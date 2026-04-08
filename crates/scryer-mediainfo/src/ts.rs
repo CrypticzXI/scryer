@@ -373,14 +373,14 @@ fn extract_language(kind: TrackKind, descriptors: &[u8]) -> Option<String> {
         let desc_end = (pos + 2 + len).min(descriptors.len());
 
         let candidate = match (kind, tag) {
-            (TrackKind::Subtitle, SUBTITLING_DESCRIPTOR) if len >= 8 => {
-                parse_descriptor_language(&descriptors[data_start..data_start + 3])
-                    .map(|lang| (2, lang))
-            }
-            (TrackKind::Subtitle, TELETEXT_DESCRIPTOR) if len >= 5 => {
-                parse_descriptor_language(&descriptors[data_start..data_start + 3])
-                    .map(|lang| (1, lang))
-            }
+            (TrackKind::Subtitle, SUBTITLING_DESCRIPTOR) if len >= 8 => descriptors
+                .get(data_start..data_start + 3)
+                .and_then(parse_descriptor_language)
+                .map(|lang| (2, lang)),
+            (TrackKind::Subtitle, TELETEXT_DESCRIPTOR) if len >= 5 => descriptors
+                .get(data_start..data_start + 3)
+                .and_then(parse_descriptor_language)
+                .map(|lang| (1, lang)),
             (TrackKind::Audio, DVB_EXTENSION_DESCRIPTOR)
                 if len >= 5
                     && descriptors.get(data_start).copied()
@@ -388,16 +388,18 @@ fn extract_language(kind: TrackKind, descriptors: &[u8]) -> Option<String> {
             {
                 let flags = descriptors.get(data_start + 1).copied().unwrap_or(0);
                 if (flags & 0x01) != 0 {
-                    parse_descriptor_language(&descriptors[data_start + 2..data_start + 5])
+                    descriptors
+                        .get(data_start + 2..data_start + 5)
+                        .and_then(parse_descriptor_language)
                         .map(|lang| (3, lang))
                 } else {
                     None
                 }
             }
-            (_, ISO_639_LANGUAGE_DESCRIPTOR) if len >= 4 => {
-                parse_descriptor_language(&descriptors[data_start..data_start + 3])
-                    .map(|lang| (0, lang))
-            }
+            (_, ISO_639_LANGUAGE_DESCRIPTOR) if len >= 4 => descriptors
+                .get(data_start..data_start + 3)
+                .and_then(parse_descriptor_language)
+                .map(|lang| (0, lang)),
             _ => None,
         };
 
@@ -1495,6 +1497,27 @@ mod tests {
         assert_eq!(
             extract_language(TrackKind::Audio, &descriptors),
             Some("jpn".to_string())
+        );
+    }
+
+    #[test]
+    fn truncated_supplementary_audio_descriptor_falls_back_without_panicking() {
+        let descriptors = [
+            ISO_639_LANGUAGE_DESCRIPTOR,
+            4,
+            b'e',
+            b'n',
+            b'g',
+            0,
+            DVB_EXTENSION_DESCRIPTOR,
+            5,
+            SUPPLEMENTARY_AUDIO_DESCRIPTOR,
+            0x01,
+            b'j',
+        ];
+        assert_eq!(
+            extract_language(TrackKind::Audio, &descriptors),
+            Some("eng".to_string())
         );
     }
 }

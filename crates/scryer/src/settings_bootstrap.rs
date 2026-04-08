@@ -1,7 +1,7 @@
 use scryer_application::{
-    QualityProfile, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, default_quality_profile_1080p_for_search,
-    default_quality_profile_for_search,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, QualityProfile, REQUIRED_AUDIO_LANGUAGES_KEY,
+    SCORING_PERSONA_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
 use scryer_infrastructure::{SettingsValueRecord, SqliteServices};
 use serde_json::{Value, json};
@@ -263,6 +263,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
             data_type: "json",
             default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
+            data_type: "bool",
+            default_value_json: "false",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -798,6 +806,20 @@ pub(crate) async fn seed_service_settings_from_environment(
         .batch_upsert_settings_if_not_overridden(entries)
         .await
         .map_err(|error| format!("failed to batch persist env settings: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_setting_seeds_include_audio_persona_migration_sentinel() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
+                && seed.data_type == "bool"
+        }));
+    }
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(

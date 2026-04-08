@@ -123,8 +123,14 @@ async fn main() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let env_filter =
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Keep default application logging at `info`, but suppress
+                // parser-internal mp4parse warnings for files we otherwise
+                // successfully analyze. ffprobe tolerates these quirks too, and
+                // real parse failures still surface through our own error path.
+                tracing_subscriber::EnvFilter::new("info,mp4parse=error")
+            });
 
         let stdout_layer = tracing_subscriber::fmt::layer();
         let buffer_layer = tracing_subscriber::fmt::layer()
