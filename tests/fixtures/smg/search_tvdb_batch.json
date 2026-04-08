@@ -1,0 +1,39 @@
+{
+  "data": {
+    "searchTvdbBatch": [
+      {
+        "query": "Test Movie",
+        "type": "movie",
+        "year": 2024,
+        "limit": 10,
+        "total_results": 2,
+        "results": [
+          {
+            "tvdb_id": 123456,
+            "name": "Test Movie Title",
+            "year": 2024
+          },
+          {
+            "tvdb_id": 789012,
+            "name": "Test Movie Title: Sequel",
+            "year": 2026
+          }
+        ]
+      },
+      {
+        "query": "Test Series",
+        "type": "series",
+        "year": null,
+        "limit": 10,
+        "total_results": 1,
+        "results": [
+          {
+            "tvdb_id": 345678,
+            "name": "Test Series Title",
+            "year": 2020
+          }
+        ]
+      }
+    ]
+  }
+}

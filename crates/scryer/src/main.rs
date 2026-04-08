@@ -20,8 +20,7 @@ use scryer_application::{
     AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
     MovieFacetHandler, SeriesFacetHandler, TitleImageKind, TitleImageRepository,
     start_background_acquisition_poller, start_background_banner_loop,
-    start_background_fanart_loop, start_background_hydration_loop,
-    start_background_library_refresh_loop, start_background_post_hydration_title_scan_workers,
+    start_background_fanart_loop, start_background_library_refresh_loop,
     start_background_poster_loop, start_background_subtitle_poller, start_download_queue_poller,
     start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
@@ -578,6 +577,7 @@ async fn bootstrap_application(
     services.system_info = Arc::new(db.clone());
     services.job_runs = Arc::new(db.clone());
     services.library_probe_signatures = Arc::new(db.clone());
+    services.library_scan_unmatched_items = Arc::new(db.clone());
     services.title_images = Arc::new(db.clone());
     services.title_image_processor = title_image_processor;
     services.housekeeping = Arc::new(db.clone());
@@ -676,14 +676,6 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     tokio::spawn(start_background_library_refresh_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_hydration_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_post_hydration_title_scan_workers(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));

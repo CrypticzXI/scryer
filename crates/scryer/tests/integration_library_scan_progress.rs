@@ -73,6 +73,8 @@ async fn active_library_scans_query_returns_progress_snapshot() {
                 session_id: "session-1".to_string(),
                 status: "running".to_string(),
                 found_titles: 12,
+                title_match_completed: 7,
+                title_match_total_known: false,
                 titles_completed: 2,
                 titles_total: Some(4),
                 files_completed: 5,
@@ -84,7 +86,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
 
     let body = gql(
         &ctx,
-        r#"query { activeLibraryScans { sessionId facet status foundTitles metadataProgress { total completed failed } fileProgress { total completed failed } } }"#,
+        r#"query { activeLibraryScans { sessionId facet status foundTitles titleMatchTotalKnown titleMatchProgress { total completed failed } hydrationProgress { total completed failed } mediaAnalysisProgress { total completed failed } } }"#,
         json!({}),
     )
     .await;
@@ -98,10 +100,52 @@ async fn active_library_scans_query_returns_progress_snapshot() {
     assert_eq!(scans[0]["facet"], "tv");
     assert_eq!(scans[0]["status"], "running");
     assert_eq!(scans[0]["foundTitles"], 12);
-    assert_eq!(scans[0]["metadataProgress"]["total"], 4);
-    assert_eq!(scans[0]["metadataProgress"]["completed"], 2);
-    assert_eq!(scans[0]["metadataProgress"]["failed"], 0);
-    assert_eq!(scans[0]["fileProgress"]["total"], 9);
-    assert_eq!(scans[0]["fileProgress"]["completed"], 5);
-    assert_eq!(scans[0]["fileProgress"]["failed"], 0);
+    assert_eq!(scans[0]["titleMatchTotalKnown"], false);
+    assert_eq!(scans[0]["titleMatchProgress"]["total"], 12);
+    assert_eq!(scans[0]["titleMatchProgress"]["completed"], 7);
+    assert_eq!(scans[0]["titleMatchProgress"]["failed"], 0);
+    assert_eq!(scans[0]["hydrationProgress"]["total"], 4);
+    assert_eq!(scans[0]["hydrationProgress"]["completed"], 2);
+    assert_eq!(scans[0]["hydrationProgress"]["failed"], 0);
+    assert_eq!(scans[0]["mediaAnalysisProgress"]["total"], 9);
+    assert_eq!(scans[0]["mediaAnalysisProgress"]["completed"], 5);
+    assert_eq!(scans[0]["mediaAnalysisProgress"]["failed"], 0);
+}
+
+#[tokio::test]
+async fn scan_library_mutation_returns_created_status_and_started_session() {
+    let ctx = TestContext::new().await;
+
+    let resp = ctx
+        .http_client()
+        .post(ctx.graphql_url())
+        .json(&json!({
+            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
+                scanLibrary(facet: $facet) {
+                    sessionId
+                    facet
+                    mode
+                    status
+                }
+            }"#,
+            "variables": { "facet": "movie" }
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(resp.status(), 201);
+
+    let body: serde_json::Value = resp.json().await.expect("should be valid JSON");
+    assert_no_errors(&body);
+
+    let session = &body["data"]["scanLibrary"];
+    assert!(
+        session["sessionId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(session["facet"], "movie");
+    assert_eq!(session["mode"], "full");
+    assert_eq!(session["status"], "discovering");
 }

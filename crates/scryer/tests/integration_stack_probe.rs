@@ -166,8 +166,8 @@ async fn run_haikyu_stack_probe() {
     assert!(
         ctx.app
             .services
-            .post_hydration_title_scan_queue
-            .enqueue(titles[0].id.clone())
+            .library_scan_runtime
+            .enqueue_title_scan(titles[0].id.clone(), "integration_stack_probe")
             .await,
         "post-hydration queue should accept the replayed title scan"
     );

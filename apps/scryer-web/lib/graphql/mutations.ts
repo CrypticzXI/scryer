@@ -172,11 +172,12 @@ export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteM
 
 export const scanLibraryMutation = `mutation ScanLibrary($facet: MediaFacetValue!) {
   scanLibrary(facet: $facet) {
-    scanned
-    matched
-    imported
-    skipped
-    unmatched
+    sessionId
+    facet
+    mode
+    status
+    startedAt
+    updatedAt
   }
 }`;
 

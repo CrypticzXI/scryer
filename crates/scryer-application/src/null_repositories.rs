@@ -17,7 +17,8 @@ use crate::{
     DownloadSubmissionRepository, FileImporter, HousekeepingRepository, ImportArtifact,
     ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
     JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    MediaFileRepository, NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
     NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
@@ -1006,6 +1007,47 @@ impl LibraryProbeRepository for NullLibraryProbeRepository {
     }
 }
 
+#[derive(Default)]
+pub struct NullLibraryScanUnmatchedItemRepository;
+
+#[async_trait]
+impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemRepository {
+    async fn upsert_library_scan_unmatched_item(
+        &self,
+        _item: &LibraryScanUnmatchedItem,
+    ) -> AppResult<String> {
+        Err(AppError::Repository(
+            "library scan unmatched item repository is not configured".to_string(),
+        ))
+    }
+
+    async fn delete_library_scan_unmatched_item(
+        &self,
+        _facet: scryer_domain::MediaFacet,
+        _item_path: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_library_scan_unmatched_items(
+        &self,
+        _facet: Option<scryer_domain::MediaFacet>,
+        _scan_root: Option<&str>,
+        _limit: i64,
+        _offset: i64,
+    ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn count_library_scan_unmatched_items(
+        &self,
+        _facet: Option<scryer_domain::MediaFacet>,
+        _scan_root: Option<&str>,
+    ) -> AppResult<i64> {
+        Ok(0)
+    }
+}
+
 #[cfg(test)]
 pub mod test_nulls {
     use crate::{
@@ -1071,9 +1113,6 @@ pub mod test_nulls {
         }
         async fn set_folder_path(&self, _: &str, _: &str) -> AppResult<()> {
             Ok(())
-        }
-        async fn list_unhydrated(&self, _: usize, _: &str) -> AppResult<Vec<Title>> {
-            Ok(vec![])
         }
         async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
             Ok(0)

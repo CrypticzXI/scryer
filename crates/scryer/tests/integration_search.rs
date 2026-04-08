@@ -9,7 +9,7 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
-use scryer_application::{IndexerClient, IndexerPluginProvider, SearchMode};
+use scryer_application::{IndexerClient, IndexerPluginProvider, MetadataSearchQuery, SearchMode};
 
 /// Create an IndexerClient backed by the built-in nzbgeek WASM plugin,
 /// configured to talk to the given wiremock URI.
@@ -736,7 +736,7 @@ async fn smg_search_tvdb() {
         .app
         .services
         .metadata_gateway
-        .search_tvdb("Test Movie", "movie")
+        .search_tvdb("Test Movie", "movie", Some(2024))
         .await
         .expect("search_tvdb should succeed");
 
@@ -781,6 +781,97 @@ async fn smg_search_tvdb_rich() {
         results[0].overview.is_some(),
         "rich search should have overview"
     );
+}
+
+#[tokio::test]
+async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
+    let ctx = TestContext::new().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("smg/search_tvdb_batch.json")),
+        )
+        .mount(&ctx.smg_server)
+        .await;
+
+    let results = ctx
+        .app
+        .services
+        .metadata_gateway
+        .search_tvdb_batch(&[
+            MetadataSearchQuery {
+                query: "  Test Movie  ".to_string(),
+                type_hint: "movie".to_string(),
+                year: Some(2024),
+            },
+            MetadataSearchQuery {
+                query: "Test Movie".to_string(),
+                type_hint: "movie".to_string(),
+                year: Some(2024),
+            },
+            MetadataSearchQuery {
+                query: "Test Series".to_string(),
+                type_hint: "series".to_string(),
+                year: None,
+            },
+            MetadataSearchQuery {
+                query: "   ".to_string(),
+                type_hint: "movie".to_string(),
+                year: None,
+            },
+        ])
+        .await
+        .expect("search_tvdb_batch should succeed");
+
+    assert_eq!(results.len(), 2);
+
+    let movie_key = MetadataSearchQuery {
+        query: "Test Movie".to_string(),
+        type_hint: "movie".to_string(),
+        year: Some(2024),
+    };
+    let series_key = MetadataSearchQuery {
+        query: "Test Series".to_string(),
+        type_hint: "series".to_string(),
+        year: None,
+    };
+
+    assert_eq!(results[&movie_key].len(), 2);
+    assert_eq!(results[&movie_key][0].name, "Test Movie Title");
+    assert_eq!(results[&series_key].len(), 1);
+    assert_eq!(results[&series_key][0].name, "Test Series Title");
+
+    let requests = ctx
+        .smg_server
+        .received_requests()
+        .await
+        .expect("should capture SMG requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "POST");
+
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    let query = body
+        .get("query")
+        .and_then(serde_json::Value::as_str)
+        .expect("query string should be present");
+    assert!(query.contains("searchTvdbBatch"));
+    assert!(!query.contains("q0: searchTvdb"));
+    assert!(!query.contains("$language"));
+
+    let request_inputs = body
+        .pointer("/variables/requests")
+        .and_then(serde_json::Value::as_array)
+        .expect("batch requests should be present");
+    assert_eq!(request_inputs.len(), 2);
+    assert!(body.pointer("/variables/language").is_none());
+    assert_eq!(request_inputs[0]["query"], "Test Movie");
+    assert_eq!(request_inputs[0]["type"], "movie");
+    assert_eq!(request_inputs[0]["year"], 2024);
+    assert_eq!(request_inputs[0]["limit"], 10);
+    assert_eq!(request_inputs[1]["query"], "Test Series");
+    assert_eq!(request_inputs[1]["type"], "series");
+    assert!(request_inputs[1].get("year").is_none());
 }
 
 #[tokio::test]
@@ -863,7 +954,7 @@ async fn smg_handles_server_error() {
         .app
         .services
         .metadata_gateway
-        .search_tvdb("Test", "movie")
+        .search_tvdb("Test", "movie", None)
         .await;
 
     assert!(result.is_err(), "should fail on 500");

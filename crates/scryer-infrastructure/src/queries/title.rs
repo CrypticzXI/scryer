@@ -65,29 +65,6 @@ pub(crate) async fn list_titles_query(
     Ok(out)
 }
 
-pub(crate) async fn list_unhydrated_titles_query(
-    pool: &SqlitePool,
-    limit: usize,
-    language: &str,
-) -> AppResult<Vec<Title>> {
-    let sql = format!(
-        "SELECT {} FROM titles WHERE metadata_fetched_at IS NULL OR metadata_language IS NULL OR metadata_language != ? ORDER BY created_at ASC LIMIT ?",
-        TITLE_COLUMNS
-    );
-    let rows = sqlx::query(&sql)
-        .bind(language)
-        .bind(limit as i64)
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row_to_title(&row)?);
-    }
-    Ok(out)
-}
-
 pub(crate) async fn clear_metadata_language_for_all_query(pool: &SqlitePool) -> AppResult<u64> {
     let result = sqlx::query(
         "UPDATE titles SET metadata_language = NULL WHERE metadata_language IS NOT NULL",

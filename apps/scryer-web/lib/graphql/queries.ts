@@ -207,6 +207,35 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     trackedStatusMessages
     trackedMatchType`;
 
+  const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
+    collections {${TITLE_COLLECTION_FIELDS}
+    }
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }
+    wantedItems {${WANTED_ITEM_FIELDS}
+    }
+    downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }`;
+
+  const TITLE_EVENT_FIELDS = `
+    id
+    titleId
+    episodeId
+    collectionId
+    eventType
+    sourceTitle
+    quality
+    downloadId
+    dataJson
+    occurredAt
+    createdAt`;
+
+  const TITLE_RELEASE_BLOCKLIST_FIELDS = `
+    sourceHint
+    sourceTitle
+    errorMessage
+    attemptedAt`;
+
 const SUBTITLE_DOWNLOAD_FIELDS = `
     id
     mediaFileId
@@ -222,6 +251,23 @@ const SUBTITLE_DOWNLOAD_FIELDS = `
     releaseInfo
     synced
     downloadedAt`;
+
+  const IMPORT_HISTORY_FIELDS = `
+    id
+    sourceSystem
+    sourceRef
+    sourceTitle
+    importType
+    status
+    errorMessage
+    decision
+    skipReason
+    titleId
+    sourcePath
+    destPath
+    startedAt
+    finishedAt
+    createdAt`;
 
 const PROVIDER_TYPE_FIELDS = `
     providerType
@@ -274,59 +320,21 @@ export const titleDetailQuery = `query TitleDetail($id: String!) {
     collections {${TITLE_COLLECTION_FIELDS}
     }
   }
-  titleEvents(titleId: $id, limit: 50, offset: 0) {
-    id
-    titleId
-    episodeId
-    collectionId
-    eventType
-    sourceTitle
-    quality
-    downloadId
-    dataJson
-    occurredAt
-    createdAt
+  titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
   }
 }`;
 
 export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId: String!, $limit: Int) {
-  titleReleaseBlocklist(titleId: $titleId, limit: $limit) {
-    sourceHint
-    sourceTitle
-    errorMessage
-    attemptedAt
+  titleReleaseBlocklist(titleId: $titleId, limit: $limit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
 }`;
 
 export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $blocklistLimit: Int) {
-  title(id: $id) {${TITLE_CORE_FIELDS}
-    collections {${TITLE_COLLECTION_FIELDS}
-    }
-    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
-    }
-    wantedItems {${WANTED_ITEM_FIELDS}
-    }
-    downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
-    }
+  title(id: $id) {${TITLE_OVERVIEW_FIELDS}
   }
-  titleEvents(titleId: $id, limit: 50, offset: 0) {
-    id
-    titleId
-    episodeId
-    collectionId
-    eventType
-    sourceTitle
-    quality
-    downloadId
-    dataJson
-    occurredAt
-    createdAt
+  titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
   }
-  titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {
-    sourceHint
-    sourceTitle
-    errorMessage
-    attemptedAt
+  titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
   subtitleDownloads(titleId: $id) {${SUBTITLE_DOWNLOAD_FIELDS}
   }
@@ -566,7 +574,7 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
   }
 }`;
 
-const TITLE_LIST_FIELDS = `
+export const TITLE_LIST_FIELDS = `
     id
     name
     facet
@@ -596,6 +604,161 @@ export const titleListEntryQuery = `query TitleListEntry($id: String!) {
 ${TITLE_LIST_FIELDS}
   }
 }`;
+
+type ReactiveRefreshVariableValue = string | number | null;
+
+export type ReactiveRefreshQueryActionInput =
+  | {
+      key: string;
+      kind: "catalogTitles";
+      facet?: string | null;
+    }
+  | {
+      key: string;
+      kind: "catalogTitle";
+      titleId: string;
+    }
+  | {
+      key: string;
+      kind: "titleOverview";
+      titleId: string;
+      blocklistLimit: number;
+    }
+  | {
+      key: string;
+      kind: "importHistory";
+      limit?: number | null;
+    };
+
+export type ReactiveRefreshQueryActionPlan =
+  | {
+      key: string;
+      kind: "catalogTitles";
+      titlesAlias: string;
+    }
+  | {
+      key: string;
+      kind: "catalogTitle";
+      titleAlias: string;
+    }
+  | {
+      key: string;
+      kind: "titleOverview";
+      titleAlias: string;
+      titleEventsAlias: string;
+      titleReleaseBlocklistAlias: string;
+      subtitleDownloadsAlias: string;
+    }
+  | {
+      key: string;
+      kind: "importHistory";
+      importHistoryAlias: string;
+    };
+
+export function buildReactiveRefreshQuery(
+  actions: ReactiveRefreshQueryActionInput[],
+) {
+  const variableDefinitions: string[] = [];
+  const fields: string[] = [];
+  const variables: Record<string, ReactiveRefreshVariableValue> = {};
+  const actionPlans: ReactiveRefreshQueryActionPlan[] = [];
+
+  actions.forEach((action, index) => {
+    switch (action.kind) {
+      case "catalogTitles": {
+        const titlesAlias = `catalogTitlesAction${index}`;
+        const facetVariableName = `catalogTitlesFacet${index}`;
+        variableDefinitions.push(`$${facetVariableName}: MediaFacetValue`);
+        fields.push(
+          `  ${titlesAlias}: titles(facet: $${facetVariableName}) {\n${TITLE_LIST_FIELDS}\n  }`,
+        );
+        variables[facetVariableName] = action.facet ?? null;
+        actionPlans.push({ key: action.key, kind: action.kind, titlesAlias });
+        break;
+      }
+      case "catalogTitle": {
+        const titleAlias = `catalogTitleAction${index}`;
+        const titleIdVariableName = `catalogTitleId${index}`;
+        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        fields.push(
+          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_LIST_FIELDS}\n  }`,
+        );
+        variables[titleIdVariableName] = action.titleId;
+        actionPlans.push({ key: action.key, kind: action.kind, titleAlias });
+        break;
+      }
+      case "titleOverview": {
+        const titleIdVariableName = `titleOverviewId${index}`;
+        const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
+        const titleAlias = `titleOverviewTitleAction${index}`;
+        const titleEventsAlias = `titleOverviewEventsAction${index}`;
+        const titleReleaseBlocklistAlias =
+          `titleOverviewBlocklistAction${index}`;
+        const subtitleDownloadsAlias =
+          `titleOverviewSubtitleDownloadsAction${index}`;
+
+        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
+        fields.push(
+          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${titleEventsAlias}: titleEvents(titleId: $${titleIdVariableName}, limit: 50, offset: 0) {\n${TITLE_EVENT_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${titleReleaseBlocklistAlias}: titleReleaseBlocklist(titleId: $${titleIdVariableName}, limit: $${blocklistLimitVariableName}) {\n${TITLE_RELEASE_BLOCKLIST_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${subtitleDownloadsAlias}: subtitleDownloads(titleId: $${titleIdVariableName}) {\n${SUBTITLE_DOWNLOAD_FIELDS}\n  }`,
+        );
+        variables[titleIdVariableName] = action.titleId;
+        variables[blocklistLimitVariableName] = action.blocklistLimit;
+        actionPlans.push({
+          key: action.key,
+          kind: action.kind,
+          titleAlias,
+          titleEventsAlias,
+          titleReleaseBlocklistAlias,
+          subtitleDownloadsAlias,
+        });
+        break;
+      }
+      case "importHistory": {
+        const importHistoryAlias = `importHistoryAction${index}`;
+        const limitVariableName = `importHistoryLimit${index}`;
+        variableDefinitions.push(`$${limitVariableName}: Int`);
+        fields.push(
+          `  ${importHistoryAlias}: importHistory(limit: $${limitVariableName}) {\n${IMPORT_HISTORY_FIELDS}\n  }`,
+        );
+        variables[limitVariableName] = action.limit ?? null;
+        actionPlans.push({
+          key: action.key,
+          kind: action.kind,
+          importHistoryAlias,
+        });
+        break;
+      }
+      default: {
+        const exhaustiveCheck: never = action;
+        throw new Error(`unsupported reactive refresh action: ${exhaustiveCheck}`);
+      }
+    }
+  });
+
+  if (fields.length === 0) {
+    throw new Error("reactive refresh query requires at least one action");
+  }
+
+  const signature = variableDefinitions.length
+    ? `(${variableDefinitions.join(", ")})`
+    : "";
+
+  return {
+    query: `query ReactiveRefresh${signature} {\n${fields.join("\n")}\n}`,
+    variables,
+    actionPlans,
+  };
+}
 
 export const mediaRenamePreviewQuery = `query MediaRenamePreview($input: MediaRenamePreviewInput!) {
   mediaRenamePreview(input: $input) {
@@ -651,65 +814,31 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
   }
 }`;
 
-export const activeLibraryScansQuery = `query ActiveLibraryScans {
-  activeLibraryScans {
-    sessionId
+const DOMAIN_EVENT_ENVELOPE_FIELDS = `
+    sequence
+    eventId
+    occurredAt
+    actorUserId
+    titleId
     facet
-    mode
-    status
-    startedAt
-    updatedAt
-    foundTitles
-    metadataTotalKnown
-    fileTotalKnown
-    metadataProgress {
-      total
-      completed
-      failed
-    }
-    fileProgress {
-      total
-      completed
-      failed
-    }
-    summary {
-      scanned
-      matched
-      imported
-      skipped
-      unmatched
-    }
+    eventType
+    streamKind
+    streamId
+    payloadJson`;
+
+export const libraryScanDomainEventsQuery = `query LibraryScanDomainEvents($afterSequence: Int, $limit: Int) {
+  domainEvents(
+    eventTypes: [library_scan_started, library_scan_title_discovered, library_scan_progressed, library_scan_completed, library_scan_failed]
+    afterSequence: $afterSequence
+    limit: $limit
+  ) {
+${DOMAIN_EVENT_ENVELOPE_FIELDS}
   }
 }`;
 
-export const libraryScanProgressSubscriptionQuery = `subscription LibraryScanProgress {
-  libraryScanProgress {
-    sessionId
-    facet
-    mode
-    status
-    startedAt
-    updatedAt
-    foundTitles
-    metadataTotalKnown
-    fileTotalKnown
-    metadataProgress {
-      total
-      completed
-      failed
-    }
-    fileProgress {
-      total
-      completed
-      failed
-    }
-    summary {
-      scanned
-      matched
-      imported
-      skipped
-      unmatched
-    }
+export const libraryScanDomainEventFeedSubscriptionQuery = `subscription LibraryScanDomainEventFeed($afterSequence: Int) {
+  domainEventFeed(afterSequence: $afterSequence) {
+${DOMAIN_EVENT_ENVELOPE_FIELDS}
   }
 }`;
 
@@ -753,14 +882,20 @@ export const JOB_RUN_FIELDS = `
     startedAt
     updatedAt
     foundTitles
-    metadataTotalKnown
-    fileTotalKnown
-    metadataProgress {
+    titleMatchTotalKnown
+    titleMatchProgress {
       total
       completed
       failed
     }
-    fileProgress {
+    hydrationTotalKnown
+    hydrationProgress {
+      total
+      completed
+      failed
+    }
+    mediaAnalysisTotalKnown
+    mediaAnalysisProgress {
       total
       completed
       failed
@@ -1172,22 +1307,7 @@ export const meQuery = `query Me {
 }`;
 
 export const importHistoryQuery = `query ImportHistory($limit: Int) {
-  importHistory(limit: $limit) {
-    id
-    sourceSystem
-    sourceRef
-    sourceTitle
-    importType
-    status
-    errorMessage
-    decision
-    skipReason
-    titleId
-    sourcePath
-    destPath
-    startedAt
-    finishedAt
-    createdAt
+  importHistory(limit: $limit) {${IMPORT_HISTORY_FIELDS}
   }
 }`;
 

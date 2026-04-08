@@ -7053,6 +7053,18 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
         collections[0].ordered_path.as_deref(),
         Some(movie_path.to_string_lossy().as_ref())
     );
+
+    let media_files = ctx
+        .db
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(
+        media_files[0].file_path,
+        movie_path.to_string_lossy().to_string()
+    );
+    assert_eq!(media_files[0].scan_status, "scan_failed");
 }
 
 #[tokio::test]
@@ -7168,6 +7180,18 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
         collections[0].ordered_path.as_deref(),
         Some(movie_path.to_string_lossy().as_ref())
     );
+
+    let media_files = ctx
+        .db
+        .list_media_files_for_title(&hydrated_title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(
+        media_files[0].file_path,
+        movie_path.to_string_lossy().to_string()
+    );
+    assert_eq!(media_files[0].scan_status, "scan_failed");
 
     let (wanted_items, total) = ctx
         .app

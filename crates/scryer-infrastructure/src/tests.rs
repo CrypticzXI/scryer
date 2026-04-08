@@ -1,7 +1,8 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    InsertMediaFileInput, MediaFileRepository, TitleImageBlob, TitleImageKind,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
     TitleRepository, UserRepository,
 };
@@ -1188,6 +1189,132 @@ async fn sqlite_show_queries_roundtrip() {
         .await
         .expect("get collection by id after delete");
     assert!(missing_collection.is_none());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_scan_unmatched_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    let created_at = "2026-04-07T00:00:00Z".to_string();
+    let updated_at = "2026-04-07T00:00:00Z".to_string();
+    let item = LibraryScanUnmatchedItem {
+        id: "library_scan_unmatched:test".to_string(),
+        facet: MediaFacet::Movie,
+        scan_session_id: "session-1".to_string(),
+        scan_root: "/library".to_string(),
+        item_path: "/library/Unknown.Movie.2020.mkv".to_string(),
+        display_name: "Unknown.Movie.2020".to_string(),
+        query: "Unknown Movie".to_string(),
+        year_hint: Some(2020),
+        reason_code: "no_metadata_search_results".to_string(),
+        error_message: None,
+        search_attempts: vec![LibraryScanUnmatchedSearchAttempt {
+            query: "Unknown Movie".to_string(),
+            result_count: 0,
+            top_results: Vec::new(),
+        }],
+        created_at: created_at.clone(),
+        updated_at: updated_at.clone(),
+    };
+
+    <SqliteServices as LibraryScanUnmatchedItemRepository>::upsert_library_scan_unmatched_item(
+        &services, &item,
+    )
+    .await
+    .expect("insert unmatched item");
+
+    let count =
+        <SqliteServices as LibraryScanUnmatchedItemRepository>::count_library_scan_unmatched_items(
+            &services,
+            Some(MediaFacet::Movie),
+            Some("/library"),
+        )
+        .await
+        .expect("count unmatched items after insert");
+    assert_eq!(count, 1);
+
+    let listed =
+        <SqliteServices as LibraryScanUnmatchedItemRepository>::list_library_scan_unmatched_items(
+            &services,
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            10,
+            0,
+        )
+        .await
+        .expect("list unmatched items after insert");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].search_attempts.len(), 1);
+    assert_eq!(listed[0].search_attempts[0].query, "Unknown Movie");
+    assert_eq!(listed[0].created_at, created_at);
+
+    let updated = LibraryScanUnmatchedItem {
+        scan_session_id: "session-2".to_string(),
+        reason_code: "no_acceptable_metadata_match".to_string(),
+        search_attempts: vec![LibraryScanUnmatchedSearchAttempt {
+            query: "Unknown Movie 2020".to_string(),
+            result_count: 2,
+            top_results: vec![
+                "Known Movie (2019)".to_string(),
+                "Known Movie 2 (2020)".to_string(),
+            ],
+        }],
+        created_at: "2026-04-08T00:00:00Z".to_string(),
+        updated_at: "2026-04-08T01:00:00Z".to_string(),
+        ..item.clone()
+    };
+
+    <SqliteServices as LibraryScanUnmatchedItemRepository>::upsert_library_scan_unmatched_item(
+        &services, &updated,
+    )
+    .await
+    .expect("update unmatched item");
+
+    let listed_after_update =
+        <SqliteServices as LibraryScanUnmatchedItemRepository>::list_library_scan_unmatched_items(
+            &services,
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            10,
+            0,
+        )
+        .await
+        .expect("list unmatched items after update");
+    assert_eq!(listed_after_update.len(), 1);
+    assert_eq!(listed_after_update[0].scan_session_id, "session-2");
+    assert_eq!(
+        listed_after_update[0].reason_code,
+        "no_acceptable_metadata_match"
+    );
+    assert_eq!(listed_after_update[0].created_at, item.created_at);
+    assert_eq!(listed_after_update[0].updated_at, updated.updated_at);
+    assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
+
+    <SqliteServices as LibraryScanUnmatchedItemRepository>::delete_library_scan_unmatched_item(
+        &services,
+        MediaFacet::Movie,
+        &item.item_path,
+    )
+    .await
+    .expect("delete unmatched item");
+
+    let count_after_delete =
+        <SqliteServices as LibraryScanUnmatchedItemRepository>::count_library_scan_unmatched_items(
+            &services,
+            Some(MediaFacet::Movie),
+            Some("/library"),
+        )
+        .await
+        .expect("count unmatched items after delete");
+    assert_eq!(count_after_delete, 0);
 
     let _ = std::fs::remove_file(db);
 }

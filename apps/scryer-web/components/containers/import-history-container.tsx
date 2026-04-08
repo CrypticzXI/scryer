@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { useClient } from "urql";
 
 import { ImportHistoryView } from "@/components/views/import-history-view";
+import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { importHistoryQuery } from "@/lib/graphql/queries";
 import { retryImportMutation } from "@/lib/graphql/mutations";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
@@ -12,6 +13,7 @@ import type { ImportRecord } from "@/lib/types";
 
 export const ImportHistoryContainer = memo(function ImportHistoryContainer() {
   const client = useClient();
+  const { queueImportHistoryRefresh } = useReactiveRefresh();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
 
@@ -61,7 +63,23 @@ export const ImportHistoryContainer = memo(function ImportHistoryContainer() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useImportHistorySubscription(() => void refresh());
+  useImportHistorySubscription(() => {
+    setLoading(true);
+    queueImportHistoryRefresh({
+      limit,
+      apply(nextRecords) {
+        setRecords(nextRecords);
+        setError(null);
+        setLoading(false);
+      },
+      onError(error) {
+        setError(
+          error instanceof Error ? error.message : "Failed to load import history",
+        );
+        setLoading(false);
+      },
+    });
+  });
 
   return (
     <ImportHistoryView

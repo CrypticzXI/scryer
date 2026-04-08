@@ -1,3 +1,8 @@
+//! Subtitle search, provider integration, scoring, sync, and orchestration.
+//!
+//! Start with `orchestration.rs` for the application-layer polling and trigger flow.
+//! Provider behavior and language utilities live in the sibling files.
+
 pub mod download;
 pub mod language;
 pub mod provider;

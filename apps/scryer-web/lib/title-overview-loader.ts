@@ -2,7 +2,7 @@ import type { Client } from "urql";
 
 import { titleOverviewInitQuery } from "@/lib/graphql/queries";
 
-type TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle> = {
+export type TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];

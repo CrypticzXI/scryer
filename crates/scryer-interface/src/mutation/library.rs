@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
 use crate::context::{actor_from_ctx, app_from_ctx, settings_db_from_ctx, to_gql_error};
-use crate::mappers::{from_library_scan_summary, from_media_rename_apply};
+use crate::mappers::{
+    from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
+};
 use crate::types::*;
 
 static RENAME_IDEMPOTENCY_KEYS: LazyLock<Mutex<HashSet<String>>> =
@@ -101,15 +103,15 @@ impl LibraryMutations {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
-    ) -> GqlResult<LibraryScanSummaryPayload> {
+    ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let facet = facet.into_domain();
-        let summary = app
-            .scan_library(&actor, facet)
+        let session = app
+            .trigger_library_scan(&actor, facet)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_library_scan_summary(summary))
+        Ok(from_library_scan_session(session))
     }
 
     async fn scan_title_library(
@@ -250,10 +252,17 @@ impl LibraryMutations {
             .await
             .map_err(to_gql_error)?;
 
-        tracing::info!(language = %language, titles_cleared = cleared, "metadata rehydration queued");
+        let refreshed = app
+            .hydrate_all_titles_for_current_language()
+            .await
+            .map_err(to_gql_error)?;
 
-        // Wake the metadata hydration loop
-        app.services.hydration_wake.notify_one();
+        tracing::info!(
+            language = %language,
+            titles_cleared = cleared,
+            titles_refreshed = refreshed,
+            "metadata rehydration completed"
+        );
 
         Ok(true)
     }

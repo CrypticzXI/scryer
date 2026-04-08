@@ -27,9 +27,11 @@ export type LibraryScanProgress = {
   startedAt: string;
   updatedAt: string;
   foundTitles: number;
-  metadataTotalKnown: boolean;
-  fileTotalKnown: boolean;
-  metadataProgress: LibraryScanPhaseProgress;
-  fileProgress: LibraryScanPhaseProgress;
+  titleMatchTotalKnown: boolean;
+  hydrationTotalKnown: boolean;
+  mediaAnalysisTotalKnown: boolean;
+  titleMatchProgress: LibraryScanPhaseProgress;
+  hydrationProgress: LibraryScanPhaseProgress;
+  mediaAnalysisProgress: LibraryScanPhaseProgress;
   summary?: LibraryScanSummary | null;
 };

@@ -534,6 +534,88 @@ impl SqliteServices {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
+    pub async fn upsert_library_scan_unmatched_item(
+        &self,
+        item: &scryer_application::LibraryScanUnmatchedItem,
+    ) -> AppResult<String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::UpsertLibraryScanUnmatchedItem {
+                item: item.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn delete_library_scan_unmatched_item(
+        &self,
+        facet: scryer_domain::MediaFacet,
+        item_path: &str,
+    ) -> AppResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::DeleteLibraryScanUnmatchedItem {
+                facet,
+                item_path: item_path.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn list_library_scan_unmatched_items(
+        &self,
+        facet: Option<scryer_domain::MediaFacet>,
+        scan_root: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<scryer_application::LibraryScanUnmatchedItem>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::ListLibraryScanUnmatchedItems {
+                facet,
+                scan_root: scan_root.map(str::to_string),
+                limit,
+                offset,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn count_library_scan_unmatched_items(
+        &self,
+        facet: Option<scryer_domain::MediaFacet>,
+        scan_root: Option<&str>,
+    ) -> AppResult<i64> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::CountLibraryScanUnmatchedItems {
+                facet,
+                scan_root: scan_root.map(str::to_string),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub async fn ensure_setting_definition(
         &self,

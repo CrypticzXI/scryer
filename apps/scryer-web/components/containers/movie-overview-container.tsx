@@ -39,6 +39,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
 
 export type TitleDetail = {
   id: string;
@@ -310,6 +311,28 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     subtitleToBlacklist !== null,
   );
 
+  const applyTitleDetailSnapshot = React.useCallback(
+    (
+      snapshot: TitleOverviewSnapshot<
+        MovieOverviewSnapshotTitle,
+        TitleHistoryEvent,
+        TitleReleaseBlocklistEntry,
+        SubtitleDownloadRecord
+      >,
+    ) => {
+      const nextTitle = snapshot.title;
+      setTitle(nextTitle);
+      setCollections(nextTitle?.collections ?? []);
+      setEvents(snapshot.titleEvents);
+      setBlocklistEntries(snapshot.titleReleaseBlocklist);
+      setMediaFiles(nextTitle?.mediaFiles ?? []);
+      setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
+      setSubtitleDownloads(snapshot.subtitleDownloads);
+      setRenamePlan(null);
+    },
+    [],
+  );
+
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
       MovieOverviewSnapshotTitle,
@@ -317,16 +340,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       TitleReleaseBlocklistEntry,
       SubtitleDownloadRecord
     >(client, titleId, 200);
-    const nextTitle = snapshot.title;
-    setTitle(nextTitle);
-    setCollections(nextTitle?.collections ?? []);
-    setEvents(snapshot.titleEvents);
-    setBlocklistEntries(snapshot.titleReleaseBlocklist);
-    setMediaFiles(nextTitle?.mediaFiles ?? []);
-    setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
-    setSubtitleDownloads(snapshot.subtitleDownloads);
-    setRenamePlan(null);
-  }, [titleId, client]);
+    applyTitleDetailSnapshot(snapshot);
+  }, [applyTitleDetailSnapshot, titleId, client]);
 
   const refreshSubtitleDownloads = React.useCallback(() => {
     if (!titleId) return;
@@ -864,7 +879,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
 
   useTitleOverviewReactiveRefresh({
     titleId,
-    refresh: refreshTitleDetail,
+    blocklistLimit: 200,
+    applySnapshot: applyTitleDetailSnapshot,
     importKinds: IMPORT_KINDS,
     pause: !titleId,
   });

@@ -261,6 +261,30 @@ pub struct WantedPauseTransition {
     pub grabbed_release: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryScanUnmatchedSearchAttempt {
+    pub query: String,
+    pub result_count: usize,
+    pub top_results: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryScanUnmatchedItem {
+    pub id: String,
+    pub facet: scryer_domain::MediaFacet,
+    pub scan_session_id: String,
+    pub scan_root: String,
+    pub item_path: String,
+    pub display_name: String,
+    pub query: String,
+    pub year_hint: Option<i32>,
+    pub reason_code: String,
+    pub error_message: Option<String>,
+    pub search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct WantedItem {
     pub id: String,

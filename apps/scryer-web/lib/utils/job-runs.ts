@@ -107,28 +107,42 @@ export function normalizeLibraryScanProgress(
         ? value.updatedAt
         : new Date().toISOString(),
     foundTitles: normalizeNumber(value.foundTitles),
-    metadataTotalKnown: value.metadataTotalKnown === true,
-    fileTotalKnown: value.fileTotalKnown === true,
-    metadataProgress: {
+    titleMatchTotalKnown: value.titleMatchTotalKnown === true,
+    hydrationTotalKnown: value.hydrationTotalKnown === true,
+    mediaAnalysisTotalKnown: value.mediaAnalysisTotalKnown === true,
+    titleMatchProgress: {
       total: normalizeNumber(
-        isRecord(value.metadataProgress) ? value.metadataProgress.total : 0,
+        isRecord(value.titleMatchProgress) ? value.titleMatchProgress.total : 0,
       ),
       completed: normalizeNumber(
-        isRecord(value.metadataProgress) ? value.metadataProgress.completed : 0,
+        isRecord(value.titleMatchProgress) ? value.titleMatchProgress.completed : 0,
       ),
       failed: normalizeNumber(
-        isRecord(value.metadataProgress) ? value.metadataProgress.failed : 0,
+        isRecord(value.titleMatchProgress) ? value.titleMatchProgress.failed : 0,
       ),
     },
-    fileProgress: {
+    hydrationProgress: {
       total: normalizeNumber(
-        isRecord(value.fileProgress) ? value.fileProgress.total : 0,
+        isRecord(value.hydrationProgress) ? value.hydrationProgress.total : 0,
       ),
       completed: normalizeNumber(
-        isRecord(value.fileProgress) ? value.fileProgress.completed : 0,
+        isRecord(value.hydrationProgress) ? value.hydrationProgress.completed : 0,
       ),
       failed: normalizeNumber(
-        isRecord(value.fileProgress) ? value.fileProgress.failed : 0,
+        isRecord(value.hydrationProgress) ? value.hydrationProgress.failed : 0,
+      ),
+    },
+    mediaAnalysisProgress: {
+      total: normalizeNumber(
+        isRecord(value.mediaAnalysisProgress) ? value.mediaAnalysisProgress.total : 0,
+      ),
+      completed: normalizeNumber(
+        isRecord(value.mediaAnalysisProgress)
+          ? value.mediaAnalysisProgress.completed
+          : 0,
+      ),
+      failed: normalizeNumber(
+        isRecord(value.mediaAnalysisProgress) ? value.mediaAnalysisProgress.failed : 0,
       ),
     },
     summary: isRecord(value.summary)

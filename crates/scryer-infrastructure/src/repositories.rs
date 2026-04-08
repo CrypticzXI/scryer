@@ -5,7 +5,8 @@ use scryer_application::{
     HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
     IndexerConfigRepository, InsertMediaFileInput, JobKey, JobRunRecord, JobRunRepository,
     JobRunStatus, JobTriggerSource, LibraryProbeRepository, LibraryProbeSignature,
-    MediaFileRepository, NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
     NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository,
     PendingReleaseStatus, PluginInstallationRepository, PostProcessingScriptRepository,
     PrimaryCollectionSummary, QualityProfile as ApplicationQualityProfile,
@@ -171,11 +172,6 @@ impl TitleRepository for SqliteServices {
 
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()> {
         crate::queries::title::set_title_folder_path_query(&self.pool, id, folder_path).await
-    }
-
-    async fn list_unhydrated(&self, limit: usize, language: &str) -> AppResult<Vec<Title>> {
-        let language = language.to_string();
-        db_call!(self, ListUnhydratedTitles { limit, language })
     }
 
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
@@ -946,6 +942,45 @@ impl LibraryProbeRepository for SqliteServices {
             probe.last_changed_at.map(|value| value.to_rfc3339()),
         )
         .await
+    }
+}
+
+#[async_trait]
+impl LibraryScanUnmatchedItemRepository for SqliteServices {
+    async fn upsert_library_scan_unmatched_item(
+        &self,
+        item: &LibraryScanUnmatchedItem,
+    ) -> AppResult<String> {
+        self.upsert_library_scan_unmatched_item(item).await
+    }
+
+    async fn delete_library_scan_unmatched_item(
+        &self,
+        facet: MediaFacet,
+        item_path: &str,
+    ) -> AppResult<()> {
+        self.delete_library_scan_unmatched_item(facet, item_path)
+            .await
+    }
+
+    async fn list_library_scan_unmatched_items(
+        &self,
+        facet: Option<MediaFacet>,
+        scan_root: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
+        self.list_library_scan_unmatched_items(facet, scan_root, limit, offset)
+            .await
+    }
+
+    async fn count_library_scan_unmatched_items(
+        &self,
+        facet: Option<MediaFacet>,
+        scan_root: Option<&str>,
+    ) -> AppResult<i64> {
+        self.count_library_scan_unmatched_items(facet, scan_root)
+            .await
     }
 }
 

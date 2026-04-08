@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::sync::mpsc;
 
+const LIBRARY_SCAN_DISCOVERY_CHANNEL_CAPACITY: usize = 16;
+
 pub struct FileSystemLibraryScanner {
     allowed_extensions: HashSet<String>,
 }
@@ -86,7 +88,7 @@ impl FileSystemLibraryScanner {
 
         let root_path = Self::validate_root(root).await?;
         let allowed_extensions = self.allowed_extensions.clone();
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(LIBRARY_SCAN_DISCOVERY_CHANNEL_CAPACITY);
 
         tokio::spawn(async move {
             if let Err(error) = walk_scan_batches(

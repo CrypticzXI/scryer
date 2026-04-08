@@ -75,18 +75,19 @@ export function LibraryScanToast({
   titleOverride?: string;
 }) {
   const terminal = isTerminal(session.status);
-  const metadataPercent = percentForPhase(
-    session.metadataProgress,
-    session.metadataTotalKnown,
+  const titleMatchPercent = percentForPhase(
+    session.titleMatchProgress,
+    session.titleMatchTotalKnown,
     terminal,
   );
-  const filePercent = percentForPhase(
-    session.fileProgress,
-    session.fileTotalKnown,
+  const mediaAnalysisPercent = percentForPhase(
+    session.mediaAnalysisProgress,
+    session.mediaAnalysisTotalKnown,
     terminal,
   );
-  const metadataIndeterminate = !terminal && !session.metadataTotalKnown;
-  const fileIndeterminate = !terminal && !session.fileTotalKnown;
+  const titleMatchIndeterminate = !terminal && !session.titleMatchTotalKnown;
+  const mediaAnalysisIndeterminate =
+    !terminal && !session.mediaAnalysisTotalKnown;
 
   return (
     <div className="w-[min(26rem,calc(100vw-3rem))] p-4">
@@ -112,16 +113,16 @@ export function LibraryScanToast({
         <div className="space-y-3">
           <div className="space-y-1">
             <p className="text-xs font-medium text-foreground">
-              {t("settings.libraryScanFetchingMetadata")}
+              {t("settings.libraryScanTitleMatch")}
             </p>
             <ActivityProgressBar
-              percent={metadataPercent}
-              indeterminate={metadataIndeterminate}
+              percent={titleMatchPercent}
+              indeterminate={titleMatchIndeterminate}
               remainingLabel={phaseLabel(
                 session.status,
-                session.metadataProgress,
-                session.metadataTotalKnown,
-                t("settings.libraryScanNoMetadataNeeded"),
+                session.titleMatchProgress,
+                session.titleMatchTotalKnown,
+                t("settings.libraryScanNoTitleMatchNeeded"),
                 t,
               )}
               colorClass="bg-sky-500"
@@ -133,16 +134,16 @@ export function LibraryScanToast({
               {t("settings.libraryScanFilesScanned")}
             </p>
             <ActivityProgressBar
-              percent={filePercent}
-              indeterminate={fileIndeterminate}
+              percent={mediaAnalysisPercent}
+              indeterminate={mediaAnalysisIndeterminate}
               remainingLabel={phaseLabel(
                 session.status,
-                session.fileProgress,
-                session.fileTotalKnown,
+                session.mediaAnalysisProgress,
+                session.mediaAnalysisTotalKnown,
                 t("settings.libraryScanNoFilesToScan"),
                 t,
               )}
-              colorClass="bg-emerald-500"
+              colorClass="bg-purple-500"
             />
           </div>
         </div>

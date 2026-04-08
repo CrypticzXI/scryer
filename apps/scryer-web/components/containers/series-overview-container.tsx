@@ -37,6 +37,7 @@ import { DeletePreviewSummary } from "@/components/common/delete-preview-summary
 import { Checkbox } from "@/components/ui/checkbox";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
 
 export type TitleDetail = {
   id: string;
@@ -303,6 +304,43 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     mediaFileToDelete !== null,
   );
 
+  const applyTitleDetailSnapshot = React.useCallback(
+    (
+      snapshot: TitleOverviewSnapshot<
+        SeriesOverviewSnapshotTitle,
+        TitleHistoryEvent,
+        TitleReleaseBlocklistEntry,
+        import("@/components/containers/movie-overview-container").SubtitleDownloadRecord
+      >,
+    ) => {
+      const nextTitle = snapshot.title;
+      const nextCollections = nextTitle?.collections ?? [];
+      const nextMediaFiles = nextTitle?.mediaFiles ?? [];
+      const nextDownloadQueueItems = nextTitle?.downloadQueueItems ?? [];
+      setTitle(nextTitle);
+      setCollections(nextCollections);
+      setEpisodesByCollection(
+        Object.fromEntries(
+          nextCollections.map((collection: TitleCollection) => [
+            collection.id,
+            collection.episodes ?? [],
+          ]),
+        ),
+      );
+      setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
+      setEvents(snapshot.titleEvents);
+      setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
+      setSubtitleDownloads(snapshot.subtitleDownloads);
+      setCompletedDownloads(
+        nextDownloadQueueItems.filter(
+          (item: DownloadQueueItem) =>
+            item.state === "completed" || item.state === "import_pending",
+        ),
+      );
+    },
+    [],
+  );
+
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
       SeriesOverviewSnapshotTitle,
@@ -310,30 +348,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       TitleReleaseBlocklistEntry,
       import("@/components/containers/movie-overview-container").SubtitleDownloadRecord
     >(client, titleId, 300);
-    const nextTitle = snapshot.title;
-    const nextCollections = nextTitle?.collections ?? [];
-    const nextMediaFiles = nextTitle?.mediaFiles ?? [];
-    const nextDownloadQueueItems = nextTitle?.downloadQueueItems ?? [];
-    setTitle(nextTitle);
-    setCollections(nextCollections);
-    setEpisodesByCollection(
-      Object.fromEntries(
-        nextCollections.map((collection: TitleCollection) => [
-          collection.id,
-          collection.episodes ?? [],
-        ]),
-      ),
-    );
-    setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
-    setEvents(snapshot.titleEvents);
-    setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
-    setSubtitleDownloads(snapshot.subtitleDownloads);
-    setCompletedDownloads(
-      nextDownloadQueueItems.filter(
-        (item: DownloadQueueItem) => item.state === "completed" || item.state === "import_pending",
-      ),
-    );
-  }, [titleId, client]);
+    applyTitleDetailSnapshot(snapshot);
+  }, [applyTitleDetailSnapshot, titleId, client]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -873,7 +889,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
   useTitleOverviewReactiveRefresh({
     titleId,
-    refresh: refreshTitleDetail,
+    blocklistLimit: 300,
+    applySnapshot: applyTitleDetailSnapshot,
     importKinds: IMPORT_KINDS,
     pause: !titleId,
     onHydrationStarted() {

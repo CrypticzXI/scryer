@@ -10,11 +10,10 @@ import {
   updateRuleSetMutation,
 } from "@/lib/graphql/mutations";
 import {
-  titlesQuery,
-  titleListEntryQuery,
   deleteTitlePreviewQuery,
   ruleSetsQuery,
   routingPageInitQuery,
+  titlesQuery,
 } from "@/lib/graphql/queries";
 import {
   CATEGORY_SCOPE_MAP,
@@ -73,8 +72,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const client = useClient();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
+  const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
+    React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
-  const { getActiveSession } = useLibraryScanProgress();
+  const { getActiveSession, getSessionById } = useLibraryScanProgress();
   const activeLibraryScanSession = getActiveSession(activeFacet);
   const activeQualityScopeId =
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
@@ -236,6 +237,31 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [activeLibraryScanSession]);
 
   React.useEffect(() => {
+    if (!startedLibraryScanSessionId) {
+      return;
+    }
+
+    const session = getSessionById(startedLibraryScanSessionId);
+    if (!session) {
+      return;
+    }
+
+    if (
+      session.status !== "completed" &&
+      session.status !== "warning" &&
+      session.status !== "failed"
+    ) {
+      return;
+    }
+
+    if (session.summary) {
+      setLibraryScanSummary(session.summary);
+    }
+
+    setStartedLibraryScanSessionId(null);
+  }, [getSessionById, setLibraryScanSummary, startedLibraryScanSessionId]);
+
+  React.useEffect(() => {
     setLibraryScanNotice(null);
   }, [activeFacet]);
 
@@ -293,68 +319,56 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [activeFacet, client, refreshRuleSets, ruleSets, setGlobalStatus, t],
   );
+  const refreshTitles = React.useCallback(
+    async () => {
+      setTitleLoading(true);
+      setTitleStatus(t("title.loading"));
 
-  const refreshTitles = React.useCallback(async () => {
-    setTitleLoading(true);
-    setTitleStatus(t("title.loading"));
-    try {
-      const { data, error } = await client
-        .query(titlesQuery, {
-          facet: activeFacet,
-        })
-        .toPromise();
-      if (error) throw error;
-      const titles = (data?.titles || []) as TitleRecord[];
-      setMonitoredTitles(titles);
-      setTitleStatus(t("title.statusTemplate", { count: titles.length }));
-    } catch (error) {
-      setTitleStatus(
-        error instanceof Error ? error.message : t("status.failedToLoad"),
-      );
-    } finally {
-      setTitleLoading(false);
-    }
-  }, [
-    activeFacet,
-    client,
-    t,
-    setMonitoredTitles,
-    setTitleLoading,
-    setTitleStatus,
-  ]);
-
-  const refreshTitleRecord = React.useCallback(
-    async (titleId: string) => {
-      const { data, error } = await client
-        .query(
-          titleListEntryQuery,
-          { id: titleId },
-          { requestPolicy: "network-only" },
-        )
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-
-      const refreshedTitle = (data?.title ?? null) as TitleRecord | null;
-      setMonitoredTitles((current) => {
-        const existingIndex = current.findIndex((item) => item.id === titleId);
-        if (!refreshedTitle) {
-          if (existingIndex === -1) {
-            return current;
-          }
-          return current.filter((item) => item.id !== titleId);
-        }
-        if (existingIndex === -1) {
-          return [...current, refreshedTitle];
+      try {
+        const { data, error } = await client
+          .query(titlesQuery, { facet: activeFacet }, { requestPolicy: "network-only" })
+          .toPromise();
+        if (error) {
+          throw error;
         }
 
-        return current.map((item) =>
-          item.id === titleId ? refreshedTitle : item,
+        const nextTitles = (data?.titles ?? []) as TitleRecord[];
+        setMonitoredTitles(nextTitles);
+        setTitleStatus(t("title.statusTemplate", { count: nextTitles.length }));
+      } catch (error) {
+        setTitleStatus(
+          error instanceof Error ? error.message : t("status.failedToLoad"),
         );
+      } finally {
+        setTitleLoading(false);
+      }
+    },
+    [activeFacet, client, setMonitoredTitles, setTitleLoading, setTitleStatus, t],
+  );
+
+  const applyRefreshedTitleRecord = React.useCallback(
+    (titleId: string, title: TitleRecord | null) => {
+      setMonitoredTitles((current) => {
+        const next = [...current];
+        const existingIndex = next.findIndex((item) => item.id === titleId);
+
+        if (!title) {
+          if (existingIndex !== -1) {
+            next.splice(existingIndex, 1);
+          }
+          return next;
+        }
+
+        if (existingIndex === -1) {
+          next.push(title);
+          return next;
+        }
+
+        next[existingIndex] = title;
+        return next;
       });
     },
-    [client, setMonitoredTitles],
+    [setMonitoredTitles],
   );
 
   React.useEffect(() => {
@@ -367,7 +381,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   useTitleListReactiveRefresh({
     facet: activeFacet,
     pause: !shouldLoadCatalogTitles,
-    onTitleUpdated: refreshTitleRecord,
+    onTitleRefreshed: applyRefreshedTitleRecord,
   });
 
   const onAddSubmit = React.useCallback(
@@ -817,13 +831,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     setLibraryScanNotice(null);
     setLibraryScanLoading(true);
+    setLibraryScanSummary(null);
+    setStartedLibraryScanSessionId(null);
     try {
-      const { data, error } = await client
+      const result = await client
         .mutation(scanLibraryMutation, { facet: activeFacet })
         .toPromise();
-      if (error) throw error;
-      setLibraryScanSummary(data.scanLibrary);
-      await refreshTitles();
+      if (result.error) throw result.error;
+      setStartedLibraryScanSessionId(result.data?.scanLibrary?.sessionId ?? null);
     } catch (error) {
       console.error("[library-scan] mutation failed:", error);
       const message =
@@ -866,11 +881,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     activeFacetLabel,
     activeLibraryScanSession,
     activeFacet,
-    refreshTitles,
     client,
     setLibraryScanLoading,
     setLibraryScanNotice,
     setLibraryScanSummary,
+    setStartedLibraryScanSessionId,
     setGlobalStatus,
     t,
   ]);

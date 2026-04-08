@@ -30,6 +30,7 @@ alass-core = "2.0.0"
 chardetng = "0.1"
 encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"] }
+unicode-normalization = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

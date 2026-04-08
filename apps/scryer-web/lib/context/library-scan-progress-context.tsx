@@ -5,6 +5,7 @@ import type { Facet, LibraryScanProgress } from "@/lib/types";
 export type LibraryScanProgressContextValue = {
   sessions: LibraryScanProgress[];
   getActiveSession: (facet: Facet) => LibraryScanProgress | null;
+  getSessionById: (sessionId: string) => LibraryScanProgress | null;
 };
 
 export const LibraryScanProgressContext =

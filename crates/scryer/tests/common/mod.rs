@@ -2,9 +2,12 @@
 
 use std::sync::Arc;
 
+use async_graphql::parser::types::{DocumentOperations, OperationType, Selection};
 use async_graphql_axum::GraphQLRequest;
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use tokio::net::TcpListener;
 use wiremock::MockServer;
@@ -138,6 +141,7 @@ impl TestContext {
         services.staged_nzb_pipeline_limit = staged_nzb_pipeline_limit;
         services.job_runs = Arc::new(db.clone());
         services.library_probe_signatures = Arc::new(db.clone());
+        services.library_scan_unmatched_items = Arc::new(db.clone());
 
         // Facet registry with all built-in facets
         let mut registry = FacetRegistry::new();
@@ -230,11 +234,67 @@ fn build_test_router(app: AppUseCase, schema: ApiSchema) -> Router {
 async fn test_graphql_handler(
     State((app, schema)): State<(AppUseCase, ApiSchema)>,
     req: GraphQLRequest,
-) -> async_graphql_axum::GraphQLResponse {
+) -> Response {
     let user = app.find_or_create_default_user().await.ok();
     let mut request = req.into_inner();
+    let response_status = graphql_response_status(&mut request);
     if let Some(u) = user {
         request = request.data(u);
     }
-    schema.execute(request).await.into()
+    let mut response =
+        async_graphql_axum::GraphQLResponse::from(schema.execute(request).await).into_response();
+    *response.status_mut() = response_status;
+    response
+}
+
+fn graphql_response_status(request: &mut async_graphql::Request) -> StatusCode {
+    if is_scan_library_request(request) {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    }
+}
+
+fn is_scan_library_request(request: &mut async_graphql::Request) -> bool {
+    let operation_name = request.operation_name.clone();
+    let Ok(document) = request.parsed_query() else {
+        return false;
+    };
+
+    let operation = match (&document.operations, operation_name.as_deref()) {
+        (DocumentOperations::Single(operation), _) => operation,
+        (DocumentOperations::Multiple(operations), Some(operation_name)) => {
+            let Some(operation) = operations.get(operation_name) else {
+                return false;
+            };
+            operation
+        }
+        (DocumentOperations::Multiple(operations), None) => {
+            if operations.len() != 1 {
+                return false;
+            }
+
+            let Some(operation) = operations.values().next() else {
+                return false;
+            };
+            operation
+        }
+    };
+
+    if operation.node.ty != OperationType::Mutation {
+        return false;
+    }
+
+    operation
+        .node
+        .selection_set
+        .node
+        .items
+        .iter()
+        .any(|selection| {
+            matches!(
+                &selection.node,
+                Selection::Field(field) if field.node.name.node.as_str() == "scanLibrary"
+            )
+        })
 }

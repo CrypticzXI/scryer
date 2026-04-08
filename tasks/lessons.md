@@ -8,6 +8,7 @@
 
 ## Destructive Actions
 - **NEVER execute destructive actions on live services without explicit permission.** This includes deleting downloads, killing processes, dropping data, etc.
+- Do not restart Docker containers, bounce the dev stack, or interfere with in-progress builds unless the user explicitly asks for that action. A container restart can invalidate active debugging/build work even if the code change itself is correct.
 - Only suggest commands for destructive operations. Let the user decide and execute.
 - Even if something looks like "test data" or "leftover" — it might be a valid in-progress item the user cares about.
 
@@ -23,6 +24,7 @@
 - When adding fields to a GraphQL type, update ALL layers: migration → application types → infrastructure queries → interface types/mappers → **frontend TypeScript types** → frontend GraphQL queries.
 - Frontend types are manually defined (no codegen). Check `TitleMediaFile` in movie-overview-container, `EpisodeMediaFile` in series-overview-container, and `MediaInfoFile` in media-info-badges for media file schema changes.
 - Don't declare a schema change "done" until the frontend builds clean with the new fields flowing end-to-end.
+- Treat each serialization boundary as authoritative for its own casing and enum values. Raw `payload_json` must be decoded as serde-shaped JSON, while top-level GraphQL envelope fields must be decoded through the GraphQL-mapped enums instead of assuming both surfaces use the same representation.
 
 ## UI Organization
 - **Per-facet/per-category settings belong in the per-category section**, not in a general settings section. When a feature varies by media type (movie/series/anime), put its UI alongside the existing per-category controls (e.g. "Default category profiles"), not inside the profile editor's general scoring section.
@@ -38,6 +40,7 @@
 ## Planning & Type Design
 - **When converting string workflow states, follow the existing serde-enum pattern already used in the codebase instead of inventing new constant-only patterns.** Keep text serialization at the persistence boundary and make the enum authoritative inside Rust.
 - **When moving conditional persistence logic out of SQL and into Rust, preserve the original atomicity guarantees.** If the old query did read/modify/write in one statement, replace it with a transaction or a single repository command, and keep low-level upserts defensive against accidental bypasses.
+- **When the user narrows a task to backend planning or backend stabilization, do not broaden the work into frontend validation or install repair unless they ask for it.** Keep the active scope tight before major refactors.
 
 ## Indexer Search Contracts
 - **Do not bake alias language or script policy into core search query construction.** Core should pass canonical title plus tagged alias context through to indexer plugins, and plugins should decide whether to prefer romanized Japanese, Korean aliases, or other provider-specific naming conventions.
@@ -48,3 +51,35 @@
 ## urql / Frontend Caching
 - `cacheExchange` was removed from all urql clients — the network layer handles caching naturally.
 - Don't add per-query `requestPolicy` overrides; the exchange-level removal is the correct fix.
+
+## Metadata Gateway / Library Scan
+- When the user asks for deterministic scan debugging, stop inferring from aggregate counters and add targeted instrumentation that proves tracked-title attachment, unhydrated-title selection, hydration outcomes, and projection completion end-to-end.
+- If movie scan metadata hydration looks effectively one-at-a-time while SMG batch search is fast, inspect whether the scan loop is awaiting per-file finalization or media analysis between title attachments. That upstream serialization can starve the hydration loop and collapse bulk metadata fetches into batch sizes of 1-2.
+- When analyzing SMG rate limits, distinguish the coalesced background hydration path from the per-candidate library-scan preload path. Bulk hydration coalescing can still exist while scan preload search fanout remains uncoalesced; scan-time request bursts should be fixed in `preload_*_library_scan_candidates`.
+- When the user wants a first-class SMG batch search API, implement a dedicated SMG GraphQL field and keep Scryer's transport on that field instead of expanding client-side `searchTvdb(...)` aliases.
+- When SMG only has one real client, trim shared search contracts to the fields Scryer actually consumes instead of preserving a generalized rich payload that forces unnecessary hydration or localization work.
+- For SMG GraphQL schema changes, always run `go run github.com/99designs/gqlgen@v0.17.87 generate` and verify both generated files update before calling the work finished.
+- Batched metadata requests should bypass APQ entirely. Their variable/cardinality entropy makes persisted-query cache hits unlikely, so the APQ GET and registration round-trip is just wasted work.
+- Long-running full-library scan triggers should start background work and return immediately. Holding the GraphQL request open couples scan lifetime to client connection lifetime and makes disconnect-driven cancellation orphan scan sessions.
+- Keep library scan batching chunk-local. Do not buffer the entire discovered file or folder set before processing matches, imports, or queued title scans, or scan progress will stall until discovery completes and the library will appear to load late.
+- When scan-time metadata discovery depends on external batch search requests, process each resolved batch through the rest of the pipeline immediately and publish progress between awaits. Do not make the UI wait for the whole metadata fanout before advancing work.
+- Keep user-visible scan denominators stable. A phase can accumulate more work internally while discovery continues, but `*_total_known` should stay false until the denominator the UI will render is final; otherwise the progress percentage moves backward and feels broken.
+- If a scan phase stays indeterminate until essentially the terminal event, do not render it as a progress bar in the toast. Keep backend tracking if it is still useful internally, but hide the user-facing bar.
+- Library scans can attach pre-existing titles that still need hydration. Those titles do not pass through title creation, so scan tracking must explicitly wake the background hydration loop when it starts counting them, or metadata progress can stall with counted titles never entering hydration.
+- For runtime library-scan tracking, workers must emit durable scan fact events and a single backend coordinator must subscribe to the central domain-event bus to project tracker state and publish compatibility scan snapshots. Do not let worker code or coordinator entrypoints mutate the in-memory scan tracker directly.
+- Final scan-phase reconciliation must read the projected durable session state, not worker-local counters. If the worker assumes its local counts are authoritative, the durable event stream can still end short of terminal title/file counts and leave the session stuck in `running` even after the worker logs completion.
+
+## Frontend Reactive Refresh
+- Debouncing websocket-driven refreshes is an action-spooling problem, not a subscriber-coupling problem. Events should be collected by action type and deduped so a 300ms flush performs one instance of each action, instead of each subscriber independently firing duplicate network requests.
+- Do not scope reactive batching to one container. Event-driven refreshes must enqueue into a shared root-level spool so title lists, title overviews, import history, and any future reactive query actions can collapse into the same aliased GraphQL flush.
+
+## Frontend Toast Boundaries
+- If Sonner toast content depends on app-level React context, the `Toaster` must be mounted beneath those providers. A global toaster in `src/main.tsx` cannot safely render route-level contexts like translation or library-scan state.
+- For scan-toast phase bars, avoid amber/orange for normal file-analysis progress unless the user explicitly wants a warning-like accent. Prefer the app's established purple family when the user asks for an in-theme alternative.
+
+## Benchmarking / Probes
+- When the user asks for quick live probes, use simple one-shot measurements against the real endpoint for the exact sizes they named. Do not spend time reconstructing earlier benchmark commands, mining shell history, or building a reusable harness unless they explicitly ask for deeper benchmarking.
+- If the user names a specific environment or host for a live probe, use that exact target instead of assuming a local service.
+
+## Library Query Extraction
+- When the user wants movie scan queries to prefer filenames, do not invent a separate filename parser. Reuse the release parser's normalized movie title output and only adjust precedence between parser output and folder fallback.

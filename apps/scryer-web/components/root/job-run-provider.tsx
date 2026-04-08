@@ -27,7 +27,11 @@ function shouldShowBackgroundLibraryToast(run: JobRun): boolean {
   if (run.status === "failed" || run.status === "warning") {
     return true;
   }
-  if (scan.metadataProgress.total > 0 || scan.fileProgress.total > 0) {
+  if (
+    scan.titleMatchProgress.total > 0 ||
+    scan.hydrationProgress.total > 0 ||
+    scan.mediaAnalysisProgress.total > 0
+  ) {
     return true;
   }
   return Boolean(

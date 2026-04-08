@@ -59,6 +59,7 @@ services:
       SCRYER_METRICS: "true"
       SCRYER_WEB_UI_URL: http://nodejs:3000
       SCRYER_AUTH_ENABLED: "false"
+      RUST_LOG: "${RUST_LOG:-info,scryer_application::app_usecase_catalog=debug,scryer_application::app_usecase_library=debug,scryer_application::library_scan_coordinator=debug,scryer_application::library_scan_progress=debug,scryer_application::library_scan_title_registry=debug,scryer_infrastructure::queries::title=debug}"
       CARGO_TARGET_DIR: /cargo-target
       SCRYER_SMG_REGISTRATION_SECRET: ${SCRYER_SMG_REGISTRATION_SECRET}
     command: >
@@ -73,7 +74,7 @@ services:
       - ./tmp/scryer-config:/config
       - ./tmp/scryer-media/movies:/data/movies
       - ./tmp/scryer-media/series:/data/series
-     # - /Volumes/Media/Anime:/data/anime:ro
+      # - /Volumes/Media/Anime:/data/anime:ro
       - /Volumes/Media/Movies:/data/movies:ro
       - ./tmp/nzbget-downloads:/nzbget-downloads
       - ./tmp/sabnzbd-downloads:/sabnzbd-downloads

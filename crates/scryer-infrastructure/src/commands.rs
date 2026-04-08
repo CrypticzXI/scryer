@@ -7,15 +7,16 @@ use crate::{
     migrations,
     queries::{
         blocklist as blocklist_queries, download_client::*, housekeeping, indexer::*,
-        notification_channel, notification_subscription, plugin_installation::*,
-        post_processing_script as pp_queries, quality::*, rule_set::*, settings::*, title::*,
-        title_history as th_queries, user::*, workflow::*,
+        library_scan_unmatched as library_scan_unmatched_queries, notification_channel,
+        notification_subscription, plugin_installation::*, post_processing_script as pp_queries,
+        quality::*, rule_set::*, settings::*, title::*, title_history as th_queries, user::*,
+        workflow::*,
     },
 };
 use scryer_application::QualityProfile;
 use scryer_application::{
-    AppError, AppResult, PendingRelease, PendingReleaseStatus, PrimaryCollectionSummary,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit,
+    AppError, AppResult, LibraryScanUnmatchedItem, PendingRelease, PendingReleaseStatus,
+    PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit,
     TitleEpisodeProgressSummary, TitleImageReplacement, TitleMediaSizeSummary, TitleMetadataUpdate,
     WantedItem,
 };
@@ -163,11 +164,6 @@ pub(crate) enum DbCommand {
     DeleteTitle {
         id: String,
         reply: Sender<AppResult<()>>,
-    },
-    ListUnhydratedTitles {
-        limit: usize,
-        language: String,
-        reply: Sender<AppResult<Vec<Title>>>,
     },
     ClearMetadataLanguageForAll {
         reply: Sender<AppResult<u64>>,
@@ -434,6 +430,27 @@ pub(crate) enum DbCommand {
         source_ref: String,
         result: String,
         reply: Sender<AppResult<u64>>,
+    },
+    UpsertLibraryScanUnmatchedItem {
+        item: LibraryScanUnmatchedItem,
+        reply: Sender<AppResult<String>>,
+    },
+    DeleteLibraryScanUnmatchedItem {
+        facet: MediaFacet,
+        item_path: String,
+        reply: Sender<AppResult<()>>,
+    },
+    ListLibraryScanUnmatchedItems {
+        facet: Option<MediaFacet>,
+        scan_root: Option<String>,
+        limit: i64,
+        offset: i64,
+        reply: Sender<AppResult<Vec<LibraryScanUnmatchedItem>>>,
+    },
+    CountLibraryScanUnmatchedItems {
+        facet: Option<MediaFacet>,
+        scan_root: Option<String>,
+        reply: Sender<AppResult<i64>>,
     },
     GetImportById {
         id: String,
@@ -1151,13 +1168,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 DbCommand::DeleteTitle { id, reply } => {
                     let _ = reply.send(delete_title_query(&pool, &id).await);
                 }
-                DbCommand::ListUnhydratedTitles {
-                    limit,
-                    language,
-                    reply,
-                } => {
-                    let _ = reply.send(list_unhydrated_titles_query(&pool, limit, &language).await);
-                }
                 DbCommand::ClearMetadataLanguageForAll { reply } => {
                     let _ = reply.send(clear_metadata_language_for_all_query(&pool).await);
                 }
@@ -1634,6 +1644,58 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             &source_system,
                             &source_ref,
                             &result,
+                        )
+                        .await,
+                    );
+                }
+                DbCommand::UpsertLibraryScanUnmatchedItem { item, reply } => {
+                    let _ = reply.send(
+                        library_scan_unmatched_queries::upsert_library_scan_unmatched_item_query(
+                            &pool, &item,
+                        )
+                        .await,
+                    );
+                }
+                DbCommand::DeleteLibraryScanUnmatchedItem {
+                    facet,
+                    item_path,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        library_scan_unmatched_queries::delete_library_scan_unmatched_item_query(
+                            &pool, facet, &item_path,
+                        )
+                        .await,
+                    );
+                }
+                DbCommand::ListLibraryScanUnmatchedItems {
+                    facet,
+                    scan_root,
+                    limit,
+                    offset,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        library_scan_unmatched_queries::list_library_scan_unmatched_items_query(
+                            &pool,
+                            facet,
+                            scan_root.as_deref(),
+                            limit,
+                            offset,
+                        )
+                        .await,
+                    );
+                }
+                DbCommand::CountLibraryScanUnmatchedItems {
+                    facet,
+                    scan_root,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        library_scan_unmatched_queries::count_library_scan_unmatched_items_query(
+                            &pool,
+                            facet,
+                            scan_root.as_deref(),
                         )
                         .await,
                     );

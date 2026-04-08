@@ -1033,6 +1033,7 @@ pub enum DomainEventType {
     SubtitleSearchFailed,
     LibraryScanStarted,
     LibraryScanTitleDiscovered,
+    LibraryScanDeltaRecorded,
     LibraryScanProgressed,
     LibraryScanCompleted,
     LibraryScanFailed,
@@ -1071,6 +1072,7 @@ impl DomainEventType {
             Self::SubtitleSearchFailed => "subtitle_search_failed",
             Self::LibraryScanStarted => "library_scan_started",
             Self::LibraryScanTitleDiscovered => "library_scan_title_discovered",
+            Self::LibraryScanDeltaRecorded => "library_scan_delta_recorded",
             Self::LibraryScanProgressed => "library_scan_progressed",
             Self::LibraryScanCompleted => "library_scan_completed",
             Self::LibraryScanFailed => "library_scan_failed",
@@ -1109,6 +1111,7 @@ impl DomainEventType {
             "subtitle_search_failed" => Some(Self::SubtitleSearchFailed),
             "library_scan_started" => Some(Self::LibraryScanStarted),
             "library_scan_title_discovered" => Some(Self::LibraryScanTitleDiscovered),
+            "library_scan_delta_recorded" => Some(Self::LibraryScanDeltaRecorded),
             "library_scan_progressed" => Some(Self::LibraryScanProgressed),
             "library_scan_completed" => Some(Self::LibraryScanCompleted),
             "library_scan_failed" => Some(Self::LibraryScanFailed),
@@ -1148,6 +1151,7 @@ impl DomainEventType {
             Self::SubtitleSearchFailed,
             Self::LibraryScanStarted,
             Self::LibraryScanTitleDiscovered,
+            Self::LibraryScanDeltaRecorded,
             Self::LibraryScanProgressed,
             Self::LibraryScanCompleted,
             Self::LibraryScanFailed,
@@ -1430,10 +1434,45 @@ pub struct LibraryScanTitleDiscoveredEventData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryScanDeltaRecordedEventData {
+    pub session_id: String,
+    pub found_titles_total: Option<i64>,
+    #[serde(default)]
+    pub found_titles_delta: i64,
+    #[serde(default)]
+    pub title_match_completed_delta: i64,
+    #[serde(default)]
+    pub title_match_failed_delta: i64,
+    pub title_match_total_known: Option<bool>,
+    #[serde(default)]
+    pub metadata_total_delta: i64,
+    #[serde(default)]
+    pub metadata_completed_delta: i64,
+    #[serde(default)]
+    pub metadata_failed_delta: i64,
+    pub metadata_total_known: Option<bool>,
+    #[serde(default)]
+    pub file_total_delta: i64,
+    #[serde(default)]
+    pub file_completed_delta: i64,
+    #[serde(default)]
+    pub file_failed_delta: i64,
+    pub file_total_known: Option<bool>,
+    #[serde(default)]
+    pub summary: Option<LibraryScanSummaryEventData>,
+    #[serde(default)]
+    pub summary_is_delta: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryScanProgressedEventData {
     pub session_id: String,
     pub status: String,
     pub found_titles: i64,
+    #[serde(default)]
+    pub title_match_completed: i64,
+    #[serde(default)]
+    pub title_match_total_known: bool,
     pub titles_completed: i64,
     pub titles_total: Option<i64>,
     pub files_completed: i64,
@@ -1441,14 +1480,29 @@ pub struct LibraryScanProgressedEventData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryScanSummaryEventData {
+    pub scanned: i64,
+    pub matched: i64,
+    pub imported: i64,
+    pub skipped: i64,
+    pub unmatched: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryScanCompletedEventData {
     pub session_id: String,
     pub status: String,
     pub found_titles: i64,
+    #[serde(default)]
+    pub title_match_completed: i64,
+    #[serde(default)]
+    pub title_match_total_known: bool,
     pub titles_completed: i64,
     pub titles_total: Option<i64>,
     pub files_completed: i64,
     pub files_total: Option<i64>,
+    #[serde(default)]
+    pub summary: Option<LibraryScanSummaryEventData>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1523,6 +1577,7 @@ pub enum DomainEventPayload {
     SubtitleSearchFailed(SubtitleSearchFailedEventData),
     LibraryScanStarted(LibraryScanStartedEventData),
     LibraryScanTitleDiscovered(LibraryScanTitleDiscoveredEventData),
+    LibraryScanDeltaRecorded(LibraryScanDeltaRecordedEventData),
     LibraryScanProgressed(LibraryScanProgressedEventData),
     LibraryScanCompleted(LibraryScanCompletedEventData),
     LibraryScanFailed(LibraryScanFailedEventData),
@@ -1563,6 +1618,7 @@ impl DomainEventPayload {
             Self::SubtitleSearchFailed(_) => DomainEventType::SubtitleSearchFailed,
             Self::LibraryScanStarted(_) => DomainEventType::LibraryScanStarted,
             Self::LibraryScanTitleDiscovered(_) => DomainEventType::LibraryScanTitleDiscovered,
+            Self::LibraryScanDeltaRecorded(_) => DomainEventType::LibraryScanDeltaRecorded,
             Self::LibraryScanProgressed(_) => DomainEventType::LibraryScanProgressed,
             Self::LibraryScanCompleted(_) => DomainEventType::LibraryScanCompleted,
             Self::LibraryScanFailed(_) => DomainEventType::LibraryScanFailed,

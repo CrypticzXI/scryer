@@ -64,34 +64,24 @@ async fn load_domain_events_for_projection(
     Ok((events, after_sequence))
 }
 
-async fn library_scan_state_stream_from_domain_events(
-    app: scryer_application::AppUseCase,
-    initial_sessions: Vec<scryer_application::LibraryScanSession>,
+fn library_scan_state_stream_from_domain_events(
+    receiver: tokio::sync::broadcast::Receiver<scryer_application::LibraryScanSession>,
 ) -> BoxStream<'static, LibraryScanProgressPayload> {
-    let receiver = app.services.library_scan_tracker.subscribe();
-
-    let stream = unfold(
-        (receiver, VecDeque::from(initial_sessions)),
-        move |(mut receiver, mut pending)| async move {
-            loop {
-                if let Some(session) = pending.pop_front() {
-                    return Some((from_library_scan_session(session), (receiver, pending)));
+    let stream = unfold(receiver, move |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(session) => {
+                    return Some((from_library_scan_session(session), receiver));
                 }
-
-                match receiver.recv().await {
-                    Ok(session) => {
-                        pending.push_back(session);
-                    }
-                    Err(RecvError::Lagged(n)) => {
-                        tracing::debug!(
-                            "library_scan_state: receiver lagged, skipped {n} tracker updates"
-                        );
-                    }
-                    Err(RecvError::Closed) => return None,
+                Err(RecvError::Lagged(n)) => {
+                    tracing::debug!(
+                        "library_scan_state: receiver lagged, skipped {n} projected updates"
+                    );
                 }
+                Err(RecvError::Closed) => return None,
             }
-        },
-    );
+        }
+    });
 
     Box::pin(stream)
 }
@@ -508,15 +498,15 @@ impl SubscriptionRoot {
             actor.id
         );
 
-        let initial_sessions = match app.active_library_scans(&actor).await {
-            Ok(sessions) => sessions,
+        let receiver = match app.subscribe_library_scan_progress(&actor) {
+            Ok(receiver) => receiver,
             Err(error) => {
-                tracing::warn!("library_scan_progress: initial load failed: {error}");
+                tracing::warn!("library_scan_progress: subscription setup failed: {error}");
                 return empty_box_stream();
             }
         };
 
-        library_scan_state_stream_from_domain_events(app, initial_sessions).await
+        library_scan_state_stream_from_domain_events(receiver)
     }
 
     async fn library_scan_state(
@@ -543,15 +533,15 @@ impl SubscriptionRoot {
             return empty_box_stream();
         }
 
-        let initial_sessions = match app.active_library_scans(&actor).await {
-            Ok(sessions) => sessions,
+        let receiver = match app.subscribe_library_scan_progress(&actor) {
+            Ok(receiver) => receiver,
             Err(error) => {
-                tracing::warn!("library_scan_state: initial load failed: {error}");
+                tracing::warn!("library_scan_state: subscription setup failed: {error}");
                 return empty_box_stream();
             }
         };
 
-        library_scan_state_stream_from_domain_events(app, initial_sessions).await
+        library_scan_state_stream_from_domain_events(receiver)
     }
 
     async fn job_run_events(&self, ctx: &Context<'_>) -> BoxStream<'static, JobRunPayload> {

@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef } from "react";
 
+import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
+import type { TitleRecord } from "@/lib/types";
 
 type UseTitleListReactiveRefreshOptions = {
   facet?: string | null;
   pause?: boolean;
-  debounceMs?: number;
-  onTitleUpdated: (titleId: string) => Promise<void> | void;
+  onTitleRefreshed: (
+    titleId: string,
+    title: TitleRecord | null,
+  ) => void;
 };
 
 const TITLE_UPDATED_KIND = "title_updated";
@@ -16,45 +20,14 @@ const TITLE_UPDATED_KIND = "title_updated";
 export function useTitleListReactiveRefresh({
   facet,
   pause = false,
-  debounceMs = 300,
-  onTitleUpdated,
+  onTitleRefreshed,
 }: UseTitleListReactiveRefreshOptions) {
-  const onTitleUpdatedRef = useRef(onTitleUpdated);
-  const refreshTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
-    new Map(),
-  );
+  const { queueCatalogTitleRefresh } = useReactiveRefresh();
+  const onTitleRefreshedRef = useRef(onTitleRefreshed);
 
   useEffect(() => {
-    onTitleUpdatedRef.current = onTitleUpdated;
+    onTitleRefreshedRef.current = onTitleRefreshed;
   });
-
-  useEffect(
-    () => () => {
-      for (const timer of refreshTimersRef.current.values()) {
-        clearTimeout(timer);
-      }
-      refreshTimersRef.current.clear();
-    },
-    [],
-  );
-
-  useEffect(() => {
-    for (const timer of refreshTimersRef.current.values()) {
-      clearTimeout(timer);
-    }
-    refreshTimersRef.current.clear();
-  }, [facet]);
-
-  useEffect(() => {
-    if (!pause) {
-      return;
-    }
-
-    for (const timer of refreshTimersRef.current.values()) {
-      clearTimeout(timer);
-    }
-    refreshTimersRef.current.clear();
-  }, [pause]);
 
   const kinds = useMemo(() => new Set([TITLE_UPDATED_KIND]), []);
 
@@ -64,23 +37,19 @@ export function useTitleListReactiveRefresh({
     pause,
     onEvent(activity) {
       const titleId = activity.titleId;
-      if (!titleId || refreshTimersRef.current.has(titleId)) {
+      if (!titleId) {
         return;
       }
 
-      const timer = setTimeout(() => {
-        refreshTimersRef.current.delete(titleId);
-        void Promise.resolve(onTitleUpdatedRef.current(titleId)).catch(
-          (error) => {
-            console.error(
-              "[title-list-reactive-refresh] refresh failed:",
-              error,
-            );
-          },
-        );
-      }, debounceMs);
-
-      refreshTimersRef.current.set(titleId, timer);
+      queueCatalogTitleRefresh({
+        titleId,
+        apply(title) {
+          onTitleRefreshedRef.current(titleId, title);
+        },
+        onError(error) {
+          console.error("[title-list-reactive-refresh] refresh failed:", error);
+        },
+      });
     },
   });
 }

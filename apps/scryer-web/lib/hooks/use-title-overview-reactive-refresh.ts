@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useRef } from "react";
 
+import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
+import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
 
-type UseTitleOverviewReactiveRefreshOptions = {
+type UseTitleOverviewReactiveRefreshOptions<
+  TTitle = unknown,
+  TEvent = unknown,
+  TBlocklist = unknown,
+  TSubtitle = unknown,
+> = {
   titleId?: string | null;
-  refresh: () => Promise<void> | void;
+  blocklistLimit: number;
+  applySnapshot: (
+    snapshot: TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle>,
+  ) => void;
   importKinds: ReadonlySet<string>;
   pause?: boolean;
-  debounceMs?: number;
   onHydrationStarted?: () => void;
   onHydrationCompleted?: () => void;
   onHydrationFailed?: () => void;
@@ -18,50 +27,61 @@ const HYDRATION_STARTED_KIND = "metadata_hydration_started";
 const HYDRATION_COMPLETED_KIND = "metadata_hydration_completed";
 const HYDRATION_FAILED_KIND = "metadata_hydration_failed";
 
-export function useTitleOverviewReactiveRefresh({
+export function useTitleOverviewReactiveRefresh<
+  TTitle = unknown,
+  TEvent = unknown,
+  TBlocklist = unknown,
+  TSubtitle = unknown,
+>({
   titleId,
-  refresh,
+  blocklistLimit,
+  applySnapshot,
   importKinds,
   pause = false,
-  debounceMs = 500,
   onHydrationStarted,
   onHydrationCompleted,
   onHydrationFailed,
-}: UseTitleOverviewReactiveRefreshOptions) {
-  const refreshRef = useRef(refresh);
+}: UseTitleOverviewReactiveRefreshOptions<
+  TTitle,
+  TEvent,
+  TBlocklist,
+  TSubtitle
+>) {
+  const { queueTitleOverviewRefresh } = useReactiveRefresh();
+  const applySnapshotRef = useRef(applySnapshot);
   const onHydrationStartedRef = useRef(onHydrationStarted);
   const onHydrationCompletedRef = useRef(onHydrationCompleted);
   const onHydrationFailedRef = useRef(onHydrationFailed);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    refreshRef.current = refresh;
+    applySnapshotRef.current = applySnapshot;
     onHydrationStartedRef.current = onHydrationStarted;
     onHydrationCompletedRef.current = onHydrationCompleted;
     onHydrationFailedRef.current = onHydrationFailed;
   });
 
-  useEffect(
-    () => () => {
-      if (refreshTimerRef.current) {
-        clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-    },
-    [],
-  );
-
-  const scheduleRefresh = () => {
-    if (refreshTimerRef.current) {
+  const queueRefresh = () => {
+    if (!titleId) {
       return;
     }
 
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null;
-      void Promise.resolve(refreshRef.current()).catch((error) => {
+    queueTitleOverviewRefresh({
+      titleId,
+      blocklistLimit,
+      apply(snapshot) {
+        applySnapshotRef.current(
+          snapshot as TitleOverviewSnapshot<
+            TTitle,
+            TEvent,
+            TBlocklist,
+            TSubtitle
+          >,
+        );
+      },
+      onError(error) {
         console.error("[title-overview-reactive-refresh] refresh failed:", error);
-      });
-    }, debounceMs);
+      },
+    });
   };
 
   const activityKinds = useMemo(
@@ -86,16 +106,16 @@ export function useTitleOverviewReactiveRefresh({
           return;
         case HYDRATION_COMPLETED_KIND:
           onHydrationCompletedRef.current?.();
-          scheduleRefresh();
+          queueRefresh();
           return;
         case HYDRATION_FAILED_KIND:
           onHydrationFailedRef.current?.();
           return;
         default:
-          scheduleRefresh();
+          queueRefresh();
       }
     },
   });
 
-  useImportHistorySubscription(scheduleRefresh, { pause });
+  useImportHistorySubscription(queueRefresh, { pause });
 }

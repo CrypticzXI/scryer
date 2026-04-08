@@ -1,5 +1,6 @@
 use async_graphql::Data;
 use async_graphql::http::{ALL_WEBSOCKET_PROTOCOLS, GraphiQLSource};
+use async_graphql::parser::types::{DocumentOperations, OperationType, Selection};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
@@ -338,7 +339,8 @@ pub(crate) async fn graphql_handler(
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
     let actor = resolve_actor(&state, &headers).await;
-    let batch = body.into_inner();
+    let mut batch = body.into_inner();
+    let response_status = graphql_response_status(&mut batch);
     let batch = if let Some(user) = actor {
         match batch {
             async_graphql::BatchRequest::Single(req) => {
@@ -363,9 +365,64 @@ pub(crate) async fn graphql_handler(
     });
 
     Response::builder()
+        .status(response_status)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from_stream(body_stream))
         .unwrap()
+}
+
+fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
+    if let async_graphql::BatchRequest::Single(request) = batch
+        && is_scan_library_request(request)
+    {
+        return StatusCode::CREATED;
+    }
+
+    StatusCode::OK
+}
+
+fn is_scan_library_request(request: &mut async_graphql::Request) -> bool {
+    let operation_name = request.operation_name.clone();
+    let Ok(document) = request.parsed_query() else {
+        return false;
+    };
+
+    let operation = match (&document.operations, operation_name.as_deref()) {
+        (DocumentOperations::Single(operation), _) => operation,
+        (DocumentOperations::Multiple(operations), Some(operation_name)) => {
+            let Some(operation) = operations.get(operation_name) else {
+                return false;
+            };
+            operation
+        }
+        (DocumentOperations::Multiple(operations), None) => {
+            if operations.len() != 1 {
+                return false;
+            }
+
+            let Some(operation) = operations.values().next() else {
+                return false;
+            };
+            operation
+        }
+    };
+
+    if operation.node.ty != OperationType::Mutation {
+        return false;
+    }
+
+    operation
+        .node
+        .selection_set
+        .node
+        .items
+        .iter()
+        .any(|selection| {
+            matches!(
+                &selection.node,
+                Selection::Field(field) if field.node.name.node.as_str() == "scanLibrary"
+            )
+        })
 }
 
 async fn resolve_actor(state: &AuthState, headers: &HeaderMap) -> Option<scryer_domain::User> {
@@ -454,5 +511,28 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             Json(ErrorResponse { error: message }),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_library_mutation_returns_created_status() {
+        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
+            "mutation StartScan { scanLibrary(facet: movie) { sessionId } }",
+        ));
+
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::CREATED);
+    }
+
+    #[test]
+    fn non_scan_requests_keep_ok_status() {
+        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
+            "query ActiveScans { activeLibraryScans { sessionId } }",
+        ));
+
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
     }
 }

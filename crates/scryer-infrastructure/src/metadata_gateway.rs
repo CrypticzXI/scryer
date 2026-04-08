@@ -8,10 +8,11 @@ use reqwest::Client;
 use ring::digest;
 use scryer_application::{
     AnibridgeSourceMapping, AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult,
-    BulkMetadataResult, EpisodeMetadata, MetadataGateway, MetadataSearchItem, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
+    BulkMetadataResult, EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
+    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
+    SeriesMetadata,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info, warn};
 
@@ -56,8 +57,8 @@ impl ApqCache {
 use crate::smg_enrollment;
 
 const SEARCH_TVDB_QUERY: &str = r#"
-  query SearchTvdb($query: String!, $type: String, $limit: Int) {
-    searchTvdb(query: $query, type: $type, limit: $limit) {
+    query SearchTvdb($query: String!, $type: String, $limit: Int, $year: Int) {
+        searchTvdb(query: $query, type: $type, limit: $limit, year: $year) {
       results {
         tvdb_id
         name
@@ -65,6 +66,23 @@ const SEARCH_TVDB_QUERY: &str = r#"
       }
     }
   }
+"#;
+
+const SEARCH_TVDB_BATCH_QUERY: &str = r#"
+    query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!) {
+        searchTvdbBatch(requests: $requests) {
+            query
+            type
+            year
+            limit
+            total_results
+            results {
+                tvdb_id
+                name
+                year
+            }
+        }
+    }
 "#;
 
 const SEARCH_TVDB_RICH_QUERY: &str = r#"
@@ -307,6 +325,13 @@ fn apply_instance_auth_headers(
 
 /// Minimum interval between cert-rejection re-enrollment attempts.
 const REENROLLMENT_COOLDOWN: Duration = Duration::from_secs(60);
+const METADATA_GATEWAY_MAX_RETRIES: u32 = 3;
+const METADATA_GATEWAY_RATE_LIMIT_BASE_DELAY: Duration = Duration::from_secs(2);
+const METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(30);
+const METADATA_GATEWAY_TRANSIENT_BASE_DELAY: Duration = Duration::from_secs(1);
+const METADATA_GATEWAY_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(5);
+const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 20;
+const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
 
 pub struct MetadataGatewayClient {
     http: Client,
@@ -316,6 +341,7 @@ pub struct MetadataGatewayClient {
     db: crate::SqliteServices,
     mtls_state: tokio::sync::RwLock<MtlsState>,
     last_reenrollment: tokio::sync::Mutex<Option<Instant>>,
+    rate_limit_until: tokio::sync::Mutex<Option<Instant>>,
     version_incompatible: tokio::sync::Mutex<Option<smg_enrollment::VersionIncompatible>>,
     search_hash: String,
     search_rich_hash: String,
@@ -374,6 +400,7 @@ impl MetadataGatewayClient {
             registration_url,
             enrollment_config,
             last_reenrollment: tokio::sync::Mutex::new(None),
+            rate_limit_until: tokio::sync::Mutex::new(None),
             version_incompatible: tokio::sync::Mutex::new(None),
             db,
             mtls_state: tokio::sync::RwLock::new(MtlsState::NotAttempted),
@@ -581,14 +608,21 @@ impl MetadataGatewayClient {
             .append_pair("variables", &variables_str);
         let raw_query = url.query().unwrap_or("").to_string();
 
-        let mut req = client.get(url);
-        if let Some(ref etag) = cached_etag {
-            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
-        if let Some(ref auth) = auth {
-            req = apply_instance_auth_headers(req, auth, raw_query.as_bytes())?;
-        }
-        let get_result = req.send().await;
+        let get_result = self
+            .send_request_with_retry(
+                || {
+                    let mut req = client.get(url.clone());
+                    if let Some(ref etag) = cached_etag {
+                        req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+                    }
+                    if let Some(ref auth) = auth {
+                        req = apply_instance_auth_headers(req, auth, raw_query.as_bytes())?;
+                    }
+                    Ok(req)
+                },
+                "metadata gateway APQ GET",
+            )
+            .await;
 
         match get_result {
             Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
@@ -660,14 +694,18 @@ impl MetadataGatewayClient {
             }
             Ok(resp) => {
                 let status = resp.status();
-                debug!(status = %status, hash, "APQ GET failed, falling back to POST");
-                self.execute_graphql_apq_register(query, &extensions, &variables)
+                let raw = resp
+                    .text()
                     .await
+                    .map_err(|error| AppError::Repository(error.to_string()))?;
+                warn!(status = %status, hash, body = %raw, "APQ GET failed");
+                Err(AppError::Repository(format!(
+                    "metadata gateway request failed ({status}): {raw}"
+                )))
             }
-            Err(err) => {
-                debug!(error = %err, hash, "APQ GET network error, falling back to POST");
-                self.execute_graphql_apq_register(query, &extensions, &variables)
-                    .await
+            Err(error) => {
+                debug!(error = %error, hash, "APQ GET request failed");
+                Err(error)
             }
         }
     }
@@ -763,6 +801,120 @@ impl MetadataGatewayClient {
             .ok_or_else(|| AppError::Repository("metadata gateway returned empty data".into()))
     }
 
+    async fn send_request_with_retry<F>(
+        &self,
+        build_req: F,
+        request_label: &'static str,
+    ) -> AppResult<reqwest::Response>
+    where
+        F: Fn() -> AppResult<reqwest::RequestBuilder>,
+    {
+        for retry_index in 0..=METADATA_GATEWAY_MAX_RETRIES {
+            self.wait_for_rate_limit_window().await;
+            let result = build_req()?.send().await;
+
+            match result {
+                Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                    if retry_index == METADATA_GATEWAY_MAX_RETRIES {
+                        return Ok(resp);
+                    }
+
+                    let retry_after = metadata_gateway_rate_limit_delay(
+                        resp.headers().get(reqwest::header::RETRY_AFTER),
+                        retry_index,
+                    );
+                    self.extend_rate_limit_window(retry_after).await;
+                    warn!(
+                        request = request_label,
+                        retry_attempt = retry_index + 1,
+                        retry_after_ms = retry_after.as_millis(),
+                        "metadata gateway rate limited (429), backing off"
+                    );
+                    self.wait_for_rate_limit_window().await;
+                }
+                Ok(resp) if resp.status().is_server_error() => {
+                    if retry_index == METADATA_GATEWAY_MAX_RETRIES {
+                        return Ok(resp);
+                    }
+
+                    let retry_after = metadata_gateway_transient_delay(retry_index);
+                    warn!(
+                        request = request_label,
+                        status = %resp.status(),
+                        retry_attempt = retry_index + 1,
+                        retry_after_ms = retry_after.as_millis(),
+                        "metadata gateway returned server error, retrying"
+                    );
+                    tokio::time::sleep(retry_after).await;
+                }
+                Err(err) if err.is_timeout() || err.is_connect() => {
+                    if retry_index == METADATA_GATEWAY_MAX_RETRIES {
+                        return Err(AppError::Repository(format!(
+                            "{request_label} failed after {} attempts: {err}",
+                            METADATA_GATEWAY_MAX_RETRIES + 1
+                        )));
+                    }
+
+                    let retry_after = metadata_gateway_transient_delay(retry_index);
+                    warn!(
+                        request = request_label,
+                        error = %err,
+                        retry_attempt = retry_index + 1,
+                        retry_after_ms = retry_after.as_millis(),
+                        "metadata gateway request failed (transient), retrying"
+                    );
+                    tokio::time::sleep(retry_after).await;
+                }
+                Ok(resp) => return Ok(resp),
+                Err(err) => return Err(AppError::Repository(err.to_string())),
+            }
+        }
+
+        Err(AppError::Repository(format!(
+            "{request_label} exhausted retries"
+        )))
+    }
+
+    async fn wait_for_rate_limit_window(&self) {
+        loop {
+            let delay = {
+                let mut guard = self.rate_limit_until.lock().await;
+                match *guard {
+                    Some(deadline) => {
+                        let now = Instant::now();
+                        if deadline <= now {
+                            *guard = None;
+                            None
+                        } else {
+                            Some(deadline.duration_since(now))
+                        }
+                    }
+                    None => None,
+                }
+            };
+
+            match delay {
+                Some(delay) if !delay.is_zero() => tokio::time::sleep(delay).await,
+                _ => return,
+            }
+        }
+    }
+
+    async fn extend_rate_limit_window(&self, delay: Duration) {
+        if delay.is_zero() {
+            return;
+        }
+
+        let deadline = Instant::now() + delay;
+        let mut guard = self.rate_limit_until.lock().await;
+        match *guard {
+            Some(current_deadline) if current_deadline >= deadline => {}
+            _ => {
+                *guard = Some(deadline);
+            }
+        }
+    }
+
     async fn send_with_retry(&self, payload: &serde_json::Value) -> AppResult<reqwest::Response> {
         let (client, auth) = self.get_http_client().await?;
         let body_bytes = serde_json::to_vec(payload)
@@ -779,69 +931,44 @@ impl MetadataGatewayClient {
             Ok(req)
         };
 
-        let result = build_req()?.send().await;
-
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                let retry_after = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(10);
-                tracing::warn!(
-                    retry_after_secs = retry_after,
-                    "metadata gateway rate limited (429), backing off"
-                );
-                tokio::time::sleep(Duration::from_secs(retry_after)).await;
-                build_req()?.send().await.map_err(|err| {
-                    AppError::Repository(format!("metadata gateway retry failed: {err}"))
-                })
-            }
-            Ok(resp) if !resp.status().is_server_error() => Ok(resp),
-            Ok(resp) => {
-                let status = resp.status();
-                tracing::warn!(
-                    status = %status,
-                    "metadata gateway returned server error, retrying in 1s"
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                build_req()?.send().await.map_err(|err| {
-                    AppError::Repository(format!("metadata gateway retry failed: {err}"))
-                })
-            }
-            Err(err) if err.is_timeout() || err.is_connect() => {
-                tracing::warn!(
-                    error = %err,
-                    "metadata gateway request failed (transient), retrying in 1s"
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                build_req()?.send().await.map_err(|err| {
-                    AppError::Repository(format!("metadata gateway retry failed: {err}"))
-                })
-            }
-            Err(err) => Err(AppError::Repository(err.to_string())),
-        }
+        self.send_request_with_retry(build_req, "metadata gateway request")
+            .await
     }
 
-    /// POST a dynamic GraphQL query and return the `data` field as raw JSON.
+    /// POST a batched GraphQL query directly and return the `data` field as raw JSON.
+    ///
+    /// Batched alias-heavy requests intentionally bypass APQ. The variable entropy on
+    /// these requests makes persisted-query cache hits unlikely enough that the GET +
+    /// register dance is wasted overhead.
+    ///
     /// Tolerates partial errors (some aliases may resolve while others fail).
-    async fn post_graphql_partial(&self, query: &str) -> AppResult<serde_json::Value> {
+    async fn post_batched_graphql_partial(&self, query: &str) -> AppResult<serde_json::Value> {
         let payload = json!({ "query": query });
-        let (client, auth) = self.get_http_client().await?;
-        let body_bytes = serde_json::to_vec(&payload)
-            .map_err(|e| AppError::Repository(format!("failed to serialize payload: {e}")))?;
-        let mut req = client
-            .post(&self.endpoint)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body_bytes.clone());
-        if let Some(ref auth) = auth {
-            req = apply_instance_auth_headers(req, auth, &body_bytes)?;
-        }
-        let resp = req
-            .send()
+        self.post_batched_graphql_partial_payload(&payload, "bulk metadata request")
             .await
-            .map_err(|e| AppError::Repository(format!("bulk metadata request failed: {e}")))?;
+    }
+
+    async fn post_batched_graphql_partial_payload(
+        &self,
+        payload: &serde_json::Value,
+        request_label: &'static str,
+    ) -> AppResult<serde_json::Value> {
+        let (client, auth) = self.get_http_client().await?;
+        let body_bytes = serde_json::to_vec(payload)
+            .map_err(|e| AppError::Repository(format!("failed to serialize payload: {e}")))?;
+        let build_req = || -> AppResult<reqwest::RequestBuilder> {
+            let mut req = client
+                .post(&self.endpoint)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body_bytes.clone());
+            if let Some(ref auth) = auth {
+                req = apply_instance_auth_headers(req, auth, &body_bytes)?;
+            }
+            Ok(req)
+        };
+        let resp = self
+            .send_request_with_retry(build_req, request_label)
+            .await?;
 
         let status = resp.status();
         let body = resp
@@ -856,19 +983,24 @@ impl MetadataGatewayClient {
                     "bulk metadata cert rejected ({status}), re-enrollment on cooldown: {body}"
                 )));
             }
-            info!("retrying bulk metadata request after re-enrollment");
+            info!(
+                request = request_label,
+                "retrying metadata gateway request after re-enrollment"
+            );
             let (client2, auth2) = self.get_http_client().await?;
-            let mut req2 = client2
-                .post(&self.endpoint)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body_bytes.clone());
-            if let Some(ref auth2) = auth2 {
-                req2 = apply_instance_auth_headers(req2, auth2, &body_bytes)?;
-            }
-            let resp2 = req2
-                .send()
-                .await
-                .map_err(|e| AppError::Repository(format!("bulk metadata retry failed: {e}")))?;
+            let build_retry_req = || -> AppResult<reqwest::RequestBuilder> {
+                let mut req = client2
+                    .post(&self.endpoint)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body_bytes.clone());
+                if let Some(ref auth2) = auth2 {
+                    req = apply_instance_auth_headers(req, auth2, &body_bytes)?;
+                }
+                Ok(req)
+            };
+            let resp2 = self
+                .send_request_with_retry(build_retry_req, request_label)
+                .await?;
             let status2 = resp2.status();
             let body2 = resp2
                 .text()
@@ -937,6 +1069,224 @@ const SERIES_FIELD_SELECTION: &str = "\
                    genres studio digital_release_date association_confidence continuity_status \
                    movie_form placement confidence signal_summary }";
 
+#[derive(Clone, Copy)]
+enum BulkMetadataAliasRequest {
+    Movie(i64),
+    Series(i64),
+}
+
+fn build_search_tvdb_batch_query(queries: &[MetadataSearchQuery]) -> Vec<MetadataSearchQuery> {
+    let mut normalized = Vec::with_capacity(queries.len());
+    let mut seen = HashSet::with_capacity(queries.len());
+
+    for query in queries {
+        let trimmed_query = query.query.trim();
+        let trimmed_type = query.type_hint.trim();
+        if trimmed_query.is_empty() || trimmed_type.is_empty() {
+            continue;
+        }
+
+        let normalized_query = MetadataSearchQuery {
+            query: trimmed_query.to_string(),
+            type_hint: trimmed_type.to_string(),
+            year: query.year,
+        };
+
+        if seen.insert(normalized_query.clone()) {
+            normalized.push(normalized_query);
+        }
+    }
+
+    normalized
+}
+
+#[derive(Serialize)]
+struct SearchTvdbBatchRequestInput {
+    query: String,
+    #[serde(rename = "type")]
+    type_hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    year: Option<i32>,
+    limit: i32,
+}
+
+fn build_bulk_metadata_alias_requests(
+    movie_ids: &[i64],
+    series_ids: &[i64],
+) -> Vec<BulkMetadataAliasRequest> {
+    movie_ids
+        .iter()
+        .copied()
+        .map(BulkMetadataAliasRequest::Movie)
+        .chain(
+            series_ids
+                .iter()
+                .copied()
+                .map(BulkMetadataAliasRequest::Series),
+        )
+        .collect()
+}
+
+fn merge_bulk_metadata_partial(
+    data: &serde_json::Value,
+    movies: &mut HashMap<i64, MovieMetadata>,
+    series: &mut HashMap<i64, SeriesMetadata>,
+) {
+    let Some(obj) = data.as_object() else {
+        return;
+    };
+
+    for (alias, value) in obj {
+        if value.is_null() {
+            continue;
+        }
+        if alias.starts_with('m') {
+            if let Ok(movie_result) = serde_json::from_value::<MovieResult>(value.clone()) {
+                let m = movie_result.movie;
+                movies.insert(
+                    m.tvdb_id,
+                    MovieMetadata {
+                        tvdb_id: m.tvdb_id,
+                        name: m.name,
+                        slug: m.slug,
+                        year: m.year,
+                        content_status: m.status,
+                        overview: m.overview,
+                        poster_url: normalize_artwork_url(&m.poster_url),
+                        banner_url: pick_artwork_url(&m.artworks, "banner"),
+                        background_url: pick_artwork_url(&m.artworks, "background"),
+                        language: m.language,
+                        runtime_minutes: m.runtime_minutes,
+                        sort_title: m.sort_title,
+                        imdb_id: m.imdb_id,
+                        anidb_id: m.anidb_id,
+                        genres: m.genres,
+                        studio: m.studio,
+                        tmdb_release_date: m.tmdb_release_date,
+                    },
+                );
+            }
+        } else if alias.starts_with('s')
+            && let Ok(series_result) = serde_json::from_value::<SeriesResult>(value.clone())
+        {
+            let s = series_result.series;
+            series.insert(
+                s.tvdb_id,
+                SeriesMetadata {
+                    tvdb_id: s.tvdb_id,
+                    name: s.name,
+                    sort_name: s.sort_name,
+                    slug: s.slug,
+                    year: s.year,
+                    content_status: s.status,
+                    first_aired: s.first_aired,
+                    overview: s.overview,
+                    network: s.network,
+                    runtime_minutes: s.runtime_minutes,
+                    poster_url: normalize_artwork_url(&s.poster_url),
+                    banner_url: pick_artwork_url(&s.artworks, "banner"),
+                    background_url: pick_artwork_url(&s.artworks, "background"),
+                    country: s.country,
+                    genres: s.genres,
+                    aliases: s.aliases,
+                    tagged_aliases: s
+                        .tagged_aliases
+                        .into_iter()
+                        .map(|ta| scryer_domain::TaggedAlias {
+                            name: ta.name,
+                            language: ta.language,
+                        })
+                        .collect(),
+                    seasons: s
+                        .seasons
+                        .into_iter()
+                        .map(|season| SeasonMetadata {
+                            tvdb_id: season.tvdb_id,
+                            number: season.number,
+                            label: season.label,
+                            episode_type: season.episode_type,
+                        })
+                        .collect(),
+                    episodes: s
+                        .episodes
+                        .into_iter()
+                        .map(|ep| EpisodeMetadata {
+                            tvdb_id: ep.tvdb_id,
+                            episode_number: ep.episode_number,
+                            name: ep.name,
+                            aired: ep.aired,
+                            runtime_minutes: ep.runtime_minutes,
+                            is_filler: ep.is_filler,
+                            is_recap: ep.is_recap,
+                            overview: ep.overview,
+                            absolute_number: ep.absolute_number,
+                            season_number: ep.season_number,
+                        })
+                        .collect(),
+                    anime_mappings: s
+                        .anime_mappings
+                        .into_iter()
+                        .map(|m| AnimeMapping {
+                            mal_id: m.mal_id,
+                            anilist_id: m.anilist_id,
+                            anidb_id: m.anidb_id,
+                            kitsu_id: m.kitsu_id,
+                            thetvdb_id: m.thetvdb_id,
+                            themoviedb_id: m.themoviedb_id,
+                            alt_tvdb_id: m.alt_tvdb_id,
+                            thetvdb_season: m.thetvdb_season,
+                            score: m.score,
+                            anime_media_type: m.anime_media_type.unwrap_or_default(),
+                            global_media_type: m.global_media_type.unwrap_or_default(),
+                            status: m.status.unwrap_or_default(),
+                            mapping_type: m.mapping_type.unwrap_or_default(),
+                            episode_mappings: m
+                                .episode_mappings
+                                .into_iter()
+                                .map(|e| AnimeEpisodeMapping {
+                                    tvdb_season: e.tvdb_season,
+                                    episode_start: e.episode_start,
+                                    episode_end: e.episode_end,
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                    anime_movies: s
+                        .anime_movies
+                        .into_iter()
+                        .map(|movie| AnimeMovie {
+                            movie_tvdb_id: movie.movie_tvdb_id,
+                            movie_tmdb_id: movie.movie_tmdb_id,
+                            movie_imdb_id: movie.movie_imdb_id,
+                            movie_mal_id: movie.movie_mal_id,
+                            movie_anidb_id: movie.movie_anidb_id,
+                            name: movie.name,
+                            slug: movie.slug,
+                            year: movie.year,
+                            content_status: movie.content_status,
+                            overview: movie.overview,
+                            poster_url: movie.poster_url,
+                            language: movie.language,
+                            runtime_minutes: movie.runtime_minutes,
+                            sort_title: movie.sort_title,
+                            imdb_id: movie.imdb_id,
+                            genres: movie.genres,
+                            studio: movie.studio,
+                            digital_release_date: movie.digital_release_date,
+                            association_confidence: movie.association_confidence,
+                            continuity_status: movie.continuity_status,
+                            movie_form: movie.movie_form,
+                            placement: movie.placement,
+                            confidence: movie.confidence,
+                            signal_summary: movie.signal_summary,
+                        })
+                        .collect(),
+                },
+            );
+        }
+    }
+}
+
 fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str) -> String {
     let mut q = String::from("query {\n");
     for (i, &id) in movie_ids.iter().enumerate() {
@@ -957,13 +1307,68 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::{build_bulk_mixed_query, normalize_artwork_url, normalize_optional_artwork_url};
+    use super::{
+        MetadataSearchQuery, SEARCH_TVDB_BATCH_QUERY, build_bulk_mixed_query,
+        build_search_tvdb_batch_query, metadata_gateway_rate_limit_delay, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_retry_after_header,
+    };
+    use std::time::Duration;
 
     #[test]
     fn bulk_series_query_requests_tagged_aliases() {
         let query = build_bulk_mixed_query(&[], &[424536], "eng");
 
         assert!(query.contains("tagged_aliases { name language }"));
+    }
+
+    #[test]
+    fn search_tvdb_batch_queries_trim_dedupe_and_preserve_first_seen_order() {
+        let queries = vec![
+            MetadataSearchQuery {
+                query: "  Spirited Away  ".to_string(),
+                type_hint: "movie".to_string(),
+                year: Some(2001),
+            },
+            MetadataSearchQuery {
+                query: "Spirited Away".to_string(),
+                type_hint: "movie".to_string(),
+                year: Some(2001),
+            },
+            MetadataSearchQuery {
+                query: "   ".to_string(),
+                type_hint: "series".to_string(),
+                year: None,
+            },
+            MetadataSearchQuery {
+                query: "Cowboy Bebop".to_string(),
+                type_hint: "anime".to_string(),
+                year: None,
+            },
+            MetadataSearchQuery {
+                query: "Spirited Away".to_string(),
+                type_hint: "movie".to_string(),
+                year: Some(2002),
+            },
+        ];
+
+        let normalized = build_search_tvdb_batch_query(&queries);
+
+        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized[0].query, "Spirited Away");
+        assert_eq!(normalized[0].type_hint, "movie");
+        assert_eq!(normalized[0].year, Some(2001));
+        assert_eq!(normalized[1].query, "Cowboy Bebop");
+        assert_eq!(normalized[1].type_hint, "anime");
+        assert_eq!(normalized[1].year, None);
+        assert_eq!(normalized[2].query, "Spirited Away");
+        assert_eq!(normalized[2].type_hint, "movie");
+        assert_eq!(normalized[2].year, Some(2002));
+    }
+
+    #[test]
+    fn search_tvdb_batch_query_uses_dedicated_field() {
+        assert!(SEARCH_TVDB_BATCH_QUERY.contains("searchTvdbBatch"));
+        assert!(!SEARCH_TVDB_BATCH_QUERY.contains("searchTvdb(query:"));
     }
 
     #[test]
@@ -986,6 +1391,46 @@ mod tests {
             Some("https://artworks.thetvdb.com/banners/posters/example.jpg".to_string())
         );
     }
+
+    #[test]
+    fn parse_retry_after_header_reads_seconds() {
+        let header = reqwest::header::HeaderValue::from_static("7");
+        assert_eq!(
+            parse_retry_after_header(Some(&header)),
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_header_ignores_invalid_values() {
+        let header = reqwest::header::HeaderValue::from_static("nonsense");
+        assert_eq!(parse_retry_after_header(Some(&header)), None);
+    }
+
+    #[test]
+    fn metadata_gateway_rate_limit_delay_prefers_retry_after_header() {
+        let header = reqwest::header::HeaderValue::from_static("9");
+        assert_eq!(
+            metadata_gateway_rate_limit_delay(Some(&header), 2),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn metadata_gateway_rate_limit_delay_uses_bounded_backoff_without_header() {
+        assert_eq!(
+            metadata_gateway_rate_limit_delay(None, 0),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            metadata_gateway_rate_limit_delay(None, 1),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            metadata_gateway_rate_limit_delay(None, 4),
+            Duration::from_secs(30)
+        );
+    }
 }
 
 #[derive(Deserialize)]
@@ -1005,6 +1450,21 @@ struct GraphqlError {
 struct SearchTvdbResponse {
     #[serde(rename = "searchTvdb")]
     search_tvdb: SearchTvdbResult,
+}
+
+#[derive(Deserialize)]
+struct SearchTvdbBatchResponse {
+    #[serde(rename = "searchTvdbBatch")]
+    search_tvdb_batch: Vec<SearchTvdbBatchResult>,
+}
+
+#[derive(Deserialize)]
+struct SearchTvdbBatchResult {
+    query: String,
+    #[serde(rename = "type")]
+    type_hint: String,
+    year: Option<i32>,
+    results: Vec<SearchTvdbItem>,
 }
 
 #[derive(Deserialize)]
@@ -1121,6 +1581,42 @@ fn pick_artwork_url(artworks: &[ArtworkItem], kind: &str) -> Option<String> {
 
 fn normalize_optional_artwork_url(url: Option<String>) -> Option<String> {
     url.map(|value| normalize_artwork_url(&value))
+}
+
+fn bounded_exponential_backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
+    let multiplier = 1u32 << attempt.min(4);
+    let delay = base.saturating_mul(multiplier);
+    if delay > max { max } else { delay }
+}
+
+fn parse_retry_after_header(value: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
+    value
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+fn metadata_gateway_rate_limit_delay(
+    retry_after: Option<&reqwest::header::HeaderValue>,
+    attempt: u32,
+) -> Duration {
+    parse_retry_after_header(retry_after)
+        .filter(|delay| !delay.is_zero())
+        .unwrap_or_else(|| {
+            bounded_exponential_backoff(
+                attempt,
+                METADATA_GATEWAY_RATE_LIMIT_BASE_DELAY,
+                METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY,
+            )
+        })
+}
+
+fn metadata_gateway_transient_delay(attempt: u32) -> Duration {
+    bounded_exponential_backoff(
+        attempt,
+        METADATA_GATEWAY_TRANSIENT_BASE_DELAY,
+        METADATA_GATEWAY_TRANSIENT_MAX_DELAY,
+    )
 }
 
 fn normalize_artwork_url(url: &str) -> String {
@@ -1268,11 +1764,13 @@ impl MetadataGateway for MetadataGatewayClient {
         &self,
         query: &str,
         type_hint: &str,
+        year: Option<i32>,
     ) -> AppResult<Vec<MetadataSearchItem>> {
         let variables = json!({
             "query": query,
             "type": type_hint,
             "limit": 10,
+            "year": year,
         });
 
         let data: SearchTvdbResponse = self
@@ -1289,6 +1787,71 @@ impl MetadataGateway for MetadataGatewayClient {
                 year: item.year,
             })
             .collect())
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        let deduped_queries = build_search_tvdb_batch_query(queries);
+
+        if deduped_queries.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut results = HashMap::new();
+
+        for chunk in deduped_queries.chunks(METADATA_GATEWAY_MAX_SEARCH_BATCH) {
+            let request_started_at = Instant::now();
+            info!(
+                query_count = chunk.len(),
+                "metadata gateway batched search request"
+            );
+            let request_inputs = chunk
+                .iter()
+                .map(|query| SearchTvdbBatchRequestInput {
+                    query: query.query.clone(),
+                    type_hint: query.type_hint.clone(),
+                    year: query.year,
+                    limit: 10,
+                })
+                .collect::<Vec<_>>();
+            let payload = json!({
+                "query": SEARCH_TVDB_BATCH_QUERY,
+                "variables": {
+                    "requests": request_inputs,
+                },
+            });
+            let data: SearchTvdbBatchResponse = self.execute_graphql(payload).await?;
+            info!(
+                query_count = chunk.len(),
+                elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+                "metadata gateway batched search complete"
+            );
+            for item in data.search_tvdb_batch {
+                let query_spec = MetadataSearchQuery {
+                    query: item.query,
+                    type_hint: item.type_hint,
+                    year: item.year,
+                };
+                let items = item
+                    .results
+                    .into_iter()
+                    .map(|entry| MetadataSearchItem {
+                        tvdb_id: entry.tvdb_id.to_string(),
+                        name: entry.name,
+                        year: entry.year,
+                    })
+                    .collect::<Vec<_>>();
+                results.insert(query_spec, items);
+            }
+
+            for query in chunk {
+                results.entry(query.clone()).or_default();
+            }
+        }
+
+        Ok(results)
     }
 
     async fn search_tvdb_rich(
@@ -1554,173 +2117,37 @@ impl MetadataGateway for MetadataGatewayClient {
             .into_iter()
             .collect();
 
-        let query = build_bulk_mixed_query(&unique_movies, &unique_series, language);
+        let request_started_at = Instant::now();
 
         info!(
             movies = unique_movies.len(),
             series = unique_series.len(),
             "bulk metadata request"
         );
-        let data = self.post_graphql_partial(&query).await?;
 
         let mut movies = HashMap::new();
         let mut series = HashMap::new();
 
-        if let Some(obj) = data.as_object() {
-            for (alias, value) in obj {
-                if value.is_null() {
-                    continue;
-                }
-                if alias.starts_with('m') {
-                    if let Ok(movie_result) = serde_json::from_value::<MovieResult>(value.clone()) {
-                        let m = movie_result.movie;
-                        movies.insert(
-                            m.tvdb_id,
-                            MovieMetadata {
-                                tvdb_id: m.tvdb_id,
-                                name: m.name,
-                                slug: m.slug,
-                                year: m.year,
-                                content_status: m.status,
-                                overview: m.overview,
-                                poster_url: normalize_artwork_url(&m.poster_url),
-                                banner_url: pick_artwork_url(&m.artworks, "banner"),
-                                background_url: pick_artwork_url(&m.artworks, "background"),
-                                language: m.language,
-                                runtime_minutes: m.runtime_minutes,
-                                sort_title: m.sort_title,
-                                imdb_id: m.imdb_id,
-                                anidb_id: m.anidb_id,
-                                genres: m.genres,
-                                studio: m.studio,
-                                tmdb_release_date: m.tmdb_release_date,
-                            },
-                        );
-                    }
-                } else if alias.starts_with('s')
-                    && let Ok(series_result) = serde_json::from_value::<SeriesResult>(value.clone())
-                {
-                    let s = series_result.series;
-                    series.insert(
-                        s.tvdb_id,
-                        SeriesMetadata {
-                            tvdb_id: s.tvdb_id,
-                            name: s.name,
-                            sort_name: s.sort_name,
-                            slug: s.slug,
-                            year: s.year,
-                            content_status: s.status,
-                            first_aired: s.first_aired,
-                            overview: s.overview,
-                            network: s.network,
-                            runtime_minutes: s.runtime_minutes,
-                            poster_url: normalize_artwork_url(&s.poster_url),
-                            banner_url: pick_artwork_url(&s.artworks, "banner"),
-                            background_url: pick_artwork_url(&s.artworks, "background"),
-                            country: s.country,
-                            genres: s.genres,
-                            aliases: s.aliases,
-                            tagged_aliases: s
-                                .tagged_aliases
-                                .into_iter()
-                                .map(|ta| scryer_domain::TaggedAlias {
-                                    name: ta.name,
-                                    language: ta.language,
-                                })
-                                .collect(),
-                            seasons: s
-                                .seasons
-                                .into_iter()
-                                .map(|season| SeasonMetadata {
-                                    tvdb_id: season.tvdb_id,
-                                    number: season.number,
-                                    label: season.label,
-                                    episode_type: season.episode_type,
-                                })
-                                .collect(),
-                            episodes: s
-                                .episodes
-                                .into_iter()
-                                .map(|ep| EpisodeMetadata {
-                                    tvdb_id: ep.tvdb_id,
-                                    episode_number: ep.episode_number,
-                                    name: ep.name,
-                                    aired: ep.aired,
-                                    runtime_minutes: ep.runtime_minutes,
-                                    is_filler: ep.is_filler,
-                                    is_recap: ep.is_recap,
-                                    overview: ep.overview,
-                                    absolute_number: ep.absolute_number,
-                                    season_number: ep.season_number,
-                                })
-                                .collect(),
-                            anime_mappings: s
-                                .anime_mappings
-                                .into_iter()
-                                .map(|m| AnimeMapping {
-                                    mal_id: m.mal_id,
-                                    anilist_id: m.anilist_id,
-                                    anidb_id: m.anidb_id,
-                                    kitsu_id: m.kitsu_id,
-                                    thetvdb_id: m.thetvdb_id,
-                                    themoviedb_id: m.themoviedb_id,
-                                    alt_tvdb_id: m.alt_tvdb_id,
-                                    thetvdb_season: m.thetvdb_season,
-                                    score: m.score,
-                                    anime_media_type: m.anime_media_type.unwrap_or_default(),
-                                    global_media_type: m.global_media_type.unwrap_or_default(),
-                                    status: m.status.unwrap_or_default(),
-                                    mapping_type: m.mapping_type.unwrap_or_default(),
-                                    episode_mappings: m
-                                        .episode_mappings
-                                        .into_iter()
-                                        .map(|e| AnimeEpisodeMapping {
-                                            tvdb_season: e.tvdb_season,
-                                            episode_start: e.episode_start,
-                                            episode_end: e.episode_end,
-                                        })
-                                        .collect(),
-                                })
-                                .collect(),
-                            anime_movies: s
-                                .anime_movies
-                                .into_iter()
-                                .map(|movie| AnimeMovie {
-                                    movie_tvdb_id: movie.movie_tvdb_id,
-                                    movie_tmdb_id: movie.movie_tmdb_id,
-                                    movie_imdb_id: movie.movie_imdb_id,
-                                    movie_mal_id: movie.movie_mal_id,
-                                    movie_anidb_id: movie.movie_anidb_id,
-                                    name: movie.name,
-                                    slug: movie.slug,
-                                    year: movie.year,
-                                    content_status: movie.content_status,
-                                    overview: movie.overview,
-                                    poster_url: movie.poster_url,
-                                    language: movie.language,
-                                    runtime_minutes: movie.runtime_minutes,
-                                    sort_title: movie.sort_title,
-                                    imdb_id: movie.imdb_id,
-                                    genres: movie.genres,
-                                    studio: movie.studio,
-                                    digital_release_date: movie.digital_release_date,
-                                    association_confidence: movie.association_confidence,
-                                    continuity_status: movie.continuity_status,
-                                    movie_form: movie.movie_form,
-                                    placement: movie.placement,
-                                    confidence: movie.confidence,
-                                    signal_summary: movie.signal_summary,
-                                })
-                                .collect(),
-                        },
-                    );
+        let bulk_requests = build_bulk_metadata_alias_requests(&unique_movies, &unique_series);
+        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
+            let mut chunk_movie_ids = Vec::new();
+            let mut chunk_series_ids = Vec::new();
+            for request in chunk {
+                match request {
+                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
+                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
                 }
             }
+
+            let query = build_bulk_mixed_query(&chunk_movie_ids, &chunk_series_ids, language);
+            let data = self.post_batched_graphql_partial(&query).await?;
+            merge_bulk_metadata_partial(&data, &mut movies, &mut series);
         }
 
         info!(
             movies_resolved = movies.len(),
             series_resolved = series.len(),
+            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
             "bulk metadata complete"
         );
         Ok(BulkMetadataResult { movies, series })
