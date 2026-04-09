@@ -54,7 +54,7 @@ The frontend is a **Vite + React 19 + React Router 7** single-page application w
 The dev stack is orchestrated via Docker Compose:
 
 ```bash
-./scripts/stack-up.sh
+cargo xtask stack up
 ```
 
 This brings up:
@@ -63,19 +63,19 @@ This brings up:
 - Vite dev server for the web UI
 - Nginx reverse proxy combining both on port 3000
 
-`./scripts/stack-up.sh` recreates the Rust service container each time, so local testing
+`cargo xtask stack up` recreates the Rust service container each time, so local testing
 starts from a fresh Linux build tree by default.
 
 To stop:
 
 ```bash
-./scripts/stack-down.sh
+cargo xtask stack down
 ```
 
 View logs:
 
 ```bash
-./scripts/stack-logs.sh
+cargo xtask stack logs
 ```
 
 ## Running Services Individually
@@ -114,12 +114,12 @@ cd apps/scryer-web && npm run lint
 From the repo root:
 
 ```bash
-./scripts/release.sh          # patch bump
-./scripts/release.sh --minor  # minor bump
-./scripts/release.sh --dry-run
+cargo xtask release          # patch bump
+cargo xtask release --minor  # minor bump
+cargo xtask release --dry-run
 ```
 
-The script handles: cargo update, audit, clippy, tests, npm audit fix, lint, version bumping all workspace crates, cargo check, signed tag, and push. CI builds and publishes the release on tag push.
+`cargo xtask release` handles: cargo update, audit, clippy, tests, npm audit fix, lint, version bumping all workspace crates, cargo check, signed tag, and push. CI builds and publishes the release on tag push. The legacy shell script is only a compatibility wrapper.
 
 ## Reporting Issues
 

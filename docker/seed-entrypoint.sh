@@ -126,34 +126,6 @@ add_client_alias() {
   mv "$tmp" "$CLIENT_ALIAS_FILE"
 }
 
-resolve_setting_value() {
-  entry_json="$1"
-  printf '%s' "$entry_json" | jq -r --slurpfile aliases "$CLIENT_ALIAS_FILE" '
-    def serialize_setting_value:
-      if has("valueJson") then
-        .valueJson | tojson
-      elif (.value | type) == "string" then
-        .value
-      else
-        .value | tojson
-      end;
-
-    if .key == "download_client.routing" then
-      (
-        if has("valueJson") then
-          .valueJson
-        else
-          .value | fromjson
-        end
-      )
-      | with_entries(.key = ($aliases[0][.key] // .key))
-      | tojson
-    else
-      serialize_setting_value
-    end
-  ' | tr -d '\n'
-}
-
 count_array() {
   jq "$1 | length" "$SEED_FILE"
 }

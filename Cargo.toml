@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "xtask",
     "crates/scryer-domain",
     "crates/scryer-application",
     "crates/scryer-release-parser",

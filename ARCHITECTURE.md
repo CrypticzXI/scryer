@@ -44,6 +44,22 @@ When tradeoffs appear, prefer:
 
 ## Non-Negotiable Principles
 
+### 0. Xtask Is The Canonical Task Interface
+
+Repository automation lives behind `cargo xtask`.
+
+For humans and agents alike, `cargo xtask` is the default interface for:
+
+- release automation
+- CI-like local validation
+- Docker stack orchestration
+- profiling and developer workflows
+- other repo-owned operational commands
+
+Compatibility scripts may remain during migration, but they are wrappers around xtask rather than the source of truth. New repo automation belongs in xtask, not in fresh shell glue.
+
+The only deliberate shell exceptions are true runtime/container entrypoints under `docker/`, such as the dev seed container bootstrap. Those are execution surfaces for Docker, not the canonical human or agent interface.
+
 ### 1. The Backend Is Authoritative
 
 All durable truth lives in the backend.
@@ -662,15 +678,18 @@ Integration coverage should validate the canonical flow from API action to durab
 
 ## Build and Release
 
-Use the release script instead of ad hoc release commands.
+Use `cargo xtask` for repo automation. The only convenience shell wrapper intentionally kept in this repo is `scripts/stack-restart.sh`.
 
 Typical commands:
 
 ```bash
 cargo build --workspace --locked
 cargo nextest run --workspace --locked
+cargo xtask --help
+cargo xtask ci clippy
+cargo xtask stack up
+./scripts/stack-restart.sh
 cd apps/scryer-web && npm ci && npm run build
-./scripts/release.sh
 ```
 
 ## Things That Will Bite You
