@@ -27,8 +27,10 @@ use scryer_application::{
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
     MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SmgEnrollmentConfig, SqliteServices,
-    SqliteTitleImageProcessor, WeaverDownloadClient, start_weaver_subscription_bridge,
+    PrioritizedDownloadClientRouter, SmgEnrollmentConfig, SqliteCatalogStore, SqliteConfigStore,
+    SqliteCustomizationStore, SqliteLibraryStateStore, SqliteNotificationStore, SqliteReleaseStore,
+    SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor, SqliteWorkflowStore,
+    WeaverDownloadClient, start_weaver_subscription_bridge,
 };
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
 use tokio::net::TcpListener;
@@ -123,14 +125,8 @@ async fn main() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let env_filter =
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                // Keep default application logging at `info`, but suppress
-                // parser-internal mp4parse warnings for files we otherwise
-                // successfully analyze. ffprobe tolerates these quirks too, and
-                // real parse failures still surface through our own error path.
-                tracing_subscriber::EnvFilter::new("info,mp4parse=error")
-            });
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
         let stdout_layer = tracing_subscriber::fmt::layer();
         let buffer_layer = tracing_subscriber::fmt::layer()
@@ -295,10 +291,11 @@ async fn bootstrap_application(
     let db = SqliteServices::new_with_mode(db_path.clone(), migration_mode)
         .await
         .map_err(|e| format!("failed to initialize sqlite services: {e}"))?;
+    let bootstrap_settings_store = SqliteSettingsStore::new(&db);
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "database initialized");
 
     let t = std::time::Instant::now();
-    seed_service_setting_definitions(&db)
+    seed_service_setting_definitions(&bootstrap_settings_store)
         .await
         .map_err(|e| format!("failed to seed service setting definitions: {e}"))?;
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "setting definitions seeded");
@@ -317,23 +314,27 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    check_version_upgrade(&db).await;
+    check_version_upgrade(&bootstrap_settings_store).await;
 
     let t = std::time::Instant::now();
-    if let Err(error) = seed_service_settings_from_environment(&db).await {
+    if let Err(error) = seed_service_settings_from_environment(&bootstrap_settings_store).await {
         tracing::warn!(
             error = %error,
             "failed to persist optional settings from environment"
         );
     }
-    if let Err(error) = migrate_legacy_download_client_routing_settings(&db).await {
+    if let Err(error) =
+        migrate_legacy_download_client_routing_settings(&bootstrap_settings_store).await
+    {
         tracing::warn!(
             error = %error,
             "failed to migrate legacy download client routing settings during bootstrap"
         );
     }
 
-    if let Err(error) = migrate_legacy_download_client_default_category_settings(&db).await {
+    if let Err(error) =
+        migrate_legacy_download_client_default_category_settings(&bootstrap_settings_store).await
+    {
         tracing::warn!(
             error = %error,
             "failed to migrate legacy download client default category settings during bootstrap"
@@ -342,14 +343,18 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "environment settings synced");
 
     let t = std::time::Instant::now();
-    if let Err(error) = normalize_media_path_setting(&db, MOVIES_PATH_KEY).await {
+    if let Err(error) =
+        normalize_media_path_setting(&bootstrap_settings_store, MOVIES_PATH_KEY).await
+    {
         tracing::warn!(
             error = %error,
             "failed to normalize media movies.path setting during bootstrap"
         );
     }
 
-    if let Err(error) = normalize_media_path_setting(&db, SERIES_PATH_KEY).await {
+    if let Err(error) =
+        normalize_media_path_setting(&bootstrap_settings_store, SERIES_PATH_KEY).await
+    {
         tracing::warn!(
             error = %error,
             "failed to normalize media series.path setting during bootstrap"
@@ -367,7 +372,10 @@ async fn bootstrap_application(
     )));
     let facet_registry = Arc::new(registry);
 
-    if let Err(error) = normalize_quality_profile_settings(&db, &facet_registry.facet_ids()).await {
+    if let Err(error) =
+        normalize_quality_profile_settings(&bootstrap_settings_store, &facet_registry.facet_ids())
+            .await
+    {
         tracing::warn!(
             error = %error,
             "failed to normalize quality profile settings during bootstrap"
@@ -376,21 +384,29 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "settings normalized");
 
     let t = std::time::Instant::now();
-    let runtime_settings = load_service_runtime_settings(&db)
+    let runtime_settings = load_service_runtime_settings(&bootstrap_settings_store)
         .await
         .map_err(|e| format!("failed to load service runtime settings: {e}"))?;
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "runtime settings loaded");
 
     tracing::info!(elapsed_ms = %bootstrap_start.elapsed().as_millis(), "bootstrap complete");
 
-    let titles = Arc::new(db.clone());
-    let users = Arc::new(db.clone());
-    let shows = Arc::new(db.clone());
+    let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
+    let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
+    let users: Arc<dyn scryer_application::UserRepository> = catalog_store.clone();
+    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store;
+    let config_store = Arc::new(SqliteConfigStore::new(&db));
+    let release_store = Arc::new(SqliteReleaseStore::new(&db));
+    let settings_store = Arc::new(SqliteSettingsStore::new(&db));
     let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
-        Arc::new(db.clone());
-    let release_attempts = Arc::new(db.clone());
-    let download_client_configs = Arc::new(db.clone());
-    let settings_for_router: Arc<dyn scryer_application::SettingsRepository> = Arc::new(db.clone());
+        config_store.clone();
+    let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
+    let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
+        config_store.clone();
+    let settings_for_router: Arc<dyn scryer_application::SettingsRepository> =
+        settings_store.clone();
+    let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
+        settings_store.clone();
     let staged_nzb_store = Arc::new(
         FileSystemStagedNzbStore::new_with_startup_purge(
             FileSystemStagedNzbStore::path_for_main_db(&db_path),
@@ -414,7 +430,7 @@ async fn bootstrap_application(
     ));
     let download_client = Arc::new(PrioritizedDownloadClientRouter::new(
         download_client_configs.clone(),
-        settings_for_router,
+        settings_for_router.clone(),
         fallback_download_client,
         staged_nzb_store.clone(),
         staged_nzb_pipeline_limit.clone(),
@@ -475,7 +491,8 @@ async fn bootstrap_application(
 
     let indexer_client = Arc::new(indexer_client);
     let title_image_processor = Arc::new(SqliteTitleImageProcessor::new());
-    let title_images_for_route: Arc<dyn TitleImageRepository> = Arc::new(db.clone());
+    let title_images_for_route: Arc<dyn TitleImageRepository> =
+        Arc::new(SqliteLibraryStateStore::new(&db));
     let metadata_gateway_url = std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
         .ok()
         .filter(|v| !v.is_empty())
@@ -520,27 +537,15 @@ async fn bootstrap_application(
     let library_scanner = Arc::new(FileSystemLibraryScanner::new());
     let library_renamer = Arc::new(FileSystemLibraryRenamer::new());
 
-    let mut services = AppServices::with_default_channels(
-        titles,
-        shows,
-        users,
-        indexer_configs,
-        indexer_client,
-        download_client,
-        download_client_configs,
-        release_attempts,
-        Arc::new(db.clone()),
-        Arc::new(db.clone()),
-        db_path.clone(),
-    );
     let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(64);
-    services.tracked_download_handle = Some(TrackedDownloadHandle::new(tracked_download_tx));
-    services.metadata_gateway = metadata_gateway.clone();
+    let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
+    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
 
     // Warm up SMG enrollment so the mTLS client is ready before the first real
     // metadata query, and check for version incompatibility.
+    let metadata_gateway_for_warmup = metadata_gateway.clone();
     tokio::spawn(async move {
-        if let Some(incompat) = metadata_gateway.warm_enrollment().await {
+        if let Some(incompat) = metadata_gateway_for_warmup.warm_enrollment().await {
             let env = if std::path::Path::new("/.dockerenv").exists() {
                 "docker"
             } else {
@@ -564,43 +569,49 @@ async fn bootstrap_application(
         }
     });
 
-    services.library_scanner = library_scanner;
-    services.library_renamer = library_renamer;
-    services.acquisition_state = Arc::new(db.clone());
-    services.domain_events = Arc::new(db.clone());
-    services.download_submissions = Arc::new(db.clone());
-    services.imports = Arc::new(db.clone());
-    services.import_artifacts = Arc::new(db.clone());
-    services.file_importer = Arc::new(scryer_infrastructure::FsFileImporter::new());
-    services.media_files = Arc::new(db.clone());
-    services.wanted_items = Arc::new(db.clone());
-    services.pending_releases = Arc::new(db.clone());
-    services.title_history = Arc::new(db.clone());
-    services.blocklist_repo = Arc::new(db.clone());
-    services.rule_sets = Arc::new(db.clone());
-    services.pp_scripts = Arc::new(db.clone());
-    services.plugin_installations = Arc::new(db.clone());
-    services.system_info = Arc::new(db.clone());
-    services.job_runs = Arc::new(db.clone());
-    services.library_probe_signatures = Arc::new(db.clone());
-    services.library_scan_unmatched_items = Arc::new(db.clone());
-    services.title_images = Arc::new(db.clone());
-    services.title_image_processor = title_image_processor;
-    services.housekeeping = Arc::new(db.clone());
-    services.subtitle_downloads = Arc::new(db.clone());
-    services.staged_nzb_store = staged_nzb_store;
-    services.staged_nzb_pipeline_limit = staged_nzb_pipeline_limit;
-    services.indexer_stats = indexer_stats;
-    services.plugin_provider = Some(plugin_provider);
-    services.download_client_plugin_provider = Some(download_client_plugin_provider.clone());
-    services.notification_channels = Some(Arc::new(db.clone()));
-    services.notification_subscriptions = Some(Arc::new(db.clone()));
-
     // Load notification WASM plugins (same pattern as indexer plugins)
     let notif_provider = scryer_plugins::DynamicNotificationPluginProvider::new(
         scryer_plugins::WasmNotificationPluginProvider::empty(),
     );
-    services.notification_provider = Some(Arc::new(notif_provider));
+    let notification_store = Arc::new(SqliteNotificationStore::new(&db));
+    let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings_for_router.clone(),
+        quality_profiles,
+        db_path.clone(),
+    )
+    .with_library_state_store(library_state_store)
+    .with_customization_store(customization_store)
+    .with_acquisition_state(workflow_store.clone())
+    .with_domain_events(workflow_store.clone())
+    .with_download_submissions(workflow_store.clone())
+    .with_import_artifacts(workflow_store.clone())
+    .with_imports(workflow_store.clone())
+    .with_job_runs(workflow_store.clone())
+    .with_notification_store(notification_store)
+    .with_system_info(settings_store.clone())
+    .with_metadata_gateway(metadata_gateway)
+    .with_library_scanner(library_scanner)
+    .with_library_renamer(library_renamer)
+    .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
+    .with_title_image_processor(title_image_processor)
+    .with_staged_nzb_store(staged_nzb_store)
+    .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
+    .with_indexer_stats(indexer_stats)
+    .with_plugin_provider(plugin_provider)
+    .with_download_client_plugin_provider(download_client_plugin_provider.clone())
+    .with_notification_provider(Arc::new(notif_provider))
+    .with_workflow_operations(workflow_store)
+    .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
+    .build();
 
     let app_use_case = AppUseCase::new(
         services,
@@ -612,11 +623,7 @@ async fn bootstrap_application(
         facet_registry,
     );
 
-    app_use_case
-        .services
-        .library_scan_tracker
-        .set_job_run_tracker(app_use_case.services.job_run_tracker.clone())
-        .await;
+    app_use_case.connect_library_scan_tracker().await;
 
     // Seed built-in plugin rows and rebuild provider from DB state.
     // This ensures user enable/disable toggles are respected after restart.
@@ -647,7 +654,6 @@ async fn bootstrap_application(
     let log_buf_subscribe = log_ring_buffer.clone();
     let schema = build_schema_with_log_buffer(
         app_use_case.clone(),
-        db.clone(),
         auth_mode.auth_enabled,
         Some(LogBuffer::new(
             move |limit| log_buf_snapshot.snapshot(limit),
@@ -705,9 +711,7 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
-    app_use_case.services.poster_wake.notify_one();
-    app_use_case.services.banner_wake.notify_one();
-    app_use_case.services.fanart_wake.notify_one();
+    app_use_case.wake_title_image_loops();
 
     if let Err(error) = seed_indexer_configs_from_env(&app_use_case).await {
         tracing::warn!(error = %error, "failed to seed indexer configs from environment");
@@ -739,8 +743,8 @@ async fn bootstrap_application(
     };
 
     let cors_for_layer = cors.clone();
-    let admin_migrations_db = db.clone();
-    let admin_settings_db = db.clone();
+    let admin_migrations_db = settings_store.as_ref().clone();
+    let admin_settings_db = settings_store.as_ref().clone();
     let admin_settings_app = app_use_case.clone();
     let ws_auth_state = auth_state.clone();
 
@@ -1081,11 +1085,11 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn check_version_upgrade(db: &SqliteServices) {
+async fn check_version_upgrade(settings_store: &SqliteSettingsStore) {
     const SCOPE: &str = "system";
     const KEY: &str = "last_run_version";
 
-    let previous = db
+    let previous = settings_store
         .get_setting_with_defaults(SCOPE, KEY, None)
         .await
         .ok()
@@ -1110,7 +1114,7 @@ async fn check_version_upgrade(db: &SqliteServices) {
     }
 
     let version_json = serde_json::to_string(VERSION).unwrap();
-    if let Err(error) = db
+    if let Err(error) = settings_store
         .upsert_setting_value(SCOPE, KEY, None, version_json, "system", None)
         .await
     {
@@ -1132,11 +1136,7 @@ pub(crate) fn normalize_env_option_with_legacy<'a>(
 
 /// Check if the primary download client is weaver and return its WebSocket URL and API key.
 async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<String>)> {
-    let configs = app.services.download_client_configs.list(None).await.ok()?;
-    let primary = configs
-        .into_iter()
-        .filter(|c| c.is_enabled)
-        .min_by_key(|c| c.client_priority)?;
+    let primary = app.primary_enabled_download_client_config().await.ok()??;
 
     if primary.client_type != "weaver" {
         return None;

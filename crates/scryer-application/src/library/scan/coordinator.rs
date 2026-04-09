@@ -1,7 +1,7 @@
 use crate::domain_events::new_library_scan_domain_event;
 use crate::{
     AppResult, AppUseCase, Id, LibraryScanMode, LibraryScanSession, LibraryScanSummary,
-    library_scan_progress::replay_library_scan_projection,
+    library_scan_progress::reduce_library_scan_projection_event,
 };
 use scryer_domain::{
     DomainEventFilter, DomainEventPayload, DomainEventType, LibraryScanCompletedEventData,
@@ -35,7 +35,7 @@ impl LibraryScanCoordinator {
     ) -> AppResult<(Self, LibraryScanSession)> {
         let session_id = session_id_override.unwrap_or_else(|| Id::new().0);
         let session = app
-            .services
+            .runtime
             .library_scan_tracker
             .start_session_with_id(session_id, facet.clone(), mode)
             .await?;
@@ -71,7 +71,6 @@ impl LibraryScanCoordinator {
     pub(crate) async fn publish_started(&self, session: &LibraryScanSession) {
         let _ = self
             .app
-            .services
             .append_domain_event(new_library_scan_domain_event(
                 None,
                 session.session_id.clone(),
@@ -87,7 +86,7 @@ impl LibraryScanCoordinator {
     pub(crate) async fn publish_progress(&self) {
         let Some(session) = self
             .app
-            .services
+            .runtime
             .library_scan_tracker
             .get_session(self.session_id())
             .await
@@ -233,7 +232,7 @@ impl LibraryScanCoordinator {
     pub(crate) async fn maybe_complete(&self) {
         let Some(session) = self
             .app
-            .services
+            .runtime
             .library_scan_tracker
             .complete_if_finished(self.session_id())
             .await
@@ -251,7 +250,7 @@ impl LibraryScanCoordinator {
     pub(crate) async fn fail(&self) {
         let failed_session = self
             .app
-            .services
+            .runtime
             .library_scan_tracker
             .fail_session(self.session_id())
             .await;
@@ -268,7 +267,6 @@ impl LibraryScanCoordinator {
 
         let _ = self
             .app
-            .services
             .append_domain_event(self.scan_event(
                 facet,
                 DomainEventPayload::LibraryScanFailed(LibraryScanFailedEventData {
@@ -290,7 +288,7 @@ impl LibraryScanCoordinator {
 
         let Some(snapshot) = self
             .app
-            .services
+            .runtime
             .library_scan_tracker
             .apply_delta(self.session_id(), &delta)
             .await
@@ -322,7 +320,6 @@ impl LibraryScanCoordinator {
 
         let _ = self
             .app
-            .services
             .append_domain_event(self.scan_event(
                 snapshot.facet,
                 DomainEventPayload::LibraryScanDeltaRecorded(delta),
@@ -337,7 +334,7 @@ impl LibraryScanCoordinator {
 
         if let Some(session) = self
             .app
-            .services
+            .runtime
             .library_scan_tracker
             .get_session(self.session_id())
             .await
@@ -354,11 +351,13 @@ pub(crate) async fn load_projected_library_scan_session(
     session_id: &str,
 ) -> AppResult<Option<LibraryScanSession>> {
     let mut after_sequence = 0i64;
-    let mut events = Vec::new();
+    let mut sessions = std::collections::HashMap::new();
+    let mut last_snapshot = None;
 
     loop {
         let batch = app
             .services
+            .events
             .domain_events
             .list(&DomainEventFilter {
                 event_types: Some(LIBRARY_SCAN_TRACKER_EVENT_TYPES.to_vec()),
@@ -376,17 +375,17 @@ pub(crate) async fn load_projected_library_scan_session(
             .map(|event| event.sequence)
             .unwrap_or(after_sequence);
         let count = batch.len();
-        events.extend(
-            batch
-                .into_iter()
-                .filter(|event| library_scan_event_session_id(&event.payload) == Some(session_id)),
-        );
+        for event in batch {
+            if library_scan_event_session_id(&event.payload) == Some(session_id) {
+                last_snapshot = reduce_library_scan_projection_event(&mut sessions, &event);
+            }
+        }
         if count < 500 {
             break;
         }
     }
 
-    Ok(replay_library_scan_projection(&events).remove(session_id))
+    Ok(last_snapshot)
 }
 
 async fn publish_coalesced_library_scan_state(app: &AppUseCase, session: &LibraryScanSession) {
@@ -442,7 +441,6 @@ async fn publish_coalesced_library_scan_state(app: &AppUseCase, session: &Librar
     };
 
     let _ = app
-        .services
         .append_domain_event(new_library_scan_domain_event(
             None,
             session.session_id.clone(),
@@ -458,6 +456,7 @@ async fn load_library_scan_session_facet(app: &AppUseCase, session_id: &str) -> 
     loop {
         let batch = app
             .services
+            .events
             .domain_events
             .list(&DomainEventFilter {
                 event_types: Some(LIBRARY_SCAN_TRACKER_EVENT_TYPES.to_vec()),

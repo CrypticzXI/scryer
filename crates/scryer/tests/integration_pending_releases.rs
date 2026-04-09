@@ -2,12 +2,11 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
-    AppError, DownloadSubmission, PendingReleaseStatus, SuccessfulGrabCommit, TitleRepository,
+    AcquisitionStateRepository, AppError, DownloadSubmission, DownloadSubmissionRepository,
+    PendingReleaseRepository, PendingReleaseStatus, SuccessfulGrabCommit, TitleRepository,
     WantedCompleteTransition, WantedItemRepository, WantedSearchTransition, WantedStatus,
 };
 use scryer_domain::{MediaFacet, Title};
@@ -15,14 +14,6 @@ use scryer_domain::{MediaFacet, Title};
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Wire pending-release and wanted-item repos into the test AppUseCase.
-fn app_with_pending(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let mut app = ctx.app.clone();
-    app.services.pending_releases = Arc::new(ctx.db.clone());
-    app.services.wanted_items = Arc::new(ctx.db.clone());
-    app
-}
 
 /// Create a title so FK constraints are satisfied.
 async fn seed_title(ctx: &TestContext, id: &str) {
@@ -62,7 +53,7 @@ async fn seed_title(ctx: &TestContext, id: &str) {
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.db.create(title).await.expect("seed title");
+    ctx.catalog.create(title).await.expect("seed title");
 }
 
 /// Insert a wanted item directly via the repo and return its ID.
@@ -90,7 +81,10 @@ async fn seed_wanted_item(
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
-    ctx.db.upsert_wanted_item(&item).await.expect("seed wanted");
+    ctx.library_state
+        .upsert_wanted_item(&item)
+        .await
+        .expect("seed wanted");
     item
 }
 
@@ -139,7 +133,7 @@ async fn seed_pending_release(
 #[tokio::test]
 async fn list_pending_releases_returns_only_waiting() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
@@ -202,7 +196,7 @@ async fn standby_listing_returns_only_standby_rows() {
     .await;
 
     let pending = ctx
-        .db
+        .library_state
         .list_standby_pending_releases_for_wanted_item(&wi.id)
         .await
         .expect("standby list");
@@ -241,14 +235,14 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
         .expect("delete standby");
 
     assert!(
-        ctx.db
+        ctx.library_state
             .get_pending_release(&standby.id)
             .await
             .unwrap()
             .is_none()
     );
     assert_eq!(
-        ctx.db
+        ctx.library_state
             .get_pending_release(&waiting.id)
             .await
             .unwrap()
@@ -275,7 +269,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
     .await;
 
     let first = ctx
-        .db
+        .library_state
         .compare_and_set_pending_release_status(
             &standby.id,
             PendingReleaseStatus::Standby,
@@ -285,7 +279,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
         .await
         .expect("first claim");
     let second = ctx
-        .db
+        .library_state
         .compare_and_set_pending_release_status(
             &standby.id,
             PendingReleaseStatus::Standby,
@@ -298,7 +292,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
     assert!(first);
     assert!(!second);
     assert_eq!(
-        ctx.db
+        ctx.library_state
             .get_pending_release(&standby.id)
             .await
             .unwrap()
@@ -339,9 +333,10 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         "grabbed_at": grabbed_at.clone(),
     })
     .to_string();
+    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
 
-    ctx.db
-        .commit_successful_grab(SuccessfulGrabCommit {
+    workflow_store
+        .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             search_count: 1,
             current_score: None,
@@ -362,7 +357,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .expect("commit successful grab");
 
     let wanted = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wi.id)
         .await
         .expect("get wanted")
@@ -376,9 +371,8 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         Some(grabbed_release.as_str())
     );
 
-    let submission = ctx
-        .db
-        .find_download_submission("nzbget", "job-1")
+    let submission = workflow_store
+        .find_by_client_item_id("nzbget", "job-1")
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -389,7 +383,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     );
 
     assert_eq!(
-        ctx.db
+        ctx.library_state
             .get_pending_release(&waiting.id)
             .await
             .unwrap()
@@ -398,7 +392,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         PendingReleaseStatus::Superseded
     );
     assert_eq!(
-        ctx.db
+        ctx.library_state
             .get_pending_release(&standby.id)
             .await
             .unwrap()
@@ -433,9 +427,10 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     )
     .await;
     let grabbed_at = Utc::now().to_rfc3339();
+    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
 
-    ctx.db
-        .commit_successful_grab(SuccessfulGrabCommit {
+    workflow_store
+        .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             search_count: 0,
             current_score: None,
@@ -462,7 +457,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .expect("commit successful grab");
 
     let claimed_release = ctx
-        .db
+        .library_state
         .get_pending_release(&claimed.id)
         .await
         .unwrap()
@@ -474,7 +469,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     );
 
     let sibling_release = ctx
-        .db
+        .library_state
         .get_pending_release(&sibling.id)
         .await
         .unwrap()
@@ -485,13 +480,19 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
 #[tokio::test]
 async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
 
     let (first_items, first_total) = app
-        .list_wanted_items(None, None, None, 50, 0)
+        .list_wanted_items(scryer_application::WantedItemsQuery {
+            status: None,
+            media_type: None,
+            title_id: None,
+            limit: 50,
+            offset: 0,
+        })
         .await
         .expect("first wanted list");
     assert_eq!(first_total, 1);
@@ -499,7 +500,13 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
     assert_eq!(first_items[0].title_id, "title-1");
 
     let (second_items, second_total) = app
-        .list_wanted_items(None, None, None, 50, 0)
+        .list_wanted_items(scryer_application::WantedItemsQuery {
+            status: None,
+            media_type: None,
+            title_id: None,
+            limit: 50,
+            offset: 0,
+        })
         .await
         .expect("second wanted list");
     assert_eq!(second_total, 1);
@@ -510,14 +517,14 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
 #[tokio::test]
 async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
     let preserved_next_search_at = (Utc::now() + Duration::hours(3)).to_rfc3339();
     let preserved_last_search_at = (Utc::now() - Duration::minutes(30)).to_rfc3339();
 
-    ctx.db
+    ctx.library_state
         .schedule_wanted_item_search(&WantedSearchTransition {
             id: wanted.id.clone(),
             next_search_at: Some(preserved_next_search_at.clone()),
@@ -554,14 +561,14 @@ async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule
     };
 
     let seeded_id = ctx
-        .db
+        .library_state
         .ensure_wanted_item_seeded(&reseed)
         .await
         .expect("reseed paused wanted item");
     assert_eq!(seeded_id, wanted.id);
 
     let fetched = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wanted.id)
         .await
         .expect("fetch wanted")
@@ -581,7 +588,7 @@ async fn ensure_wanted_item_seeded_preserves_existing_schedule_after_search_acti
     let preserved_next_search_at = (Utc::now() + Duration::hours(3)).to_rfc3339();
     let preserved_last_search_at = (Utc::now() - Duration::minutes(30)).to_rfc3339();
 
-    ctx.db
+    ctx.library_state
         .schedule_wanted_item_search(&WantedSearchTransition {
             id: wanted.id.clone(),
             next_search_at: Some(preserved_next_search_at.clone()),
@@ -613,13 +620,13 @@ async fn ensure_wanted_item_seeded_preserves_existing_schedule_after_search_acti
         updated_at: Utc::now().to_rfc3339(),
     };
 
-    ctx.db
+    ctx.library_state
         .ensure_wanted_item_seeded(&reseed)
         .await
         .expect("reseed searched wanted item");
 
     let fetched = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wanted.id)
         .await
         .expect("fetch wanted")
@@ -640,7 +647,7 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
     seed_title(&ctx, "title-1").await;
     let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
 
-    ctx.db
+    ctx.library_state
         .transition_wanted_to_completed(&WantedCompleteTransition {
             id: wanted.id.clone(),
             last_search_at: Some(Utc::now().to_rfc3339()),
@@ -677,13 +684,13 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         updated_at: Utc::now().to_rfc3339(),
     };
 
-    ctx.db
+    ctx.library_state
         .ensure_wanted_item_seeded(&reseed)
         .await
         .expect("reseed completed wanted item");
 
     let fetched = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wanted.id)
         .await
         .expect("fetch wanted")
@@ -701,7 +708,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
     let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
     let preserved_next_search_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
 
-    ctx.db
+    ctx.library_state
         .schedule_wanted_item_search(&WantedSearchTransition {
             id: wanted.id.clone(),
             next_search_at: Some(preserved_next_search_at.clone()),
@@ -713,12 +720,13 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .await
         .expect("schedule wanted item");
 
-    app_with_pending(&ctx)
+    ctx.app
+        .clone()
         .pause_wanted_item(&wanted.id)
         .await
         .expect("pause wanted item");
 
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&scryer_application::WantedItem {
             id: scryer_domain::Id::new().0,
             title_id: "title-1".to_string(),
@@ -742,7 +750,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .expect("direct upsert wanted item");
 
     let fetched = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wanted.id)
         .await
         .expect("fetch wanted")
@@ -761,7 +769,7 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
     let wanted = seed_wanted_item(&ctx, "title-1", WantedStatus::Wanted).await;
     let preserved_next_search_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
 
-    ctx.db
+    ctx.library_state
         .schedule_wanted_item_search(&WantedSearchTransition {
             id: wanted.id.clone(),
             next_search_at: Some(preserved_next_search_at.clone()),
@@ -773,7 +781,7 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
         .await
         .expect("schedule wanted item");
 
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&scryer_application::WantedItem {
             id: scryer_domain::Id::new().0,
             title_id: "title-1".to_string(),
@@ -797,7 +805,7 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
         .expect("direct upsert wanted item");
 
     let fetched = ctx
-        .db
+        .library_state
         .get_wanted_item_by_id(&wanted.id)
         .await
         .expect("fetch wanted")
@@ -818,7 +826,7 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
 #[tokio::test]
 async fn dismiss_sets_status_to_dismissed() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
@@ -840,14 +848,19 @@ async fn dismiss_sets_status_to_dismissed() {
     assert!(pending.is_empty());
 
     // Verify status in DB
-    let fetched = ctx.db.get_pending_release(&pr.id).await.unwrap().unwrap();
+    let fetched = ctx
+        .library_state
+        .get_pending_release(&pr.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.status, PendingReleaseStatus::Dismissed);
 }
 
 #[tokio::test]
 async fn dismiss_nonexistent_returns_error() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     let err = app
         .dismiss_pending_release("nonexistent-id")
@@ -859,7 +872,7 @@ async fn dismiss_nonexistent_returns_error() {
 #[tokio::test]
 async fn dismiss_non_waiting_returns_error() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
@@ -884,7 +897,7 @@ async fn dismiss_non_waiting_returns_error() {
 #[tokio::test]
 async fn force_grab_nonexistent_returns_error() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     let err = app
         .force_grab_pending_release("nonexistent-id")
@@ -896,7 +909,7 @@ async fn force_grab_nonexistent_returns_error() {
 #[tokio::test]
 async fn force_grab_non_waiting_returns_error() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
@@ -921,7 +934,7 @@ async fn force_grab_non_waiting_returns_error() {
 #[tokio::test]
 async fn process_expired_skips_when_none_expired() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
@@ -946,7 +959,7 @@ async fn process_expired_skips_when_none_expired() {
 #[tokio::test]
 async fn process_expired_marks_expired_when_wanted_item_gone() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     // Create pending release referencing a wanted item, then delete the wanted item
     seed_title(&ctx, "title-1").await;
@@ -961,7 +974,7 @@ async fn process_expired_marks_expired_when_wanted_item_gone() {
     )
     .await;
     // Delete the wanted item
-    ctx.db
+    ctx.library_state
         .delete_wanted_items_for_title("title-1")
         .await
         .expect("delete wanted");
@@ -973,14 +986,19 @@ async fn process_expired_marks_expired_when_wanted_item_gone() {
     assert_eq!(count, 0);
 
     // PR should be marked expired
-    let fetched = ctx.db.get_pending_release(&pr.id).await.unwrap().unwrap();
+    let fetched = ctx
+        .library_state
+        .get_pending_release(&pr.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.status, PendingReleaseStatus::Expired);
 }
 
 #[tokio::test]
 async fn process_expired_supersedes_when_already_grabbed() {
     let ctx = TestContext::new().await;
-    let app = app_with_pending(&ctx);
+    let app = ctx.app.clone();
 
     seed_title(&ctx, "title-1").await;
     let wi = seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Grabbed).await;
@@ -1001,6 +1019,11 @@ async fn process_expired_supersedes_when_already_grabbed() {
     assert_eq!(count, 0);
 
     // PR should be superseded (wanted item already grabbed)
-    let fetched = ctx.db.get_pending_release(&pr.id).await.unwrap().unwrap();
+    let fetched = ctx
+        .library_state
+        .get_pending_release(&pr.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.status, PendingReleaseStatus::Superseded);
 }

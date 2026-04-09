@@ -220,6 +220,7 @@ impl AppUseCase {
 
         let record = self
             .services
+            .workflow
             .subtitle_downloads
             .delete(subtitle_download_id)
             .await?
@@ -229,6 +230,7 @@ impl AppUseCase {
 
         if let Some(provider_file_id) = &record.provider_file_id {
             self.services
+                .workflow
                 .subtitle_downloads
                 .blacklist(
                     &record.media_file_id,
@@ -288,6 +290,7 @@ impl AppUseCase {
     async fn resolve_title_delete_context(&self, title_id: &str) -> AppResult<UserDeleteContext> {
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -295,6 +298,7 @@ impl AppUseCase {
         let root_folders = self.root_folders_for_facet(&title.facet).await?;
         let other_titles = self
             .services
+            .catalog
             .titles
             .list(None, None)
             .await?
@@ -319,12 +323,14 @@ impl AppUseCase {
     ) -> AppResult<UserDeleteContext> {
         let media_file = self
             .services
+            .library
             .media_files
             .get_media_file_by_id(file_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
         let subtitles = self
             .services
+            .workflow
             .subtitle_downloads
             .list_for_media_file(file_id)
             .await?;
@@ -345,6 +351,7 @@ impl AppUseCase {
     ) -> AppResult<UserDeleteContext> {
         let subtitle = self
             .services
+            .workflow
             .subtitle_downloads
             .get(subtitle_download_id)
             .await?

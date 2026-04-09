@@ -4,7 +4,7 @@ use scryer_domain::{
 };
 use std::collections::HashMap;
 
-use crate::{AppError, AppResult, AppUseCase};
+use crate::{AppError, AppResult, AppUseCase, NotificationScopeIdUpdate};
 
 impl AppUseCase {
     pub async fn list_notification_channels(
@@ -114,8 +114,8 @@ impl AppUseCase {
 
         let provider = self
             .services
-            .notification_provider
-            .as_ref()
+            .notifications
+            .notification_provider()
             .ok_or_else(|| {
                 AppError::Repository("notification plugin provider is not configured".into())
             })?;
@@ -191,7 +191,7 @@ impl AppUseCase {
         id: String,
         event_type: Option<String>,
         scope: Option<String>,
-        scope_id: Option<Option<String>>,
+        scope_id: NotificationScopeIdUpdate,
         is_enabled: Option<bool>,
     ) -> AppResult<NotificationSubscription> {
         crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
@@ -213,8 +213,10 @@ impl AppUseCase {
         if let Some(s) = scope {
             sub.scope = s;
         }
-        if let Some(si) = scope_id {
-            sub.scope_id = si;
+        match scope_id {
+            NotificationScopeIdUpdate::NoChange => {}
+            NotificationScopeIdUpdate::Clear => sub.scope_id = None,
+            NotificationScopeIdUpdate::Set(scope_id) => sub.scope_id = Some(scope_id),
         }
         if let Some(e) = is_enabled {
             sub.is_enabled = e;
@@ -236,8 +238,8 @@ impl AppUseCase {
 
     pub fn available_notification_provider_types(&self) -> Vec<String> {
         self.services
-            .notification_provider
-            .as_ref()
+            .notifications
+            .notification_provider()
             .map(|p| p.available_provider_types())
             .unwrap_or_default()
     }
@@ -247,33 +249,36 @@ impl AppUseCase {
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
         self.services
-            .notification_provider
-            .as_ref()
+            .notifications
+            .notification_provider()
             .map(|p| p.config_fields_for_provider(provider_type))
             .unwrap_or_default()
     }
 
     pub fn notification_provider_name(&self, provider_type: &str) -> Option<String> {
         self.services
-            .notification_provider
-            .as_ref()
+            .notifications
+            .notification_provider()
             .and_then(|p| p.plugin_name_for_provider(provider_type))
     }
 
     pub fn notification_channels_repo(
         &self,
     ) -> AppResult<&std::sync::Arc<dyn crate::NotificationChannelRepository>> {
-        self.services.notification_channels.as_ref().ok_or_else(|| {
-            AppError::Repository("notification channel repository is not configured".into())
-        })
+        self.services
+            .notifications
+            .notification_channels()
+            .ok_or_else(|| {
+                AppError::Repository("notification channel repository is not configured".into())
+            })
     }
 
     pub fn notification_subscriptions_repo(
         &self,
     ) -> AppResult<&std::sync::Arc<dyn crate::NotificationSubscriptionRepository>> {
         self.services
-            .notification_subscriptions
-            .as_ref()
+            .notifications
+            .notification_subscriptions()
             .ok_or_else(|| {
                 AppError::Repository(
                     "notification subscription repository is not configured".into(),

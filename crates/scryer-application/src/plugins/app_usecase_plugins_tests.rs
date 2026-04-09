@@ -151,20 +151,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         Ok(())
     }
 
-    async fn update(
-        &self,
-        _id: &str,
-        _name: Option<String>,
-        _provider_type: Option<String>,
-        _base_url: Option<String>,
-        _api_key_encrypted: Option<String>,
-        _rate_limit_seconds: Option<i64>,
-        _rate_limit_burst: Option<i64>,
-        _is_enabled: Option<bool>,
-        _enable_interactive_search: Option<bool>,
-        _enable_auto_search: Option<bool>,
-        _config_json: Option<String>,
-    ) -> AppResult<IndexerConfig> {
+    async fn update(&self, _update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
         Err(AppError::Repository("not implemented".into()))
     }
 
@@ -364,7 +351,7 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
 
-    let mut services = AppServices::with_default_channels(
+    let services = AppServices::builder(
         Arc::new(NullTitleRepository),
         Arc::new(NullShowRepository),
         Arc::new(NullUserRepository),
@@ -376,11 +363,15 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         Arc::new(NullSettingsRepository),
         Arc::new(NullQualityProfileRepository),
         String::new(),
-    );
-    services.plugin_installations = plugin_repo.clone();
-    if let Some(p) = provider {
-        services.plugin_provider = Some(Arc::new(p));
-    }
+    )
+    .with_plugin_installations(plugin_repo.clone());
+    let services = if let Some(p) = provider {
+        services
+            .with_plugin_provider(Arc::new(p))
+            .build_partial_for_tests()
+    } else {
+        services.build_partial_for_tests()
+    };
 
     let registry = FacetRegistry::new();
     let app = AppUseCase::new(

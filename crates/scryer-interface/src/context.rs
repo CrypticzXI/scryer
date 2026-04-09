@@ -4,7 +4,6 @@ use async_graphql::{Context, Error, Result as GqlResult, Schema};
 use scryer_application::AppError;
 use scryer_application::AppUseCase;
 use scryer_domain::User;
-use scryer_infrastructure::SqliteServices;
 use tokio::sync::broadcast;
 
 use crate::{mutation::MutationRoot, query::QueryRoot, subscription::SubscriptionRoot};
@@ -42,26 +41,20 @@ pub type ApiSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 #[derive(Clone)]
 pub struct ApiContext {
     pub app: AppUseCase,
-    pub settings_db: SqliteServices,
     pub auth_enabled: bool,
 }
 
-pub fn build_schema(app: AppUseCase, settings_db: SqliteServices, auth_enabled: bool) -> ApiSchema {
-    build_schema_with_log_buffer(app, settings_db, auth_enabled, None)
+pub fn build_schema(app: AppUseCase, auth_enabled: bool) -> ApiSchema {
+    build_schema_with_log_buffer(app, auth_enabled, None)
 }
 
 pub fn build_schema_with_log_buffer(
     app: AppUseCase,
-    settings_db: SqliteServices,
     auth_enabled: bool,
     log_buffer: Option<LogBuffer>,
 ) -> ApiSchema {
-    let mut builder =
-        Schema::build(QueryRoot, MutationRoot::default(), SubscriptionRoot).data(ApiContext {
-            app,
-            settings_db,
-            auth_enabled,
-        });
+    let mut builder = Schema::build(QueryRoot, MutationRoot::default(), SubscriptionRoot)
+        .data(ApiContext { app, auth_enabled });
     if let Some(buf) = log_buffer {
         builder = builder.data(buf);
     }
@@ -70,10 +63,6 @@ pub fn build_schema_with_log_buffer(
 
 pub(crate) fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
     Ok(ctx.data_unchecked::<ApiContext>().app.clone())
-}
-
-pub(crate) fn settings_db_from_ctx(ctx: &Context<'_>) -> GqlResult<SqliteServices> {
-    Ok(ctx.data_unchecked::<ApiContext>().settings_db.clone())
 }
 
 pub(crate) fn to_gql_error(err: AppError) -> Error {

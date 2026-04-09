@@ -6,13 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::TestContext;
+use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    ReleaseAttemptRepository, ShowRepository, TitleRepository, import_completed_download,
+    ImportRepository, MediaFileRepository, ReleaseAttemptRepository, ShowRepository,
+    TitleRepository, WantedItemRepository, import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::FsFileImporter;
+use scryer_infrastructure::{FsFileImporter, SqliteWorkflowStore};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,12 +23,14 @@ use scryer_infrastructure::FsFileImporter;
 /// Build an AppUseCase with a real SQLite import repository and filesystem
 /// file importer so that tests can exercise the full import pipeline.
 fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let mut app = ctx.app.clone();
-    app.services.imports = Arc::new(ctx.db.clone());
-    app.services.file_importer = Arc::new(FsFileImporter);
-    app.services.media_files = Arc::new(ctx.db.clone());
-    app.services.wanted_items = Arc::new(ctx.db.clone());
-    app
+    let workflow_store = Arc::new(SqliteWorkflowStore::new(&ctx.db));
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_imports(workflow_store)
+            .with_file_importer(Arc::new(FsFileImporter))
+            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_wanted_items(Arc::new(ctx.library_state.clone()))
+    })
 }
 
 /// Build a minimal CompletedDownload with scryer-origin parameters.
@@ -92,7 +96,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.db.create(title).await.expect("add movie title")
+    ctx.catalog.create(title).await.expect("add movie title")
 }
 
 async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &str) -> Title {
@@ -132,7 +136,7 @@ async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.db.create(title).await.expect("add series title")
+    ctx.catalog.create(title).await.expect("add series title")
 }
 
 fn mediainfo_fixture(name: &str) -> PathBuf {
@@ -175,7 +179,7 @@ async fn seed_movie_wanted_item(
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&item)
         .await
         .expect("seed movie wanted");
@@ -199,7 +203,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.db
+    ctx.catalog
         .create_collection(collection.clone())
         .await
         .expect("create collection");
@@ -225,7 +229,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.db
+    ctx.catalog
         .create_episode(episode.clone())
         .await
         .expect("create episode");
@@ -257,7 +261,7 @@ async fn seed_episode_wanted_item(
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&item)
         .await
         .expect("seed episode wanted");
@@ -308,11 +312,10 @@ async fn import_deduplicates_completed_imports() {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
 
     // Seed a completed import record for (nzbget, "dl-dedup").
-    let import_id = app
-        .services
-        .imports
+    let import_id = workflow_store
         .queue_import_request(
             "nzbget".to_string(),
             "dl-dedup".to_string(),
@@ -321,8 +324,7 @@ async fn import_deduplicates_completed_imports() {
         )
         .await
         .expect("queue_import_request");
-    app.services
-        .imports
+    workflow_store
         .update_import_status(&import_id, scryer_domain::ImportStatus::Completed, None)
         .await
         .expect("update_import_status");
@@ -596,7 +598,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "rejected file should have been recycled"
     );
     assert!(
-        ctx.db
+        ctx.library_state
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -605,7 +607,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
     );
 
     let updated_wanted = ctx
-        .db
+        .library_state
         .get_wanted_item_for_title(&title.id, None)
         .await
         .expect("get wanted")
@@ -616,8 +618,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::WantedStatus::Wanted
     );
 
-    let failures = ctx
-        .db
+    let failures = scryer_infrastructure::SqliteReleaseStore::new(&ctx.db)
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
         .expect("failed signatures");
@@ -691,7 +692,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         Some(ImportSkipReason::PostDownloadRuleBlocked)
     );
     assert!(
-        ctx.db
+        ctx.library_state
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -700,7 +701,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
     );
 
     let updated_wanted = ctx
-        .db
+        .library_state
         .get_wanted_item_for_title(&title.id, Some(&episode.id))
         .await
         .expect("get wanted")
@@ -760,7 +761,7 @@ score_entry["bad_runtime"] := count(input.file.video_width) if {
 
     assert_eq!(result.decision, ImportDecision::Imported);
     let media_files = ctx
-        .db
+        .library_state
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -794,7 +795,7 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
         .join("Upgrade.Movie.2024.1080p.WEB-DL.H264.mkv");
     std::fs::create_dir_all(old_path.parent().expect("old path parent")).expect("create old dir");
     std::fs::copy(mediainfo_fixture("h264_aac.mkv"), &old_path).expect("seed old movie file");
-    ctx.db
+    ctx.library_state
         .insert_media_file(&scryer_application::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: old_path.to_string_lossy().to_string(),
@@ -848,7 +849,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "old file should have been restored after rejected upgrade"
     );
     let media_files = ctx
-        .db
+        .library_state
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");

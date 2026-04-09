@@ -1,4 +1,5 @@
 use async_graphql::{Context, Object, Result as GqlResult};
+use scryer_application::NotificationScopeIdUpdate;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{from_notification_channel, from_notification_subscription};
@@ -101,7 +102,10 @@ impl NotificationMutations {
                 input.id,
                 input.event_type,
                 input.scope,
-                input.scope_id.map(Some),
+                input
+                    .scope_id
+                    .map(NotificationScopeIdUpdate::Set)
+                    .unwrap_or(NotificationScopeIdUpdate::NoChange),
                 input.is_enabled,
             )
             .await

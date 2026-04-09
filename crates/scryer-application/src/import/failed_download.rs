@@ -88,10 +88,9 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
         td.client_item.title_name, failure_reason
     );
     if let Some(title_id) = td.title_id.as_deref()
-        && let Ok(Some(title)) = app.services.titles.get_by_id(title_id).await
+        && let Ok(Some(title)) = app.services.catalog.titles.get_by_id(title_id).await
     {
         let _ = app
-            .services
             .append_domain_event(new_title_domain_event(
                 None,
                 &title,
@@ -105,7 +104,6 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
             .await;
     } else {
         let _ = app
-            .services
             .append_domain_event(new_global_domain_event(
                 None,
                 DomainEventPayload::DownloadFailed(DownloadFailedEventData {

@@ -1,4 +1,5 @@
-//! Quality profiles, scoring, release parsing, and deduplication.
-//!
-//! Start with `profile.rs` for profile ownership.
-//! Scoring and release-shape helpers live in the sibling files.
+pub(crate) mod profile;
+pub mod release_dedup;
+pub(crate) mod release_group_db;
+pub(crate) mod release_parser;
+pub(crate) mod scoring_weights;

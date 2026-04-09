@@ -3,15 +3,17 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use ring::hmac;
 
 use super::*;
+use crate::services::AppAssembly;
 
 impl AppUseCase {
     pub fn new(
-        services: AppServices,
+        assembly: AppAssembly,
         auth: JwtAuthConfig,
         facet_registry: Arc<FacetRegistry>,
     ) -> Self {
         Self {
-            services,
+            services: assembly.services,
+            runtime: assembly.runtime,
             auth,
             facet_registry,
             jwt_signing_keys: Arc::new(RwLock::new(HashMap::new())),
@@ -20,7 +22,7 @@ impl AppUseCase {
         }
     }
 
-    pub(super) fn hash_password(&self, password: &str) -> AppResult<String> {
+    pub(crate) fn hash_password(&self, password: &str) -> AppResult<String> {
         if password.trim().is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
@@ -34,7 +36,7 @@ impl AppUseCase {
         Ok(format!("v2${phc_string}"))
     }
 
-    pub(super) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
+    pub(crate) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
         if let Some(phc_string) = password_hash.strip_prefix("v2$") {
             let parsed = PasswordHash::new(phc_string)
                 .map_err(|err| AppError::Validation(format!("invalid v2 password hash: {err}")))?;
@@ -184,7 +186,7 @@ impl AppUseCase {
             return Ok(());
         }
 
-        let users = self.services.users.list_all().await?;
+        let users = self.services.identity.users.list_all().await?;
         let mut cache = self.jwt_signing_keys.write().await;
         cache.clear();
         for user in users {
@@ -292,6 +294,7 @@ impl AppUseCase {
 
         let user = self
             .services
+            .identity
             .users
             .get_by_username(username)
             .await?
@@ -313,6 +316,7 @@ impl AppUseCase {
         {
             match self
                 .services
+                .identity
                 .users
                 .update_password_hash(&user.id, new_hash)
                 .await

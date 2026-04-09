@@ -61,6 +61,12 @@ fn non_empty(s: String) -> Option<String> {
 /// Shared by the single-title facet handler path and the bulk hydration loop.
 pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> HydrationResult {
     let mut extra_external_ids = Vec::new();
+    if let Some(imdb_id) = crate::normalize::normalize_imdb_id(movie.imdb_id.as_str()) {
+        extra_external_ids.push(scryer_domain::ExternalId {
+            source: "imdb".into(),
+            value: imdb_id,
+        });
+    }
     if let Some(anidb_id) = movie.anidb_id {
         extra_external_ids.push(scryer_domain::ExternalId {
             source: "anidb".into(),

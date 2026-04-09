@@ -12,8 +12,8 @@ const NOTIFICATION_BATCH_LIMIT: usize = 100;
 
 pub async fn start_notification_dispatcher(app: AppUseCase, cancel: CancellationToken) {
     info!("notification dispatcher started");
-    let repo = app.services.domain_events.clone();
-    let mut rx = app.services.domain_event_broadcast.subscribe();
+    let repo = app.services.events.domain_events.clone();
+    let mut rx = app.runtime.domain_event_broadcast.subscribe();
     let mut last_sequence = match repo.get_subscriber_offset(NOTIFICATION_SUBSCRIBER).await {
         Ok(sequence) => sequence,
         Err(error) => {
@@ -59,7 +59,7 @@ async fn dispatch_pending_events(
     app: &AppUseCase,
     mut after_sequence: i64,
 ) -> crate::AppResult<i64> {
-    let repo = app.services.domain_events.clone();
+    let repo = app.services.events.domain_events.clone();
 
     loop {
         let events = repo
@@ -93,9 +93,8 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
         Ok(repo) => repo,
         Err(_) => return,
     };
-    let provider = match app.services.notification_provider.as_ref() {
-        Some(provider) => provider,
-        None => return,
+    let Some(provider) = app.services.notifications.notification_provider() else {
+        return;
     };
 
     let event_type = event.payload.event_type();

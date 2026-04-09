@@ -191,6 +191,7 @@ impl TrackedDownloadService {
         };
         if let Err(e) = app
             .services
+            .workflow
             .download_submissions
             .update_tracked_state(
                 &td.client_type,
@@ -217,6 +218,7 @@ impl TrackedDownloadService {
         // 1. download_submissions lookup (highest confidence).
         if let Ok(Some(sub)) = app
             .services
+            .workflow
             .download_submissions
             .find_by_client_item_id(&td.client_type, &td.client_item.download_client_item_id)
             .await
@@ -232,7 +234,7 @@ impl TrackedDownloadService {
         // 2. Embedded client parameters (*scryer_title_id).
         if let Some(title_id) = td.client_item.title_id.as_deref().filter(|s| !s.is_empty()) {
             // Cross-validate: does this title still exist?
-            if let Ok(Some(_)) = app.services.titles.get_by_id(title_id).await {
+            if let Ok(Some(_)) = app.services.catalog.titles.get_by_id(title_id).await {
                 td.title_id = Some(title_id.to_string());
                 td.match_type = TitleMatchType::ClientParameter;
                 return;
@@ -247,6 +249,7 @@ impl TrackedDownloadService {
         // get a tracked_state column for restart reconstruction.
         if let Err(error) = app
             .services
+            .workflow
             .download_submissions
             .record_submission(DownloadSubmission {
                 title_id: String::new(),
@@ -267,6 +270,7 @@ impl TrackedDownloadService {
         // Check download_submissions.tracked_state for terminal states.
         if let Ok(Some(tracked_state)) = app
             .services
+            .workflow
             .download_submissions
             .get_tracked_state(&td.client_type, &td.client_item.download_client_item_id)
             .await
@@ -281,6 +285,7 @@ impl TrackedDownloadService {
         // tracked state was not persisted before shutdown.
         if let Ok(Some(import_record)) = app
             .services
+            .workflow
             .imports
             .get_import_by_source_ref(&td.client_type, &td.client_item.download_client_item_id)
             .await
@@ -289,6 +294,7 @@ impl TrackedDownloadService {
             td.state = TrackedDownloadState::Imported;
             let _ = app
                 .services
+                .workflow
                 .download_submissions
                 .update_tracked_state(
                     &td.client_type,
@@ -507,17 +513,7 @@ mod tests {
 
         async fn update(
             &self,
-            _: &str,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<i64>,
-            _: Option<i64>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<String>,
+            _: crate::IndexerConfigUpdate,
         ) -> AppResult<scryer_domain::IndexerConfig> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -581,7 +577,7 @@ mod tests {
         download_submissions: Arc<TestDownloadSubmissionRepo>,
         imports: Arc<TestImportRepo>,
     ) -> AppUseCase {
-        let mut services = AppServices::with_default_channels(
+        let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
@@ -593,9 +589,10 @@ mod tests {
             Arc::new(crate::null_repositories::NullSettingsRepository),
             Arc::new(NullQualityProfileRepository),
             String::new(),
-        );
-        services.download_submissions = download_submissions;
-        services.imports = imports;
+        )
+        .with_download_submissions(download_submissions)
+        .with_imports(imports)
+        .build_partial_for_tests();
 
         AppUseCase::new(
             services,
@@ -723,7 +720,7 @@ mod tests {
             }
         }
 
-        let mut services = AppServices::with_default_channels(
+        let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
@@ -735,9 +732,10 @@ mod tests {
             Arc::new(crate::null_repositories::NullSettingsRepository),
             Arc::new(NullQualityProfileRepository),
             String::new(),
-        );
-        services.download_submissions = Arc::new(FailingDownloadSubmissionRepo);
-        services.imports = Arc::new(TestImportRepo::default());
+        )
+        .with_download_submissions(Arc::new(FailingDownloadSubmissionRepo))
+        .with_imports(Arc::new(TestImportRepo::default()))
+        .build_partial_for_tests();
 
         let app = AppUseCase::new(
             services,

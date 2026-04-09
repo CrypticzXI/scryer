@@ -1,4 +1,7 @@
-use scryer_application::{AppError, AppResult, PrimaryCollectionSummary, TitleMetadataUpdate};
+use scryer_application::{
+    AppError, AppResult, CollectionUpdate, EpisodeUpdate, PrimaryCollectionSummary,
+    TitleMetadataUpdate,
+};
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, ExternalId, InterstitialMovieMetadata,
     MediaFacet, Title,
@@ -641,18 +644,21 @@ pub(crate) async fn create_collection_query(
     Ok(collection.clone())
 }
 
-#[expect(clippy::too_many_arguments)]
 pub(crate) async fn update_collection_query(
     pool: &SqlitePool,
     collection_id: &str,
-    collection_type: Option<CollectionType>,
-    collection_index: Option<String>,
-    label: Option<String>,
-    ordered_path: Option<String>,
-    first_episode_number: Option<String>,
-    last_episode_number: Option<String>,
-    monitored: Option<bool>,
+    update: CollectionUpdate,
 ) -> AppResult<Collection> {
+    let CollectionUpdate {
+        collection_type,
+        collection_index,
+        label,
+        ordered_path,
+        first_episode_number,
+        last_episode_number,
+        monitored,
+    } = update;
+
     let mut assignments = Vec::new();
     if collection_type.is_some() {
         assignments.push("collection_type = ?");
@@ -879,24 +885,27 @@ pub(crate) async fn get_episode_by_id_query(
     }
 }
 
-#[expect(clippy::too_many_arguments)]
 pub(crate) async fn update_episode_query(
     pool: &SqlitePool,
     episode_id: &str,
-    episode_type: Option<scryer_domain::EpisodeType>,
-    episode_number: Option<String>,
-    season_number: Option<String>,
-    episode_label: Option<String>,
-    title: Option<String>,
-    air_date: Option<String>,
-    duration_seconds: Option<i64>,
-    has_multi_audio: Option<bool>,
-    has_subtitle: Option<bool>,
-    monitored: Option<bool>,
-    collection_id: Option<String>,
-    overview: Option<String>,
-    tvdb_id: Option<String>,
+    update: EpisodeUpdate,
 ) -> AppResult<Episode> {
+    let EpisodeUpdate {
+        episode_type,
+        episode_number,
+        season_number,
+        episode_label,
+        title,
+        air_date,
+        duration_seconds,
+        has_multi_audio,
+        has_subtitle,
+        monitored,
+        collection_id,
+        overview,
+        tvdb_id,
+    } = update;
+
     let mut assignments = Vec::new();
     if episode_type.is_some() {
         assignments.push("episode_type = ?");
@@ -1442,14 +1451,19 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let aliases_json = serde_json::to_string(&title.aliases)
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    let tagged_aliases_json =
+        serde_json::to_string(&title.tagged_aliases).map_err(|err| AppError::Repository(err.to_string()))?;
+    let metadata_fetched_at = title.metadata_fetched_at.map(|value| value.to_rfc3339());
 
     sqlx::query(
         "INSERT INTO titles (
             id, name, facet, monitored, tags, external_ids, created_by, created_at,
-            year, overview, poster_url, sort_title, slug, runtime_minutes,
-            genres, content_status, language, min_availability, aliases, folder_path, tagged_aliases_json
+            year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id,
+            runtime_minutes, genres, content_status, language, first_aired, network, studio,
+            country, aliases, metadata_language, metadata_fetched_at, min_availability,
+            digital_release_date, folder_path, tagged_aliases_json
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&title.id)
     .bind(&title.name)
@@ -1462,16 +1476,26 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
     .bind(title.year)
     .bind(&title.overview)
     .bind(&title.poster_url)
+    .bind(&title.banner_url)
+    .bind(&title.background_url)
     .bind(&title.sort_title)
     .bind(&title.slug)
+    .bind(&title.imdb_id)
     .bind(title.runtime_minutes)
     .bind(&genres_json)
     .bind(&title.content_status)
     .bind(&title.language)
-    .bind(&title.min_availability)
+    .bind(&title.first_aired)
+    .bind(&title.network)
+    .bind(&title.studio)
+    .bind(&title.country)
     .bind(&aliases_json)
+    .bind(&title.metadata_language)
+    .bind(&metadata_fetched_at)
+    .bind(&title.min_availability)
+    .bind(&title.digital_release_date)
     .bind(&title.folder_path)
-    .bind(serde_json::to_string(&title.tagged_aliases).unwrap_or_else(|_| "[]".to_string()))
+    .bind(&tagged_aliases_json)
     .execute(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;

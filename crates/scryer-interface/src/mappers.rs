@@ -1,16 +1,19 @@
 use scryer_application::{
-    ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, HealthCheckResult, HousekeepingReport,
-    IndexerSearchResult, JobDefinition, JobRun, LibraryScanSummary, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingRelease, QualityProfile, QualityProfileCriteria,
-    QualityProfileDecision, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, RssSyncReport, ScoringEntry, ScoringSource, SystemHealth, TitleHistoryPage,
-    TitleReleaseBlocklistEntry,
+    ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
+    FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport,
+    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
+    LibraryScanSummary, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingRelease, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
+    QualityProfileSelection, QualityProfileSettings, RegistryPlugin, RenameApplyItemResult,
+    RenameApplyResult, RenamePlan, RenamePlanItem, RssSyncReport, ScoringEntry, ScoringSource,
+    ServiceSettings, SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
-    IndexerConfig, PluginInstallation, PolicyOutput, RuleSet, Title, TitleHistoryRecord, User,
+    IndexerConfig, MediaFacet, PluginInstallation, PolicyOutput, RuleSet, Title,
+    TitleHistoryRecord, User,
 };
-use scryer_infrastructure::WorkflowOperationRecord;
 use scryer_rules;
 use std::fs;
 
@@ -60,6 +63,133 @@ pub(crate) fn from_quality_profile(profile: QualityProfile) -> QualityProfilePay
     }
 }
 
+pub(crate) fn from_library_paths_settings(settings: LibraryPathsSettings) -> LibraryPathsPayload {
+    LibraryPathsPayload {
+        movie_path: settings.movie_path,
+        series_path: settings.series_path,
+        anime_path: settings.anime_path,
+    }
+}
+
+pub(crate) fn from_service_settings(settings: ServiceSettings) -> ServiceSettingsPayload {
+    ServiceSettingsPayload {
+        tls_cert_path: settings.tls_cert_path,
+        tls_key_path: settings.tls_key_path,
+    }
+}
+
+pub(crate) fn from_download_client_routing_entry(
+    entry: DownloadClientRoutingSettingsEntry,
+) -> DownloadClientRoutingEntryPayload {
+    DownloadClientRoutingEntryPayload {
+        client_id: entry.client_id,
+        enabled: entry.enabled,
+        category: entry.category,
+        recent_queue_priority: entry.recent_queue_priority,
+        older_queue_priority: entry.older_queue_priority,
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    }
+}
+
+pub(crate) fn from_indexer_routing_entry(
+    entry: IndexerRoutingSettingsEntry,
+) -> IndexerRoutingEntryPayload {
+    IndexerRoutingEntryPayload {
+        indexer_id: entry.indexer_id,
+        enabled: entry.enabled,
+        categories: entry.categories,
+        priority: entry.priority,
+    }
+}
+
+fn from_quality_scope(facet: MediaFacet) -> ContentScopeValue {
+    match facet {
+        MediaFacet::Movie => ContentScopeValue::Movie,
+        MediaFacet::Series => ContentScopeValue::Series,
+        MediaFacet::Anime => ContentScopeValue::Anime,
+    }
+}
+
+fn from_quality_profile_selection(
+    selection: QualityProfileSelection,
+) -> QualityProfileSelectionPayload {
+    QualityProfileSelectionPayload {
+        scope: from_quality_scope(selection.facet),
+        override_profile_id: selection.override_profile_id,
+        effective_profile_id: selection.effective_profile_id,
+        inherits_global: selection.inherits_global,
+    }
+}
+
+fn from_facet_scoring_persona_selection(
+    selection: FacetScoringPersonaSelection,
+) -> FacetScoringPersonaSelectionPayload {
+    FacetScoringPersonaSelectionPayload {
+        scope: from_quality_scope(selection.facet),
+        override_persona: selection
+            .override_persona
+            .map(ScoringPersonaValue::from_application),
+        effective_persona: ScoringPersonaValue::from_application(selection.effective_persona),
+        inherits_global: selection.inherits_global,
+    }
+}
+
+pub(crate) fn from_media_settings(
+    scope: ContentScopeValue,
+    settings: MediaSettings,
+) -> MediaSettingsPayload {
+    MediaSettingsPayload {
+        scope,
+        library_path: settings.library_path,
+        root_folders: settings
+            .root_folders
+            .into_iter()
+            .map(|entry| RootFolderPayload {
+                path: entry.path,
+                is_default: entry.is_default,
+            })
+            .collect(),
+        required_audio_languages: settings.required_audio_languages,
+        rename_template: settings.rename_template,
+        rename_collision_policy: settings.rename_collision_policy,
+        rename_missing_metadata_policy: settings.rename_missing_metadata_policy,
+        filler_policy: settings.filler_policy,
+        recap_policy: settings.recap_policy,
+        monitor_specials: settings.monitor_specials,
+        inter_season_movies: settings.inter_season_movies,
+        monitor_filler_movies: settings.monitor_filler_movies,
+        nfo_write_on_import: settings.nfo_write_on_import,
+        plexmatch_write_on_import: settings.plexmatch_write_on_import,
+    }
+}
+
+pub(crate) fn from_quality_profile_settings(
+    settings: QualityProfileSettings,
+) -> QualityProfileSettingsPayload {
+    QualityProfileSettingsPayload {
+        profiles: settings
+            .profiles
+            .into_iter()
+            .map(from_quality_profile)
+            .collect(),
+        global_profile_id: settings.global_profile_id,
+        global_scoring_persona: ScoringPersonaValue::from_application(
+            settings.global_scoring_persona,
+        ),
+        category_selections: settings
+            .category_selections
+            .into_iter()
+            .map(from_quality_profile_selection)
+            .collect(),
+        category_persona_selections: settings
+            .category_persona_selections
+            .into_iter()
+            .map(from_facet_scoring_persona_selection)
+            .collect(),
+    }
+}
+
 pub(crate) fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
     DeletePreviewPayload {
         fingerprint: preview.fingerprint,
@@ -77,7 +207,7 @@ pub(crate) fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayloa
 }
 
 pub(crate) fn from_tvdb_scan_operation(
-    operation: WorkflowOperationRecord,
+    operation: WorkflowOperationInfo,
     limit: i64,
     source: String,
 ) -> TvdbScanOperationPayload {

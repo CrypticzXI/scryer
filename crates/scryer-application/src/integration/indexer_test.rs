@@ -19,8 +19,9 @@ impl AppUseCase {
 
         let provider = self
             .services
+            .integrations
             .plugin_provider
-            .as_ref()
+            .available()
             .ok_or_else(|| AppError::Repository("plugin provider not available".into()))?;
 
         let now = Utc::now();
@@ -125,20 +126,7 @@ mod tests {
             Ok(config)
         }
 
-        async fn update(
-            &self,
-            _id: &str,
-            _name: Option<String>,
-            _provider_type: Option<String>,
-            _base_url: Option<String>,
-            _api_key_encrypted: Option<String>,
-            _rate_limit_seconds: Option<i64>,
-            _rate_limit_burst: Option<i64>,
-            _is_enabled: Option<bool>,
-            _enable_interactive_search: Option<bool>,
-            _enable_auto_search: Option<bool>,
-            _config_json: Option<String>,
-        ) -> AppResult<IndexerConfig> {
+        async fn update(&self, _update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
             Err(AppError::Repository("not implemented".into()))
         }
 
@@ -183,7 +171,7 @@ mod tests {
         indexer_configs: Arc<dyn IndexerConfigRepository>,
         plugin_provider: Option<Arc<dyn IndexerPluginProvider>>,
     ) -> AppUseCase {
-        let mut services = AppServices::with_default_channels(
+        let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
@@ -196,7 +184,13 @@ mod tests {
             Arc::new(NullQualityProfileRepository),
             String::new(),
         );
-        services.plugin_provider = plugin_provider;
+        let services = if let Some(plugin_provider) = plugin_provider {
+            services
+                .with_plugin_provider(plugin_provider)
+                .build_partial_for_tests()
+        } else {
+            services.build_partial_for_tests()
+        };
 
         AppUseCase::new(
             services,

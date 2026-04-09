@@ -32,7 +32,7 @@ pub(crate) fn normalize_library_scan_item_path(path: &str) -> String {
 }
 
 fn build_library_scan_unmatched_item_id(facet: &MediaFacet, item_path: &str) -> String {
-    let fingerprint = sha256_hex(&format!("{}:{item_path}", facet.as_str()));
+    let fingerprint = sha256_hex(format!("{}:{item_path}", facet.as_str()));
     format!("library_scan_unmatched:{}", &fingerprint[..24])
 }
 
@@ -183,6 +183,7 @@ pub(crate) async fn persist_library_scan_unmatched_item(
     item: &LibraryScanUnmatchedItem,
 ) -> AppResult<()> {
     app.services
+        .library
         .library_scan_unmatched_items
         .upsert_library_scan_unmatched_item(item)
         .await?;
@@ -200,6 +201,7 @@ pub(crate) async fn clear_library_scan_unmatched_item(
     }
 
     app.services
+        .library
         .library_scan_unmatched_items
         .delete_library_scan_unmatched_item(facet.clone(), &item_path)
         .await
@@ -214,6 +216,7 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
     let scan_root = normalize_library_scan_root(library_path);
     let count = app
         .services
+        .library
         .library_scan_unmatched_items
         .count_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root))
         .await?;
@@ -223,6 +226,7 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
 
     let existing = app
         .services
+        .library
         .library_scan_unmatched_items
         .list_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root), count, 0)
         .await?;
@@ -230,6 +234,7 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
     for item in existing {
         if !seen_paths.contains(&item.item_path) {
             app.services
+                .library
                 .library_scan_unmatched_items
                 .delete_library_scan_unmatched_item(facet.clone(), &item.item_path)
                 .await?;

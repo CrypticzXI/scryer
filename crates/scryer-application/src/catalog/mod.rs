@@ -1,4 +1,7 @@
-//! Catalog workflows for title lifecycle, discovery, hydration, and image refresh.
-//!
-//! Start with `catalog.rs` for the main title workflow.
-//! Facet adapters live under `facets/`; hydration queue coordination lives under `hydration/`.
+pub(crate) use crate::*;
+
+pub(crate) mod catalog;
+pub(crate) mod discovery;
+pub(crate) mod facets;
+pub(crate) mod helpers;
+pub(crate) mod title_images;

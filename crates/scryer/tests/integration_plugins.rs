@@ -3,13 +3,31 @@
 mod common;
 
 use common::TestContext;
-use scryer_application::{IndexerConfigRepository, PluginInstallationRepository};
+use scryer_application::PluginInstallationRepository;
 use scryer_domain::User;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 fn admin() -> User {
     User::new_admin("admin")
+}
+
+fn available_provider_types(
+    app: &scryer_application::AppUseCase,
+    plugin_type: &str,
+) -> Vec<String> {
+    match plugin_type {
+        "download_client" => app
+            .available_download_client_provider_types()
+            .into_iter()
+            .map(|(provider_type, ..)| provider_type)
+            .collect(),
+        _ => app
+            .available_indexer_provider_types()
+            .into_iter()
+            .map(|(provider_type, ..)| provider_type)
+            .collect(),
+    }
 }
 
 struct RealPluginFixture {
@@ -108,7 +126,10 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
         ]
     })
     .to_string();
-    ctx.db.store_registry_cache(&registry_json).await.unwrap();
+    ctx.customization
+        .store_registry_cache(&registry_json)
+        .await
+        .unwrap();
 
     let installation = ctx
         .app
@@ -119,13 +140,7 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
     assert_eq!(installation.provider_type, fixture.provider_type);
     assert_eq!(installation.plugin_type, fixture.plugin_type);
 
-    let provider_types = ctx
-        .app
-        .services
-        .plugin_provider
-        .as_ref()
-        .unwrap()
-        .available_provider_types();
+    let provider_types = available_provider_types(&ctx.app, fixture.plugin_type);
     assert!(
         provider_types.contains(&fixture.provider_type.to_string()),
         "{} should be available after install, got {provider_types:?}",
@@ -149,7 +164,7 @@ async fn seed_builtins_creates_installations() {
     let ctx = TestContext::new().await;
     ctx.app.seed_builtin_plugins().await.unwrap();
 
-    let installations = ctx.db.list_plugin_installations().await.unwrap();
+    let installations = ctx.customization.list_plugin_installations().await.unwrap();
     assert_eq!(
         installations.len(),
         3,
@@ -173,7 +188,7 @@ async fn seed_builtins_idempotent() {
     ctx.app.seed_builtin_plugins().await.unwrap();
     ctx.app.seed_builtin_plugins().await.unwrap();
 
-    let installations = ctx.db.list_plugin_installations().await.unwrap();
+    let installations = ctx.customization.list_plugin_installations().await.unwrap();
     assert_eq!(
         installations.len(),
         3,
@@ -217,7 +232,10 @@ async fn list_available_with_builtins_and_registry() {
         ]
     })
     .to_string();
-    ctx.db.store_registry_cache(&registry_json).await.unwrap();
+    ctx.customization
+        .store_registry_cache(&registry_json)
+        .await
+        .unwrap();
 
     let result = ctx.app.list_available_plugins(&admin()).await.unwrap();
 
@@ -261,13 +279,7 @@ async fn toggle_builtin_disables_and_rebuilds() {
     ctx.app.seed_builtin_plugins().await.unwrap();
 
     // Initially both builtins should be available as provider types
-    let types_before = ctx
-        .app
-        .services
-        .plugin_provider
-        .as_ref()
-        .unwrap()
-        .available_provider_types();
+    let types_before = available_provider_types(&ctx.app, "indexer");
     assert!(types_before.contains(&"nzbgeek".to_string()));
 
     // Disable nzbgeek
@@ -279,13 +291,7 @@ async fn toggle_builtin_disables_and_rebuilds() {
     assert!(!toggled.is_enabled);
 
     // After toggle, reload_plugins is called → nzbgeek should be gone from provider types
-    let types_after = ctx
-        .app
-        .services
-        .plugin_provider
-        .as_ref()
-        .unwrap()
-        .available_provider_types();
+    let types_after = available_provider_types(&ctx.app, "indexer");
     assert!(
         !types_after.contains(&"nzbgeek".to_string()),
         "nzbgeek should be disabled in provider"
@@ -303,13 +309,7 @@ async fn toggle_builtin_disables_and_rebuilds() {
         .unwrap();
     assert!(re_enabled.is_enabled);
 
-    let types_final = ctx
-        .app
-        .services
-        .plugin_provider
-        .as_ref()
-        .unwrap()
-        .available_provider_types();
+    let types_final = available_provider_types(&ctx.app, "indexer");
     assert!(
         types_final.contains(&"nzbgeek".to_string()),
         "nzbgeek should be back"
@@ -322,7 +322,7 @@ async fn toggle_updates_timestamp() {
     ctx.app.seed_builtin_plugins().await.unwrap();
 
     let before = ctx
-        .db
+        .customization
         .get_plugin_installation("nzbgeek")
         .await
         .unwrap()
@@ -337,7 +337,7 @@ async fn toggle_updates_timestamp() {
         .unwrap();
 
     let after = ctx
-        .db
+        .customization
         .get_plugin_installation("nzbgeek")
         .await
         .unwrap()
@@ -360,7 +360,7 @@ async fn reconcile_noop_for_builtins_without_default_url() {
     // auto-creation because it still needs a manual API key.
     ctx.app.reconcile_indexer_configs().await.unwrap();
 
-    let configs = IndexerConfigRepository::list(&ctx.db, None).await.unwrap();
+    let configs = ctx.app.list_indexer_configs(&admin(), None).await.unwrap();
     assert!(
         configs.is_empty(),
         "no builtin configs should be auto-created during reconciliation"
@@ -391,13 +391,7 @@ async fn uninstall_builtin_rejected() {
 async fn available_provider_types_includes_builtins() {
     let ctx = TestContext::new().await;
 
-    let types = ctx
-        .app
-        .services
-        .plugin_provider
-        .as_ref()
-        .unwrap()
-        .available_provider_types();
+    let types = available_provider_types(&ctx.app, "indexer");
 
     assert!(
         types.contains(&"nzbgeek".to_string()),

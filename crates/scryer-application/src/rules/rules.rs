@@ -5,12 +5,12 @@ use scryer_rules::validation::{ValidationResult, validate_user_rule};
 impl AppUseCase {
     pub async fn list_rule_sets(&self, actor: &User) -> AppResult<Vec<RuleSet>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.rule_sets.list_rule_sets().await
+        self.services.customization.rule_sets.list_rule_sets().await
     }
 
     pub async fn get_rule_set(&self, actor: &User, id: &str) -> AppResult<Option<RuleSet>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.rule_sets.get_rule_set(id).await
+        self.services.customization.rule_sets.get_rule_set(id).await
     }
 
     pub async fn create_rule_set(
@@ -51,8 +51,13 @@ impl AppUseCase {
             managed_key: None,
         };
 
-        self.services.rule_sets.create_rule_set(&rule_set).await?;
         self.services
+            .customization
+            .rule_sets
+            .create_rule_set(&rule_set)
+            .await?;
+        self.services
+            .customization
             .rule_sets
             .record_rule_set_history(
                 &rule_set.id,
@@ -76,10 +81,21 @@ impl AppUseCase {
         applied_facets: Option<Vec<MediaFacet>>,
         priority: Option<i32>,
     ) -> AppResult<RuleSet> {
+        if name.is_none()
+            && description.is_none()
+            && rego_source.is_none()
+            && applied_facets.is_none()
+            && priority.is_none()
+        {
+            return Err(AppError::Validation(
+                "at least one rule set field must be provided".into(),
+            ));
+        }
         require(actor, &Entitlement::ManageTitle)?;
 
         let mut rule_set = self
             .services
+            .customization
             .rule_sets
             .get_rule_set(&id)
             .await?
@@ -115,8 +131,13 @@ impl AppUseCase {
         }
         rule_set.updated_at = Utc::now();
 
-        self.services.rule_sets.update_rule_set(&rule_set).await?;
         self.services
+            .customization
+            .rule_sets
+            .update_rule_set(&rule_set)
+            .await?;
+        self.services
+            .customization
             .rule_sets
             .record_rule_set_history(
                 &rule_set.id,
@@ -133,7 +154,12 @@ impl AppUseCase {
     pub async fn delete_rule_set(&self, actor: &User, id: &str) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        if let Some(rule_set) = self.services.rule_sets.get_rule_set(id).await?
+        if let Some(rule_set) = self
+            .services
+            .customization
+            .rule_sets
+            .get_rule_set(id)
+            .await?
             && rule_set.is_managed
         {
             return Err(AppError::Validation(
@@ -141,8 +167,13 @@ impl AppUseCase {
             ));
         }
 
-        self.services.rule_sets.delete_rule_set(id).await?;
         self.services
+            .customization
+            .rule_sets
+            .delete_rule_set(id)
+            .await?;
+        self.services
+            .customization
             .rule_sets
             .record_rule_set_history(id, "deleted", None, Some(&actor.id))
             .await?;
@@ -161,6 +192,7 @@ impl AppUseCase {
 
         let mut rule_set = self
             .services
+            .customization
             .rule_sets
             .get_rule_set(id)
             .await?
@@ -169,9 +201,14 @@ impl AppUseCase {
         rule_set.enabled = enabled;
         rule_set.updated_at = Utc::now();
 
-        self.services.rule_sets.update_rule_set(&rule_set).await?;
+        self.services
+            .customization
+            .rule_sets
+            .update_rule_set(&rule_set)
+            .await?;
         let action = if enabled { "enabled" } else { "disabled" };
         self.services
+            .customization
             .rule_sets
             .record_rule_set_history(&rule_set.id, action, None, Some(&actor.id))
             .await?;
@@ -216,9 +253,15 @@ impl AppUseCase {
     pub async fn migrate_legacy_persona_preferences(&self) -> AppResult<()> {
         const SYSTEM_SCOPE: &str = "system";
 
-        let mut existing_rules = self.services.rule_sets.list_rule_sets().await?;
+        let mut existing_rules = self
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await?;
         let profiles = self
             .services
+            .config
             .quality_profiles
             .list_quality_profiles(SYSTEM_SCOPE, None)
             .await?;
@@ -267,6 +310,7 @@ impl AppUseCase {
 
         let legacy_dual_managed = self
             .services
+            .customization
             .rule_sets
             .list_rule_sets_by_managed_key_prefix("convenience:prefer-dual-audio:")
             .await?;
@@ -289,6 +333,7 @@ impl AppUseCase {
 
         for rule_set in legacy_dual_managed {
             self.services
+                .customization
                 .rule_sets
                 .delete_rule_set(&rule_set.id)
                 .await?;
@@ -297,6 +342,7 @@ impl AppUseCase {
         for rule_set in existing_rules {
             if is_legacy_prefer_dual_audio_cleanup_candidate(&rule_set) {
                 self.services
+                    .customization
                     .rule_sets
                     .delete_rule_set(&rule_set.id)
                     .await?;
@@ -336,13 +382,22 @@ impl AppUseCase {
             is_managed: false,
             managed_key: None,
         };
-        self.services.rule_sets.create_rule_set(&rule_set).await?;
+        self.services
+            .customization
+            .rule_sets
+            .create_rule_set(&rule_set)
+            .await?;
         existing_rules.push(rule_set);
         Ok(())
     }
 
     pub async fn rebuild_user_rules_engine(&self) -> AppResult<()> {
-        let enabled = self.services.rule_sets.list_enabled_rule_sets().await?;
+        let enabled = self
+            .services
+            .customization
+            .rule_sets
+            .list_enabled_rule_sets()
+            .await?;
 
         let mut policies: Vec<scryer_rules::UserPolicy> = enabled
             .iter()
@@ -363,7 +418,7 @@ impl AppUseCase {
         // Append scoring policies from loaded WASM plugins.
         // Rewrite package declarations so the Rego package path matches the
         // system-assigned ID, same as we do for user-authored rules.
-        if let Some(ref pp) = self.services.plugin_provider {
+        if let Some(pp) = self.services.integrations.plugin_provider.available() {
             let plugin_policies = pp.scoring_policies();
             if !plugin_policies.is_empty() {
                 tracing::info!(
@@ -383,6 +438,7 @@ impl AppUseCase {
 
         let mut guard = self
             .services
+            .customization
             .user_rules
             .write()
             .map_err(|e| AppError::Repository(format!("rules engine lock poisoned: {e}")))?;
@@ -486,20 +542,7 @@ mod tests {
             Ok(config)
         }
 
-        async fn update(
-            &self,
-            _id: &str,
-            _name: Option<String>,
-            _provider_type: Option<String>,
-            _base_url: Option<String>,
-            _api_key_encrypted: Option<String>,
-            _rate_limit_seconds: Option<i64>,
-            _rate_limit_burst: Option<i64>,
-            _is_enabled: Option<bool>,
-            _enable_interactive_search: Option<bool>,
-            _enable_auto_search: Option<bool>,
-            _config_json: Option<String>,
-        ) -> AppResult<IndexerConfig> {
+        async fn update(&self, _update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
             Err(AppError::Repository("not configured".into()))
         }
 
@@ -635,7 +678,7 @@ mod tests {
     }
 
     fn build_test_app(profiles: Vec<QualityProfile>, rules: Vec<RuleSet>) -> AppUseCase {
-        let mut services = AppServices::with_default_channels(
+        let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
@@ -647,8 +690,9 @@ mod tests {
             Arc::new(crate::null_repositories::NullSettingsRepository),
             Arc::new(TestQualityProfileRepo { profiles }),
             String::new(),
-        );
-        services.rule_sets = Arc::new(TestRuleSetRepo::new(rules));
+        )
+        .with_rule_sets(Arc::new(TestRuleSetRepo::new(rules)))
+        .build_partial_for_tests();
 
         AppUseCase::new(
             services,
@@ -837,7 +881,13 @@ mod tests {
 
         app.migrate_legacy_persona_preferences().await.unwrap();
 
-        let rules = app.services.rule_sets.list_rule_sets().await.unwrap();
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
         let migrated = rules
             .iter()
             .find(|rule| rule.name == "Migrated: Prefer Multi-Audio (Balanced Legacy)")
@@ -872,7 +922,13 @@ mod tests {
 
         app.migrate_legacy_persona_preferences().await.unwrap();
 
-        let rules = app.services.rule_sets.list_rule_sets().await.unwrap();
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
         let migrated = rules
             .iter()
             .find(|rule| rule.name == "Migrated: Prefer Atmos (Balanced Atmos)")
@@ -902,7 +958,13 @@ mod tests {
 
         app.migrate_legacy_persona_preferences().await.unwrap();
 
-        let rules = app.services.rule_sets.list_rule_sets().await.unwrap();
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
         let migrated = rules
             .iter()
             .find(|rule| rule.name == "Migrated: Disable Atmos Persona Bias (Audiophile No Atmos)")
@@ -930,7 +992,13 @@ mod tests {
         app.migrate_legacy_persona_preferences().await.unwrap();
         app.migrate_legacy_persona_preferences().await.unwrap();
 
-        let rules = app.services.rule_sets.list_rule_sets().await.unwrap();
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
         assert_eq!(
             rules.iter().filter(|rule| rule.is_managed).count(),
             0,

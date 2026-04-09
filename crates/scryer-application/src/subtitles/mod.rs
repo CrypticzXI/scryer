@@ -5,6 +5,7 @@
 
 pub mod download;
 pub mod language;
+pub mod orchestration;
 pub mod provider;
 pub mod scoring;
 pub mod search;

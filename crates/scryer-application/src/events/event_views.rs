@@ -30,6 +30,14 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             ActivitySeverity::Info,
             format!("Updated '{}'.", data.title.title_name),
         ),
+        DomainEventPayload::TitleRematched(data) => (
+            ActivityKind::TitleUpdated,
+            ActivitySeverity::Info,
+            format!(
+                "Rematched '{}' to TVDB {}.",
+                data.title.title_name, data.new_tvdb_id
+            ),
+        ),
         DomainEventPayload::TitleDeleted(data) => (
             ActivityKind::SystemNotice,
             ActivitySeverity::Info,
@@ -268,13 +276,19 @@ pub(crate) fn title_history_records_from_domain_event(
             None,
             None,
         ),
+        DomainEventPayload::TitleRematched(_) => {
+            (TitleHistoryEventType::Rematched, None, None, None)
+        }
         DomainEventPayload::TitleUpdated(_) => {
             return Vec::new();
         }
         _ => return Vec::new(),
     };
 
-    let data_json = serde_json::to_string(&event.payload).ok();
+    let data_json = match &event.payload {
+        DomainEventPayload::TitleRematched(data) => serde_json::to_string(data).ok(),
+        _ => serde_json::to_string(&event.payload).ok(),
+    };
     let episode_ids = event_episode_ids(event);
     if episode_ids.is_empty() {
         return vec![TitleHistoryRecord {
@@ -315,6 +329,7 @@ pub(crate) fn history_event_from_domain_event(event: &DomainEvent) -> Option<His
     let event_type = match &event.payload {
         DomainEventPayload::TitleAdded(_) => EventType::TitleAdded,
         DomainEventPayload::TitleUpdated(_) => EventType::TitleUpdated,
+        DomainEventPayload::TitleRematched(_) => EventType::TitleUpdated,
         DomainEventPayload::MediaFileUpgraded(_) => EventType::FileUpgraded,
         DomainEventPayload::DownloadFailed(_)
         | DomainEventPayload::ImportRejected(_)

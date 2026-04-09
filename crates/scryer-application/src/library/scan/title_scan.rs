@@ -1,10 +1,18 @@
 use super::*;
 
-async fn title_requires_scan_hydration(
+pub(super) async fn title_requires_scan_hydration(
     app: &AppUseCase,
     title: &Title,
     metadata_language: &str,
 ) -> AppResult<bool> {
+    if !title
+        .external_ids
+        .iter()
+        .any(|external_id| external_id.source.eq_ignore_ascii_case("tvdb"))
+    {
+        return Ok(false);
+    }
+
     if title.metadata_fetched_at.is_none()
         || title.metadata_language.as_deref() != Some(metadata_language)
     {
@@ -20,6 +28,7 @@ async fn title_requires_scan_hydration(
 
     let episodes = app
         .services
+        .catalog
         .shows
         .list_episodes_for_title(&title.id)
         .await?;
@@ -32,6 +41,7 @@ async fn discover_movie_title_files(
 ) -> AppResult<Vec<LibraryFile>> {
     let collections = app
         .services
+        .catalog
         .shows
         .list_collections_for_title(&title.id)
         .await
@@ -77,6 +87,7 @@ async fn discover_movie_title_files(
     match tokio::fs::metadata(&candidate_path).await {
         Ok(metadata) if metadata.is_dir() => Ok(app
             .services
+            .library
             .library_scanner
             .scan_library(candidate_path.to_string_lossy().as_ref())
             .await?),
@@ -94,6 +105,49 @@ async fn discover_movie_title_files(
         }]),
         Ok(_) | Err(_) => Ok(Vec::new()),
     }
+}
+
+async fn hydrate_library_scan_workset(
+    app: &AppUseCase,
+    coordinator: &LibraryScanCoordinator,
+    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    hydration_targets: Vec<crate::catalog_workflow::HydrationTarget>,
+    track_metadata_progress: bool,
+) -> AppResult<()> {
+    for chunk in hydration_targets.chunks(crate::catalog_workflow::HYDRATION_BULK_BATCH_SIZE) {
+        let hydration_outcome = app.hydrate_titles_bulk(chunk.to_vec()).await?;
+
+        for (title_id, hydrated) in hydration_outcome.hydrated_titles {
+            if let Some(work) = workset.get_mut(&title_id) {
+                work.title = hydrated;
+            }
+            if track_metadata_progress {
+                coordinator.mark_metadata_completed(1).await;
+            }
+        }
+
+        for (title_id, reason) in hydration_outcome.failed_titles {
+            if let Some(work) = workset.remove(&title_id) {
+                warn!(
+                    title_id = %title_id,
+                    reason = %reason,
+                    "library scan title hydration failed"
+                );
+                if track_metadata_progress {
+                    coordinator.mark_metadata_failed(1).await;
+                }
+                coordinator
+                    .mark_file_failed(work.discovered_file_count())
+                    .await;
+            }
+        }
+
+        if track_metadata_progress {
+            coordinator.publish_progress().await;
+        }
+    }
+
+    Ok(())
 }
 
 impl AppUseCase {
@@ -114,7 +168,9 @@ impl AppUseCase {
 
         let mut hydration_targets = Vec::new();
         for work in workset.values() {
-            if title_requires_scan_hydration(self, &work.title, &metadata_language).await? {
+            let needs_hydration =
+                title_requires_scan_hydration(self, &work.title, &metadata_language).await?;
+            if needs_hydration {
                 hydration_targets.push(crate::catalog_workflow::HydrationTarget {
                     title: work.title.clone(),
                     requested_tvdb_id: None,
@@ -123,36 +179,29 @@ impl AppUseCase {
             }
         }
 
-        coordinator
-            .add_metadata_total(hydration_targets.len())
-            .await;
-        coordinator.mark_metadata_total_known().await;
+        let track_hydration_metadata_progress = self
+            .runtime
+            .library_scan_tracker
+            .get_session(session_id)
+            .await
+            .is_none_or(|session| session.metadata_progress.total == 0);
 
-        if !hydration_targets.is_empty() {
-            let hydration_outcome = self.hydrate_titles_bulk(hydration_targets).await?;
-
-            for (title_id, hydrated) in hydration_outcome.hydrated_titles {
-                if let Some(work) = workset.get_mut(&title_id) {
-                    work.title = hydrated;
-                }
-                coordinator.mark_metadata_completed(1).await;
-            }
-
-            for (title_id, reason) in hydration_outcome.failed_titles {
-                if let Some(work) = workset.remove(&title_id) {
-                    warn!(
-                        title_id = %title_id,
-                        reason = %reason,
-                        "library scan title hydration failed"
-                    );
-                    coordinator.mark_metadata_failed(1).await;
-                    coordinator
-                        .mark_file_failed(work.discovered_file_count())
-                        .await;
-                }
-            }
-
+        if track_hydration_metadata_progress {
+            coordinator
+                .add_metadata_total(hydration_targets.len())
+                .await;
+            coordinator.mark_metadata_total_known().await;
             coordinator.publish_progress().await;
+        }
+        if !hydration_targets.is_empty() {
+            hydrate_library_scan_workset(
+                self,
+                &coordinator,
+                &mut workset,
+                hydration_targets,
+                track_hydration_metadata_progress,
+            )
+            .await?;
         }
 
         self.run_library_scan_title_work_pool(actor, session_id, workset)
@@ -179,6 +228,9 @@ impl AppUseCase {
             let session_id = session_id.to_string();
             let title_id = work.title.id.clone();
             let discovered_file_count = work.discovered_file_count();
+            let absorb_walk_summary =
+                matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
+            let created_in_scan = work.created_in_scan;
             work_set.spawn(async move {
                 let result = app
                     .walk_library_title(
@@ -189,17 +241,35 @@ impl AppUseCase {
                         },
                     )
                     .await;
-                (title_id, discovered_file_count, result)
+                (
+                    title_id,
+                    discovered_file_count,
+                    absorb_walk_summary,
+                    created_in_scan,
+                    result,
+                )
             });
         }
 
         while let Some(result) = work_set.join_next().await {
-            let (title_id, discovered_file_count, walk_result) =
+            let (
+                title_id,
+                discovered_file_count,
+                absorb_walk_summary,
+                created_in_scan,
+                walk_result,
+            ) =
                 result.map_err(|error| AppError::Repository(error.to_string()))?;
 
             match walk_result {
                 Ok(walk_result) => {
-                    summary.absorb(&walk_result.summary);
+                    if absorb_walk_summary {
+                        let mut delta = walk_result.summary;
+                        if created_in_scan {
+                            delta.imported = delta.imported.saturating_sub(1);
+                        }
+                        summary.absorb(&delta);
+                    }
                 }
                 Err(error) => {
                     warn!(
@@ -218,6 +288,9 @@ impl AppUseCase {
                 let session_id = session_id.to_string();
                 let title_id = work.title.id.clone();
                 let discovered_file_count = work.discovered_file_count();
+                let absorb_walk_summary =
+                    matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
+                let created_in_scan = work.created_in_scan;
                 work_set.spawn(async move {
                     let result = app
                         .walk_library_title(
@@ -228,7 +301,13 @@ impl AppUseCase {
                             },
                         )
                         .await;
-                    (title_id, discovered_file_count, result)
+                    (
+                        title_id,
+                        discovered_file_count,
+                        absorb_walk_summary,
+                        created_in_scan,
+                        result,
+                    )
                 });
             }
         }
@@ -244,6 +323,7 @@ impl AppUseCase {
         require(actor, &Entitlement::ManageTitle)?;
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -260,6 +340,7 @@ impl AppUseCase {
             facet_plan,
             discovered_files: None,
             mode: LibraryScanTitleWalkMode::OneOff,
+            created_in_scan: false,
         };
 
         let metadata_language = self.metadata_language().await;
@@ -363,7 +444,13 @@ impl AppUseCase {
         }
 
         for collection_id in cleanup.stale_collection_ids {
-            if let Err(error) = self.services.shows.delete_collection(&collection_id).await {
+            if let Err(error) = self
+                .services
+                .catalog
+                .shows
+                .delete_collection(&collection_id)
+                .await
+            {
                 warn!(
                     error = %error,
                     collection_id = %collection_id,
@@ -382,6 +469,9 @@ impl AppUseCase {
             elapsed_ms = elapsed_ms_u64(started_at),
             "movie title scan completed"
         );
+        if let Some(coordinator) = session_coordinator.as_ref() {
+            coordinator.publish_progress().await;
+        }
 
         Ok(LibraryTitleWalkResult { summary })
     }
@@ -446,7 +536,7 @@ impl AppUseCase {
             Some(files) => files,
             None => {
                 let scan_result = scan_episodic_title_directory_for_progress_metrics(
-                    self.services.library_scanner.clone(),
+                    self.services.library.library_scanner.clone(),
                     &title_dir,
                 )
                 .await?;
@@ -461,22 +551,24 @@ impl AppUseCase {
                 scan_result.files
             }
         };
-
         let db_started = Instant::now();
         let existing_files = self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
             .unwrap_or_default();
         let collections = self
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await
             .unwrap_or_default();
         let title_episodes = self
             .services
+            .catalog
             .shows
             .list_episodes_for_title(&title.id)
             .await
@@ -516,7 +608,7 @@ impl AppUseCase {
 
         let mut summary = LibraryScanSummary::default();
         let mut layout_summary = TitleScanLayoutSummary::default();
-        let analysis_limit = self.services.library_scan_analysis_limit.clone();
+        let analysis_limit = self.runtime.library_scan_analysis_limit.clone();
         let mut pending_progress = TitleScanProgressDelta::default();
         let mut unchanged_file_skips = 0usize;
         let mut analyzed_files = 0usize;
@@ -681,7 +773,7 @@ impl AppUseCase {
                 }
 
                 analyzed_files += 1;
-                let analyzer = self.services.media_analyzer.clone();
+                let analyzer = self.services.library.media_analyzer.clone();
                 let analysis_limit = analysis_limit.clone();
                 let file_path = plan.file.path.clone();
                 pending_analysis_plans.insert(file_path.clone(), plan);
@@ -770,6 +862,7 @@ impl AppUseCase {
             let db_started = Instant::now();
             let delete_result = self
                 .services
+                .library
                 .media_files
                 .delete_media_file(&record.id)
                 .await;
@@ -789,6 +882,7 @@ impl AppUseCase {
         if title.folder_path.as_deref() != Some(title_dir_str.as_str()) {
             let db_started = Instant::now();
             self.services
+                .catalog
                 .titles
                 .set_folder_path(&title.id, &title_dir_str)
                 .await?;

@@ -20,7 +20,13 @@ impl AppUseCase {
     }
 
     async fn check_download_clients(&self) -> Vec<HealthCheckResult> {
-        let configs = match self.services.download_client_configs.list(None).await {
+        let configs = match self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "health check: failed to list download clients");
@@ -69,7 +75,7 @@ impl AppUseCase {
     }
 
     async fn check_indexers(&self) -> Vec<HealthCheckResult> {
-        let configs = match self.services.indexer_configs.list(None).await {
+        let configs = match self.services.integrations.indexer_configs.list(None).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "health check: failed to list indexers");
@@ -98,7 +104,7 @@ impl AppUseCase {
             }];
         }
 
-        let stats = self.services.indexer_stats.all_stats();
+        let stats = self.services.integrations.indexer_stats.all_stats();
         let all_failing = !stats.is_empty()
             && stats
                 .iter()
@@ -207,7 +213,7 @@ impl AppUseCase {
     }
 
     async fn check_smg_certificate(&self) -> Vec<HealthCheckResult> {
-        let expires_at = match self.services.system_info.smg_cert_expires_at().await {
+        let expires_at = match self.services.config.system_info.smg_cert_expires_at().await {
             Ok(Some(v)) => v,
             _ => return vec![],
         };

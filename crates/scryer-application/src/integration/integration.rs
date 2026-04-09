@@ -103,7 +103,7 @@ pub async fn publish_download_queue_snapshot_events(
     *previous_items = next_items;
 
     if !domain_events.is_empty()
-        && let Err(error) = app.services.append_domain_events(domain_events).await
+        && let Err(error) = app.append_domain_events(domain_events).await
     {
         tracing::warn!(error = %error, "failed to append download queue domain events");
     }
@@ -125,8 +125,9 @@ impl AppUseCase {
 
         if self
             .services
+            .integrations
             .download_client_plugin_provider
-            .as_ref()
+            .available()
             .is_some_and(|provider| {
                 provider
                     .available_provider_types()
@@ -161,6 +162,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<IndexerConfig>> {
         require(actor, &Entitlement::ManageConfig)?;
         self.services
+            .integrations
             .indexer_configs
             .list(provider_filter.map(|provider| provider.trim().to_lowercase()))
             .await
@@ -172,7 +174,11 @@ impl AppUseCase {
         config_id: &str,
     ) -> AppResult<Option<IndexerConfig>> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.services.indexer_configs.get_by_id(config_id).await
+        self.services
+            .integrations
+            .indexer_configs
+            .get_by_id(config_id)
+            .await
     }
 
     pub async fn create_indexer_config(
@@ -232,55 +238,44 @@ impl AppUseCase {
             updated_at: Utc::now(),
         };
 
-        self.services.indexer_configs.create(config).await
+        self.services
+            .integrations
+            .indexer_configs
+            .create(config)
+            .await
     }
 
     pub async fn update_indexer_config(
         &self,
         actor: &User,
-        config_id: &str,
-        name: Option<String>,
-        provider_type: Option<String>,
-        base_url: Option<String>,
-        api_key_encrypted: Option<String>,
-        rate_limit_seconds: Option<i64>,
-        rate_limit_burst: Option<i64>,
-        is_enabled: Option<bool>,
-        enable_interactive_search: Option<bool>,
-        enable_auto_search: Option<bool>,
-        config_json: Option<String>,
+        update: IndexerConfigUpdate,
     ) -> AppResult<IndexerConfig> {
         require(actor, &Entitlement::ManageConfig)?;
-
-        let has_any_updates = name.is_some()
-            || provider_type.is_some()
-            || base_url.is_some()
-            || api_key_encrypted.is_some()
-            || rate_limit_seconds.is_some()
-            || rate_limit_burst.is_some()
-            || is_enabled.is_some()
-            || enable_interactive_search.is_some()
-            || enable_auto_search.is_some()
-            || config_json.is_some();
-        if !has_any_updates {
+        let config_id = update.id.trim();
+        if config_id.is_empty() {
+            return Err(AppError::Validation("indexer config id is required".into()));
+        }
+        if !update.has_changes() {
             return Err(AppError::Validation(
                 "at least one indexer field must be provided".into(),
             ));
         }
 
-        let normalized_name = name.map(|value| value.trim().to_string());
+        let normalized_name = update.name.map(|value| value.trim().to_string());
         if normalized_name.as_ref().is_some_and(String::is_empty) {
             return Err(AppError::Validation("indexer name cannot be empty".into()));
         }
 
-        let normalized_provider = provider_type.map(|value| value.trim().to_lowercase());
+        let normalized_provider = update
+            .provider_type
+            .map(|value| value.trim().to_lowercase());
         if normalized_provider.as_ref().is_some_and(String::is_empty) {
             return Err(AppError::Validation("provider type cannot be empty".into()));
         }
 
-        let normalized_config_json = config_json.map(|value| value.trim().to_string());
+        let normalized_config_json = update.config_json.map(|value| value.trim().to_string());
 
-        let normalized_base_url = match base_url {
+        let normalized_base_url = match update.base_url {
             Some(value) => {
                 let normalized = value.trim().to_string();
                 if normalized.is_empty() {
@@ -291,7 +286,8 @@ impl AppUseCase {
             None => derive_indexer_base_url_from_config_json(normalized_config_json.as_deref()),
         };
 
-        let normalized_api_key = api_key_encrypted
+        let normalized_api_key = update
+            .api_key_encrypted
             .map(|value| value.trim().to_string())
             .and_then(|value| if value.is_empty() { None } else { Some(value) });
 
@@ -305,27 +301,32 @@ impl AppUseCase {
 
         let updated = self
             .services
+            .integrations
             .indexer_configs
-            .update(
-                config_id,
-                normalized_name,
-                normalized_provider,
-                normalized_base_url,
-                normalized_api_key,
-                rate_limit_seconds,
-                rate_limit_burst,
-                is_enabled,
-                enable_interactive_search,
-                enable_auto_search,
-                normalized_config_json,
-            )
+            .update(IndexerConfigUpdate {
+                id: config_id.to_string(),
+                name: normalized_name,
+                provider_type: normalized_provider,
+                base_url: normalized_base_url,
+                api_key_encrypted: normalized_api_key,
+                rate_limit_seconds: update.rate_limit_seconds,
+                rate_limit_burst: update.rate_limit_burst,
+                is_enabled: update.is_enabled,
+                enable_interactive_search: update.enable_interactive_search,
+                enable_auto_search: update.enable_auto_search,
+                config_json: normalized_config_json,
+            })
             .await?;
         Ok(updated)
     }
 
     pub async fn delete_indexer_config(&self, actor: &User, config_id: &str) -> AppResult<()> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.services.indexer_configs.delete(config_id).await?;
+        self.services
+            .integrations
+            .indexer_configs
+            .delete(config_id)
+            .await?;
         Ok(())
     }
 
@@ -344,6 +345,7 @@ impl AppUseCase {
         }
 
         self.services
+            .integrations
             .download_client_configs
             .list(client_type)
             .await
@@ -356,6 +358,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<DownloadQueueItem>> {
         let mut enabled_clients = self
             .services
+            .integrations
             .download_client_configs
             .list(None)
             .await?
@@ -376,10 +379,18 @@ impl AppUseCase {
         let queue_items = if include_history_only {
             Vec::new()
         } else {
-            self.services.download_client.list_queue().await?
+            self.services
+                .integrations
+                .download_client
+                .list_queue()
+                .await?
         };
         let history_items = if include_history_only || include_all_activity {
-            self.services.download_client.list_history().await?
+            self.services
+                .integrations
+                .download_client
+                .list_history()
+                .await?
         } else {
             Vec::new()
         };
@@ -396,6 +407,7 @@ impl AppUseCase {
             }
             if let Ok(Some(submission)) = self
                 .services
+                .workflow
                 .download_submissions
                 .find_by_client_item_id(&item.client_type, &item.download_client_item_id)
                 .await
@@ -495,6 +507,7 @@ impl AppUseCase {
             }
             if let Ok(Some(record)) = self
                 .services
+                .workflow
                 .imports
                 .get_import_by_source_ref(&item.client_type, &item.download_client_item_id)
                 .await
@@ -539,6 +552,7 @@ impl AppUseCase {
 
         let mut enabled_clients = self
             .services
+            .integrations
             .download_client_configs
             .list(None)
             .await?
@@ -558,6 +572,7 @@ impl AppUseCase {
 
         let mut items = self
             .services
+            .integrations
             .download_client
             .list_history_page(offset, fetch_limit)
             .await?;
@@ -568,6 +583,7 @@ impl AppUseCase {
             }
             if let Ok(Some(submission)) = self
                 .services
+                .workflow
                 .download_submissions
                 .find_by_client_item_id(&item.client_type, &item.download_client_item_id)
                 .await
@@ -625,6 +641,7 @@ impl AppUseCase {
             }
             if let Ok(Some(record)) = self
                 .services
+                .workflow
                 .imports
                 .get_import_by_source_ref(&item.client_type, &item.download_client_item_id)
                 .await
@@ -691,13 +708,14 @@ impl AppUseCase {
                 DomainEventType::DownloadQueueItemUpserted,
                 DomainEventType::DownloadQueueItemRemoved,
             ];
-            let mut wake_rx = app.services.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
             let mut events = Vec::new();
             let mut after_sequence = 0_i64;
 
             loop {
                 let batch = match app
                     .services
+                    .events
                     .domain_events
                     .list(&DomainEventFilter {
                         event_types: Some(event_types.clone()),
@@ -737,6 +755,7 @@ impl AppUseCase {
             loop {
                 let next_events = match app
                     .services
+                    .events
                     .domain_events
                     .list(&DomainEventFilter {
                         event_types: Some(event_types.clone()),
@@ -814,6 +833,7 @@ impl AppUseCase {
 
         let import_id = self
             .services
+            .workflow
             .imports
             .queue_import_request(
                 normalized_client_type.clone(),
@@ -824,7 +844,7 @@ impl AppUseCase {
             .await?;
 
         let title = match title_id.as_deref() {
-            Some(id) => self.services.titles.get_by_id(id).await?,
+            Some(id) => self.services.catalog.titles.get_by_id(id).await?,
             None => None,
         };
         self.emit_import_requested_event(
@@ -871,7 +891,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         let handle = self
-            .services
+            .runtime
             .tracked_download_handle
             .as_ref()
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
@@ -892,7 +912,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         let handle = self
-            .services
+            .runtime
             .tracked_download_handle
             .as_ref()
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
@@ -913,7 +933,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         let handle = self
-            .services
+            .runtime
             .tracked_download_handle
             .as_ref()
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
@@ -936,11 +956,13 @@ impl AppUseCase {
         require(actor, &Entitlement::TriggerActions)?;
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
         self.services
+            .workflow
             .download_submissions
             .record_submission(DownloadSubmission {
                 title_id: title.id.clone(),
@@ -952,7 +974,7 @@ impl AppUseCase {
             })
             .await?;
         let handle = self
-            .services
+            .runtime
             .tracked_download_handle
             .as_ref()
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
@@ -972,6 +994,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         self.services
+            .integrations
             .download_client
             .pause_queue_item(download_client_item_id)
             .await?;
@@ -991,6 +1014,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         self.services
+            .integrations
             .download_client
             .resume_queue_item(download_client_item_id)
             .await?;
@@ -1011,6 +1035,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         self.services
+            .integrations
             .download_client
             .delete_queue_item(download_client_item_id, is_history)
             .await?;
@@ -1035,6 +1060,7 @@ impl AppUseCase {
         }
 
         self.services
+            .integrations
             .download_client_configs
             .get_by_id(client_id)
             .await
@@ -1057,7 +1083,12 @@ impl AppUseCase {
         let client_type = self.normalize_download_client_type(input.client_type)?;
         let config_json = self.normalize_download_client_config_json(input.config_json)?;
 
-        let existing = self.services.download_client_configs.list(None).await?;
+        let existing = self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await?;
         let client_priority = existing
             .into_iter()
             .map(|entry| entry.client_priority)
@@ -1079,7 +1110,12 @@ impl AppUseCase {
             updated_at: Utc::now(),
         };
 
-        let created = self.services.download_client_configs.create(config).await?;
+        let created = self
+            .services
+            .integrations
+            .download_client_configs
+            .create(config)
+            .await?;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
             "download_client",
@@ -1094,29 +1130,21 @@ impl AppUseCase {
     pub async fn update_download_client_config(
         &self,
         actor: &User,
-        client_id: &str,
-        name: Option<String>,
-        client_type: Option<String>,
-        config_json: Option<String>,
-        is_enabled: Option<bool>,
+        update: DownloadClientConfigUpdate,
     ) -> AppResult<DownloadClientConfig> {
         require(actor, &Entitlement::ManageConfig)?;
-        let client_id = client_id.trim();
+        let client_id = update.id.trim();
         if client_id.is_empty() {
             return Err(AppError::Validation("client id is required".into()));
         }
 
-        let has_any_updates = name.is_some()
-            || client_type.is_some()
-            || config_json.is_some()
-            || is_enabled.is_some();
-        if !has_any_updates {
+        if !update.has_changes() {
             return Err(AppError::Validation(
                 "at least one download client field must be provided".into(),
             ));
         }
 
-        let normalized_name = name.map(|value| value.trim().to_string());
+        let normalized_name = update.name.map(|value| value.trim().to_string());
         if normalized_name
             .as_ref()
             .is_some_and(|value| value.is_empty())
@@ -1124,26 +1152,26 @@ impl AppUseCase {
             return Err(AppError::Validation("client name cannot be empty".into()));
         }
 
-        let normalized_client_type = match client_type {
+        let normalized_client_type = match update.client_type {
             Some(value) => Some(self.normalize_download_client_type(value)?),
             None => None,
         };
-        let normalized_config_json = match config_json {
+        let normalized_config_json = match update.config_json {
             Some(value) => Some(self.normalize_download_client_config_json(value)?),
             None => None,
         };
 
         let updated = self
             .services
+            .integrations
             .download_client_configs
-            .update(
-                client_id,
-                normalized_name,
-                normalized_client_type,
-                None,
-                normalized_config_json,
-                is_enabled,
-            )
+            .update(DownloadClientConfigUpdate {
+                id: client_id.to_string(),
+                name: normalized_name,
+                client_type: normalized_client_type,
+                config_json: normalized_config_json,
+                is_enabled: update.is_enabled,
+            })
             .await?;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
@@ -1168,6 +1196,7 @@ impl AppUseCase {
         }
 
         self.services
+            .integrations
             .download_client_configs
             .delete(client_id)
             .await?;
@@ -1189,6 +1218,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::ManageConfig)?;
         self.services
+            .integrations
             .download_client_configs
             .reorder(ordered_ids)
             .await
@@ -1430,7 +1460,7 @@ async fn handle_tracked_download_command(
             title_id,
             reply,
         } => {
-            let title = match app.services.titles.get_by_id(&title_id).await {
+            let title = match app.services.catalog.titles.get_by_id(&title_id).await {
                 Ok(Some(title)) => title,
                 Ok(None) => {
                     let _ = reply.send(Err(AppError::NotFound(format!("title {title_id}"))));
@@ -1471,6 +1501,7 @@ async fn try_remove_from_client(
     // Look up the client config to check removal settings.
     let config = match app
         .services
+        .integrations
         .download_client_configs
         .list(Some(td.client_type.clone()))
         .await
@@ -1526,6 +1557,7 @@ async fn try_remove_from_client(
 
     if let Err(error) = app
         .services
+        .integrations
         .download_client
         .delete_queue_item(item_id, is_history)
         .await

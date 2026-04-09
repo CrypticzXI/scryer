@@ -1,10 +1,11 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleRepository, UserRepository,
+    CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate, InsertMediaFileInput,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, ShowRepository, TitleImageBlob,
+    TitleImageKind, TitleImageReplacement, TitleImageRepository, TitleImageStorageMode,
+    TitleImageVariantRecord, TitleRepository, UserRepository,
 };
 use scryer_domain::{
     Collection, CollectionType, Entitlement, Episode, ExternalId, InterstitialMovieMetadata,
@@ -19,8 +20,7 @@ async fn sqlite_can_initialize() {
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy()).await.unwrap();
-    let users = services
-        .list_all()
+    let users = UserRepository::list_all(&catalog_store(&services))
         .await
         .expect("query should return users after initialization");
 
@@ -67,6 +67,14 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     }
 }
 
+fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
+    SqliteCatalogStore::new(services)
+}
+
+fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
+    SqliteLibraryStateStore::new(services)
+}
+
 #[tokio::test]
 async fn nzbget_client_is_sendable() {
     let client = NzbgetDownloadClient::new(
@@ -88,13 +96,15 @@ async fn title_queries_prefer_local_cached_poster_url() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
     let title = make_test_title("title-1", Some("https://tvdb.example/poster.jpg"));
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    let before_cache = <SqliteServices as TitleRepository>::get_by_id(&services, &title.id)
+    let before_cache = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
@@ -103,37 +113,37 @@ async fn title_queries_prefer_local_cached_poster_url() {
         Some("https://tvdb.example/poster.jpg")
     );
 
-    <SqliteServices as TitleImageRepository>::replace_title_image(
-        &services,
-        &title.id,
-        TitleImageReplacement {
-            kind: TitleImageKind::Poster,
-            source_url: "https://tvdb.example/poster.jpg".to_string(),
-            source_etag: Some("\"etag-1\"".to_string()),
-            source_last_modified: None,
-            source_format: "jpeg".to_string(),
-            source_width: 1000,
-            source_height: 1500,
-            storage_mode: TitleImageStorageMode::AvifMaster,
-            master_format: "avif".to_string(),
-            master_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            master_width: 1000,
-            master_height: 1500,
-            master_bytes: vec![1, 2, 3],
-            variants: vec![TitleImageVariantRecord {
-                variant_key: "w500".to_string(),
-                format: "avif".to_string(),
-                width: 500,
-                height: 750,
-                bytes: vec![7, 8, 9],
-                sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-            }],
-        },
-    )
-    .await
-    .expect("title image should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster.jpg".to_string(),
+                source_etag: Some("\"etag-1\"".to_string()),
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![1, 2, 3],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w500".to_string(),
+                    format: "avif".to_string(),
+                    width: 500,
+                    height: 750,
+                    bytes: vec![7, 8, 9],
+                    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("title image should insert");
 
-    let after_cache = <SqliteServices as TitleRepository>::get_by_id(&services, &title.id)
+    let after_cache = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
@@ -154,9 +164,11 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
     let title = make_test_title("title-2", Some("https://tvdb.example/poster-a.jpg"));
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
@@ -170,35 +182,35 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
             "22222222222222222222222222222222",
         ),
     ] {
-        <SqliteServices as TitleImageRepository>::replace_title_image(
-            &services,
-            &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: source_url.to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: sha.to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![7, 8, 9],
-                    sha256: sha.to_string(),
-                }],
-            },
-        )
-        .await
-        .expect("title image should upsert");
+        library_state
+            .replace_title_image(
+                &title.id,
+                TitleImageReplacement {
+                    kind: TitleImageKind::Poster,
+                    source_url: source_url.to_string(),
+                    source_etag: None,
+                    source_last_modified: None,
+                    source_format: "jpeg".to_string(),
+                    source_width: 1000,
+                    source_height: 1500,
+                    storage_mode: TitleImageStorageMode::AvifMaster,
+                    master_format: "avif".to_string(),
+                    master_sha256: sha.to_string(),
+                    master_width: 1000,
+                    master_height: 1500,
+                    master_bytes: vec![1, 2, 3],
+                    variants: vec![TitleImageVariantRecord {
+                        variant_key: "w500".to_string(),
+                        format: "avif".to_string(),
+                        width: 500,
+                        height: 750,
+                        bytes: vec![7, 8, 9],
+                        sha256: sha.to_string(),
+                    }],
+                },
+            )
+            .await
+            .expect("title image should upsert");
 
         sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
             .bind(source_url)
@@ -208,7 +220,7 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
             .expect("source url should update");
     }
 
-    let updated = <SqliteServices as TitleRepository>::get_by_id(&services, &title.id)
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
@@ -229,21 +241,22 @@ async fn title_queries_find_by_external_id() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
 
     let mut title = make_test_title("title-external-id", None);
     title.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
         value: "123456".to_string(),
     }];
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    let found =
-        <SqliteServices as TitleRepository>::find_by_external_id(&services, "tvdb", "123456")
-            .await
-            .expect("lookup should succeed")
-            .expect("title should exist");
+    let found = catalog
+        .find_by_external_id("tvdb", "123456")
+        .await
+        .expect("lookup should succeed")
+        .expect("title should exist");
 
     assert_eq!(found.id, title.id);
     let _ = std::fs::remove_file(db);
@@ -258,23 +271,23 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
     let title = make_test_title("title-media-file", None);
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    let file_id = <SqliteServices as MediaFileRepository>::insert_media_file(
-        &services,
-        &InsertMediaFileInput {
+    let file_id = library_state
+        .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: "/library/Movie.Title.2024.mkv".to_string(),
             size_bytes: 4_096,
             ..Default::default()
-        },
-    )
-    .await
-    .expect("media file should insert");
+        })
+        .await
+        .expect("media file should insert");
 
     sqlx::query("UPDATE media_files SET scan_status = 'scanned' WHERE id = ?")
         .bind(&file_id)
@@ -282,21 +295,21 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("scan status should update");
 
-    <SqliteServices as MediaFileRepository>::update_media_file_source_signature(
-        &services,
-        &file_id,
-        4_096,
-        Some("unix_mtime_nsec_v1".to_string()),
-        Some("1:2".to_string()),
-    )
-    .await
-    .expect("source signature should refresh");
+    library_state
+        .update_media_file_source_signature(
+            &file_id,
+            4_096,
+            Some("unix_mtime_nsec_v1".to_string()),
+            Some("1:2".to_string()),
+        )
+        .await
+        .expect("source signature should refresh");
 
-    let media_file =
-        <SqliteServices as MediaFileRepository>::get_media_file_by_id(&services, &file_id)
-            .await
-            .expect("lookup should succeed")
-            .expect("media file should exist");
+    let media_file = library_state
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup should succeed")
+        .expect("media file should exist");
 
     assert_eq!(media_file.scan_status, "scanned");
     assert_eq!(
@@ -317,36 +330,38 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
     let title = make_test_title("title-3", Some("https://tvdb.example/poster-original.jpg"));
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    <SqliteServices as TitleImageRepository>::replace_title_image(
-        &services,
-        &title.id,
-        TitleImageReplacement {
-            kind: TitleImageKind::Poster,
-            source_url: "https://tvdb.example/poster-original.jpg".to_string(),
-            source_etag: None,
-            source_last_modified: None,
-            source_format: "jpeg".to_string(),
-            source_width: 400,
-            source_height: 600,
-            storage_mode: TitleImageStorageMode::Original,
-            master_format: "jpeg".to_string(),
-            master_sha256: "cccccccccccccccccccccccccccccccc".to_string(),
-            master_width: 400,
-            master_height: 600,
-            master_bytes: vec![3, 2, 1],
-            variants: Vec::new(),
-        },
-    )
-    .await
-    .expect("title image should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster-original.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 400,
+                source_height: 600,
+                storage_mode: TitleImageStorageMode::Original,
+                master_format: "jpeg".to_string(),
+                master_sha256: "cccccccccccccccccccccccccccccccc".to_string(),
+                master_width: 400,
+                master_height: 600,
+                master_bytes: vec![3, 2, 1],
+                variants: Vec::new(),
+            },
+        )
+        .await
+        .expect("title image should insert");
 
-    let updated = <SqliteServices as TitleRepository>::get_by_id(&services, &title.id)
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
@@ -355,14 +370,10 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         Some("/images/titles/title-3/poster/original?v=cccccccccccccccc")
     );
 
-    let original = <SqliteServices as TitleImageRepository>::get_title_image_blob(
-        &services,
-        &title.id,
-        TitleImageKind::Poster,
-        "original",
-    )
-    .await
-    .expect("original blob lookup should succeed");
+    let original = library_state
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+        .await
+        .expect("original blob lookup should succeed");
     assert_eq!(
         original,
         Some(TitleImageBlob {
@@ -384,39 +395,41 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
     let title = make_test_title(
         "title-4",
         Some("https://tvdb.example/poster-incomplete.jpg"),
     );
-    <SqliteServices as TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    <SqliteServices as TitleImageRepository>::replace_title_image(
-        &services,
-        &title.id,
-        TitleImageReplacement {
-            kind: TitleImageKind::Poster,
-            source_url: "https://tvdb.example/poster-incomplete.jpg".to_string(),
-            source_etag: None,
-            source_last_modified: None,
-            source_format: "jpeg".to_string(),
-            source_width: 1000,
-            source_height: 1500,
-            storage_mode: TitleImageStorageMode::AvifMaster,
-            master_format: "avif".to_string(),
-            master_sha256: "dddddddddddddddddddddddddddddddd".to_string(),
-            master_width: 1000,
-            master_height: 1500,
-            master_bytes: vec![9, 8, 7],
-            variants: Vec::new(),
-        },
-    )
-    .await
-    .expect("title image should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster-incomplete.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "dddddddddddddddddddddddddddddddd".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![9, 8, 7],
+                variants: Vec::new(),
+            },
+        )
+        .await
+        .expect("title image should insert");
 
-    let updated = <SqliteServices as TitleRepository>::get_by_id(&services, &title.id)
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
         .await
         .expect("title lookup should succeed")
         .expect("title should exist");
@@ -425,13 +438,10 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         Some("/images/titles/title-4/poster/original?v=dddddddddddddddd")
     );
 
-    let pending = <SqliteServices as TitleImageRepository>::list_titles_requiring_image_refresh(
-        &services,
-        TitleImageKind::Poster,
-        10,
-    )
-    .await
-    .expect("list pending poster refresh should succeed");
+    let pending = library_state
+        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .await
+        .expect("list pending poster refresh should succeed");
     assert!(
         pending.iter().any(|task| task.title_id == title.id),
         "incomplete AVIF cache rows should be re-queued for repair"
@@ -700,8 +710,9 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let workflow_store = SqliteWorkflowStore::new(&services);
 
-    services
+    workflow_store
         .update_tracked_state("weaver", "job-123", "failed")
         .await
         .expect("tracked state upsert should succeed without a preexisting submission row");
@@ -855,9 +866,10 @@ async fn user_crud_queries_work() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let catalog = catalog_store(&services);
 
-    let created = <SqliteServices as UserRepository>::create(
-        &services,
+    let created = UserRepository::create(
+        &catalog,
         scryer_domain::User {
             id: "u-1".to_string(),
             username: "editor".to_string(),
@@ -868,14 +880,14 @@ async fn user_crud_queries_work() {
     .await
     .expect("create user");
 
-    let from_db = <SqliteServices as UserRepository>::get_by_id(&services, &created.id)
+    let from_db = UserRepository::get_by_id(&catalog, &created.id)
         .await
         .expect("query by id")
         .expect("id should exist");
     assert_eq!(from_db.username, created.username);
 
-    let updated = <SqliteServices as UserRepository>::update_entitlements(
-        &services,
+    let updated = UserRepository::update_entitlements(
+        &catalog,
         &created.id,
         vec![Entitlement::ManageTitle, Entitlement::ViewHistory],
     )
@@ -883,10 +895,10 @@ async fn user_crud_queries_work() {
     .expect("update entitlements");
     assert!(updated.entitlements.contains(&Entitlement::ManageTitle));
 
-    <SqliteServices as UserRepository>::delete(&services, &created.id)
+    UserRepository::delete(&catalog, &created.id)
         .await
         .expect("delete user");
-    let missing = <SqliteServices as UserRepository>::get_by_id(&services, &created.id)
+    let missing = UserRepository::get_by_id(&catalog, &created.id)
         .await
         .expect("query after delete");
     assert!(missing.is_none());
@@ -901,6 +913,7 @@ async fn sqlite_show_queries_roundtrip() {
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy()).await.unwrap();
+    let catalog = catalog_store(&services);
 
     let title = Title {
         id: "title-show-1".into(),
@@ -938,7 +951,7 @@ async fn sqlite_show_queries_roundtrip() {
         digital_release_date: None,
         folder_path: None,
     };
-    <SqliteServices as scryer_application::TitleRepository>::create(&services, title.clone())
+    TitleRepository::create(&catalog, title.clone())
         .await
         .expect("insert title");
 
@@ -1006,12 +1019,9 @@ async fn sqlite_show_queries_roundtrip() {
         monitored: true,
         created_at: Utc::now(),
     };
-    <SqliteServices as scryer_application::ShowRepository>::create_collection(
-        &services,
-        collection.clone(),
-    )
-    .await
-    .expect("insert collection");
+    ShowRepository::create_collection(&catalog, collection.clone())
+        .await
+        .expect("insert collection");
 
     let episode = Episode {
         id: "episode-show-1".into(),
@@ -1034,24 +1044,14 @@ async fn sqlite_show_queries_roundtrip() {
         monitored: true,
         created_at: Utc::now(),
     };
-    <SqliteServices as scryer_application::ShowRepository>::create_episode(
-        &services,
-        episode.clone(),
-    )
-    .await
-    .expect("insert episode");
+    ShowRepository::create_episode(&catalog, episode.clone())
+        .await
+        .expect("insert episode");
 
-    let collections =
-        <SqliteServices as scryer_application::ShowRepository>::list_collections_for_title(
-            &services, &title.id,
-        )
+    let collections = ShowRepository::list_collections_for_title(&catalog, &title.id)
         .await
         .expect("list collections");
-    let episodes =
-        <SqliteServices as scryer_application::ShowRepository>::list_episodes_for_collection(
-            &services,
-            &collection.id,
-        )
+    let episodes = ShowRepository::list_episodes_for_collection(&catalog, &collection.id)
         .await
         .expect("list episodes");
 
@@ -1064,11 +1064,7 @@ async fn sqlite_show_queries_roundtrip() {
             .map(|movie| movie.name.as_str()),
         Some("Test Movie")
     );
-    let loaded_collection =
-        <SqliteServices as scryer_application::ShowRepository>::get_collection_by_id(
-            &services,
-            &collection.id,
-        )
+    let loaded_collection = ShowRepository::get_collection_by_id(&catalog, &collection.id)
         .await
         .expect("get collection by id")
         .expect("collection should exist");
@@ -1087,51 +1083,50 @@ async fn sqlite_show_queries_roundtrip() {
     );
     assert_eq!(episodes.len(), 1);
     assert_eq!(episodes[0].id, episode.id);
-    let loaded_episode = <SqliteServices as scryer_application::ShowRepository>::get_episode_by_id(
-        &services,
-        &episode.id,
-    )
-    .await
-    .expect("get episode by id")
-    .expect("episode should exist");
+    let loaded_episode = ShowRepository::get_episode_by_id(&catalog, &episode.id)
+        .await
+        .expect("get episode by id")
+        .expect("episode should exist");
     assert_eq!(loaded_episode.id, episode.id);
 
-    let updated_collection =
-        <SqliteServices as scryer_application::ShowRepository>::update_collection(
-            &services,
-            &collection.id,
-            Some(CollectionType::Arc),
-            Some("1.1".into()),
-            Some("Arc One".into()),
-            Some("arc/season".into()),
-            None,
-            Some("12".into()),
-            None,
-        )
-        .await
-        .expect("update collection");
+    let updated_collection = ShowRepository::update_collection(
+        &catalog,
+        &collection.id,
+        CollectionUpdate {
+            collection_type: Some(CollectionType::Arc),
+            collection_index: Some("1.1".into()),
+            label: Some("Arc One".into()),
+            ordered_path: Some("arc/season".into()),
+            last_episode_number: Some("12".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update collection");
     assert_eq!(updated_collection.collection_type, CollectionType::Arc);
     assert_eq!(updated_collection.collection_index, "1.1");
     assert_eq!(updated_collection.label, Some("Arc One".into()));
     assert_eq!(updated_collection.ordered_path, Some("arc/season".into()));
     assert_eq!(updated_collection.last_episode_number, Some("12".into()));
 
-    let updated_episode = <SqliteServices as scryer_application::ShowRepository>::update_episode(
-        &services,
+    let updated_episode = ShowRepository::update_episode(
+        &catalog,
         &episode.id,
-        Some(scryer_domain::EpisodeType::Special),
-        Some("E1".into()),
-        Some("2".into()),
-        Some("Special".into()),
-        Some("Pilot Special".into()),
-        Some("2026-01-01".into()),
-        Some(2_400),
-        Some(true),
-        Some(false),
-        None,
-        Some(collection.id.clone()),
-        Some("Updated overview".into()),
-        Some("349232".into()),
+        EpisodeUpdate {
+            episode_type: Some(scryer_domain::EpisodeType::Special),
+            episode_number: Some("E1".into()),
+            season_number: Some("2".into()),
+            episode_label: Some("Special".into()),
+            title: Some("Pilot Special".into()),
+            air_date: Some("2026-01-01".into()),
+            duration_seconds: Some(2_400),
+            has_multi_audio: Some(true),
+            has_subtitle: Some(false),
+            collection_id: Some(collection.id.clone()),
+            overview: Some("Updated overview".into()),
+            tvdb_id: Some("349232".into()),
+            ..Default::default()
+        },
     )
     .await
     .expect("update episode");
@@ -1148,44 +1143,27 @@ async fn sqlite_show_queries_roundtrip() {
     assert!(updated_episode.has_multi_audio);
     assert!(!updated_episode.has_subtitle);
 
-    <SqliteServices as scryer_application::ShowRepository>::delete_episode(&services, &episode.id)
+    ShowRepository::delete_episode(&catalog, &episode.id)
         .await
         .expect("delete episode");
     let episodes_after_delete =
-        <SqliteServices as scryer_application::ShowRepository>::list_episodes_for_collection(
-            &services,
-            &collection.id,
-        )
-        .await
-        .expect("list episodes after delete");
+        ShowRepository::list_episodes_for_collection(&catalog, &collection.id)
+            .await
+            .expect("list episodes after delete");
     assert!(episodes_after_delete.is_empty());
-    let missing_episode =
-        <SqliteServices as scryer_application::ShowRepository>::get_episode_by_id(
-            &services,
-            &episode.id,
-        )
+    let missing_episode = ShowRepository::get_episode_by_id(&catalog, &episode.id)
         .await
         .expect("get episode by id after delete");
     assert!(missing_episode.is_none());
 
-    <SqliteServices as scryer_application::ShowRepository>::delete_collection(
-        &services,
-        &collection.id,
-    )
-    .await
-    .expect("delete collection");
-    let collections_after_delete =
-        <SqliteServices as scryer_application::ShowRepository>::list_collections_for_title(
-            &services, &title.id,
-        )
+    ShowRepository::delete_collection(&catalog, &collection.id)
+        .await
+        .expect("delete collection");
+    let collections_after_delete = ShowRepository::list_collections_for_title(&catalog, &title.id)
         .await
         .expect("list collections after delete");
     assert!(collections_after_delete.is_empty());
-    let missing_collection =
-        <SqliteServices as scryer_application::ShowRepository>::get_collection_by_id(
-            &services,
-            &collection.id,
-        )
+    let missing_collection = ShowRepository::get_collection_by_id(&catalog, &collection.id)
         .await
         .expect("get collection by id after delete");
     assert!(missing_collection.is_none());
@@ -1202,6 +1180,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
+    let library_state = library_state_store(&services);
 
     let created_at = "2026-04-07T00:00:00Z".to_string();
     let updated_at = "2026-04-07T00:00:00Z".to_string();
@@ -1225,30 +1204,19 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         updated_at: updated_at.clone(),
     };
 
-    <SqliteServices as LibraryScanUnmatchedItemRepository>::upsert_library_scan_unmatched_item(
-        &services, &item,
-    )
-    .await
-    .expect("insert unmatched item");
+    library_state
+        .upsert_library_scan_unmatched_item(&item)
+        .await
+        .expect("insert unmatched item");
 
-    let count =
-        <SqliteServices as LibraryScanUnmatchedItemRepository>::count_library_scan_unmatched_items(
-            &services,
-            Some(MediaFacet::Movie),
-            Some("/library"),
-        )
+    let count = library_state
+        .count_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"))
         .await
         .expect("count unmatched items after insert");
     assert_eq!(count, 1);
 
-    let listed =
-        <SqliteServices as LibraryScanUnmatchedItemRepository>::list_library_scan_unmatched_items(
-            &services,
-            Some(MediaFacet::Movie),
-            Some("/library"),
-            10,
-            0,
-        )
+    let listed = library_state
+        .list_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"), 10, 0)
         .await
         .expect("list unmatched items after insert");
     assert_eq!(listed.len(), 1);
@@ -1272,20 +1240,13 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         ..item.clone()
     };
 
-    <SqliteServices as LibraryScanUnmatchedItemRepository>::upsert_library_scan_unmatched_item(
-        &services, &updated,
-    )
-    .await
-    .expect("update unmatched item");
+    library_state
+        .upsert_library_scan_unmatched_item(&updated)
+        .await
+        .expect("update unmatched item");
 
-    let listed_after_update =
-        <SqliteServices as LibraryScanUnmatchedItemRepository>::list_library_scan_unmatched_items(
-            &services,
-            Some(MediaFacet::Movie),
-            Some("/library"),
-            10,
-            0,
-        )
+    let listed_after_update = library_state
+        .list_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"), 10, 0)
         .await
         .expect("list unmatched items after update");
     assert_eq!(listed_after_update.len(), 1);
@@ -1298,20 +1259,13 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed_after_update[0].updated_at, updated.updated_at);
     assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
 
-    <SqliteServices as LibraryScanUnmatchedItemRepository>::delete_library_scan_unmatched_item(
-        &services,
-        MediaFacet::Movie,
-        &item.item_path,
-    )
-    .await
-    .expect("delete unmatched item");
+    library_state
+        .delete_library_scan_unmatched_item(MediaFacet::Movie, &item.item_path)
+        .await
+        .expect("delete unmatched item");
 
-    let count_after_delete =
-        <SqliteServices as LibraryScanUnmatchedItemRepository>::count_library_scan_unmatched_items(
-            &services,
-            Some(MediaFacet::Movie),
-            Some("/library"),
-        )
+    let count_after_delete = library_state
+        .count_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"))
         .await
         .expect("count unmatched items after delete");
     assert_eq!(count_after_delete, 0);

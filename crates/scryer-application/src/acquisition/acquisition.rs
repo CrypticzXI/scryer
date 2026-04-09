@@ -25,7 +25,7 @@ impl AppUseCase {
     /// Sync the wanted_items table with current monitored state.
     /// Creates entries for monitored media without files, removes stale entries.
     pub(crate) async fn sync_wanted_state(&self) -> AppResult<()> {
-        let titles = self.services.titles.list(None, None).await?;
+        let titles = self.services.catalog.titles.list(None, None).await?;
         let now = Utc::now();
 
         for title in &titles {
@@ -33,6 +33,7 @@ impl AppUseCase {
                 // Clean up wanted items for unmonitored titles
                 if let Err(err) = self
                     .services
+                    .workflow
                     .wanted_items
                     .delete_wanted_items_for_title(&title.id)
                     .await
@@ -67,6 +68,7 @@ impl AppUseCase {
         // Check if movie already has a media file
         let has_file = match self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
@@ -126,6 +128,7 @@ impl AppUseCase {
 
         match self
             .services
+            .workflow
             .wanted_items
             .ensure_wanted_item_seeded(&item)
             .await
@@ -160,6 +163,7 @@ impl AppUseCase {
     ) {
         let collections = match self
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await
@@ -174,6 +178,7 @@ impl AppUseCase {
         // Get existing files for the title to know which episodes already have files
         let existing_files = self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
@@ -192,6 +197,7 @@ impl AppUseCase {
 
             let episodes = match self
                 .services
+                .catalog
                 .shows
                 .list_episodes_for_collection(&collection.id)
                 .await
@@ -239,6 +245,7 @@ impl AppUseCase {
 
                 if let Err(err) = self
                     .services
+                    .workflow
                     .wanted_items
                     .ensure_wanted_item_seeded(&item)
                     .await
@@ -285,7 +292,7 @@ impl AppUseCase {
                 // Skip if the movie already exists as a separate Movie facet title
                 // (prevents downloading the same movie twice)
                 if (!movie.imdb_id.is_empty() || movie.movie_tmdb_id.is_some())
-                    && let Ok(all_titles) = self.services.titles.list(None, None).await
+                    && let Ok(all_titles) = self.services.catalog.titles.list(None, None).await
                 {
                     let already_exists = all_titles.iter().any(|t| {
                         t.facet == scryer_domain::MediaFacet::Movie
@@ -339,6 +346,7 @@ impl AppUseCase {
 
                 if let Err(err) = self
                     .services
+                    .workflow
                     .wanted_items
                     .ensure_wanted_item_seeded(&item)
                     .await
@@ -370,6 +378,7 @@ impl AppUseCase {
     ) {
         let existing_items = match self
             .services
+            .workflow
             .wanted_items
             .list_wanted_items(None, None, Some(&title.id), 5000, 0)
             .await
@@ -394,6 +403,7 @@ impl AppUseCase {
         for episode_id in stale_episode_ids {
             if let Err(err) = self
                 .services
+                .workflow
                 .wanted_items
                 .delete_wanted_items_for_episode(&episode_id)
                 .await
@@ -416,6 +426,7 @@ impl AppUseCase {
         for collection_id in stale_interstitial_collection_ids {
             if let Err(err) = self
                 .services
+                .workflow
                 .wanted_items
                 .delete_wanted_items_for_collection(&collection_id)
                 .await
@@ -481,7 +492,7 @@ impl DownloadClientSnapshot {
         let mut failed_by_download_id = std::collections::HashMap::new();
 
         // Fetch current queue
-        if let Ok(queue) = app.services.download_client.list_queue().await {
+        if let Ok(queue) = app.services.integrations.download_client.list_queue().await {
             for item in &queue {
                 match item.state {
                     DownloadQueueState::Queued
@@ -503,7 +514,13 @@ impl DownloadClientSnapshot {
 
         // Fetch recent history — key by download client job ID (works across all
         // clients: NZBGet, SABnzbd, Weaver).
-        if let Ok(history) = app.services.download_client.list_history().await {
+        if let Ok(history) = app
+            .services
+            .integrations
+            .download_client
+            .list_history()
+            .await
+        {
             for item in &history {
                 if item.state == DownloadQueueState::Completed {
                     completed_client_ids.insert(item.download_client_item_id.clone());
@@ -561,6 +578,7 @@ impl DownloadClientSnapshot {
 async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClientSnapshot) {
     let grabbed_items = match app
         .services
+        .workflow
         .wanted_items
         .list_wanted_items(Some("grabbed"), None, None, 200, 0)
         .await
@@ -596,6 +614,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         // (which gets sanitized differently by each client).
         let submissions = app
             .services
+            .workflow
             .download_submissions
             .list_for_title(&item.title_id)
             .await
@@ -659,6 +678,7 @@ pub(crate) async fn process_download_failure(
 
         let _ = app
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title_id.clone()),
@@ -672,6 +692,7 @@ pub(crate) async fn process_download_failure(
 
         let _ = app
             .services
+            .workflow
             .blocklist_repo
             .add(&NewBlocklistEntry {
                 title_id,
@@ -723,6 +744,7 @@ pub(crate) async fn process_download_failure(
 
                 let _ = app
                     .services
+                    .workflow
                     .wanted_items
                     .schedule_wanted_item_search(&WantedSearchTransition {
                         id: item.id.clone(),
@@ -746,9 +768,9 @@ pub(crate) async fn process_download_failure(
                     )
                 };
 
-                if let Ok(Some(title)) = app.services.titles.get_by_id(&item.title_id).await {
+                if let Ok(Some(title)) = app.services.catalog.titles.get_by_id(&item.title_id).await
+                {
                     let _ = app
-                        .services
                         .append_domain_event(new_title_domain_event(
                             None,
                             &title,
@@ -777,10 +799,9 @@ pub(crate) async fn process_download_failure(
             context.release_title, context.reason
         );
         if let Some(title_id) = resolved_title_id.as_deref()
-            && let Ok(Some(title)) = app.services.titles.get_by_id(title_id).await
+            && let Ok(Some(title)) = app.services.catalog.titles.get_by_id(title_id).await
         {
             let _ = app
-                .services
                 .append_domain_event(new_title_domain_event(
                     None,
                     &title,
@@ -794,7 +815,6 @@ pub(crate) async fn process_download_failure(
                 .await;
         } else {
             let _ = app
-                .services
                 .append_domain_event(new_global_domain_event(
                     None,
                     DomainEventPayload::DownloadFailed(DownloadFailedEventData {
@@ -811,12 +831,13 @@ pub(crate) async fn process_download_failure(
 
     if context.remove_from_client_if_configured
         && let Some(title_id) = resolved_title_id.as_deref()
-        && let Ok(Some(title)) = app.services.titles.get_by_id(title_id).await
+        && let Ok(Some(title)) = app.services.catalog.titles.get_by_id(title_id).await
         && app
             .should_remove_failed_download(&title.facet, &context.client_id)
             .await
         && let Err(error) = app
             .services
+            .integrations
             .download_client
             .delete_queue_item(&context.client_item_id, true)
             .await
@@ -832,6 +853,7 @@ pub(crate) async fn process_download_failure(
 
     let _ = app
         .services
+        .workflow
         .download_submissions
         .delete_by_client_item_id(&context.client_item_id)
         .await;
@@ -851,6 +873,7 @@ async fn resolve_failure_wanted_item(
 
     let grabbed_items = app
         .services
+        .workflow
         .wanted_items
         .list_wanted_items(Some("grabbed"), None, Some(title_id), 25, 0)
         .await
@@ -890,6 +913,7 @@ async fn process_due_wanted_items(app: &AppUseCase) {
 
     let due_items = match app
         .services
+        .workflow
         .wanted_items
         .list_due_wanted_items(&now_str, batch_size)
         .await
@@ -971,6 +995,7 @@ async fn process_due_wanted_items(app: &AppUseCase) {
         // from ever detecting download failures.
         let current = app
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(&item.id)
             .await
@@ -996,6 +1021,7 @@ async fn process_due_wanted_items(app: &AppUseCase) {
 
         let _ = app
             .services
+            .workflow
             .wanted_items
             .schedule_wanted_item_search(&WantedSearchTransition {
                 id: item.id.clone(),
@@ -1012,6 +1038,7 @@ async fn process_due_wanted_items(app: &AppUseCase) {
 async fn prune_standby_candidates(app: &AppUseCase) {
     let all_standby = app
         .services
+        .workflow
         .pending_releases
         .list_all_standby_pending_releases()
         .await
@@ -1035,6 +1062,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
     for (wanted_item_id, mut releases) in grouped {
         let wanted = app
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(&wanted_item_id)
             .await
@@ -1044,6 +1072,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
         let Some(wanted) = wanted else {
             let _ = app
                 .services
+                .workflow
                 .pending_releases
                 .delete_standby_pending_releases_for_wanted_item(&wanted_item_id)
                 .await;
@@ -1053,6 +1082,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
         if wanted.status != WantedStatus::Grabbed {
             let _ = app
                 .services
+                .workflow
                 .pending_releases
                 .delete_standby_pending_releases_for_wanted_item(&wanted_item_id)
                 .await;
@@ -1067,6 +1097,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
             if is_stale || is_overflow {
                 let _ = app
                     .services
+                    .workflow
                     .pending_releases
                     .update_pending_release_status(&release.id, PendingReleaseStatus::Expired, None)
                     .await;
@@ -1093,7 +1124,13 @@ async fn process_single_wanted_item(
     dl_snapshot: &DownloadClientSnapshot,
 ) -> AppResult<()> {
     // Load the title to get search context
-    let title = match app.services.titles.get_by_id(&item.title_id).await? {
+    let title = match app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&item.title_id)
+        .await?
+    {
         Some(t) => t,
         None => {
             warn!(
@@ -1109,6 +1146,7 @@ async fn process_single_wanted_item(
     // releases for the same episode are grabbed simultaneously.
     let submissions = app
         .services
+        .workflow
         .download_submissions
         .list_for_title(&item.title_id)
         .await
@@ -1134,7 +1172,7 @@ async fn process_single_wanted_item(
     // Load episode data for episode-type wanted items
     let episode = if item.media_type == "episode" {
         if let Some(ep_id) = item.episode_id.as_deref() {
-            match app.services.shows.get_episode_by_id(ep_id).await {
+            match app.services.catalog.shows.get_episode_by_id(ep_id).await {
                 Ok(ep) => ep,
                 Err(err) => {
                     warn!(episode_id = ep_id, error = %err, "failed to load episode for wanted item");
@@ -1152,7 +1190,12 @@ async fn process_single_wanted_item(
     // so the search uses the movie's name/year/IMDB ID instead of the parent series'
     let search_title = if item.media_type == "interstitial_movie" {
         if let Some(ref coll_id) = item.collection_id
-            && let Ok(Some(collection)) = app.services.shows.get_collection_by_id(coll_id).await
+            && let Ok(Some(collection)) = app
+                .services
+                .catalog
+                .shows
+                .get_collection_by_id(coll_id)
+                .await
             && let Some(ref movie) = collection.interstitial_movie
         {
             let mut t = title.clone();
@@ -1199,6 +1242,7 @@ async fn process_single_wanted_item(
                     if let Ok(tvdb_num) = tvdb_str.parse::<i64>() {
                         if let Ok(mappings) = app
                             .services
+                            .library
                             .metadata_gateway
                             .anibridge_mappings_for_episode(tvdb_num, s, e)
                             .await
@@ -1267,6 +1311,7 @@ async fn process_single_wanted_item(
             // Load season episodes for runtime scoring and upgrade checking.
             let season_episodes = if let Some(ref coll_id) = item.collection_id {
                 app.services
+                    .catalog
                     .shows
                     .list_episodes_for_collection(coll_id)
                     .await
@@ -1286,23 +1331,23 @@ async fn process_single_wanted_item(
             };
 
             let pack_results = app
-                .search_and_score_releases(
-                    pack_queries,
-                    imdb_id.clone(),
-                    tvdb_id.clone(),
-                    anidb_id.clone(),
-                    Some(category.clone()),
-                    Some(title.facet.as_str().to_string()),
-                    Some(title.id.as_str()),
-                    &title.tags,
-                    "background_acquisition_season_pack",
-                    SearchMode::Auto,
-                    pack_runtime,
-                    Some(season_num),
-                    None, // episode=None signals a season pack search
-                    None, // no absolute episode for season packs
-                    &title.tagged_aliases,
-                )
+                .search_and_score_releases(crate::app_usecase_discovery::ReleaseSearchRequest {
+                    queries: pack_queries,
+                    imdb_id: imdb_id.clone(),
+                    tvdb_id: tvdb_id.clone(),
+                    anidb_id: anidb_id.clone(),
+                    category: Some(category.clone()),
+                    facet: Some(title.facet.as_str().to_string()),
+                    title_id: Some(title.id.as_str()),
+                    title_tags: &title.tags,
+                    caller_label: "background_acquisition_season_pack",
+                    mode: SearchMode::Auto,
+                    runtime_minutes: pack_runtime,
+                    season: Some(season_num),
+                    episode: None,
+                    absolute_episode: None,
+                    tagged_aliases: &title.tagged_aliases,
+                })
                 .await
                 .unwrap_or_default();
 
@@ -1343,6 +1388,7 @@ async fn process_single_wanted_item(
 
                     let existing_files = app
                         .services
+                        .library
                         .media_files
                         .list_media_files_for_title(&title.id)
                         .await
@@ -1407,6 +1453,7 @@ async fn process_single_wanted_item(
 
                         let grab_result = app
                             .services
+                            .integrations
                             .download_client
                             .submit_download(&DownloadClientAddRequest {
                                 title: title.clone(),
@@ -1443,6 +1490,7 @@ async fn process_single_wanted_item(
                                 season_pack_grabbed.insert(season_key.clone());
                                 let _ = app
                                     .services
+                                    .workflow
                                     .release_attempts
                                     .record_release_attempt(
                                         Some(title.id.clone()),
@@ -1457,6 +1505,7 @@ async fn process_single_wanted_item(
                                     .unwrap_or_else(|_| "\"other\"".to_string());
                                 let _ = app
                                     .services
+                                    .workflow
                                     .download_submissions
                                     .record_submission(DownloadSubmission {
                                         title_id: title.id.clone(),
@@ -1488,7 +1537,6 @@ async fn process_single_wanted_item(
                                 grab_meta
                                     .insert("score".to_string(), serde_json::json!(pack_score));
                                 let _ = app
-                                    .services
                                     .append_domain_event(new_title_domain_event(
                                         None,
                                         &title,
@@ -1523,6 +1571,7 @@ async fn process_single_wanted_item(
                                 );
                                 let _ = app
                                     .services
+                                    .workflow
                                     .release_attempts
                                     .record_release_attempt(
                                         Some(title.id.clone()),
@@ -1584,23 +1633,23 @@ async fn process_single_wanted_item(
         .and_then(|ep| ep.absolute_number.as_deref())
         .and_then(|v| v.parse::<u32>().ok());
     let results = match app
-        .search_and_score_releases(
+        .search_and_score_releases(crate::app_usecase_discovery::ReleaseSearchRequest {
             queries,
             imdb_id,
             tvdb_id,
             anidb_id,
-            Some(category.clone()),
-            Some(title.facet.as_str().to_string()),
-            Some(title.id.as_str()),
-            &title.tags,
-            "background_acquisition",
-            SearchMode::Auto,
+            category: Some(category.clone()),
+            facet: Some(title.facet.as_str().to_string()),
+            title_id: Some(title.id.as_str()),
+            title_tags: &title.tags,
+            caller_label: "background_acquisition",
+            mode: SearchMode::Auto,
             runtime_minutes,
-            search_season,
-            search_episode,
+            season: search_season,
+            episode: search_episode,
             absolute_episode,
-            &title.tagged_aliases,
-        )
+            tagged_aliases: &title.tagged_aliases,
+        })
         .await
     {
         Ok(r) => r,
@@ -1637,6 +1686,7 @@ async fn process_single_wanted_item(
     // in addition to the download-client snapshot checked below).
     let db_blocklist: std::collections::HashSet<String> = app
         .services
+        .workflow
         .release_attempts
         .list_failed_release_signatures_for_title(&title.id, 200)
         .await
@@ -1648,12 +1698,12 @@ async fn process_single_wanted_item(
 
     // Resolve quality profile once (used by upgrade evaluation for each candidate).
     let profile = app
-        .resolve_quality_profile(
-            &title.tags,
-            title.imdb_id.as_deref(),
-            tvdb_id_from_external_ids(&title.external_ids).as_deref(),
-            Some(&category),
-        )
+        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &title.tags,
+            imdb_id: title.imdb_id.as_deref(),
+            tvdb_id: tvdb_id_from_external_ids(&title.external_ids).as_deref(),
+            category_hint: Some(&category),
+        })
         .await
         .unwrap_or_else(|_| crate::quality_profile::default_quality_profile_for_search());
 
@@ -1673,7 +1723,7 @@ async fn process_single_wanted_item(
     }
 
     let persona = app
-        .resolve_scoring_persona(Some(&category), Some(&profile), Some(&category))
+        .resolve_scoring_persona(Some(&category))
         .await
         .unwrap_or_default();
     let thresholds = app.acquisition_thresholds(&persona).await;
@@ -1681,6 +1731,7 @@ async fn process_single_wanted_item(
     // Load existing media files for repack group validation.
     let existing_files = app
         .services
+        .library
         .media_files
         .list_media_files_for_title(&title.id)
         .await
@@ -1809,6 +1860,7 @@ async fn process_single_wanted_item(
 
         let _ = app
             .services
+            .workflow
             .wanted_items
             .insert_release_decision(&decision_record)
             .await;
@@ -1862,6 +1914,7 @@ async fn process_single_wanted_item(
             .to_string();
             let _ = app
                 .services
+                .workflow
                 .wanted_items
                 .transition_wanted_to_grabbed(&WantedGrabTransition {
                     id: item.id.clone(),
@@ -1881,6 +1934,7 @@ async fn process_single_wanted_item(
 
         let _ = app
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title.id.clone()),
@@ -1977,6 +2031,7 @@ async fn process_single_wanted_item(
 
         let grab_result = app
             .services
+            .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
@@ -2015,6 +2070,7 @@ async fn process_single_wanted_item(
 
                 let _ = app
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -2039,6 +2095,7 @@ async fn process_single_wanted_item(
                 let download_job_id = grab.job_id.clone();
 
                 app.services
+                    .workflow
                     .acquisition_state
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: item.id.clone(),
@@ -2077,7 +2134,6 @@ async fn process_single_wanted_item(
                 .await;
 
                 let _ = app
-                    .services
                     .append_domain_event(new_title_domain_event(
                         None,
                         &title,
@@ -2105,6 +2161,7 @@ async fn process_single_wanted_item(
 
                 let _ = app
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -2117,7 +2174,6 @@ async fn process_single_wanted_item(
                     .await;
 
                 let _ = app
-                    .services
                     .append_domain_event(new_title_domain_event(
                         None,
                         &title,
@@ -2196,6 +2252,7 @@ async fn process_single_wanted_item(
     // Re-queue for next cycle
     let _ = app
         .services
+        .workflow
         .wanted_items
         .schedule_wanted_item_search(&WantedSearchTransition {
             id: item.id.clone(),
@@ -2219,6 +2276,7 @@ async fn recover_from_standby_candidates(
 ) -> bool {
     let standby_releases = app
         .services
+        .workflow
         .pending_releases
         .list_standby_pending_releases_for_wanted_item(&item.id)
         .await
@@ -2231,6 +2289,7 @@ async fn recover_from_standby_candidates(
 
         let claimed = app
             .services
+            .workflow
             .pending_releases
             .compare_and_set_pending_release_status(
                 &standby.id,
@@ -2247,6 +2306,7 @@ async fn recover_from_standby_candidates(
         if dl_snapshot.is_active(&standby.release_title) {
             let _ = app
                 .services
+                .workflow
                 .pending_releases
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                 .await;
@@ -2268,6 +2328,7 @@ async fn recover_from_standby_candidates(
                 let grabbed_at = now.to_rfc3339();
                 let _ = app
                     .services
+                    .workflow
                     .pending_releases
                     .update_pending_release_status(
                         &standby.id,
@@ -2278,6 +2339,7 @@ async fn recover_from_standby_candidates(
 
                 let siblings = app
                     .services
+                    .workflow
                     .pending_releases
                     .list_standby_pending_releases_for_wanted_item(&item.id)
                     .await
@@ -2288,6 +2350,7 @@ async fn recover_from_standby_candidates(
                     }
                     let _ = app
                         .services
+                        .workflow
                         .pending_releases
                         .update_pending_release_status(
                             &sibling.id,
@@ -2297,9 +2360,9 @@ async fn recover_from_standby_candidates(
                         .await;
                 }
 
-                if let Ok(Some(title)) = app.services.titles.get_by_id(&item.title_id).await {
+                if let Ok(Some(title)) = app.services.catalog.titles.get_by_id(&item.title_id).await
+                {
                     let _ = app
-                        .services
                         .append_domain_event(new_title_domain_event(
                             None,
                             &title,
@@ -2319,6 +2382,7 @@ async fn recover_from_standby_candidates(
             Ok(false) | Err(_) => {
                 let _ = app
                     .services
+                    .workflow
                     .pending_releases
                     .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                     .await;
@@ -2346,6 +2410,7 @@ async fn persist_standby_candidates(
 ) {
     let _ = app
         .services
+        .workflow
         .pending_releases
         .delete_standby_pending_releases_for_wanted_item(&item.id)
         .await;
@@ -2477,6 +2542,7 @@ async fn persist_standby_candidates(
 
         if app
             .services
+            .workflow
             .pending_releases
             .insert_pending_release(&standby)
             .await
@@ -2501,48 +2567,67 @@ async fn persist_standby_candidates(
 impl AppUseCase {
     pub async fn get_wanted_item(&self, actor: &User, id: &str) -> AppResult<Option<WantedItem>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.wanted_items.get_wanted_item_by_id(id).await
+        self.services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(id)
+            .await
     }
 
     pub async fn list_wanted_items(
         &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        limit: i64,
-        offset: i64,
+        query: WantedItemsQuery,
     ) -> AppResult<(Vec<WantedItem>, i64)> {
+        let WantedItemsQuery {
+            status,
+            media_type,
+            title_id,
+            limit,
+            offset,
+        } = query;
         let items = self
             .services
+            .workflow
             .wanted_items
-            .list_wanted_items(status, media_type, title_id, limit, offset)
+            .list_wanted_items(
+                status.as_deref(),
+                media_type.as_deref(),
+                title_id.as_deref(),
+                limit,
+                offset,
+            )
             .await?;
         let total = self
             .services
+            .workflow
             .wanted_items
-            .count_wanted_items(status, media_type, title_id)
+            .count_wanted_items(
+                status.as_deref(),
+                media_type.as_deref(),
+                title_id.as_deref(),
+            )
             .await?;
         Ok((items, total))
     }
 
     pub async fn list_release_decisions(
         &self,
-        wanted_item_id: Option<&str>,
-        title_id: Option<&str>,
-        limit: i64,
+        query: ReleaseDecisionsQuery,
     ) -> AppResult<Vec<ReleaseDecision>> {
-        if let Some(wid) = wanted_item_id {
+        if let Some(wid) = query.wanted_item_id.as_deref() {
             return self
                 .services
+                .workflow
                 .wanted_items
-                .list_release_decisions_for_wanted_item(wid, limit)
+                .list_release_decisions_for_wanted_item(wid, query.limit)
                 .await;
         }
-        if let Some(tid) = title_id {
+        if let Some(tid) = query.title_id.as_deref() {
             return self
                 .services
+                .workflow
                 .wanted_items
-                .list_release_decisions_for_title(tid, limit)
+                .list_release_decisions_for_title(tid, query.limit)
                 .await;
         }
         Ok(vec![])
@@ -2551,6 +2636,7 @@ impl AppUseCase {
     pub async fn trigger_title_wanted_search(&self, title_id: &str) -> AppResult<usize> {
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -2571,7 +2657,7 @@ impl AppUseCase {
         };
 
         if queued > 0 {
-            self.services.acquisition_wake.notify_one();
+            self.runtime.acquisition_wake.notify_one();
         }
 
         Ok(queued)
@@ -2585,6 +2671,7 @@ impl AppUseCase {
         let season_str = season_number.to_string();
         let items = self
             .services
+            .workflow
             .wanted_items
             .list_wanted_items(Some("wanted"), Some("episode"), Some(title_id), 500, 0)
             .await?;
@@ -2594,6 +2681,7 @@ impl AppUseCase {
         for item in &items {
             if item.season_number.as_deref() == Some(season_str.as_str()) {
                 self.services
+                    .workflow
                     .wanted_items
                     .schedule_wanted_item_search(&WantedSearchTransition {
                         id: item.id.clone(),
@@ -2609,7 +2697,7 @@ impl AppUseCase {
         }
 
         if queued > 0 {
-            self.services.acquisition_wake.notify_one();
+            self.runtime.acquisition_wake.notify_one();
         }
 
         Ok(queued)
@@ -2618,6 +2706,7 @@ impl AppUseCase {
     pub async fn trigger_wanted_item_search(&self, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(wanted_item_id)
             .await?
@@ -2625,6 +2714,7 @@ impl AppUseCase {
 
         let now = Utc::now();
         self.services
+            .workflow
             .wanted_items
             .schedule_wanted_item_search(&WantedSearchTransition {
                 id: item.id.clone(),
@@ -2635,19 +2725,21 @@ impl AppUseCase {
                 grabbed_release: item.grabbed_release.clone(),
             })
             .await?;
-        self.services.acquisition_wake.notify_one();
+        self.runtime.acquisition_wake.notify_one();
         Ok(())
     }
 
     pub async fn pause_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
 
         self.services
+            .workflow
             .wanted_items
             .transition_wanted_to_paused(&WantedPauseTransition {
                 id: item.id.clone(),
@@ -2662,6 +2754,7 @@ impl AppUseCase {
     pub async fn resume_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(wanted_item_id)
             .await?
@@ -2676,6 +2769,7 @@ impl AppUseCase {
         );
 
         self.services
+            .workflow
             .wanted_items
             .schedule_wanted_item_search(&WantedSearchTransition {
                 id: item.id.clone(),
@@ -2691,6 +2785,7 @@ impl AppUseCase {
     pub async fn reset_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(wanted_item_id)
             .await?
@@ -2705,6 +2800,7 @@ impl AppUseCase {
         );
 
         self.services
+            .workflow
             .wanted_items
             .schedule_wanted_item_search(&WantedSearchTransition {
                 id: item.id.clone(),
@@ -2726,6 +2822,7 @@ impl AppUseCase {
     ) -> AppResult<usize> {
         let has_file = self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
@@ -2739,6 +2836,7 @@ impl AppUseCase {
         let next_search_at = now.to_rfc3339();
         if let Some(item) = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_for_title(&title.id, None)
             .await?
@@ -2748,6 +2846,7 @@ impl AppUseCase {
             }
 
             self.services
+                .workflow
                 .wanted_items
                 .schedule_wanted_item_search(&WantedSearchTransition {
                     id: item.id.clone(),
@@ -2784,6 +2883,7 @@ impl AppUseCase {
         };
 
         self.services
+            .workflow
             .wanted_items
             .ensure_wanted_item_seeded(&item)
             .await?;
@@ -2797,12 +2897,14 @@ impl AppUseCase {
     ) -> AppResult<usize> {
         let collections = self
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await?;
 
         let existing_files = self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
@@ -2821,6 +2923,7 @@ impl AppUseCase {
 
             let episodes = self
                 .services
+                .catalog
                 .shows
                 .list_episodes_for_collection(&collection.id)
                 .await?;
@@ -2832,6 +2935,7 @@ impl AppUseCase {
 
                 if let Some(item) = self
                     .services
+                    .workflow
                     .wanted_items
                     .get_wanted_item_for_title(&title.id, Some(&episode.id))
                     .await?
@@ -2841,6 +2945,7 @@ impl AppUseCase {
                     }
 
                     self.services
+                        .workflow
                         .wanted_items
                         .schedule_wanted_item_search(&WantedSearchTransition {
                             id: item.id.clone(),
@@ -2879,6 +2984,7 @@ impl AppUseCase {
                 };
 
                 self.services
+                    .workflow
                     .wanted_items
                     .ensure_wanted_item_seeded(&item)
                     .await?;
@@ -2942,6 +3048,7 @@ pub async fn start_background_acquisition_poller(
     let now_str = Utc::now().to_rfc3339();
     match app
         .services
+        .workflow
         .wanted_items
         .reset_fruitless_wanted_items(&now_str)
         .await
@@ -3032,7 +3139,7 @@ pub async fn start_background_acquisition_poller(
     rss_sync_interval.tick().await;
     pending_release_interval.tick().await;
 
-    let wake = app.services.acquisition_wake.clone();
+    let wake = app.runtime.acquisition_wake.clone();
 
     /// Run a scheduled task inside a spawned task to isolate panics.
     /// If the task panics, the error is logged and the scheduler loop continues.

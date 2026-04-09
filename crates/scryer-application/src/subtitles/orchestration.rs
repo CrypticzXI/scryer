@@ -8,11 +8,189 @@ use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
-    AppResult, AppUseCase, JobKey, JobTriggerSource, SubtitleSettings as AppSubtitleSettings,
+    AppError, AppResult, AppUseCase, JobKey, JobTriggerSource,
+    SubtitleSettings as AppSubtitleSettings,
 };
-use scryer_domain::SubtitleDownload;
+use scryer_domain::{SubtitleDownload, User};
 
 impl AppUseCase {
+    pub async fn list_subtitle_downloads_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<SubtitleDownload>> {
+        self.services
+            .workflow
+            .subtitle_downloads
+            .list_for_title(title_id)
+            .await
+    }
+
+    pub async fn search_subtitles_for_media_file(
+        &self,
+        _actor: &User,
+        media_file_id: &str,
+        language: &str,
+    ) -> AppResult<Vec<crate::subtitles::SubtitleMatch>> {
+        let media_file = self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(media_file_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("media file not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+        let settings = self.subtitle_settings().await?;
+        let api_key = settings.open_subtitles_api_key.clone().ok_or_else(|| {
+            AppError::Validation("OpenSubtitles API key not configured".to_string())
+        })?;
+
+        let provider = OpenSubtitlesProvider::new(api_key);
+        if let (Some(username), Some(password)) = (
+            settings.open_subtitles_username.as_deref(),
+            settings.open_subtitles_password.as_deref(),
+        ) && !username.is_empty()
+            && !password.is_empty()
+        {
+            let _ = provider.login(username, password).await;
+        }
+
+        let (imdb_id, series_imdb_id) = title_imdb_ids(&title);
+        let (season_num, episode_num) = media_file_episode_context(self, &media_file).await;
+        let languages = vec![language.trim().to_string()];
+
+        SubtitleSearchOrchestrator::new(0)
+            .search(
+                &provider,
+                Path::new(&media_file.file_path),
+                subtitle_media_kind(&title),
+                &title.name,
+                &title.aliases,
+                title.year,
+                imdb_id,
+                series_imdb_id,
+                season_num,
+                episode_num,
+                &languages,
+                media_file.release_group.as_deref(),
+                media_file.source_type.as_deref(),
+                media_file.video_codec_parsed.as_deref(),
+                media_file.audio_codec_parsed.as_deref(),
+                media_file.resolution.as_deref(),
+                None,
+                settings.include_ai_translated,
+                settings.include_machine_translated,
+            )
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_subtitle_for_media_file(
+        &self,
+        _actor: &User,
+        media_file_id: &str,
+        provider_file_id: &str,
+        language: &str,
+        forced: bool,
+        hearing_impaired: bool,
+        score: Option<i32>,
+        release_info: Option<String>,
+        uploader: Option<String>,
+        ai_translated: bool,
+        machine_translated: bool,
+    ) -> AppResult<()> {
+        let media_file = self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(media_file_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("media file not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+        let settings = self.subtitle_settings().await?;
+        let api_key = settings.open_subtitles_api_key.clone().ok_or_else(|| {
+            AppError::Validation("OpenSubtitles API key not configured".to_string())
+        })?;
+
+        let provider = OpenSubtitlesProvider::new(api_key);
+        if let (Some(username), Some(password)) = (
+            settings.open_subtitles_username.as_deref(),
+            settings.open_subtitles_password.as_deref(),
+        ) && !username.is_empty()
+            && !password.is_empty()
+        {
+            let _ = provider.login(username, password).await;
+        }
+
+        let file_path = Path::new(&media_file.file_path);
+        let (dest_path, _) = crate::subtitles::download::download_and_save(
+            &provider,
+            provider_file_id,
+            file_path,
+            language,
+            forced,
+            hearing_impaired,
+        )
+        .await?;
+
+        let record = SubtitleDownload {
+            id: scryer_domain::Id::new().0,
+            media_file_id: media_file.id.clone(),
+            title_id: media_file.title_id.clone(),
+            episode_id: media_file.episode_id.clone(),
+            language: language.to_string(),
+            provider: "opensubtitles".to_string(),
+            provider_file_id: Some(provider_file_id.to_string()),
+            file_path: dest_path.to_string_lossy().to_string(),
+            score,
+            hearing_impaired,
+            forced,
+            ai_translated,
+            machine_translated,
+            uploader,
+            release_info,
+            synced: false,
+            downloaded_at: chrono::Utc::now().to_rfc3339(),
+        };
+        self.services
+            .workflow
+            .subtitle_downloads
+            .insert(&record)
+            .await?;
+
+        let sync_result = maybe_sync_downloaded_subtitle(
+            self,
+            read_subtitle_sync_settings(&settings),
+            subtitle_media_kind(&title),
+            file_path,
+            &dest_path,
+            Some(&record.id),
+            score,
+            forced,
+        )
+        .await;
+
+        info!(
+            media_file_id = %media_file.id,
+            subtitle_download_id = %record.id,
+            sync_summary = %sync_summary_suffix(sync_result.as_ref()),
+            "manual subtitle download completed"
+        );
+
+        Ok(())
+    }
+
     pub(crate) async fn run_subtitle_search_job(&self) -> AppResult<String> {
         run_subtitle_search_cycle(self).await?;
         Ok("Subtitle search cycle completed".to_string())
@@ -167,7 +345,12 @@ async fn maybe_sync_downloaded_subtitle(
         Ok(result) => {
             if result.applied
                 && let Some(id) = download_id
-                && let Err(err) = app.services.subtitle_downloads.set_synced(id, true).await
+                && let Err(err) = app
+                    .services
+                    .workflow
+                    .subtitle_downloads
+                    .set_synced(id, true)
+                    .await
             {
                 warn!(error = %err, download_id = id, "failed to persist subtitle sync status");
             }
@@ -213,7 +396,13 @@ async fn media_file_episode_context(
         return (None, None);
     };
 
-    match app.services.shows.get_episode_by_id(episode_id).await {
+    match app
+        .services
+        .catalog
+        .shows
+        .get_episode_by_id(episode_id)
+        .await
+    {
         Ok(Some(episode)) => (
             episode
                 .season_number
@@ -278,12 +467,14 @@ async fn run_subtitle_search_for_file(
 
     let title = app
         .services
+        .catalog
         .titles
         .get_by_id(title_id)
         .await?
         .ok_or_else(|| crate::AppError::NotFound("title not found".into()))?;
     let mf = app
         .services
+        .library
         .media_files
         .get_media_file_by_id(media_file_id)
         .await?
@@ -304,6 +495,7 @@ async fn run_subtitle_search_for_file(
 
     let existing = app
         .services
+        .workflow
         .subtitle_downloads
         .list_for_media_file(&mf.id)
         .await
@@ -353,6 +545,7 @@ async fn run_subtitle_search_for_file(
         for result in &results {
             let blacklisted = app
                 .services
+                .workflow
                 .subtitle_downloads
                 .is_blacklisted(&mf.id, &result.provider, &result.provider_file_id)
                 .await
@@ -405,7 +598,13 @@ async fn run_subtitle_search_for_file(
                     downloaded_at: Utc::now().to_rfc3339(),
                 };
                 let record_id = record.id.clone();
-                let record_inserted = match app.services.subtitle_downloads.insert(&record).await {
+                let record_inserted = match app
+                    .services
+                    .workflow
+                    .subtitle_downloads
+                    .insert(&record)
+                    .await
+                {
                     Ok(()) => true,
                     Err(err) => {
                         warn!(error = %err, "failed to persist on-import subtitle download record");
@@ -484,7 +683,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
     }
 
     // Get all monitored titles with media files
-    let titles = app.services.titles.list(None, None).await?;
+    let titles = app.services.catalog.titles.list(None, None).await?;
     let mut searched = 0u32;
     let mut downloaded = 0u32;
 
@@ -495,6 +694,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
 
         let media_files = app
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await?;
@@ -502,6 +702,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
         for mf in &media_files {
             let existing = app
                 .services
+                .workflow
                 .subtitle_downloads
                 .list_for_media_file(&mf.id)
                 .await
@@ -574,6 +775,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 for r in &results {
                     let blacklisted = app
                         .services
+                        .workflow
                         .subtitle_downloads
                         .is_blacklisted(&mf.id, &r.provider, &r.provider_file_id)
                         .await
@@ -640,6 +842,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
 
                         let record_inserted = match app
                             .services
+                            .workflow
                             .subtitle_downloads
                             .insert(&record)
                             .await

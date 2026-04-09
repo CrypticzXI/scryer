@@ -79,13 +79,7 @@ pub trait ShowRepository: Send + Sync {
     async fn update_collection(
         &self,
         collection_id: &str,
-        collection_type: Option<CollectionType>,
-        collection_index: Option<String>,
-        label: Option<String>,
-        ordered_path: Option<String>,
-        first_episode_number: Option<String>,
-        last_episode_number: Option<String>,
-        monitored: Option<bool>,
+        update: CollectionUpdate,
     ) -> AppResult<Collection>;
     async fn update_collection_interstitial_movie(
         &self,
@@ -113,23 +107,7 @@ pub trait ShowRepository: Send + Sync {
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>>;
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
-    async fn update_episode(
-        &self,
-        episode_id: &str,
-        episode_type: Option<scryer_domain::EpisodeType>,
-        episode_number: Option<String>,
-        season_number: Option<String>,
-        episode_label: Option<String>,
-        title: Option<String>,
-        air_date: Option<String>,
-        duration_seconds: Option<i64>,
-        has_multi_audio: Option<bool>,
-        has_subtitle: Option<bool>,
-        monitored: Option<bool>,
-        collection_id: Option<String>,
-        overview: Option<String>,
-        tvdb_id: Option<String>,
-    ) -> AppResult<Episode>;
+    async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
@@ -189,20 +167,7 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
     async fn touch_last_error(&self, provider_type: &str) -> AppResult<()>;
-    async fn update(
-        &self,
-        id: &str,
-        name: Option<String>,
-        provider_type: Option<String>,
-        base_url: Option<String>,
-        api_key_encrypted: Option<String>,
-        rate_limit_seconds: Option<i64>,
-        rate_limit_burst: Option<i64>,
-        is_enabled: Option<bool>,
-        enable_interactive_search: Option<bool>,
-        enable_auto_search: Option<bool>,
-        config_json: Option<String>,
-    ) -> AppResult<IndexerConfig>;
+    async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -211,15 +176,7 @@ pub trait DownloadClientConfigRepository: Send + Sync {
     async fn list(&self, client_type: Option<String>) -> AppResult<Vec<DownloadClientConfig>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<DownloadClientConfig>>;
     async fn create(&self, config: DownloadClientConfig) -> AppResult<DownloadClientConfig>;
-    async fn update(
-        &self,
-        id: &str,
-        name: Option<String>,
-        client_type: Option<String>,
-        base_url: Option<String>,
-        config_json: Option<String>,
-        is_enabled: Option<bool>,
-    ) -> AppResult<DownloadClientConfig>;
+    async fn update(&self, update: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
 }
@@ -494,6 +451,32 @@ pub trait ImportRepository: Send + Sync {
     async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowOperationInfo {
+    pub id: String,
+    pub operation_type: String,
+    pub status: String,
+    pub actor_user_id: Option<String>,
+    pub progress_json: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[async_trait]
+pub trait WorkflowOperationRepository: Send + Sync {
+    async fn create_workflow_operation(
+        &self,
+        operation_type: String,
+        status: String,
+        actor_user_id: Option<String>,
+        progress_json: Option<String>,
+        started_at: Option<String>,
+        completed_at: Option<String>,
+    ) -> AppResult<WorkflowOperationInfo>;
 }
 
 #[async_trait]

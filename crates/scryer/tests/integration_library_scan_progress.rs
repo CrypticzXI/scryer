@@ -35,7 +35,6 @@ async fn active_library_scans_query_returns_progress_snapshot() {
     let ctx = TestContext::new().await;
 
     ctx.app
-        .services
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
@@ -56,7 +55,6 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .await
         .expect("append library scan started event");
     ctx.app
-        .services
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),

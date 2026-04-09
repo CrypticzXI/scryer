@@ -1,7 +1,5 @@
 use super::*;
 
-pub(crate) const SETTINGS_SCOPE_SYSTEM: &str = "system";
-pub(crate) const SETTINGS_SCOPE_MEDIA: &str = "media";
 pub(crate) const INHERIT_QUALITY_PROFILE_VALUE: &str = "__inherit__";
 pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 4] =
     ["nzbget", "sabnzbd", "qbittorrent", "weaver"];

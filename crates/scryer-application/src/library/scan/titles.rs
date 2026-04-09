@@ -117,14 +117,14 @@ pub(crate) fn update_movie_probe_path_index(
     }
 }
 
-pub(crate) fn build_movie_title_indexes(
-    existing_titles: &[Title],
-) -> (
+pub(crate) type MovieTitleIndexes = (
     HashMap<String, usize>,
     HashMap<String, usize>,
     HashMap<String, usize>,
     HashMap<String, usize>,
-) {
+);
+
+pub(crate) fn build_movie_title_indexes(existing_titles: &[Title]) -> MovieTitleIndexes {
     let mut existing_titles_by_name = HashMap::new();
     let mut existing_titles_by_tvdb_id = HashMap::new();
     let mut existing_titles_by_imdb_id = HashMap::new();

@@ -59,7 +59,8 @@ struct Mp4BoxHeader {
 /// Parse an MP4/MOV/M4V file into a [`RawContainer`].
 pub(crate) fn parse_mp4(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let prepared = prepare_mp4_metadata(path)?;
+    let mut prepared = prepare_mp4_metadata(path)?;
+    sanitize_prepared_mp4_metadata(&mut prepared.metadata);
     let metadata_by_track = parse_mp4_track_metadata(&prepared.metadata);
 
     let mut cursor = Cursor::new(prepared.metadata.as_slice());
@@ -171,6 +172,103 @@ fn should_copy_top_level_box(name: &[u8; 4]) -> bool {
         name,
         b"ftyp" | b"moov" | b"styp" | b"sidx" | b"moof" | b"mfra"
     )
+}
+
+fn sanitize_prepared_mp4_metadata(data: &mut Vec<u8>) {
+    sanitize_mp4_box_range(data, 0, data.len());
+}
+
+fn sanitize_mp4_box_range(data: &mut Vec<u8>, start: usize, end: usize) -> usize {
+    let mut pos = start;
+    let mut range_end = end;
+    let mut total_delta = 0;
+
+    while pos < range_end {
+        let Some(header) = read_box_header_from_bytes(&data[pos..range_end]) else {
+            break;
+        };
+        let mut box_size = header.size as usize;
+        if box_size < header.header_size || pos + box_size > range_end {
+            break;
+        }
+
+        let box_delta = if &header.name == b"hdlr" {
+            sanitize_hdlr_box(data, pos, header)
+        } else if let Some((child_start, child_end)) = mp4_child_range(pos, header, box_size) {
+            let child_delta = sanitize_mp4_box_range(data, child_start, child_end);
+            if child_delta > 0 {
+                box_size += child_delta;
+                write_box_size_at(data, pos, header.header_size, box_size as u64);
+            }
+            child_delta
+        } else {
+            0
+        };
+
+        box_size += if &header.name == b"hdlr" {
+            box_delta
+        } else {
+            0
+        };
+        pos += box_size;
+        range_end += box_delta;
+        total_delta += box_delta;
+    }
+
+    total_delta
+}
+
+fn mp4_child_range(
+    box_start: usize,
+    header: Mp4BoxHeader,
+    box_size: usize,
+) -> Option<(usize, usize)> {
+    let payload_start = match &header.name {
+        b"meta" if box_size >= header.header_size + 4 => box_start + header.header_size + 4,
+        b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" | b"tref" | b"moof" | b"traf"
+        | b"mfra" => box_start + header.header_size,
+        _ => return None,
+    };
+    Some((payload_start, box_start + box_size))
+}
+
+fn sanitize_hdlr_box(data: &mut Vec<u8>, box_start: usize, header: Mp4BoxHeader) -> usize {
+    let payload_start = box_start + header.header_size;
+    let box_end = box_start + header.size as usize;
+    if box_end > data.len() || box_end < payload_start {
+        return 0;
+    }
+
+    if box_end >= payload_start + 8 {
+        data[payload_start + 4..payload_start + 8].fill(0);
+    }
+    if box_end >= payload_start + 24 {
+        data[payload_start + 12..payload_start + 24].fill(0);
+    }
+
+    let name_start = payload_start + 24;
+    if box_end > name_start && data[name_start..box_end].contains(&0) {
+        return 0;
+    }
+
+    data.insert(box_end, 0);
+    write_box_size_at(data, box_start, header.header_size, header.size + 1);
+    1
+}
+
+fn write_box_size_at(data: &mut [u8], box_start: usize, header_size: usize, new_size: u64) {
+    match header_size {
+        8 => {
+            if let Ok(size32) = u32::try_from(new_size) {
+                data[box_start..box_start + 4].copy_from_slice(&size32.to_be_bytes());
+            }
+        }
+        16 => {
+            data[box_start..box_start + 4].copy_from_slice(&1_u32.to_be_bytes());
+            data[box_start + 8..box_start + 16].copy_from_slice(&new_size.to_be_bytes());
+        }
+        _ => {}
+    }
 }
 
 fn build_mp4_tracks(
@@ -1261,6 +1359,22 @@ mod tests {
         make_box(b"meta", &full_box)
     }
 
+    fn make_hdlr_box(
+        pre_defined: u32,
+        handler_type: &[u8; 4],
+        reserved: [u32; 3],
+        name: &[u8],
+    ) -> Vec<u8> {
+        let mut payload = vec![0_u8; 4];
+        payload.extend_from_slice(&pre_defined.to_be_bytes());
+        payload.extend_from_slice(handler_type);
+        for value in reserved {
+            payload.extend_from_slice(&value.to_be_bytes());
+        }
+        payload.extend_from_slice(name);
+        make_box(b"hdlr", &payload)
+    }
+
     #[test]
     fn codec_type_to_fourcc_roundtrips() {
         assert_eq!(codec_type_to_fourcc(CodecType::H264), "avc1");
@@ -1301,6 +1415,38 @@ mod tests {
             stats
         );
         assert!(stats.seeks >= 3, "expected explicit skipping: {:?}", stats);
+    }
+
+    #[test]
+    fn sanitize_prepared_metadata_repairs_malformed_hdlr_boxes() {
+        let hdlr = make_hdlr_box(1, b"vide", [2, 3, 4], b"VideoHandler");
+        let mdia = make_box(b"mdia", &hdlr);
+        let trak = make_box(b"trak", &mdia);
+        let mut moov = make_box(b"moov", &trak);
+
+        let original_len = moov.len();
+        let original_moov_size = read_box_header_from_bytes(&moov).unwrap().size;
+
+        sanitize_prepared_mp4_metadata(&mut moov);
+
+        assert_eq!(moov.len(), original_len + 1);
+        assert_eq!(
+            read_box_header_from_bytes(&moov).unwrap().size,
+            original_moov_size + 1
+        );
+
+        let moov_header = read_box_header_from_bytes(&moov).unwrap();
+        let trak = &moov[moov_header.header_size..moov_header.size as usize];
+        let trak_header = read_box_header_from_bytes(trak).unwrap();
+        let mdia = &trak[trak_header.header_size..trak_header.size as usize];
+        let mdia_header = read_box_header_from_bytes(mdia).unwrap();
+        let hdlr = &mdia[mdia_header.header_size..mdia_header.size as usize];
+        let hdlr_header = read_box_header_from_bytes(hdlr).unwrap();
+        let payload = &hdlr[hdlr_header.header_size..hdlr_header.size as usize];
+
+        assert_eq!(&payload[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&payload[12..24], &[0; 12]);
+        assert_eq!(payload.last().copied(), Some(0));
     }
 
     #[test]

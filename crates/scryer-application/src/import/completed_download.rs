@@ -186,6 +186,7 @@ pub async fn verify_import(
 
     let artifacts = match app
         .services
+        .workflow
         .import_artifacts
         .list_by_source_ref(&td.client_type, source_ref)
         .await
@@ -266,6 +267,7 @@ async fn find_completed_download(
 ) -> Option<CompletedDownload> {
     let completed_downloads = match app
         .services
+        .integrations
         .download_client
         .list_completed_downloads()
         .await
@@ -420,7 +422,15 @@ async fn expected_episode_units(
     let Some(title_id) = td.title_id.as_deref() else {
         return ExpectedEpisodeResolution::Unresolved;
     };
-    let Some(title) = app.services.titles.get_by_id(title_id).await.ok().flatten() else {
+    let Some(title) = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return ExpectedEpisodeResolution::Unresolved;
     };
 
@@ -486,7 +496,7 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
         .unwrap_or_else(|| "Manual interaction required for this download.".to_string());
 
     let event = match td.title_id.as_ref() {
-        Some(title_id) => match app.services.titles.get_by_id(title_id).await {
+        Some(title_id) => match app.services.catalog.titles.get_by_id(title_id).await {
             Ok(Some(title)) => new_title_domain_event(
                 None,
                 &title,
@@ -521,19 +531,21 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
         ),
     };
 
-    let _ = app.services.append_domain_event(event).await;
+    let _ = app.append_domain_event(event).await;
 }
 
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
     let source_ref = &td.client_item.download_client_item_id;
     let imported = app
         .services
+        .workflow
         .import_artifacts
         .count_by_result(&td.client_type, source_ref, "imported")
         .await
         .unwrap_or(0);
     let already_present = app
         .services
+        .workflow
         .import_artifacts
         .count_by_result(&td.client_type, source_ref, "already_present")
         .await
@@ -561,10 +573,10 @@ mod tests {
         NullReleaseAttemptRepository, NullUserRepository,
     };
     use crate::{
-        ActivityKind, AppError, AppResult, AppServices, AppUseCase, DomainEventRepository,
-        FacetRegistry, ImportArtifact, ImportArtifactRepository, IndexerConfigRepository,
-        JwtAuthConfig, QualityProfile, QualityProfileRepository, ShowRepository,
-        TitleMetadataUpdate, TitleRepository,
+        ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
+        DomainEventRepository, EpisodeUpdate, FacetRegistry, ImportArtifact,
+        ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig, QualityProfile,
+        QualityProfileRepository, ShowRepository, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -733,17 +745,7 @@ mod tests {
             Ok(collection)
         }
 
-        async fn update_collection(
-            &self,
-            _: &str,
-            _: Option<CollectionType>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<bool>,
-        ) -> AppResult<Collection> {
+        async fn update_collection(&self, _: &str, _: CollectionUpdate) -> AppResult<Collection> {
             Err(AppError::Repository("not needed in test".into()))
         }
 
@@ -817,23 +819,7 @@ mod tests {
             Ok(episode)
         }
 
-        async fn update_episode(
-            &self,
-            _: &str,
-            _: Option<EpisodeType>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<i64>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-        ) -> AppResult<Episode> {
+        async fn update_episode(&self, _: &str, _: EpisodeUpdate) -> AppResult<Episode> {
             Err(AppError::Repository("not needed in test".into()))
         }
 
@@ -964,17 +950,7 @@ mod tests {
 
         async fn update(
             &self,
-            _: &str,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<i64>,
-            _: Option<i64>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<String>,
+            _: crate::IndexerConfigUpdate,
         ) -> AppResult<scryer_domain::IndexerConfig> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -1117,7 +1093,7 @@ mod tests {
         episodes: Vec<Episode>,
         artifacts: Vec<ImportArtifact>,
     ) -> AppUseCase {
-        let mut services = AppServices::with_default_channels(
+        let services = AppServices::builder(
             Arc::new(TestTitleRepo {
                 titles: Arc::new(Mutex::new(titles)),
             }),
@@ -1134,11 +1110,12 @@ mod tests {
             Arc::new(crate::null_repositories::NullSettingsRepository),
             Arc::new(TestQualityProfileRepo),
             String::new(),
-        );
-        services.domain_events = Arc::new(TestDomainEventRepo::default());
-        services.import_artifacts = Arc::new(TestImportArtifactRepo {
+        )
+        .with_domain_events(Arc::new(TestDomainEventRepo::default()))
+        .with_import_artifacts(Arc::new(TestImportArtifactRepo {
             artifacts: Arc::new(Mutex::new(artifacts)),
-        });
+        }))
+        .build_partial_for_tests();
 
         AppUseCase::new(
             services,

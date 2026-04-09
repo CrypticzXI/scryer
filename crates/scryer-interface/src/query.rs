@@ -1,24 +1,23 @@
 use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 
 use chrono::Utc;
-use scryer_application::TitleHistoryFilter;
+use scryer_application::{
+    IndexerEpisodeSearchRequest, IndexerSearchRequest, ReleaseDecisionsQuery, TitleHistoryFilter,
+    WantedItemsQuery,
+};
 use scryer_domain::{PolicyInput, TitleHistoryEventType};
 
-use crate::context::{actor_from_ctx, app_from_ctx, settings_db_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
-    from_download_queue_item, from_episode, from_health_check_result, from_indexer_config,
-    from_job_definition, from_job_run, from_library_scan_session, from_media_rename_plan,
-    from_pending_release, from_provider_type, from_release_decision, from_system_health,
-    from_title, from_title_history_page, from_title_history_record, from_title_media_file,
+    from_download_client_routing_entry, from_download_queue_item, from_episode,
+    from_health_check_result, from_indexer_config, from_indexer_routing_entry, from_job_definition,
+    from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
+    from_media_settings, from_pending_release, from_provider_type, from_quality_profile_settings,
+    from_release_decision, from_service_settings, from_system_health, from_title,
+    from_title_history_page, from_title_history_record, from_title_media_file,
     from_title_release_blocklist_entry, from_user, from_wanted_item,
-};
-use crate::settings_graph::{
-    load_download_client_routing, load_indexer_routing, load_library_paths_payload,
-    load_media_settings_payload, load_quality_profile_settings_payload,
-    load_required_audio_languages_for_scope, load_service_settings_payload,
-    load_title_required_audio_override,
 };
 use crate::types::*;
 
@@ -107,6 +106,26 @@ fn from_download_history_page(
             .map(from_download_queue_item)
             .collect(),
         has_more: page.has_more,
+    }
+}
+
+fn from_metadata_search_item(
+    item: scryer_application::RichMetadataSearchItem,
+) -> MetadataSearchItemPayload {
+    MetadataSearchItemPayload {
+        tvdb_id: item.tvdb_id,
+        name: item.name,
+        imdb_id: item.imdb_id,
+        slug: item.slug,
+        type_hint: item.type_hint,
+        year: item.year,
+        status: item.status,
+        overview: item.overview,
+        popularity: item.popularity,
+        poster_url: item.poster_url,
+        language: item.language,
+        runtime_minutes: item.runtime_minutes,
+        sort_title: item.sort_title,
     }
 }
 
@@ -344,19 +363,30 @@ impl QueryRoot {
             (Some(query), None, Some(season), Some(episode)) => app
                 .search_indexers_episode(
                     &actor,
-                    query,
-                    season,
-                    episode,
-                    imdb_id,
-                    tvdb_id,
-                    anidb_id,
-                    category,
-                    absolute_episode.map(|value| value as u32),
+                    IndexerEpisodeSearchRequest {
+                        title: query,
+                        season,
+                        episode,
+                        imdb_id,
+                        tvdb_id,
+                        anidb_id,
+                        category,
+                        absolute_episode: absolute_episode.map(|value| value as u32),
+                    },
                 )
                 .await
                 .map_err(to_gql_error)?,
             (Some(query), None, None, None) => app
-                .search_indexers(&actor, query, imdb_id, tvdb_id, anidb_id, category)
+                .search_indexers(
+                    &actor,
+                    IndexerSearchRequest {
+                        query,
+                        imdb_id,
+                        tvdb_id,
+                        anidb_id,
+                        category,
+                    },
+                )
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(title_id), Some(season), Some(episode)) => app
@@ -701,26 +731,34 @@ impl QueryRoot {
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_media_settings_payload(&app, &db, scope).await
+        app.get_media_settings(&actor, scope.into_media_facet())
+            .await
+            .map(|settings| from_media_settings(scope, settings))
+            .map_err(to_gql_error)
     }
 
     async fn library_paths(&self, ctx: &Context<'_>) -> GqlResult<LibraryPathsPayload> {
+        let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_library_paths_payload(&db).await
+        app.get_library_paths(&actor)
+            .await
+            .map(from_library_paths_settings)
+            .map_err(to_gql_error)
     }
 
     async fn service_settings(&self, ctx: &Context<'_>) -> GqlResult<ServiceSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_service_settings_payload(&db).await
+        app.get_service_settings(&actor)
+            .await
+            .map(from_service_settings)
+            .map_err(to_gql_error)
     }
 
     async fn quality_profile_settings(
@@ -732,8 +770,10 @@ impl QueryRoot {
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_quality_profile_settings_payload(&app, &db).await
+        app.get_quality_profile_settings(&actor)
+            .await
+            .map(from_quality_profile_settings)
+            .map_err(to_gql_error)
     }
 
     async fn download_client_routing(
@@ -741,12 +781,20 @@ impl QueryRoot {
         ctx: &Context<'_>,
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
+        let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_download_client_routing(&db, scope).await
+        app.get_download_client_routing(&actor, scope.as_scope_id())
+            .await
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(from_download_client_routing_entry)
+                    .collect()
+            })
+            .map_err(to_gql_error)
     }
 
     async fn indexer_routing(
@@ -754,12 +802,20 @@ impl QueryRoot {
         ctx: &Context<'_>,
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
+        let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        let db = settings_db_from_ctx(ctx)?;
-        load_indexer_routing(&db, scope).await
+        app.get_indexer_routing(&actor, scope.as_scope_id())
+            .await
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(from_indexer_routing_entry)
+                    .collect()
+            })
+            .map_err(to_gql_error)
     }
 
     async fn indexers(
@@ -773,7 +829,7 @@ impl QueryRoot {
             .list_indexer_configs(&actor, provider_type)
             .await
             .map_err(to_gql_error)?;
-        let stats = app.services.indexer_stats.all_stats();
+        let stats = app.indexer_query_stats(&actor).map_err(to_gql_error)?;
         let mut payloads: Vec<IndexerConfigPayload> =
             configs.into_iter().map(from_indexer_config).collect();
         for payload in &mut payloads {
@@ -797,7 +853,7 @@ impl QueryRoot {
             .map_err(to_gql_error)?
             .map(from_indexer_config);
         if let Some(ref mut p) = payload {
-            let stats = app.services.indexer_stats.all_stats();
+            let stats = app.indexer_query_stats(&actor).map_err(to_gql_error)?;
             if let Some(s) = stats.iter().find(|s| s.indexer_id == p.id) {
                 p.last_query_at = s.last_query_at.clone();
             }
@@ -923,7 +979,10 @@ impl QueryRoot {
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
-        let results = app.services.health_check_results.read().await;
+        let results = app
+            .cached_health_check_results(&actor)
+            .await
+            .map_err(to_gql_error)?;
         Ok(results
             .iter()
             .cloned()
@@ -982,9 +1041,7 @@ impl QueryRoot {
         }
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let records = app
-            .services
-            .imports
-            .list_imports(limit)
+            .list_import_history(&actor, limit)
             .await
             .map_err(to_gql_error)?;
         Ok(records
@@ -1055,13 +1112,13 @@ impl QueryRoot {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let (items, total) = app
-            .list_wanted_items(
-                status.map(WantedStatusValue::as_str),
-                media_type.map(WantedMediaTypeValue::as_str),
-                title_id.as_deref(),
+            .list_wanted_items(WantedItemsQuery {
+                status: status.map(|value| value.as_str().to_string()),
+                media_type: media_type.map(|value| value.as_str().to_string()),
+                title_id,
                 limit,
                 offset,
-            )
+            })
             .await
             .map_err(to_gql_error)?;
         Ok(WantedItemsListPayload {
@@ -1083,7 +1140,11 @@ impl QueryRoot {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let decisions = app
-            .list_release_decisions(wanted_item_id.as_deref(), title_id.as_deref(), limit)
+            .list_release_decisions(ReleaseDecisionsQuery {
+                wanted_item_id,
+                title_id,
+                limit,
+            })
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -1119,9 +1180,7 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
 
         let scripts = app
-            .services
-            .pp_scripts
-            .list_scripts()
+            .list_post_processing_scripts()
             .await
             .map_err(to_gql_error)?;
         Ok(scripts
@@ -1140,9 +1199,7 @@ impl QueryRoot {
 
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let runs = app
-            .services
-            .pp_scripts
-            .list_runs_for_script(&script_id, limit)
+            .list_post_processing_script_runs(&script_id, limit)
             .await
             .map_err(to_gql_error)?;
         Ok(runs
@@ -1269,29 +1326,10 @@ impl QueryRoot {
         }
         let limit = limit.clamp(1, 100);
         let results = app
-            .services
-            .metadata_gateway
-            .search_tvdb_rich(&query, &type_hint, limit, &language)
+            .search_metadata(&actor, &query, &type_hint, limit, &language)
             .await
             .map_err(to_gql_error)?;
-        Ok(results
-            .into_iter()
-            .map(|item| MetadataSearchItemPayload {
-                tvdb_id: item.tvdb_id,
-                name: item.name,
-                imdb_id: item.imdb_id,
-                slug: item.slug,
-                type_hint: item.type_hint,
-                year: item.year,
-                status: item.status,
-                overview: item.overview,
-                popularity: item.popularity,
-                poster_url: item.poster_url,
-                language: item.language,
-                runtime_minutes: item.runtime_minutes,
-                sort_title: item.sort_title,
-            })
-            .collect())
+        Ok(results.into_iter().map(from_metadata_search_item).collect())
     }
 
     async fn search_metadata_multi(
@@ -1308,35 +1346,25 @@ impl QueryRoot {
         }
         let limit = limit.clamp(1, 100);
         let result = app
-            .services
-            .metadata_gateway
-            .search_tvdb_multi(&query, limit, &language)
+            .search_metadata_multi(&actor, &query, limit, &language)
             .await
             .map_err(to_gql_error)?;
-        let convert = |items: Vec<scryer_application::RichMetadataSearchItem>| {
-            items
-                .into_iter()
-                .map(|item| MetadataSearchItemPayload {
-                    tvdb_id: item.tvdb_id,
-                    name: item.name,
-                    imdb_id: item.imdb_id,
-                    slug: item.slug,
-                    type_hint: item.type_hint,
-                    year: item.year,
-                    status: item.status,
-                    overview: item.overview,
-                    popularity: item.popularity,
-                    poster_url: item.poster_url,
-                    language: item.language,
-                    runtime_minutes: item.runtime_minutes,
-                    sort_title: item.sort_title,
-                })
-                .collect()
-        };
         Ok(MetadataSearchMultiPayload {
-            movies: convert(result.movies),
-            series: convert(result.series),
-            anime: convert(result.anime),
+            movies: result
+                .movies
+                .into_iter()
+                .map(from_metadata_search_item)
+                .collect(),
+            series: result
+                .series
+                .into_iter()
+                .map(from_metadata_search_item)
+                .collect(),
+            anime: result
+                .anime
+                .into_iter()
+                .map(from_metadata_search_item)
+                .collect(),
         })
     }
 
@@ -1352,9 +1380,7 @@ impl QueryRoot {
             return Err(Error::new("insufficient entitlements"));
         }
         let movie = app
-            .services
-            .metadata_gateway
-            .get_movie(tvdb_id as i64, &language)
+            .get_metadata_movie(&actor, tvdb_id as i64, &language)
             .await
             .map_err(to_gql_error)?;
         Ok(MetadataMoviePayload {
@@ -1389,9 +1415,7 @@ impl QueryRoot {
         }
         let tvdb_id: i64 = id.parse().map_err(|_| Error::new("invalid tvdb id"))?;
         let series = app
-            .services
-            .metadata_gateway
-            .get_series(tvdb_id, &language)
+            .get_metadata_series(&actor, tvdb_id, &language)
             .await
             .map_err(to_gql_error)?;
         Ok(MetadataSeriesPayload {
@@ -1528,17 +1552,7 @@ impl QueryRoot {
     async fn setup_status(&self, ctx: &Context<'_>) -> GqlResult<SetupStatusPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let db = settings_db_from_ctx(ctx)?;
-
-        let setup_complete = match db
-            .get_setting_with_defaults("system", "setup.complete", None)
-            .await
-        {
-            Ok(Some(record)) => {
-                record.value_json.as_deref().map(|v| v.trim_matches('"')) == Some("true")
-            }
-            _ => false,
-        };
+        let setup_complete = app.setup_complete().await.map_err(to_gql_error)?;
 
         let has_download_clients = !app
             .list_download_client_configs(&actor, None)
@@ -1626,12 +1640,9 @@ impl QueryRoot {
         title_id: String,
     ) -> GqlResult<Vec<SubtitleDownloadPayload>> {
         let _actor = actor_from_ctx(ctx)?;
-        let db = settings_db_from_ctx(ctx)?;
-        let downloads =
-            scryer_infrastructure::queries::subtitle::list_subtitle_downloads_for_title(
-                db.pool(),
-                &title_id,
-            )
+        let app = app_from_ctx(ctx)?;
+        let downloads = app
+            .list_subtitle_downloads_for_title(&title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(downloads
@@ -1664,24 +1675,33 @@ impl TitlePayload {
         &self,
         ctx: &Context<'_>,
     ) -> GqlResult<Option<Vec<String>>> {
-        let db = settings_db_from_ctx(ctx)?;
-        load_title_required_audio_override(&db, &self.id).await
+        let app = app_from_ctx(ctx)?;
+        app.load_title_required_audio_override(&self.id)
+            .await
+            .map_err(to_gql_error)
     }
 
     async fn effective_required_audio_languages(
         &self,
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<String>> {
-        let db = settings_db_from_ctx(ctx)?;
-        if let Some(languages) = load_title_required_audio_override(&db, &self.id).await? {
+        let app = app_from_ctx(ctx)?;
+        if let Some(languages) = app
+            .load_title_required_audio_override(&self.id)
+            .await
+            .map_err(to_gql_error)?
+        {
             return Ok(languages);
         }
-        load_required_audio_languages_for_scope(&db, title_scope_from_facet(self.facet)).await
+        app.load_facet_required_audio_languages(title_scope_from_facet(self.facet).as_scope_id())
+            .await
+            .map_err(to_gql_error)
     }
 
     async fn inherits_required_audio_languages(&self, ctx: &Context<'_>) -> GqlResult<bool> {
-        let db = settings_db_from_ctx(ctx)?;
-        Ok(load_title_required_audio_override(&db, &self.id)
+        let app = app_from_ctx(ctx)?;
+        Ok(app
+            .load_title_required_audio_override(&self.id)
             .await?
             .is_none())
     }
@@ -1703,9 +1723,7 @@ impl TitlePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let files = app
-            .services
-            .media_files
-            .list_media_files_for_title(&self.id)
+            .list_title_media_files(&actor, &self.id)
             .await
             .map_err(to_gql_error)?;
         Ok(files.into_iter().map(from_title_media_file).collect())
@@ -1722,7 +1740,13 @@ impl TitlePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let (items, _) = app
-            .list_wanted_items(status.as_deref(), None, Some(&self.id), 500, 0)
+            .list_wanted_items(WantedItemsQuery {
+                status,
+                media_type: None,
+                title_id: Some(self.id.clone()),
+                limit: 500,
+                offset: 0,
+            })
             .await
             .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_wanted_item).collect())
@@ -1739,7 +1763,11 @@ impl TitlePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let decisions = app
-            .list_release_decisions(None, Some(&self.id), limit)
+            .list_release_decisions(ReleaseDecisionsQuery {
+                wanted_item_id: None,
+                title_id: Some(self.id.clone()),
+                limit,
+            })
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -1827,9 +1855,7 @@ impl EpisodePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let wanted_item = app
-            .services
-            .wanted_items
-            .get_wanted_item_for_title(&self.title_id, Some(&self.id))
+            .get_title_wanted_item(&actor, &self.title_id, Some(&self.id))
             .await
             .map_err(to_gql_error)?
             .map(from_wanted_item);
@@ -1843,9 +1869,7 @@ impl EpisodePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let files = app
-            .services
-            .media_files
-            .list_media_files_for_title(&self.title_id)
+            .list_title_media_files(&actor, &self.title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(files
@@ -1936,7 +1960,11 @@ impl WantedItemPayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let decisions = app
-            .list_release_decisions(Some(&self.id), None, limit)
+            .list_release_decisions(ReleaseDecisionsQuery {
+                wanted_item_id: Some(self.id.clone()),
+                title_id: None,
+                limit,
+            })
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -1990,9 +2018,7 @@ impl DownloadQueueItemPayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let title = app
-            .services
-            .titles
-            .get_by_id(title_id)
+            .get_title_for_management(&actor, title_id)
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -2009,9 +2035,7 @@ impl PendingReleasePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let title = app
-            .services
-            .titles
-            .get_by_id(&self.title_id)
+            .get_title_for_management(&actor, &self.title_id)
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -2025,9 +2049,7 @@ impl PendingReleasePayload {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
         let wanted_item = app
-            .services
-            .wanted_items
-            .get_wanted_item_by_id(&self.wanted_item_id)
+            .get_wanted_item_for_management(&actor, &self.wanted_item_id)
             .await
             .map_err(to_gql_error)?
             .map(from_wanted_item);

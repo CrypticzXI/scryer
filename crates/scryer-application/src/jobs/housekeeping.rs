@@ -32,6 +32,7 @@ impl AppUseCase {
         // 1. Orphaned media files (file_path no longer exists on disk)
         let all_files = self
             .services
+            .workflow
             .housekeeping
             .list_all_media_file_paths()
             .await?;
@@ -42,6 +43,7 @@ impl AppUseCase {
             .collect();
         let orphaned_media_files = if !orphan_ids.is_empty() {
             self.services
+                .workflow
                 .housekeeping
                 .delete_media_files_by_ids(&orphan_ids)
                 .await?
@@ -52,6 +54,7 @@ impl AppUseCase {
         // 2. Stale release decisions (> 30 days)
         let stale_release_decisions = self
             .services
+            .workflow
             .housekeeping
             .delete_release_decisions_older_than(30)
             .await?;
@@ -59,6 +62,7 @@ impl AppUseCase {
         // 3. Stale release attempts (> 90 days, non-pending)
         let stale_release_attempts = self
             .services
+            .workflow
             .housekeeping
             .delete_release_attempts_older_than(90)
             .await?;
@@ -66,6 +70,7 @@ impl AppUseCase {
         // 4. Expired event outboxes (dispatched > 7 days ago)
         let expired_event_outboxes = self
             .services
+            .workflow
             .housekeeping
             .delete_dispatched_event_outboxes_older_than(7)
             .await?;
@@ -73,11 +78,13 @@ impl AppUseCase {
         // 5. Stale history events (> 365 days)
         let stale_history_events = self
             .services
+            .workflow
             .housekeeping
             .delete_history_events_older_than(365)
             .await?;
         let stale_domain_events = self
             .services
+            .workflow
             .housekeeping
             .delete_domain_events_older_than(365)
             .await?;
@@ -85,6 +92,7 @@ impl AppUseCase {
         // 6. Stale staged NZB artifacts (> 1 hour old)
         let staged_nzb_artifacts_pruned = self
             .services
+            .workflow
             .staged_nzb_store
             .prune_staged_nzbs_older_than(chrono::Utc::now() - chrono::Duration::hours(1))
             .await?;

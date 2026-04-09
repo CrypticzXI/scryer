@@ -1,3 +1,3 @@
-//! Health, readiness, and environment diagnostics.
-//!
-//! Start with `health.rs` for the application-facing health workflow.
+pub(crate) use crate::*;
+
+pub(crate) mod health;

@@ -1,17 +1,14 @@
 use std::collections::HashSet;
 
 use async_graphql::{Context, Object, Result as GqlResult};
+use scryer_application::{ExternalImportLibraryPathsSelection, IndexerConfigUpdate};
 use scryer_domain::{Entitlement, NewDownloadClientConfig, NewIndexerConfig};
 use scryer_infrastructure::external_import::{
     self, ArrDownloadClient, ArrIndexer, ExternalArrClient,
 };
 
-use crate::context::{actor_from_ctx, app_from_ctx, settings_db_from_ctx};
+use crate::context::{actor_from_ctx, app_from_ctx};
 use crate::types::*;
-
-use super::config::ensure_download_client_routing_entry_for_client;
-
-const SETTINGS_SCOPE_MEDIA: &str = "media";
 
 #[derive(Default)]
 pub(crate) struct ExternalImportMutations;
@@ -128,7 +125,6 @@ impl ExternalImportMutations {
         }
 
         let app = app_from_ctx(ctx)?;
-        let db = settings_db_from_ctx(ctx)?;
 
         let selected_dc_keys: HashSet<String> = input
             .selected_download_client_dedup_keys
@@ -151,65 +147,22 @@ impl ExternalImportMutations {
         };
 
         // ── Save media paths ──────────────────────────────────────────────
-        let mut paths_saved = false;
-        if let Some(movies_path) = &input.selected_movies_path {
-            if let Err(err) = db
-                .upsert_setting_value(
-                    SETTINGS_SCOPE_MEDIA,
-                    "movies.path",
-                    None,
-                    &format!("\"{}\"", movies_path.replace('"', "\\\"")),
-                    "external-import",
-                    Some(actor.id.clone()),
-                )
-                .await
-            {
-                result
-                    .errors
-                    .push(format!("failed to save movies path: {err}"));
-            } else {
-                paths_saved = true;
-            }
+        match app
+            .save_external_import_library_paths(
+                &actor,
+                ExternalImportLibraryPathsSelection {
+                    movie_path: input.selected_movies_path.clone(),
+                    series_path: input.selected_series_path.clone(),
+                    anime_path: input.selected_anime_path.clone(),
+                },
+            )
+            .await
+        {
+            Ok(saved) => result.media_paths_saved = saved,
+            Err(err) => result
+                .errors
+                .push(format!("failed to save selected media paths: {err}")),
         }
-        if let Some(series_path) = &input.selected_series_path {
-            if let Err(err) = db
-                .upsert_setting_value(
-                    SETTINGS_SCOPE_MEDIA,
-                    "series.path",
-                    None,
-                    &format!("\"{}\"", series_path.replace('"', "\\\"")),
-                    "external-import",
-                    Some(actor.id.clone()),
-                )
-                .await
-            {
-                result
-                    .errors
-                    .push(format!("failed to save series path: {err}"));
-            } else {
-                paths_saved = true;
-            }
-        }
-        if let Some(anime_path) = &input.selected_anime_path {
-            if let Err(err) = db
-                .upsert_setting_value(
-                    SETTINGS_SCOPE_MEDIA,
-                    "anime.path",
-                    None,
-                    &format!("\"{}\"", anime_path.replace('"', "\\\"")),
-                    "external-import",
-                    Some(actor.id.clone()),
-                )
-                .await
-            {
-                result
-                    .errors
-                    .push(format!("failed to save anime path: {err}"));
-            } else {
-                paths_saved = true;
-            }
-        }
-        result.media_paths_saved = paths_saved;
 
         // ── Collect download clients + indexers from external apps ─────────
         let mut all_download_clients: Vec<(ArrDownloadClient, String)> = Vec::new();
@@ -314,10 +267,9 @@ impl ExternalImportMutations {
                         || scryer_type == "sabnzbd"
                         || scryer_type == "weaver"
                     {
-                        let _ = ensure_download_client_routing_entry_for_client(
-                            &db, &config.id, &actor.id,
-                        )
-                        .await;
+                        let _ = app
+                            .ensure_download_client_routing_entry_for_client(&actor, &config.id)
+                            .await;
                     }
                 }
                 Err(err) => {
@@ -406,17 +358,19 @@ impl ExternalImportMutations {
                         let _ = app
                             .update_indexer_config(
                                 &actor,
-                                &existing_config.id,
-                                Some(idx.name.clone()),
-                                None,
-                                Some(base_url),
-                                api_key,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
+                                IndexerConfigUpdate {
+                                    id: existing_config.id.clone(),
+                                    name: Some(idx.name.clone()),
+                                    provider_type: None,
+                                    base_url: Some(base_url),
+                                    api_key_encrypted: api_key,
+                                    rate_limit_seconds: None,
+                                    rate_limit_burst: None,
+                                    is_enabled: None,
+                                    enable_interactive_search: None,
+                                    enable_auto_search: None,
+                                    config_json: None,
+                                },
                             )
                             .await;
                     }

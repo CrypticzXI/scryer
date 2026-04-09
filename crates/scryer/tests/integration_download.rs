@@ -11,13 +11,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{
-    DownloadClient, DownloadClientAddRequest, DownloadClientConfigRepository, DownloadSourceKind,
-    NullSettingsRepository, NullStagedNzbStore, StagedNzbRef,
+    DownloadClient, DownloadClientAddRequest, DownloadSourceKind, NullSettingsRepository,
+    NullStagedNzbStore, StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
 use scryer_infrastructure::{
     FileSystemStagedNzbStore, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, WeaverDownloadClient,
+    SabnzbdDownloadClient, SqliteConfigStore, WeaverDownloadClient,
 };
 
 fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
@@ -114,6 +114,19 @@ fn request_with_staged_nzb(
         is_recent: None,
         season_pack: None,
     }
+}
+
+fn download_client_config_repo(
+    ctx: &TestContext,
+) -> Arc<dyn scryer_application::DownloadClientConfigRepository> {
+    Arc::new(SqliteConfigStore::new(&ctx.db))
+}
+
+async fn insert_download_client_config(ctx: &TestContext, config: DownloadClientConfig) {
+    download_client_config_repo(ctx)
+        .create(config)
+        .await
+        .expect("create download client config");
 }
 
 // ---------------------------------------------------------------------------
@@ -952,7 +965,7 @@ fn build_router_with_cache(
 ) -> PrioritizedDownloadClientRouter {
     let fallback = NzbgetDownloadClient::new(fallback_uri, None, None, "SCORE".to_string());
     PrioritizedDownloadClientRouter::new(
-        Arc::new(ctx.db.clone()),
+        download_client_config_repo(ctx),
         Arc::new(NullSettingsRepository),
         Arc::new(fallback),
         staged_nzb_store,
@@ -971,14 +984,9 @@ async fn router_routes_to_highest_priority_client() {
     // second_server has no mocks — any request there would fail.
 
     // Insert configs out-of-order to confirm priority ordering beats insertion order.
-    ctx.db
-        .create(router_config("c2", &second_server.uri(), 2, true))
-        .await
-        .unwrap();
-    ctx.db
-        .create(router_config("c1", &ctx.nzbget_server.uri(), 1, true))
-        .await
-        .unwrap();
+    insert_download_client_config(&ctx, router_config("c2", &second_server.uri(), 2, true)).await;
+    insert_download_client_config(&ctx, router_config("c1", &ctx.nzbget_server.uri(), 1, true))
+        .await;
 
     let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
     let items = router
@@ -1004,14 +1012,9 @@ async fn router_falls_back_to_next_client_on_primary_failure() {
     // Secondary (priority 2) is mocked to succeed.
     mount_list_queue_mocks(&second_server).await;
 
-    ctx.db
-        .create(router_config("c1", &ctx.nzbget_server.uri(), 1, true))
-        .await
-        .unwrap();
-    ctx.db
-        .create(router_config("c2", &second_server.uri(), 2, true))
-        .await
-        .unwrap();
+    insert_download_client_config(&ctx, router_config("c1", &ctx.nzbget_server.uri(), 1, true))
+        .await;
+    insert_download_client_config(&ctx, router_config("c2", &second_server.uri(), 2, true)).await;
 
     let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
     let items = router
@@ -1041,7 +1044,7 @@ async fn router_uses_fallback_when_no_clients_configured() {
     let fallback =
         NzbgetDownloadClient::new(ctx.nzbget_server.uri(), None, None, "SCORE".to_string());
     let router = PrioritizedDownloadClientRouter::new(
-        Arc::new(ctx.db.clone()),
+        download_client_config_repo(&ctx),
         Arc::new(NullSettingsRepository),
         Arc::new(fallback),
         Arc::new(NullStagedNzbStore),
@@ -1075,15 +1078,12 @@ async fn router_skips_client_with_invalid_config() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    ctx.db.create(bad_config).await.unwrap();
+    insert_download_client_config(&ctx, bad_config).await;
 
     // Priority 2: valid nzbget client, mocked to succeed.
     let second_server = MockServer::start().await;
     mount_list_queue_mocks(&second_server).await;
-    ctx.db
-        .create(router_config("good", &second_server.uri(), 2, true))
-        .await
-        .unwrap();
+    insert_download_client_config(&ctx, router_config("good", &second_server.uri(), 2, true)).await;
 
     let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
     let items = router
@@ -1112,14 +1112,15 @@ async fn router_skips_client_missing_base_url() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    ctx.db.create(no_url_config).await.unwrap();
+    insert_download_client_config(&ctx, no_url_config).await;
 
     // Priority 2: valid config.
     mount_list_queue_mocks(&ctx.nzbget_server).await;
-    ctx.db
-        .create(router_config("valid", &ctx.nzbget_server.uri(), 2, true))
-        .await
-        .unwrap();
+    insert_download_client_config(
+        &ctx,
+        router_config("valid", &ctx.nzbget_server.uri(), 2, true),
+    )
+    .await;
 
     let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
     let items = router
@@ -1135,15 +1136,11 @@ async fn router_disabled_clients_are_not_used() {
     let ctx = TestContext::new().await;
 
     // Disabled client at priority 1 — should be filtered out.
-    ctx.db
-        .create(router_config(
-            "disabled",
-            &ctx.nzbget_server.uri(),
-            1,
-            false,
-        ))
-        .await
-        .unwrap();
+    insert_download_client_config(
+        &ctx,
+        router_config("disabled", &ctx.nzbget_server.uri(), 1, false),
+    )
+    .await;
 
     // No enabled clients → fallback is used.
     let fallback_server = MockServer::start().await;
@@ -1151,7 +1148,7 @@ async fn router_disabled_clients_are_not_used() {
     let fallback =
         NzbgetDownloadClient::new(fallback_server.uri(), None, None, "SCORE".to_string());
     let router = PrioritizedDownloadClientRouter::new(
-        Arc::new(ctx.db.clone()),
+        download_client_config_repo(&ctx),
         Arc::new(NullSettingsRepository),
         Arc::new(fallback),
         Arc::new(NullStagedNzbStore),
@@ -1207,19 +1204,16 @@ async fn router_reuses_single_staged_nzb_across_client_failover() {
         .mount(&second_client_server)
         .await;
 
-    ctx.db
-        .create(router_config("primary", &ctx.nzbget_server.uri(), 1, true))
-        .await
-        .unwrap();
-    ctx.db
-        .create(router_config(
-            "secondary",
-            &second_client_server.uri(),
-            2,
-            true,
-        ))
-        .await
-        .unwrap();
+    insert_download_client_config(
+        &ctx,
+        router_config("primary", &ctx.nzbget_server.uri(), 1, true),
+    )
+    .await;
+    insert_download_client_config(
+        &ctx,
+        router_config("secondary", &second_client_server.uri(), 2, true),
+    )
+    .await;
 
     let router = build_router_with_cache(
         &ctx,
@@ -1269,19 +1263,16 @@ async fn router_deletes_staged_nzb_after_final_failure() {
             .await;
     }
 
-    ctx.db
-        .create(router_config("primary", &ctx.nzbget_server.uri(), 1, true))
-        .await
-        .unwrap();
-    ctx.db
-        .create(router_config(
-            "secondary",
-            &second_client_server.uri(),
-            2,
-            true,
-        ))
-        .await
-        .unwrap();
+    insert_download_client_config(
+        &ctx,
+        router_config("primary", &ctx.nzbget_server.uri(), 1, true),
+    )
+    .await;
+    insert_download_client_config(
+        &ctx,
+        router_config("secondary", &second_client_server.uri(), 2, true),
+    )
+    .await;
 
     let router = build_router_with_cache(
         &ctx,

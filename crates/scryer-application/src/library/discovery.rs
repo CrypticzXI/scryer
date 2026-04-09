@@ -298,6 +298,7 @@ async fn begin_background_refresh_probe(
     let (scheme, value) = compute_library_probe_signature(path).await?;
     let stored_probe = app
         .services
+        .library
         .library_probe_signatures
         .get_probe_signature(title_id)
         .await?;
@@ -309,6 +310,7 @@ async fn begin_background_refresh_probe(
 
     if unchanged {
         app.services
+            .library
             .library_probe_signatures
             .upsert_probe_signature(&LibraryProbeSignature {
                 title_id: title_id.to_string(),
@@ -338,6 +340,7 @@ async fn persist_background_refresh_probe_result(
     has_delta: bool,
 ) -> AppResult<()> {
     app.services
+        .library
         .library_probe_signatures
         .upsert_probe_signature(&LibraryProbeSignature {
             title_id: title_id.to_string(),

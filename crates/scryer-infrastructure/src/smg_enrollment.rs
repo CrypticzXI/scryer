@@ -360,7 +360,8 @@ pub fn cert_pem_to_base64_der(cert_pem: &str) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 async fn load_setting(db: &crate::SqliteServices, key: &str) -> Result<Option<String>, String> {
-    let record = db
+    let settings_store = crate::SqliteSettingsStore::new(db);
+    let record = settings_store
         .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, key, None)
         .await
         .map_err(|e| format!("failed to read {key}: {e}"))?;
@@ -371,17 +372,18 @@ async fn load_setting(db: &crate::SqliteServices, key: &str) -> Result<Option<St
 }
 
 async fn persist_setting(db: &crate::SqliteServices, key: &str, value: &str) -> Result<(), String> {
-    db.upsert_setting_value(
-        SETTINGS_SCOPE_SYSTEM,
-        key,
-        None,
-        serde_json::to_string(value).unwrap(),
-        "smg-enrollment",
-        None,
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| format!("failed to persist {key}: {e}"))
+    crate::SqliteSettingsStore::new(db)
+        .upsert_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            key,
+            None,
+            serde_json::to_string(value).unwrap(),
+            "smg-enrollment",
+            None,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("failed to persist {key}: {e}"))
 }
 
 fn parse_string_json(raw: &str) -> Option<String> {

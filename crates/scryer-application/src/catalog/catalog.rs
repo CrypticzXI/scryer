@@ -10,16 +10,12 @@ use crate::domain_events::{deleted_media_update, new_title_domain_event, title_c
 use scryer_domain::{
     DomainEventPayload, InterstitialMovieMetadata, MediaFileDeletedEventData,
     MediaFileDeletedReason, MetadataHydrationState, ReleaseGrabbedEventData, TitleAddedEventData,
-    TitleDeletedEventData,
+    TitleDeletedEventData, TitleRematchedEventData,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
-pub const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
-pub const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
-const DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY: &str = "download_client.default_category";
-const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 const RECENT_QUEUE_PRIORITY_WINDOW_DAYS: i64 = 14;
 const REMATCH_REPLACED_EXTERNAL_ID_SOURCES: &[&str] =
     &["tvdb", "imdb", "tmdb", "mal", "anilist", "anidb", "kitsu"];
@@ -28,7 +24,7 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
     "scryer:anime-media-type:",
     "scryer:anime-status:",
 ];
-const HYDRATION_BULK_BATCH_SIZE: usize = 20;
+pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HydrationCompletionOptions {
@@ -155,7 +151,7 @@ impl AppUseCase {
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.titles.list(facet, query).await
+        self.services.catalog.titles.list(facet, query).await
     }
 
     pub async fn list_title_release_blocklist(
@@ -167,6 +163,7 @@ impl AppUseCase {
         require(actor, &Entitlement::ViewCatalog)?;
         let bounded_limit = limit.clamp(1, 1_000);
         self.services
+            .workflow
             .release_attempts
             .list_failed_release_signatures_for_title(title_id, bounded_limit)
             .await
@@ -297,16 +294,15 @@ impl AppUseCase {
             folder_path: None,
         };
 
-        let title = self.services.titles.create(title).await?;
-        self.services
-            .append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                &title,
-                DomainEventPayload::TitleAdded(TitleAddedEventData {
-                    title: title_context_snapshot(&title),
-                }),
-            ))
-            .await?;
+        let title = self.services.catalog.titles.create(title).await?;
+        self.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            &title,
+            DomainEventPayload::TitleAdded(TitleAddedEventData {
+                title: title_context_snapshot(&title),
+            }),
+        ))
+        .await?;
 
         Ok(title)
     }
@@ -317,21 +313,21 @@ impl AppUseCase {
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.poster_wake.notify_one();
+            self.runtime.poster_wake.notify_one();
         }
         if title
             .banner_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.banner_wake.notify_one();
+            self.runtime.banner_wake.notify_one();
         }
         if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.fanart_wake.notify_one();
+            self.runtime.fanart_wake.notify_one();
         }
     }
 
@@ -412,6 +408,7 @@ impl AppUseCase {
 
             let bulk_result = self
                 .services
+                .library
                 .metadata_gateway
                 .get_metadata_bulk(&movie_ids, &series_ids, &language)
                 .await;
@@ -444,6 +441,7 @@ impl AppUseCase {
                     .await;
                     let refreshed = self
                         .services
+                        .catalog
                         .titles
                         .get_by_id(&hydrated.id)
                         .await?
@@ -483,6 +481,7 @@ impl AppUseCase {
                     .await;
                     let refreshed = self
                         .services
+                        .catalog
                         .titles
                         .get_by_id(&hydrated.id)
                         .await?
@@ -592,6 +591,7 @@ impl AppUseCase {
 
         let title = match self
             .services
+            .catalog
             .titles
             .update_title_hydrated_metadata(&title.id, metadata_update)
             .await
@@ -623,21 +623,21 @@ impl AppUseCase {
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.poster_wake.notify_one();
+            self.runtime.poster_wake.notify_one();
         }
         if title
             .banner_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.banner_wake.notify_one();
+            self.runtime.banner_wake.notify_one();
         }
         if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.services.fanart_wake.notify_one();
+            self.runtime.fanart_wake.notify_one();
         }
 
         title
@@ -668,6 +668,7 @@ impl AppUseCase {
         // duplicates on every metadata refresh cycle.
         let existing_collections = self
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await
@@ -702,6 +703,7 @@ impl AppUseCase {
         }
         let mut existing_episode_lookup: std::collections::HashMap<(String, String), Episode> =
             self.services
+                .catalog
                 .shows
                 .list_episodes_for_title(&title.id)
                 .await
@@ -806,16 +808,14 @@ impl AppUseCase {
                 {
                     let _ = self
                         .services
+                        .catalog
                         .shows
                         .update_collection(
                             existing_id,
-                            None,
-                            None,
-                            Some(season.label.clone()),
-                            None,
-                            None,
-                            None,
-                            None,
+                            CollectionUpdate {
+                                label: Some(season.label.clone()),
+                                ..Default::default()
+                            },
                         )
                         .await;
                     if let Some(existing) = existing_collections_by_id.get_mut(existing_id) {
@@ -829,6 +829,7 @@ impl AppUseCase {
                 {
                     match self
                         .services
+                        .catalog
                         .shows
                         .update_collection_specials_movies(existing_id, specials_movies.clone())
                         .await
@@ -873,6 +874,7 @@ impl AppUseCase {
 
             match self
                 .services
+                .catalog
                 .shows
                 .create_collection(collection.clone())
                 .await
@@ -974,16 +976,14 @@ impl AppUseCase {
                         {
                             let _ = self
                                 .services
+                                .catalog
                                 .shows
                                 .update_collection(
                                     existing_id,
-                                    None,
-                                    None,
-                                    Some(label.clone()),
-                                    None,
-                                    None,
-                                    None,
-                                    None,
+                                    CollectionUpdate {
+                                        label: Some(label.clone()),
+                                        ..Default::default()
+                                    },
                                 )
                                 .await;
                             if let Some(existing_coll) =
@@ -998,6 +998,7 @@ impl AppUseCase {
                         {
                             match self
                                 .services
+                                .catalog
                                 .shows
                                 .update_collection_interstitial_movie(
                                     existing_id,
@@ -1033,6 +1034,7 @@ impl AppUseCase {
                         {
                             let _ = self
                                 .services
+                                .catalog
                                 .shows
                                 .update_interstitial_season_episode(existing_id, Some(se.clone()))
                                 .await;
@@ -1079,7 +1081,13 @@ impl AppUseCase {
                         created_at: Utc::now(),
                     };
 
-                    match self.services.shows.create_collection(collection).await {
+                    match self
+                        .services
+                        .catalog
+                        .shows
+                        .create_collection(collection)
+                        .await
+                    {
                         Ok(created) => {
                             existing_collections_by_id.insert(created.id.clone(), created.clone());
                             info!(
@@ -1183,16 +1191,14 @@ impl AppUseCase {
                     })
                 && let Err(err) = self
                     .services
+                    .catalog
                     .shows
                     .update_collection(
                         cid,
-                        None,
-                        None,
-                        Some(ep.name.clone()),
-                        None,
-                        None,
-                        None,
-                        None,
+                        CollectionUpdate {
+                            label: Some(ep.name.clone()),
+                            ..Default::default()
+                        },
                     )
                     .await
             {
@@ -1263,26 +1269,21 @@ impl AppUseCase {
                 if title_changed || overview_changed || tvdb_id_changed {
                     let _ = self
                         .services
+                        .catalog
                         .shows
                         .update_episode(
                             &existing.id,
-                            None,
-                            None,
-                            None,
-                            if title_changed {
-                                new_title.clone()
-                            } else {
-                                None
+                            EpisodeUpdate {
+                                episode_label: if title_changed {
+                                    new_title.clone()
+                                } else {
+                                    None
+                                },
+                                title: if title_changed { new_title } else { None },
+                                overview: if overview_changed { new_overview } else { None },
+                                tvdb_id: if tvdb_id_changed { new_tvdb_id } else { None },
+                                ..Default::default()
                             },
-                            if title_changed { new_title } else { None },
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            if overview_changed { new_overview } else { None },
-                            if tvdb_id_changed { new_tvdb_id } else { None },
                         )
                         .await;
                 }
@@ -1327,7 +1328,7 @@ impl AppUseCase {
                 created_at: Utc::now(),
             };
 
-            match self.services.shows.create_episode(episode).await {
+            match self.services.catalog.shows.create_episode(episode).await {
                 Ok(created) => {
                     existing_episode_lookup
                         .insert((season_number_key, episode_number_key), created);
@@ -1348,16 +1349,20 @@ impl AppUseCase {
         &self,
         actor: &User,
         request: NewTitle,
-        source_hint: Option<String>,
-        source_kind: Option<DownloadSourceKind>,
-        source_title: Option<String>,
+        queued_release: QueuedReleaseSelection,
     ) -> AppResult<(Title, String)> {
+        let QueuedReleaseSelection {
+            source_hint,
+            source_kind,
+            source_title,
+        } = queued_release;
         let title = self.add_title(actor, request).await?;
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
         let source_password: Option<String> = None;
         let _ = self
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title.id.clone()),
@@ -1378,6 +1383,7 @@ impl AppUseCase {
         );
         let job_result = self
             .services
+            .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
@@ -1410,6 +1416,7 @@ impl AppUseCase {
                 }
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -1424,6 +1431,7 @@ impl AppUseCase {
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 let _ = self
                     .services
+                    .workflow
                     .download_submissions
                     .record_submission(DownloadSubmission {
                         title_id: title.id.clone(),
@@ -1440,6 +1448,7 @@ impl AppUseCase {
                 let error_message = error.to_string();
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -1454,19 +1463,18 @@ impl AppUseCase {
             }
         };
 
-        self.services
-            .append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                &title,
-                DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
-                    title: title_context_snapshot(&title),
-                    source_title: None,
-                    source_hint: None,
-                    download_id: Some(grab.job_id.clone()),
-                    episode_ids: Vec::new(),
-                }),
-            ))
-            .await?;
+        self.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            &title,
+            DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
+                title: title_context_snapshot(&title),
+                source_title: None,
+                source_hint: None,
+                download_id: Some(grab.job_id.clone()),
+                episode_ids: Vec::new(),
+            }),
+        ))
+        .await?;
 
         Ok((title, grab.job_id))
     }
@@ -1475,14 +1483,18 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: &str,
-        source_hint: Option<String>,
-        source_kind: Option<DownloadSourceKind>,
-        source_title: Option<String>,
+        queued_release: QueuedReleaseSelection,
     ) -> AppResult<String> {
         require(actor, &Entitlement::TriggerActions)?;
 
+        let QueuedReleaseSelection {
+            source_hint,
+            source_kind,
+            source_title,
+        } = queued_release;
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -1493,6 +1505,7 @@ impl AppUseCase {
         let source_password: Option<String> = None;
         let _ = self
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title.id.clone()),
@@ -1513,6 +1526,7 @@ impl AppUseCase {
         );
         let job_result = self
             .services
+            .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
@@ -1545,6 +1559,7 @@ impl AppUseCase {
                 }
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -1559,6 +1574,7 @@ impl AppUseCase {
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 let _ = self
                     .services
+                    .workflow
                     .download_submissions
                     .record_submission(DownloadSubmission {
                         title_id: title.id.clone(),
@@ -1575,6 +1591,7 @@ impl AppUseCase {
                 let error_message = error.to_string();
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -1589,19 +1606,18 @@ impl AppUseCase {
             }
         };
 
-        self.services
-            .append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                &title,
-                DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
-                    title: title_context_snapshot(&title),
-                    source_title: None,
-                    source_hint: None,
-                    download_id: Some(grab.job_id.clone()),
-                    episode_ids: Vec::new(),
-                }),
-            ))
-            .await?;
+        self.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            &title,
+            DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
+                title: title_context_snapshot(&title),
+                source_title: None,
+                source_hint: None,
+                download_id: Some(grab.job_id.clone()),
+                episode_ids: Vec::new(),
+            }),
+        ))
+        .await?;
 
         Ok(grab.job_id)
     }
@@ -1652,7 +1668,7 @@ impl AppUseCase {
             } else {
                 self.sync_wanted_movie_inner(title, &now, true).await;
             }
-            self.services.acquisition_wake.notify_one();
+            self.runtime.acquisition_wake.notify_one();
         }
     }
 
@@ -1661,6 +1677,7 @@ impl AppUseCase {
     async fn persist_title_monitoring(&self, title_id: &str, monitored: bool) -> AppResult<Title> {
         let title = self
             .services
+            .catalog
             .titles
             .update_monitored(title_id, monitored)
             .await?;
@@ -1669,6 +1686,7 @@ impl AppUseCase {
             self.sync_title_for_immediate_acquisition(&title).await;
         } else if let Err(err) = self
             .services
+            .workflow
             .wanted_items
             .delete_wanted_items_for_title(&title.id)
             .await
@@ -1694,21 +1712,20 @@ impl AppUseCase {
     ) -> AppResult<Collection> {
         let collection = self
             .services
+            .catalog
             .shows
             .update_collection(
                 collection_id,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(monitored),
+                CollectionUpdate {
+                    monitored: Some(monitored),
+                    ..Default::default()
+                },
             )
             .await?;
 
         if propagate_to_episodes {
             self.services
+                .catalog
                 .shows
                 .set_collection_episodes_monitored(collection_id, monitored)
                 .await?;
@@ -1717,6 +1734,7 @@ impl AppUseCase {
         if !monitored
             && let Err(err) = self
                 .services
+                .workflow
                 .wanted_items
                 .delete_wanted_items_for_collection(collection_id)
                 .await
@@ -1741,28 +1759,21 @@ impl AppUseCase {
     ) -> AppResult<Episode> {
         let episode = self
             .services
+            .catalog
             .shows
             .update_episode(
                 episode_id,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(monitored),
-                None,
-                None,
-                None,
+                EpisodeUpdate {
+                    monitored: Some(monitored),
+                    ..Default::default()
+                },
             )
             .await?;
 
         if !monitored
             && let Err(err) = self
                 .services
+                .workflow
                 .wanted_items
                 .delete_wanted_items_for_episode(episode_id)
                 .await
@@ -1793,6 +1804,7 @@ impl AppUseCase {
         if monitored {
             let title = self
                 .services
+                .catalog
                 .titles
                 .get_by_id(&collection.title_id)
                 .await?
@@ -1829,6 +1841,7 @@ impl AppUseCase {
             if let Some(collection_id) = episode.collection_id.as_deref() {
                 let collection = self
                     .services
+                    .catalog
                     .shows
                     .get_collection_by_id(collection_id)
                     .await?
@@ -1846,6 +1859,7 @@ impl AppUseCase {
 
             let title = self
                 .services
+                .catalog
                 .titles
                 .get_by_id(&episode.title_id)
                 .await?
@@ -1891,7 +1905,13 @@ impl AppUseCase {
         let collection = self
             .apply_collection_monitoring_change(collection_id, monitored, true)
             .await?;
-        if let Some(title) = self.services.titles.get_by_id(&collection.title_id).await? {
+        if let Some(title) = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&collection.title_id)
+            .await?
+        {
             self.emit_title_updated_activity(Some(actor.id.clone()), &title)
                 .await;
         }
@@ -1909,7 +1929,13 @@ impl AppUseCase {
         let episode = self
             .apply_episode_monitoring_change(episode_id, monitored)
             .await?;
-        if let Some(title) = self.services.titles.get_by_id(&episode.title_id).await? {
+        if let Some(title) = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&episode.title_id)
+            .await?
+        {
             self.emit_title_updated_activity(Some(actor.id.clone()), &title)
                 .await;
         }
@@ -1921,26 +1947,34 @@ impl AppUseCase {
         actor: &User,
         id: &str,
         delete_files_on_disk: bool,
-        preview_fingerprint: Option<&str>,
-        typed_confirmation: Option<&str>,
+        delete_confirmation: Option<DeleteExecutionConfirmation>,
     ) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
 
         if delete_files_on_disk {
-            let preview_fingerprint = preview_fingerprint.ok_or_else(|| {
+            let delete_confirmation = delete_confirmation.ok_or_else(|| {
                 AppError::Validation(
                     "delete preview confirmation is required before deleting files on disk".into(),
                 )
             })?;
-            self.execute_delete_title_files(id, preview_fingerprint, typed_confirmation)
-                .await?;
+            let DeleteExecutionConfirmation {
+                preview_fingerprint,
+                typed_confirmation,
+            } = delete_confirmation;
+            self.execute_delete_title_files(
+                id,
+                &preview_fingerprint,
+                typed_confirmation.as_deref(),
+            )
+            .await?;
         }
 
         // Purge recycle bin entries that belonged to this title.
@@ -1963,6 +1997,7 @@ impl AppUseCase {
 
         let queued_submission_keys = match self
             .services
+            .workflow
             .download_submissions
             .list_for_title(id)
             .await
@@ -1987,7 +2022,13 @@ impl AppUseCase {
         };
 
         // Cancel any inflight downloads for this title
-        match self.services.download_client.list_queue().await {
+        match self
+            .services
+            .integrations
+            .download_client
+            .list_queue()
+            .await
+        {
             Ok(queue_items) => {
                 for item in queue_items {
                     let matches_title = item.title_id.as_deref() == Some(id)
@@ -1998,6 +2039,7 @@ impl AppUseCase {
                     if matches_title
                         && let Err(err) = self
                             .services
+                            .integrations
                             .download_client
                             .delete_queue_item(&item.download_client_item_id, false)
                             .await
@@ -2022,6 +2064,7 @@ impl AppUseCase {
 
         if let Err(err) = self
             .services
+            .workflow
             .pending_releases
             .delete_pending_releases_for_title(id)
             .await
@@ -2036,6 +2079,7 @@ impl AppUseCase {
         // Clean up wanted items for this title
         if let Err(err) = self
             .services
+            .workflow
             .wanted_items
             .delete_wanted_items_for_title(id)
             .await
@@ -2049,6 +2093,7 @@ impl AppUseCase {
 
         if let Err(err) = self
             .services
+            .workflow
             .download_submissions
             .delete_for_title(id)
             .await
@@ -2060,10 +2105,9 @@ impl AppUseCase {
             );
         }
 
-        self.services.titles.delete(id).await?;
+        self.services.catalog.titles.delete(id).await?;
 
         let _ = self
-            .services
             .append_domain_event(new_title_domain_event(
                 Some(actor.id.clone()),
                 &title,
@@ -2081,29 +2125,41 @@ impl AppUseCase {
         actor: &User,
         file_id: &str,
         delete_from_disk: bool,
-        preview_fingerprint: Option<&str>,
-        typed_confirmation: Option<&str>,
+        delete_confirmation: Option<DeleteExecutionConfirmation>,
     ) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
 
         let media_file = self
             .services
+            .library
             .media_files
             .get_media_file_by_id(file_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
 
         if delete_from_disk {
-            let preview_fingerprint = preview_fingerprint.ok_or_else(|| {
+            let delete_confirmation = delete_confirmation.ok_or_else(|| {
                 AppError::Validation(
                     "delete preview confirmation is required before deleting files on disk".into(),
                 )
             })?;
-            self.execute_delete_media_file(file_id, preview_fingerprint, typed_confirmation)
-                .await?;
+            let DeleteExecutionConfirmation {
+                preview_fingerprint,
+                typed_confirmation,
+            } = delete_confirmation;
+            self.execute_delete_media_file(
+                file_id,
+                &preview_fingerprint,
+                typed_confirmation.as_deref(),
+            )
+            .await?;
         }
 
-        self.services.media_files.delete_media_file(file_id).await?;
+        self.services
+            .library
+            .media_files
+            .delete_media_file(file_id)
+            .await?;
 
         info!(
             file_id = %file_id,
@@ -2113,10 +2169,14 @@ impl AppUseCase {
         );
 
         if delete_from_disk
-            && let Ok(Some(title)) = self.services.titles.get_by_id(&media_file.title_id).await
+            && let Ok(Some(title)) = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&media_file.title_id)
+                .await
         {
             let _ = self
-                .services
                 .append_domain_event(new_title_domain_event(
                     Some(actor.id.clone()),
                     &title,
@@ -2142,16 +2202,16 @@ impl AppUseCase {
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
     ) -> AppResult<Title> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         if name.is_none() && facet.is_none() && tags.is_none() {
             return Err(AppError::Validation(
                 "at least one title field must be provided".into(),
             ));
         }
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
+            .catalog
             .titles
             .update_metadata(id, name, facet, tags)
             .await?;
@@ -2178,6 +2238,7 @@ impl AppUseCase {
 
         let existing_title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -2185,6 +2246,7 @@ impl AppUseCase {
 
         let duplicate = self
             .services
+            .catalog
             .titles
             .find_by_external_id("tvdb", target_tvdb_id)
             .await?
@@ -2204,19 +2266,23 @@ impl AppUseCase {
 
         if has_episodes {
             self.services
+                .workflow
                 .pending_releases
                 .delete_pending_releases_for_title(&existing_title.id)
                 .await?;
             self.services
+                .workflow
                 .wanted_items
                 .delete_wanted_items_for_title(&existing_title.id)
                 .await?;
 
             self.services
+                .catalog
                 .shows
                 .delete_episodes_for_title(&existing_title.id)
                 .await?;
             self.services
+                .catalog
                 .shows
                 .delete_collections_for_title(&existing_title.id)
                 .await?;
@@ -2233,6 +2299,7 @@ impl AppUseCase {
 
         let reset_title = self
             .services
+            .catalog
             .titles
             .replace_match_state(
                 &existing_title.id,
@@ -2279,14 +2346,24 @@ impl AppUseCase {
 
         let refreshed_title = self
             .services
+            .catalog
             .titles
             .get_by_id(&existing_title.id)
             .await?
             .unwrap_or(hydrated_title);
 
         let old_tvdb_id = extract_tvdb_id(&existing_title).map(|id| id.to_string());
-
-        let _ = old_tvdb_id;
+        self.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            &refreshed_title,
+            DomainEventPayload::TitleRematched(TitleRematchedEventData {
+                title: title_context_snapshot(&refreshed_title),
+                old_tvdb_id,
+                new_tvdb_id: target_tvdb_id.to_string(),
+                source: "manual".to_string(),
+            }),
+        ))
+        .await?;
         self.emit_title_updated_activity(Some(actor.id.clone()), &refreshed_title)
             .await;
 
@@ -2300,11 +2377,12 @@ impl AppUseCase {
 
     pub async fn get_title(&self, actor: &User, id: &str) -> AppResult<Option<Title>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.titles.get_by_id(id).await
+        self.services.catalog.titles.get_by_id(id).await
     }
 
     async fn validate_title_exists(&self, title_id: &str) -> AppResult<()> {
         self.services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -2319,6 +2397,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<PrimaryCollectionSummary>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .catalog
             .shows
             .list_primary_collection_summaries(title_ids)
             .await
@@ -2331,6 +2410,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .library
             .media_files
             .list_title_media_size_summaries(title_ids)
             .await
@@ -2343,6 +2423,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .library
             .media_files
             .list_title_episode_progress_summaries(title_ids)
             .await
@@ -2356,6 +2437,7 @@ impl AppUseCase {
         require(actor, &Entitlement::ViewCatalog)?;
         self.validate_title_exists(title_id).await?;
         self.services
+            .catalog
             .shows
             .list_collections_for_title(title_id)
             .await
@@ -2368,6 +2450,7 @@ impl AppUseCase {
     ) -> AppResult<Option<Collection>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .catalog
             .shows
             .get_collection_by_id(collection_id)
             .await
@@ -2416,7 +2499,12 @@ impl AppUseCase {
             created_at: Utc::now(),
         };
 
-        let collection = self.services.shows.create_collection(collection).await?;
+        let collection = self
+            .services
+            .catalog
+            .shows
+            .create_collection(collection)
+            .await?;
         Ok(collection)
     }
 
@@ -2434,19 +2522,6 @@ impl AppUseCase {
     ) -> AppResult<Collection> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        if collection_type.as_ref().is_none()
-            && collection_index.is_none()
-            && label.is_none()
-            && ordered_path.is_none()
-            && first_episode_number.is_none()
-            && last_episode_number.is_none()
-            && monitored.is_none()
-        {
-            return Err(AppError::Validation(
-                "at least one collection field must be provided".into(),
-            ));
-        }
-
         if let Some(raw) = &collection_type
             && raw.trim().is_empty()
         {
@@ -2461,12 +2536,6 @@ impl AppUseCase {
                 })
             })
             .transpose()?;
-        let has_non_monitor_updates = parsed_type.is_some()
-            || collection_index.is_some()
-            || label.is_some()
-            || ordered_path.is_some()
-            || first_episode_number.is_some()
-            || last_episode_number.is_some();
 
         if let Some(raw) = &collection_index
             && raw.trim().is_empty()
@@ -2476,20 +2545,32 @@ impl AppUseCase {
             ));
         }
 
+        let update = CollectionUpdate {
+            collection_type: parsed_type,
+            collection_index: collection_index.map(|value| value.trim().to_string()),
+            label: normalize_show_text_opt(label),
+            ordered_path: normalize_show_text_opt(ordered_path),
+            first_episode_number: normalize_show_text_opt(first_episode_number),
+            last_episode_number: normalize_show_text_opt(last_episode_number),
+            monitored,
+        };
+        if !update.has_changes() {
+            return Err(AppError::Validation(
+                "at least one collection field must be provided".into(),
+            ));
+        }
+
+        let has_non_monitor_updates = update.has_non_monitor_changes();
+        let monitored = update.monitored;
+
         let mut collection = if has_non_monitor_updates {
+            let mut repo_update = update.clone();
+            repo_update.monitored = None;
             Some(
                 self.services
+                    .catalog
                     .shows
-                    .update_collection(
-                        &collection_id,
-                        parsed_type,
-                        collection_index.map(|value| value.trim().to_string()),
-                        normalize_show_text_opt(label),
-                        normalize_show_text_opt(ordered_path),
-                        normalize_show_text_opt(first_episode_number),
-                        normalize_show_text_opt(last_episode_number),
-                        None,
-                    )
+                    .update_collection(&collection_id, repo_update)
                     .await?,
             )
         } else {
@@ -2561,7 +2642,7 @@ impl AppUseCase {
             created_at: Utc::now(),
         };
 
-        let episode = self.services.shows.create_episode(episode).await?;
+        let episode = self.services.catalog.shows.create_episode(episode).await?;
         Ok(episode)
     }
 
@@ -2584,24 +2665,6 @@ impl AppUseCase {
     ) -> AppResult<Episode> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        if episode_type.as_ref().is_none()
-            && episode_number.is_none()
-            && season_number.is_none()
-            && episode_label.is_none()
-            && title.is_none()
-            && air_date.is_none()
-            && duration_seconds.is_none()
-            && has_multi_audio.is_none()
-            && has_subtitle.is_none()
-            && monitored.is_none()
-            && collection_id.is_none()
-            && overview.is_none()
-        {
-            return Err(AppError::Validation(
-                "at least one episode field must be provided".into(),
-            ));
-        }
-
         if let Some(raw) = &episode_type
             && raw.trim().is_empty()
         {
@@ -2614,38 +2677,39 @@ impl AppUseCase {
                     .ok_or_else(|| AppError::Validation(format!("unknown episode type: {}", value)))
             })
             .transpose()?;
-        let has_non_monitor_updates = parsed_episode_type.is_some()
-            || episode_number.is_some()
-            || season_number.is_some()
-            || episode_label.is_some()
-            || title.is_some()
-            || air_date.is_some()
-            || duration_seconds.is_some()
-            || has_multi_audio.is_some()
-            || has_subtitle.is_some()
-            || collection_id.is_some()
-            || overview.is_some();
+
+        let update = EpisodeUpdate {
+            episode_type: parsed_episode_type,
+            episode_number: normalize_show_text_opt(episode_number),
+            season_number: normalize_show_text_opt(season_number),
+            episode_label: normalize_show_text_opt(episode_label),
+            title: normalize_show_text_opt(title),
+            air_date: normalize_show_text_opt(air_date),
+            duration_seconds,
+            has_multi_audio,
+            has_subtitle,
+            monitored,
+            collection_id,
+            overview,
+            tvdb_id: None,
+        };
+        if !update.has_changes() {
+            return Err(AppError::Validation(
+                "at least one episode field must be provided".into(),
+            ));
+        }
+
+        let has_non_monitor_updates = update.has_non_monitor_changes();
+        let monitored = update.monitored;
 
         let mut episode = if has_non_monitor_updates {
+            let mut repo_update = update.clone();
+            repo_update.monitored = None;
             Some(
                 self.services
+                    .catalog
                     .shows
-                    .update_episode(
-                        &episode_id,
-                        parsed_episode_type,
-                        normalize_show_text_opt(episode_number),
-                        normalize_show_text_opt(season_number),
-                        normalize_show_text_opt(episode_label),
-                        normalize_show_text_opt(title),
-                        normalize_show_text_opt(air_date),
-                        duration_seconds,
-                        has_multi_audio,
-                        has_subtitle,
-                        None,
-                        collection_id,
-                        overview,
-                        None,
-                    )
+                    .update_episode(&episode_id, repo_update)
                     .await?,
             )
         } else {
@@ -2669,14 +2733,22 @@ impl AppUseCase {
     pub async fn delete_collection(&self, actor: &User, collection_id: &str) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        self.services.shows.delete_collection(collection_id).await?;
+        self.services
+            .catalog
+            .shows
+            .delete_collection(collection_id)
+            .await?;
         Ok(())
     }
 
     pub async fn delete_episode(&self, actor: &User, episode_id: &str) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        self.services.shows.delete_episode(episode_id).await?;
+        self.services
+            .catalog
+            .shows
+            .delete_episode(episode_id)
+            .await?;
         Ok(())
     }
 
@@ -2687,6 +2759,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<Episode>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .catalog
             .shows
             .list_episodes_for_collection(collection_id)
             .await
@@ -2694,7 +2767,11 @@ impl AppUseCase {
 
     pub async fn get_episode(&self, actor: &User, episode_id: &str) -> AppResult<Option<Episode>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        self.services.shows.get_episode_by_id(episode_id).await
+        self.services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await
     }
 
     pub async fn list_calendar_episodes(
@@ -2705,6 +2782,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<CalendarEpisode>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
+            .catalog
             .shows
             .list_episodes_in_date_range(start_date, end_date)
             .await
@@ -2714,7 +2792,7 @@ impl AppUseCase {
     /// This updates episode air dates (TBA → actual), adds newly announced
     /// episodes, and refreshes other metadata fields.
     pub(crate) async fn run_metadata_refresh_job(&self) -> AppResult<u32> {
-        let titles = match self.services.titles.list(None, None).await {
+        let titles = match self.services.catalog.titles.list(None, None).await {
             Ok(t) => t,
             Err(err) => {
                 warn!(error = %err, "metadata refresh: failed to list titles");
@@ -2748,7 +2826,7 @@ impl AppUseCase {
     }
 
     pub async fn hydrate_all_titles_for_current_language(&self) -> AppResult<u32> {
-        let titles = self.services.titles.list(None, None).await?;
+        let titles = self.services.catalog.titles.list(None, None).await?;
         let refreshed = titles.len() as u32;
         let targets = titles
             .into_iter()
@@ -2760,6 +2838,43 @@ impl AppUseCase {
             .collect::<Vec<_>>();
         let _ = self.hydrate_titles_bulk(targets).await?;
         Ok(refreshed)
+    }
+
+    pub async fn rehydrate_all_metadata(
+        &self,
+        actor: &User,
+        language: &str,
+    ) -> AppResult<(u64, u32)> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let language = language.trim().to_ascii_lowercase();
+        if language.is_empty() {
+            return Err(AppError::Validation("language is required".to_string()));
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                "metadata_language",
+                None,
+                serde_json::to_string(&language)
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                "rehydrate_metadata",
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        let cleared = self
+            .services
+            .catalog
+            .titles
+            .clear_metadata_language_for_all()
+            .await?;
+        let refreshed = self.hydrate_all_titles_for_current_language().await?;
+
+        Ok((cleared, refreshed))
     }
 }
 

@@ -1,4 +1,10 @@
-//! Library workflows for rename, filesystem traversal, deletion, and scan coordination.
-//!
-//! Start with `library.rs` for the main workflow.
-//! Scan-specific pieces live under `scan/`.
+pub(crate) use crate::*;
+
+pub(crate) mod discovery;
+pub mod filesystem_walk;
+pub(crate) mod library;
+pub(crate) mod nfo;
+pub mod recycle_bin;
+pub(crate) mod rename;
+pub(crate) mod title_matching;
+pub(crate) mod user_delete;

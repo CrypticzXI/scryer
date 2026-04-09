@@ -417,13 +417,7 @@ impl ShowRepository for MockShowRepo {
     async fn update_collection(
         &self,
         collection_id: &str,
-        collection_type: Option<CollectionType>,
-        collection_index: Option<String>,
-        label: Option<String>,
-        ordered_path: Option<String>,
-        first_episode_number: Option<String>,
-        last_episode_number: Option<String>,
-        monitored: Option<bool>,
+        update: CollectionUpdate,
     ) -> AppResult<Collection> {
         let mut collections = self.collections.lock().await;
         let item = collections
@@ -431,25 +425,25 @@ impl ShowRepository for MockShowRepo {
             .find(|entry| entry.id == collection_id)
             .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
 
-        if let Some(value) = collection_type {
+        if let Some(value) = update.collection_type {
             item.collection_type = value;
         }
-        if let Some(value) = collection_index {
+        if let Some(value) = update.collection_index {
             item.collection_index = value;
         }
-        if let Some(value) = label {
+        if let Some(value) = update.label {
             item.label = Some(value);
         }
-        if let Some(value) = ordered_path {
+        if let Some(value) = update.ordered_path {
             item.ordered_path = Some(value);
         }
-        if let Some(value) = first_episode_number {
+        if let Some(value) = update.first_episode_number {
             item.first_episode_number = Some(value);
         }
-        if let Some(value) = last_episode_number {
+        if let Some(value) = update.last_episode_number {
             item.last_episode_number = Some(value);
         }
-        if let Some(value) = monitored {
+        if let Some(value) = update.monitored {
             item.monitored = value;
         }
 
@@ -564,66 +558,50 @@ impl ShowRepository for MockShowRepo {
         Ok(episode)
     }
 
-    async fn update_episode(
-        &self,
-        episode_id: &str,
-        episode_type: Option<scryer_domain::EpisodeType>,
-        episode_number: Option<String>,
-        season_number: Option<String>,
-        episode_label: Option<String>,
-        title: Option<String>,
-        air_date: Option<String>,
-        duration_seconds: Option<i64>,
-        has_multi_audio: Option<bool>,
-        has_subtitle: Option<bool>,
-        monitored: Option<bool>,
-        collection_id: Option<String>,
-        overview: Option<String>,
-        tvdb_id: Option<String>,
-    ) -> AppResult<Episode> {
+    async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
         let mut episodes = self.episodes.lock().await;
         let item = episodes
             .iter_mut()
             .find(|entry| entry.id == episode_id)
             .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
 
-        if let Some(value) = episode_type {
+        if let Some(value) = update.episode_type {
             item.episode_type = value;
         }
-        if let Some(value) = episode_number {
+        if let Some(value) = update.episode_number {
             item.episode_number = Some(value);
         }
-        if let Some(value) = season_number {
+        if let Some(value) = update.season_number {
             item.season_number = Some(value);
         }
-        if let Some(value) = episode_label {
+        if let Some(value) = update.episode_label {
             item.episode_label = Some(value);
         }
-        if let Some(value) = title {
+        if let Some(value) = update.title {
             item.title = Some(value);
         }
-        if let Some(value) = air_date {
+        if let Some(value) = update.air_date {
             item.air_date = Some(value);
         }
-        if let Some(value) = duration_seconds {
+        if let Some(value) = update.duration_seconds {
             item.duration_seconds = Some(value);
         }
-        if let Some(value) = has_multi_audio {
+        if let Some(value) = update.has_multi_audio {
             item.has_multi_audio = value;
         }
-        if let Some(value) = has_subtitle {
+        if let Some(value) = update.has_subtitle {
             item.has_subtitle = value;
         }
-        if let Some(value) = monitored {
+        if let Some(value) = update.monitored {
             item.monitored = value;
         }
-        if let Some(value) = collection_id {
+        if let Some(value) = update.collection_id {
             item.collection_id = Some(value);
         }
-        if let Some(value) = overview {
+        if let Some(value) = update.overview {
             item.overview = Some(value);
         }
-        if let Some(value) = tvdb_id {
+        if let Some(value) = update.tvdb_id {
             item.tvdb_id = Some(value);
         }
 
@@ -899,8 +877,10 @@ impl SettingsRepository for MockSettingsRepo {
 
 #[derive(Default, Clone)]
 struct StoredSettingsRepo {
-    values: Arc<Mutex<HashMap<(String, String, Option<String>), String>>>,
+    values: StoredSettingValues,
 }
+
+type StoredSettingValues = Arc<Mutex<HashMap<(String, String, Option<String>), String>>>;
 
 impl StoredSettingsRepo {
     async fn set_value(&self, scope: &str, key_name: &str, value: &str) {
@@ -1217,20 +1197,20 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         Ok(config)
     }
 
-    async fn update(
-        &self,
-        id: &str,
-        name: Option<String>,
-        provider_type: Option<String>,
-        base_url: Option<String>,
-        api_key_encrypted: Option<String>,
-        rate_limit_seconds: Option<i64>,
-        rate_limit_burst: Option<i64>,
-        is_enabled: Option<bool>,
-        enable_interactive_search: Option<bool>,
-        enable_auto_search: Option<bool>,
-        config_json: Option<String>,
-    ) -> AppResult<IndexerConfig> {
+    async fn update(&self, update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
+        let crate::IndexerConfigUpdate {
+            id,
+            name,
+            provider_type,
+            base_url,
+            api_key_encrypted,
+            rate_limit_seconds,
+            rate_limit_burst,
+            is_enabled,
+            enable_interactive_search,
+            enable_auto_search,
+            config_json,
+        } = update;
         let mut entries = self.store.lock().await;
         let item = entries
             .iter_mut()
@@ -1316,13 +1296,15 @@ impl DownloadClientConfigRepository for MockDownloadClientConfigRepo {
 
     async fn update(
         &self,
-        id: &str,
-        name: Option<String>,
-        client_type: Option<String>,
-        _base_url: Option<String>,
-        config_json: Option<String>,
-        is_enabled: Option<bool>,
+        update: crate::DownloadClientConfigUpdate,
     ) -> AppResult<DownloadClientConfig> {
+        let crate::DownloadClientConfigUpdate {
+            id,
+            name,
+            client_type,
+            config_json,
+            is_enabled,
+        } = update;
         let mut entries = self.store.lock().await;
         let item = entries
             .iter_mut()
@@ -1954,7 +1936,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
-    let mut services = AppServices::with_default_channels(
+    let services = AppServices::builder(
         titles,
         shows,
         users,
@@ -1966,8 +1948,9 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
         settings,
         quality_profiles,
         String::new(),
-    );
-    services.domain_events = Arc::new(MockDomainEventRepo::default());
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .build_partial_for_tests();
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
     registry.register(Arc::new(SeriesFacetHandler::new(
@@ -2004,7 +1987,7 @@ fn bootstrap_with_cleanup_tracking(
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let indexer_client = Arc::new(MockIndexerClient);
 
-    let mut services = AppServices::with_default_channels(
+    let services = AppServices::builder(
         titles,
         shows,
         users,
@@ -2016,10 +1999,11 @@ fn bootstrap_with_cleanup_tracking(
         settings,
         quality_profiles,
         String::new(),
-    );
-    services.domain_events = Arc::new(MockDomainEventRepo::default());
-    services.download_submissions = download_submissions;
-    services.pending_releases = pending_releases;
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions)
+    .with_pending_releases(pending_releases)
+    .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
@@ -2048,17 +2032,20 @@ fn bootstrap_with_acquisition_tracking(
     pending_releases: Arc<TrackingPendingReleaseRepo>,
     wanted_items: Arc<TrackingWantedItemRepo>,
 ) -> (AppUseCase, User) {
-    let (mut app, user) = bootstrap_with_cleanup_tracking(
+    let (app, user) = bootstrap_with_cleanup_tracking(
         download_client,
         download_submissions.clone(),
         pending_releases.clone(),
     );
-    app.services.acquisition_state = Arc::new(TrackingAcquisitionStateRepo {
-        download_submissions,
-        pending_releases,
-        wanted_items: wanted_items.clone(),
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
+                download_submissions,
+                pending_releases,
+                wanted_items: wanted_items.clone(),
+            }))
+            .with_wanted_items(wanted_items)
     });
-    app.services.wanted_items = wanted_items;
     (app, user)
 }
 
@@ -2077,7 +2064,7 @@ fn bootstrap_with_scan_unmatched_tracking(
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
-    let mut services = AppServices::with_default_channels(
+    let services = AppServices::builder(
         titles,
         shows,
         users,
@@ -2089,11 +2076,12 @@ fn bootstrap_with_scan_unmatched_tracking(
         settings,
         quality_profiles,
         String::new(),
-    );
-    services.domain_events = Arc::new(MockDomainEventRepo::default());
-    services.metadata_gateway = Arc::new(EmptySearchMetadataGateway);
-    services.library_scanner = library_scanner;
-    services.library_scan_unmatched_items = unmatched_items;
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_metadata_gateway(Arc::new(EmptySearchMetadataGateway))
+    .with_library_scanner(library_scanner)
+    .with_library_scan_unmatched_items(unmatched_items)
+    .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
@@ -2262,9 +2250,7 @@ async fn add_title_and_queue_sends_download_job() {
 
                 ..Default::default()
             },
-            None,
-            None,
-            None,
+            QueuedReleaseSelection::default(),
         )
         .await
         .expect("title + queue should succeed");
@@ -2321,7 +2307,16 @@ async fn search_indexer_requires_query() {
     let (app, user) = bootstrap();
 
     let result = app
-        .search_indexers(&user, "   ".into(), None, None, None, None)
+        .search_indexers(
+            &user,
+            IndexerSearchRequest {
+                query: "   ".into(),
+                imdb_id: None,
+                tvdb_id: None,
+                anidb_id: None,
+                category: None,
+            },
+        )
         .await;
     assert!(result.is_err());
 }
@@ -2414,7 +2409,7 @@ async fn delete_title_removes_title_from_catalog() {
         .await
         .expect("create title");
 
-    app.delete_title(&user, &created.id, false, None, None)
+    app.delete_title(&user, &created.id, false, None)
         .await
         .expect("delete title");
 
@@ -2546,7 +2541,7 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         },
     ];
 
-    app.delete_title(&user, &created.id, false, None, None)
+    app.delete_title(&user, &created.id, false, None)
         .await
         .expect("delete title");
 
@@ -3110,6 +3105,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 
     let title = app
         .services
+        .catalog
         .titles
         .create(Title {
             id: Id::new().0,
@@ -3152,6 +3148,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 
     let season_one = app
         .services
+        .catalog
         .shows
         .create_collection(Collection {
             id: Id::new().0,
@@ -3174,6 +3171,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 
     let episode_one = app
         .services
+        .catalog
         .shows
         .create_episode(Episode {
             id: Id::new().0,
@@ -3201,6 +3199,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 
     let episode_two = app
         .services
+        .catalog
         .shows
         .create_episode(Episode {
             id: Id::new().0,
@@ -3228,6 +3227,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 
     let interstitial = app
         .services
+        .catalog
         .shows
         .create_collection(Collection {
             id: Id::new().0,
@@ -3355,9 +3355,40 @@ async fn update_user_password_is_hashed() {
         .expect("create user");
 
     let updated = app
-        .set_user_password(&user, &created.id, "after-pass".to_string(), None)
+        .set_user_password(&user, &created.id, "after-pass".to_string())
         .await
         .expect("update password");
+
+    assert!(updated.password_hash.is_some());
+    assert_ne!(
+        updated.password_hash, created.password_hash,
+        "password hash should change when password is updated"
+    );
+    assert_ne!(updated.password_hash, Some("after-pass".to_string()));
+}
+
+#[tokio::test]
+async fn self_password_change_is_hashed() {
+    let (app, admin) = bootstrap();
+
+    let created = app
+        .create_user(
+            &admin,
+            "self-password-user".into(),
+            "before-pass".to_string(),
+            vec![Entitlement::ViewCatalog],
+        )
+        .await
+        .expect("create user");
+
+    let updated = app
+        .change_own_password(
+            &created,
+            "after-pass".to_string(),
+            "before-pass".to_string(),
+        )
+        .await
+        .expect("update own password");
 
     assert!(updated.password_hash.is_some());
     assert_ne!(
@@ -3496,30 +3527,32 @@ async fn create_collection_and_episode() {
 
 #[tokio::test]
 async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
-    let (mut app, user) = bootstrap();
-    app.services.metadata_gateway = Arc::new(MockMetadataGateway {
-        movies: HashMap::from([(
-            131_963,
-            MovieMetadata {
-                tvdb_id: 131_963,
-                name: "Mugen Train".into(),
-                slug: "mugen-train".into(),
-                year: Some(2020),
-                content_status: "Released".into(),
-                overview: "A train mission.".into(),
-                poster_url: "https://example.com/mugen-train.jpg".into(),
-                banner_url: None,
-                background_url: None,
-                language: "eng".into(),
-                runtime_minutes: 117,
-                sort_title: "Mugen Train".into(),
-                imdb_id: "tt11032374".into(),
-                anidb_id: None,
-                genres: vec!["Action".into(), "Anime".into()],
-                studio: "ufotable".into(),
-                tmdb_release_date: Some("2020-10-16".into()),
-            },
-        )]),
+    let (app, user) = bootstrap();
+    let app = app.with_test_overrides(|services| {
+        services.with_metadata_gateway(Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                131_963,
+                MovieMetadata {
+                    tvdb_id: 131_963,
+                    name: "Mugen Train".into(),
+                    slug: "mugen-train".into(),
+                    year: Some(2020),
+                    content_status: "Released".into(),
+                    overview: "A train mission.".into(),
+                    poster_url: "https://example.com/mugen-train.jpg".into(),
+                    banner_url: None,
+                    background_url: None,
+                    language: "eng".into(),
+                    runtime_minutes: 117,
+                    sort_title: "Mugen Train".into(),
+                    imdb_id: "tt11032374".into(),
+                    anidb_id: None,
+                    genres: vec!["Action".into(), "Anime".into()],
+                    studio: "ufotable".into(),
+                    tmdb_release_date: Some("2020-10-16".into()),
+                },
+            )]),
+        }))
     });
     let title = app
         .add_title(
@@ -4844,7 +4877,12 @@ async fn issue_and_authenticate_token_round_trips() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
     let token = app.issue_access_token(&user).expect("issue token");
     let decoded = app
         .authenticate_token(&token)
@@ -4863,7 +4901,12 @@ async fn entitlements_survive_token_round_trip() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
     let token = app.issue_access_token(&user).expect("issue token");
     let decoded = app
         .authenticate_token(&token)
@@ -4882,7 +4925,12 @@ async fn expired_token_returns_unauthorized() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
     // Encode a token with an exp 100 seconds in the past
     let claims = JwtClaims {
         sub: user.id.clone(),
@@ -4909,7 +4957,12 @@ async fn wrong_issuer_token_returns_unauthorized() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
     let claims = JwtClaims {
         sub: user.id.clone(),
         exp: Utc::now().timestamp() + 3600,
@@ -4943,7 +4996,12 @@ async fn authenticate_token_warms_cache_without_get_by_id_round_trip() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
 
     let token = app.issue_access_token(&user).expect("issue token");
     app.authenticate_token(&token)
@@ -4971,7 +5029,7 @@ async fn password_change_invalidates_existing_token_immediately() {
         .expect("create user");
     let token = app.issue_access_token(&created).expect("issue token");
 
-    app.set_user_password(&admin, &created.id, "after-pass".to_string(), None)
+    app.set_user_password(&admin, &created.id, "after-pass".to_string())
         .await
         .expect("rotate password");
 
@@ -5073,7 +5131,12 @@ async fn malformed_entitlement_claims_are_rejected() {
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
     };
-    app.services.users.create(user.clone()).await.unwrap();
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
     app.ensure_jwt_signing_keys_loaded()
         .await
         .expect("seed signing key cache");

@@ -1,56 +1,33 @@
 use scryer_application::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, QualityProfile, REQUIRED_AUDIO_LANGUAGES_KEY,
-    SCORING_PERSONA_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
+    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, MOVIES_ROOT_FOLDERS_KEY,
+    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
+    QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile,
+    QualityProfileRepository, RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
+    RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_TEMPLATE_ANIME_GLOBAL_KEY, RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
+    RENAME_TEMPLATE_SERIES_GLOBAL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
+    SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
-use scryer_infrastructure::{SettingsValueRecord, SqliteServices};
+pub(crate) use scryer_application::{
+    MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
+};
+use scryer_infrastructure::{SettingsValueRecord, SqliteSettingsStore};
 use serde_json::{Value, json};
 
 use crate::{normalize_env_option, normalize_env_option_with_legacy};
 
-pub(crate) const SETTINGS_SCOPE_SYSTEM: &str = "system";
-pub(crate) const SETTINGS_SCOPE_MEDIA: &str = "media";
 pub(crate) const SETTINGS_CATEGORY_SERVICE: &str = "service";
 pub(crate) const SETTINGS_CATEGORY_MEDIA: &str = "media";
-pub(crate) const MOVIES_PATH_KEY: &str = "movies.path";
-pub(crate) const SERIES_PATH_KEY: &str = "series.path";
-pub(crate) const ANIME_PATH_KEY: &str = "anime.path";
-pub(crate) const MOVIES_ROOT_FOLDERS_KEY: &str = "movies.root_folders";
-pub(crate) const SERIES_ROOT_FOLDERS_KEY: &str = "series.root_folders";
-pub(crate) const ANIME_ROOT_FOLDERS_KEY: &str = "anime.root_folders";
-pub(crate) const QUALITY_PROFILE_ID_KEY: &str = "quality.profile_id";
-pub(crate) const QUALITY_PROFILE_CATALOG_KEY: &str = "quality.profiles";
-pub(crate) const DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY: &str =
-    "download_client.default_category";
-pub(crate) const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
-pub(crate) const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
-pub(crate) const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
-pub(crate) const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
-pub(crate) const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
-pub(crate) const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
-pub(crate) const TLS_CERT_KEY: &str = "tls.cert_path";
-pub(crate) const TLS_KEY_KEY: &str = "tls.key_path";
-pub(crate) const RENAME_TEMPLATE_KEY: &str = "rename.template";
-pub(crate) const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY: &str = "rename.template.movie.global";
-pub(crate) const RENAME_TEMPLATE_SERIES_GLOBAL_KEY: &str = "rename.template.series.global";
-pub(crate) const RENAME_TEMPLATE_ANIME_GLOBAL_KEY: &str = "rename.template.anime.global";
-pub(crate) const RENAME_COLLISION_POLICY_KEY: &str = "rename.collision_policy";
-pub(crate) const RENAME_COLLISION_POLICY_GLOBAL_KEY: &str = "rename.collision_policy.global";
-pub(crate) const RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY: &str =
-    "rename.collision_policy.movie.global";
-pub(crate) const RENAME_MISSING_METADATA_POLICY_KEY: &str = "rename.missing_metadata_policy";
-pub(crate) const RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY: &str =
-    "rename.missing_metadata_policy.global";
-pub(crate) const RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY: &str =
-    "rename.missing_metadata_policy.movie.global";
-pub(crate) const QUALITY_PROFILE_INHERIT_VALUE: &str = "__inherit__";
 pub(crate) const SETTINGS_CATEGORY_ACQUISITION: &str = "acquisition";
 pub(crate) const SETTINGS_CATEGORY_POST_PROCESSING: &str = "post_processing";
-pub(crate) const POST_PROCESSING_SCRIPT_MOVIE_KEY: &str = "post_processing.script.movie";
-pub(crate) const POST_PROCESSING_SCRIPT_SERIES_KEY: &str = "post_processing.script.series";
-pub(crate) const POST_PROCESSING_SCRIPT_ANIME_KEY: &str = "post_processing.script.anime";
-pub(crate) const POST_PROCESSING_TIMEOUT_KEY: &str = "post_processing.timeout_secs";
-pub(crate) const SETUP_COMPLETE_KEY: &str = "setup.complete";
 pub(crate) const SETTINGS_CATEGORY_SUBTITLES: &str = "subtitles";
 
 #[derive(Debug)]
@@ -711,7 +688,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
 }
 
 pub(crate) async fn seed_service_setting_definitions(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
 ) -> Result<(), String> {
     let definitions: Vec<scryer_infrastructure::SettingDefinitionSeed> = service_setting_seeds()
         .iter()
@@ -733,7 +710,7 @@ pub(crate) async fn seed_service_setting_definitions(
 }
 
 pub(crate) async fn seed_service_settings_from_environment(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
 ) -> Result<(), String> {
     let env_settings: Vec<(&str, &str, Option<Value>)> = vec![
         (
@@ -823,7 +800,7 @@ mod tests {
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -889,7 +866,7 @@ pub(crate) async fn migrate_legacy_download_client_routing_settings(
 }
 
 pub(crate) async fn migrate_legacy_download_client_default_category_settings(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -955,7 +932,7 @@ pub(crate) async fn migrate_legacy_download_client_default_category_settings(
 }
 
 pub(crate) async fn normalize_media_path_setting(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     key_name: &str,
 ) -> Result<(), String> {
     let media_path = database
@@ -999,7 +976,7 @@ pub(crate) async fn normalize_media_path_setting(
 }
 
 pub(crate) async fn normalize_quality_profile_settings(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     scope_ids: &[&str],
 ) -> Result<(), String> {
     let mut profiles = database
@@ -1041,7 +1018,7 @@ pub(crate) async fn normalize_quality_profile_settings(
 }
 
 pub(crate) async fn sync_quality_profile_catalog_setting(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     profiles: &[QualityProfile],
 ) -> Result<(), String> {
     let catalog: Vec<serde_json::Value> = profiles
@@ -1125,7 +1102,7 @@ pub(crate) fn merge_default_quality_profiles(
 }
 
 pub(crate) async fn normalize_quality_profile_id_setting(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     scope_id: Option<&str>,
     valid_profile_ids: &[String],
 ) -> Result<(), String> {
@@ -1197,7 +1174,7 @@ pub(crate) async fn normalize_quality_profile_id_setting(
 }
 
 async fn seed_scope_default_if_unset(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     scope_id: &str,
     default_profile_id: &str,
 ) -> Result<(), String> {
@@ -1221,7 +1198,7 @@ async fn seed_scope_default_if_unset(
 }
 
 pub(crate) async fn upsert_quality_profile_setting(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
     scope_id: Option<String>,
     value: &str,
 ) -> Result<(), String> {
@@ -1286,7 +1263,7 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
 }
 
 pub(crate) async fn load_service_runtime_settings(
-    database: &SqliteServices,
+    database: &SqliteSettingsStore,
 ) -> Result<ServiceRuntimeSettings, String> {
     let keys = vec![
         (

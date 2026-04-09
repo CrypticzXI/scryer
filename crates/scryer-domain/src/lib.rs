@@ -1011,6 +1011,7 @@ pub enum EventType {
 pub enum DomainEventType {
     TitleAdded,
     TitleUpdated,
+    TitleRematched,
     TitleDeleted,
     ConfigurationChanged,
     DiscoverySearchCompleted,
@@ -1050,6 +1051,7 @@ impl DomainEventType {
         match self {
             Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
+            Self::TitleRematched => "title_rematched",
             Self::TitleDeleted => "title_deleted",
             Self::ConfigurationChanged => "configuration_changed",
             Self::DiscoverySearchCompleted => "discovery_search_completed",
@@ -1089,6 +1091,7 @@ impl DomainEventType {
         match value {
             "title_added" => Some(Self::TitleAdded),
             "title_updated" => Some(Self::TitleUpdated),
+            "title_rematched" => Some(Self::TitleRematched),
             "title_deleted" => Some(Self::TitleDeleted),
             "configuration_changed" => Some(Self::ConfigurationChanged),
             "discovery_search_completed" => Some(Self::DiscoverySearchCompleted),
@@ -1215,6 +1218,14 @@ pub struct TitleAddedEventData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TitleUpdatedEventData {
     pub title: TitleContextSnapshot,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TitleRematchedEventData {
+    pub title: TitleContextSnapshot,
+    pub old_tvdb_id: Option<String>,
+    pub new_tvdb_id: String,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1555,6 +1566,7 @@ pub struct DownloadQueueItemRemovedEventData {
 pub enum DomainEventPayload {
     TitleAdded(TitleAddedEventData),
     TitleUpdated(TitleUpdatedEventData),
+    TitleRematched(TitleRematchedEventData),
     TitleDeleted(TitleDeletedEventData),
     ConfigurationChanged(ConfigurationChangedEventData),
     DiscoverySearchCompleted(DiscoverySearchCompletedEventData),
@@ -1594,6 +1606,7 @@ impl DomainEventPayload {
         match self {
             Self::TitleAdded(_) => DomainEventType::TitleAdded,
             Self::TitleUpdated(_) => DomainEventType::TitleUpdated,
+            Self::TitleRematched(_) => DomainEventType::TitleRematched,
             Self::TitleDeleted(_) => DomainEventType::TitleDeleted,
             Self::ConfigurationChanged(_) => DomainEventType::ConfigurationChanged,
             Self::DiscoverySearchCompleted(_) => DomainEventType::DiscoverySearchCompleted,

@@ -41,6 +41,7 @@ async fn persist_or_reuse_scanned_media_file(
             let db_started = Instant::now();
             let update_result = app
                 .services
+                .library
                 .media_files
                 .update_media_file_source_signature(
                     existing.file_id,
@@ -87,6 +88,7 @@ async fn persist_or_reuse_scanned_media_file(
     let db_started = Instant::now();
     let insert_result = app
         .services
+        .library
         .media_files
         .insert_media_file(&media_file_input)
         .await;
@@ -127,6 +129,7 @@ async fn persist_scanned_media_analysis_outcome(
         MediaAnalysisOutcome::Valid(analysis) => {
             let update_result = app
                 .services
+                .library
                 .media_files
                 .update_media_file_analysis(file_id, *analysis)
                 .await;
@@ -142,6 +145,7 @@ async fn persist_scanned_media_analysis_outcome(
         MediaAnalysisOutcome::Invalid(error_message) => {
             let mark_result = app
                 .services
+                .library
                 .media_files
                 .mark_scan_failed(file_id, &error_message)
                 .await;
@@ -201,7 +205,13 @@ async fn ensure_movie_collection_for_file(
         created_at: Utc::now(),
     };
 
-    if let Err(err) = app.services.shows.create_collection(collection).await {
+    if let Err(err) = app
+        .services
+        .catalog
+        .shows
+        .create_collection(collection)
+        .await
+    {
         info!(
             title_id = %title.id,
             path = %file.path,
@@ -283,6 +293,7 @@ pub(super) async fn finalize_title_scan_file(
             let db_started = Instant::now();
             let link_result = app
                 .services
+                .library
                 .media_files
                 .link_file_to_episode(&persisted_file.file_id, &episode.id)
                 .await;
@@ -354,6 +365,7 @@ pub(super) async fn finalize_movie_scan_file(
 
     let existing_files = match app
         .services
+        .library
         .media_files
         .list_media_files_for_title(&title.id)
         .await
@@ -410,6 +422,7 @@ pub(super) async fn finalize_movie_scan_file(
     if persisted_file.should_analyze {
         let analysis_outcome = match app
             .services
+            .library
             .media_analyzer
             .analyze_file(PathBuf::from(&file.path))
             .await
@@ -436,6 +449,7 @@ pub(super) async fn finalize_movie_scan_file(
 
     let collections = match app
         .services
+        .catalog
         .shows
         .list_collections_for_title(&title.id)
         .await

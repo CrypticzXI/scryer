@@ -37,7 +37,7 @@ async fn wait_for_image_loop_to_resume(
     token: &tokio_util::sync::CancellationToken,
     kind: TitleImageKind,
 ) -> bool {
-    let active_scans = app.services.library_scan_tracker.list_active().await;
+    let active_scans = app.runtime.library_scan_tracker.list_active().await;
     if active_scans.is_empty() {
         return true;
     }
@@ -50,7 +50,7 @@ async fn wait_for_image_loop_to_resume(
 
     tokio::select! {
         _ = token.cancelled() => false,
-        _ = app.services.library_scan_tracker.wait_until_idle() => {
+        _ = app.runtime.library_scan_tracker.wait_until_idle() => {
             info!(kind = kind.as_str(), "image loop: resuming after library scan");
             true
         }
@@ -64,9 +64,9 @@ async fn start_background_image_loop(
 ) {
     let label = kind.as_str();
     let wake: Arc<Notify> = match kind {
-        TitleImageKind::Poster => app.services.poster_wake.clone(),
-        TitleImageKind::Banner => app.services.banner_wake.clone(),
-        TitleImageKind::Fanart => app.services.fanart_wake.clone(),
+        TitleImageKind::Poster => app.runtime.poster_wake.clone(),
+        TitleImageKind::Banner => app.runtime.banner_wake.clone(),
+        TitleImageKind::Fanart => app.runtime.fanart_wake.clone(),
     };
 
     info!(
@@ -105,6 +105,7 @@ async fn start_background_image_loop(
 
             let batch = match app
                 .services
+                .library
                 .title_images
                 .list_titles_requiring_image_refresh(kind, IMAGE_MAX_BATCH)
                 .await
@@ -149,6 +150,7 @@ async fn start_background_image_loop(
                     );
                     match app
                         .services
+                        .library
                         .title_image_processor
                         .fetch_and_process_image(kind, &task.source_url)
                         .await
@@ -156,6 +158,7 @@ async fn start_background_image_loop(
                         Ok(replacement) => {
                             if let Err(error) = app
                                 .services
+                                .library
                                 .title_images
                                 .replace_title_image(&task.title_id, replacement)
                                 .await

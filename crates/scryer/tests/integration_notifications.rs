@@ -6,8 +6,9 @@ use async_graphql::Request;
 use async_trait::async_trait;
 use chrono::Utc;
 use common::TestContext;
+use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, NotificationClient, NotificationPluginProvider,
+    AppError, AppResult, NotificationClient, NotificationPluginProvider, NotificationScopeIdUpdate,
     start_notification_dispatcher,
 };
 use scryer_domain::{
@@ -17,6 +18,7 @@ use scryer_domain::{
     MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NewDomainEvent,
     NotificationEventType, TitleContextSnapshot,
 };
+use scryer_infrastructure::SqliteNotificationStore;
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -31,19 +33,17 @@ use tokio_util::sync::CancellationToken;
 /// Wire notification repos into the test AppUseCase so CRUD methods don't
 /// return "not configured".
 fn app_with_notifications(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let mut app = ctx.app.clone();
-    app.services.notification_channels = Some(Arc::new(ctx.db.clone()));
-    app.services.notification_subscriptions = Some(Arc::new(ctx.db.clone()));
-    app
+    ctx.app.with_test_overrides(|builder| {
+        builder.with_notification_store(Arc::new(SqliteNotificationStore::new(&ctx.db)))
+    })
 }
 
 fn app_with_notification_provider(
     ctx: &TestContext,
     provider: Arc<dyn NotificationPluginProvider>,
 ) -> scryer_application::AppUseCase {
-    let mut app = app_with_notifications(ctx);
-    app.services.notification_provider = Some(provider);
-    app
+    app_with_notifications(ctx)
+        .with_test_overrides(|builder| builder.with_notification_provider(provider))
 }
 
 async fn default_user(app: &scryer_application::AppUseCase) -> scryer_domain::User {
@@ -176,10 +176,10 @@ fn assert_no_errors(body: &Value) {
 
 async fn schema_exec(
     app: &scryer_application::AppUseCase,
-    ctx: &TestContext,
+    _ctx: &TestContext,
     query: &str,
 ) -> Value {
-    let schema = build_schema(app.clone(), ctx.db.clone(), false);
+    let schema = build_schema(app.clone(), false);
     let user = default_user(app).await;
     let response = schema.execute(Request::new(query).data(user)).await;
     serde_json::to_value(&response).expect("serialize GraphQL response")
@@ -495,7 +495,7 @@ async fn update_subscription() {
             sub.id.clone(),
             Some("import_completed".into()),
             None,
-            None,
+            NotificationScopeIdUpdate::NoChange,
             Some(false),
         )
         .await
@@ -614,7 +614,7 @@ async fn update_subscription_rejects_unknown_event_type() {
             sub.id,
             Some("bogus_event".into()),
             None,
-            None,
+            NotificationScopeIdUpdate::NoChange,
             None,
         )
         .await
@@ -930,8 +930,7 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
     ];
 
     for (_plugin_event_type, _title, _body, _metadata, event) in &scenarios {
-        app.services
-            .append_domain_event(event.clone())
+        app.append_domain_event(event.clone())
             .await
             .expect("append domain event");
     }

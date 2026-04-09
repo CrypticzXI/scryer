@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use common::TestContext;
 use scryer_application::recycle_bin::RecycleBinConfig;
+use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::upgrade::{UpgradeResult, execute_upgrade};
 use scryer_application::{
-    ActivityKind, ActivitySeverity, InsertMediaFileInput, QualityProfile, TitleRepository,
+    ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, QualityProfile,
+    TitleRepository,
 };
 use scryer_domain::{CompletedDownload, MediaFacet, Title, User};
 use scryer_infrastructure::FsFileImporter;
@@ -18,10 +20,11 @@ use scryer_infrastructure::FsFileImporter;
 // ---------------------------------------------------------------------------
 
 fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let mut app = ctx.app.clone();
-    app.services.media_files = Arc::new(ctx.db.clone());
-    app.services.file_importer = Arc::new(FsFileImporter);
-    app
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_file_importer(Arc::new(FsFileImporter))
+    })
 }
 
 async fn seed_title(ctx: &TestContext, id: &str) -> Title {
@@ -61,7 +64,7 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.db.create(title.clone()).await.expect("seed title");
+    ctx.catalog.create(title.clone()).await.expect("seed title");
     title
 }
 
@@ -89,8 +92,16 @@ async fn seed_media_file(
         acquisition_score: Some(score),
         ..Default::default()
     };
-    let file_id = ctx.db.insert_media_file(&input).await.expect("insert");
-    let files = ctx.db.list_media_files_for_title(title_id).await.unwrap();
+    let file_id = ctx
+        .library_state
+        .insert_media_file(&input)
+        .await
+        .expect("insert");
+    let files = ctx
+        .library_state
+        .list_media_files_for_title(title_id)
+        .await
+        .unwrap();
     files.into_iter().find(|f| f.id == file_id).unwrap()
 }
 
@@ -192,7 +203,11 @@ async fn upgrade_replaces_old_file_with_new() {
     );
 
     // DB should have the new file, not the old one
-    let files = ctx.db.list_media_files_for_title("title-1").await.unwrap();
+    let files = ctx
+        .library_state
+        .list_media_files_for_title("title-1")
+        .await
+        .unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].id, outcome.new_file_id);
     assert_eq!(files[0].acquisition_score, Some(650));

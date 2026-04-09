@@ -240,6 +240,7 @@ impl DownloadQueueStateValue {
 pub enum DomainEventTypeValue {
     TitleAdded,
     TitleUpdated,
+    TitleRematched,
     TitleDeleted,
     ConfigurationChanged,
     DiscoverySearchCompleted,
@@ -279,6 +280,7 @@ impl DomainEventTypeValue {
         match value {
             DomainEventType::TitleAdded => Self::TitleAdded,
             DomainEventType::TitleUpdated => Self::TitleUpdated,
+            DomainEventType::TitleRematched => Self::TitleRematched,
             DomainEventType::TitleDeleted => Self::TitleDeleted,
             DomainEventType::ConfigurationChanged => Self::ConfigurationChanged,
             DomainEventType::DiscoverySearchCompleted => Self::DiscoverySearchCompleted,
@@ -318,6 +320,7 @@ impl DomainEventTypeValue {
         match self {
             Self::TitleAdded => DomainEventType::TitleAdded,
             Self::TitleUpdated => DomainEventType::TitleUpdated,
+            Self::TitleRematched => DomainEventType::TitleRematched,
             Self::TitleDeleted => DomainEventType::TitleDeleted,
             Self::ConfigurationChanged => DomainEventType::ConfigurationChanged,
             Self::DiscoverySearchCompleted => DomainEventType::DiscoverySearchCompleted,

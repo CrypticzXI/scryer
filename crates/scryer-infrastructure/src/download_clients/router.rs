@@ -906,12 +906,7 @@ mod tests {
 
         async fn update(
             &self,
-            _id: &str,
-            _name: Option<String>,
-            _client_type: Option<String>,
-            _base_url: Option<String>,
-            _config_json: Option<String>,
-            _is_enabled: Option<bool>,
+            _update: scryer_application::DownloadClientConfigUpdate,
         ) -> AppResult<DownloadClientConfig> {
             unreachable!("not used in router tests")
         }

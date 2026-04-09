@@ -17,6 +17,7 @@ async fn ensure_title_folder_path_if_missing(
 
     match app
         .services
+        .catalog
         .titles
         .set_folder_path(&title.id, folder_path.as_str())
         .await
@@ -207,7 +208,7 @@ enum MovieCandidateResolution {
     ReadyCreated { index: usize, title: Title },
     CreateFailed(AppError),
     Skipped,
-    Unresolved(PreparedMovieLibraryScanCandidate),
+    Unresolved(Box<PreparedMovieLibraryScanCandidate>),
 }
 
 enum MovieMetadataResolution {
@@ -222,12 +223,14 @@ pub(super) fn movie_title_work(
     pre_scanned_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
     cleanup: LibraryScanMovieCleanupContext,
+    created_in_scan: bool,
 ) -> LibraryScanTitleWork {
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Movie(cleanup),
         discovered_files: Some(pre_scanned_files),
         mode,
+        created_in_scan,
     }
 }
 
@@ -236,6 +239,7 @@ fn merge_default_movie_title_work(
     title: Title,
     file: LibraryFile,
     mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
 ) {
     merge_library_scan_title_work(
         workset,
@@ -244,6 +248,7 @@ fn merge_default_movie_title_work(
             vec![file],
             mode,
             LibraryScanMovieCleanupContext::default(),
+            created_in_scan,
         ),
     );
 }
@@ -252,12 +257,14 @@ pub(super) fn episodic_title_work(
     title: Title,
     pre_scanned_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
 ) -> LibraryScanTitleWork {
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Episodic,
         discovered_files: Some(pre_scanned_files),
         mode,
+        created_in_scan,
     }
 }
 
@@ -319,10 +326,11 @@ async fn merge_series_title_work_for_index(
     index: usize,
     folder_path: &Path,
     mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
 ) {
     let title_id = existing_titles[index].id.clone();
     let pre_scanned_files = scan_title_files_for_library_scan_session(
-        app.services.library_scanner.clone(),
+        app.services.library.library_scanner.clone(),
         &title_id,
         folder_path,
     )
@@ -330,7 +338,12 @@ async fn merge_series_title_work_for_index(
     ensure_title_folder_path_if_missing(app, &mut existing_titles[index], folder_path).await;
     merge_library_scan_title_work(
         workset,
-        episodic_title_work(existing_titles[index].clone(), pre_scanned_files, mode),
+        episodic_title_work(
+            existing_titles[index].clone(),
+            pre_scanned_files,
+            mode,
+            created_in_scan,
+        ),
     );
 }
 
@@ -343,6 +356,7 @@ async fn append_series_title_and_merge_work(
     title: Title,
     folder_path: &Path,
     mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
 ) -> usize {
     let index = append_series_title(
         existing_titles,
@@ -350,8 +364,16 @@ async fn append_series_title_and_merge_work(
         existing_titles_by_tvdb_id,
         title,
     );
-    merge_series_title_work_for_index(app, workset, existing_titles, index, folder_path, mode)
-        .await;
+    merge_series_title_work_for_index(
+        app,
+        workset,
+        existing_titles,
+        index,
+        folder_path,
+        mode,
+        created_in_scan,
+    )
+    .await;
     index
 }
 
@@ -403,7 +425,7 @@ async fn resolve_movie_scan_candidate(
         return Ok(MovieCandidateResolution::Skipped);
     }
 
-    Ok(MovieCandidateResolution::Unresolved(candidate))
+    Ok(MovieCandidateResolution::Unresolved(Box::new(candidate)))
 }
 
 async fn resolve_movie_metadata_match(
@@ -489,10 +511,29 @@ pub(super) async fn process_movie_full_scan_candidate(
     )
     .await?
     {
-        MovieCandidateResolution::Ready(title)
-        | MovieCandidateResolution::ReadyCreated { title, .. } => {
+        MovieCandidateResolution::Ready(title) => {
             summary.matched += 1;
-            merge_default_movie_title_work(workset, title, file, LibraryScanTitleWalkMode::Full);
+            merge_default_movie_title_work(
+                workset,
+                title,
+                file,
+                LibraryScanTitleWalkMode::Full,
+                false,
+            );
+            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            coordinator.mark_title_match_completed(1).await;
+            Ok(None)
+        }
+        MovieCandidateResolution::ReadyCreated { title, .. } => {
+            summary.imported += 1;
+            summary.matched += 1;
+            merge_default_movie_title_work(
+                workset,
+                title,
+                file,
+                LibraryScanTitleWalkMode::Full,
+                true,
+            );
             clear_library_scan_unmatched_item(app, facet, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
@@ -504,7 +545,7 @@ pub(super) async fn process_movie_full_scan_candidate(
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
-        MovieCandidateResolution::Unresolved(candidate) => Ok(Some(candidate)),
+        MovieCandidateResolution::Unresolved(candidate) => Ok(Some(*candidate)),
     }
 }
 
@@ -547,6 +588,7 @@ pub(super) async fn process_series_full_scan_candidate(
             index,
             &candidate.folder_path,
             LibraryScanTitleWalkMode::Full,
+            false,
         )
         .await;
         summary.matched += 1;
@@ -567,8 +609,10 @@ pub(super) async fn process_series_full_scan_candidate(
                     created,
                     &candidate.folder_path,
                     LibraryScanTitleWalkMode::Full,
+                    true,
                 )
                 .await;
+                summary.imported += 1;
                 summary.matched += 1;
                 clear_library_scan_unmatched_item(app, facet, &item_path).await?;
             }
@@ -645,10 +689,29 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     )
     .await?
     {
-        MovieMetadataResolution::Ready(title)
-        | MovieMetadataResolution::ReadyCreated { title, .. } => {
+        MovieMetadataResolution::Ready(title) => {
             summary.matched += 1;
-            merge_default_movie_title_work(workset, title, file, LibraryScanTitleWalkMode::Full);
+            merge_default_movie_title_work(
+                workset,
+                title,
+                file,
+                LibraryScanTitleWalkMode::Full,
+                false,
+            );
+            clear_library_scan_unmatched_item(app, facet, &candidate.file.path).await?;
+            coordinator.mark_title_match_completed(1).await;
+            Ok(())
+        }
+        MovieMetadataResolution::ReadyCreated { title, .. } => {
+            summary.imported += 1;
+            summary.matched += 1;
+            merge_default_movie_title_work(
+                workset,
+                title,
+                file,
+                LibraryScanTitleWalkMode::Full,
+                true,
+            );
             clear_library_scan_unmatched_item(app, facet, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(())
@@ -735,6 +798,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
             index,
             &candidate.folder_path,
             LibraryScanTitleWalkMode::Full,
+            false,
         )
         .await;
         summary.matched += 1;
@@ -765,8 +829,10 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
                 created,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Full,
+                true,
             )
             .await;
+            summary.imported += 1;
             summary.matched += 1;
             clear_library_scan_unmatched_item(
                 app,
@@ -874,6 +940,7 @@ pub(super) async fn process_series_refresh_candidate(
                     created,
                     &candidate.folder_path,
                     LibraryScanTitleWalkMode::Additive,
+                    true,
                 )
                 .await;
                 update_series_title_folder_path_index(
@@ -969,6 +1036,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
                 created,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Additive,
+                true,
             )
             .await;
             update_series_title_folder_path_index(
@@ -1027,6 +1095,7 @@ pub(super) async fn process_movie_refresh_candidate(
                 title,
                 file,
                 LibraryScanTitleWalkMode::Additive,
+                false,
             );
             summary.matched += 1;
             Ok(None)
@@ -1038,6 +1107,7 @@ pub(super) async fn process_movie_refresh_candidate(
                 title,
                 file,
                 LibraryScanTitleWalkMode::Additive,
+                true,
             );
             summary.imported += 1;
             summary.matched += 1;
@@ -1056,7 +1126,7 @@ pub(super) async fn process_movie_refresh_candidate(
             summary.skipped += 1;
             Ok(None)
         }
-        MovieCandidateResolution::Unresolved(candidate) => Ok(Some(candidate)),
+        MovieCandidateResolution::Unresolved(candidate) => Ok(Some(*candidate)),
     }
 }
 
@@ -1096,6 +1166,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                 title,
                 file,
                 LibraryScanTitleWalkMode::Additive,
+                false,
             );
             summary.matched += 1;
             Ok(())
@@ -1107,6 +1178,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                 title,
                 file,
                 LibraryScanTitleWalkMode::Additive,
+                true,
             );
             summary.imported += 1;
             summary.matched += 1;

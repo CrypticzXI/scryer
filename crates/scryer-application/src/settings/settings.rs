@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use scryer_domain::RootFolderEntry;
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::warn;
 
@@ -9,10 +10,8 @@ use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
-
-const SETTINGS_SOURCE_TYPED_GRAPHQL: &str = "typed_graphql";
 
 const ACQUISITION_ENABLED_KEY: &str = "acquisition.enabled";
 const ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY: &str = "acquisition.upgrade_cooldown_hours";
@@ -100,10 +99,342 @@ impl AcquisitionSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryPathsSettings {
+    pub movie_path: String,
+    pub series_path: String,
+    pub anime_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateLibraryPaths {
+    pub movie_path: String,
+    pub series_path: String,
+    pub anime_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExternalImportLibraryPathsSelection {
+    pub movie_path: Option<String>,
+    pub series_path: Option<String>,
+    pub anime_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceSettings {
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateServiceSettings {
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadClientRoutingSettingsEntry {
+    pub client_id: String,
+    pub enabled: bool,
+    pub category: Option<String>,
+    pub recent_queue_priority: Option<String>,
+    pub older_queue_priority: Option<String>,
+    pub remove_completed: bool,
+    pub remove_failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerRoutingSettingsEntry {
+    pub indexer_id: String,
+    pub enabled: bool,
+    pub categories: Vec<String>,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaSettings {
+    pub library_path: String,
+    pub root_folders: Vec<RootFolderEntry>,
+    pub required_audio_languages: Vec<String>,
+    pub rename_template: String,
+    pub rename_collision_policy: String,
+    pub rename_missing_metadata_policy: String,
+    pub filler_policy: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import: bool,
+    pub plexmatch_write_on_import: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateMediaSettings {
+    pub library_path: Option<String>,
+    pub root_folders: Option<Vec<RootFolderEntry>>,
+    pub required_audio_languages: Option<Vec<String>>,
+    pub rename_template: Option<String>,
+    pub rename_collision_policy: Option<String>,
+    pub rename_missing_metadata_policy: Option<String>,
+    pub filler_policy: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityProfileSelection {
+    pub facet: MediaFacet,
+    pub override_profile_id: Option<String>,
+    pub effective_profile_id: String,
+    pub inherits_global: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetScoringPersonaSelection {
+    pub facet: MediaFacet,
+    pub override_persona: Option<ScoringPersona>,
+    pub effective_persona: ScoringPersona,
+    pub inherits_global: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct QualityProfileSettings {
+    pub profiles: Vec<crate::QualityProfile>,
+    pub global_profile_id: String,
+    pub global_scoring_persona: ScoringPersona,
+    pub category_selections: Vec<QualityProfileSelection>,
+    pub category_persona_selections: Vec<FacetScoringPersonaSelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateQualityProfileSelection {
+    pub facet: MediaFacet,
+    pub inherit_global: bool,
+    pub profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateFacetScoringPersonaSelection {
+    pub facet: MediaFacet,
+    pub inherit_global: bool,
+    pub persona: Option<ScoringPersona>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveQualityProfileSettings {
+    pub profiles: Vec<crate::QualityProfile>,
+    pub replace_existing: bool,
+    pub global_profile_id: Option<String>,
+    pub category_selections: Vec<UpdateQualityProfileSelection>,
+    pub global_scoring_persona: Option<ScoringPersona>,
+    pub category_persona_selections: Vec<UpdateFacetScoringPersonaSelection>,
+}
+
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_json_object(raw_json: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    serde_json::from_str::<serde_json::Value>(raw_json)
+        .ok()?
+        .as_object()
+        .cloned()
+}
+
+fn encode_setting_json<T: Serialize>(value: &T) -> AppResult<String> {
+    serde_json::to_string(value).map_err(|error| AppError::Repository(error.to_string()))
+}
+
+fn parse_download_client_routing_priority(raw_priority: &serde_json::Value) -> Option<i64> {
+    match raw_priority {
+        serde_json::Value::Number(number) => number.as_i64(),
+        serde_json::Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn next_download_client_routing_priority(
+    routing_by_client: &serde_json::Map<String, serde_json::Value>,
+) -> i64 {
+    let max_explicit_priority = routing_by_client
+        .values()
+        .filter_map(|value| value.get("priority"))
+        .filter_map(parse_download_client_routing_priority)
+        .max();
+
+    match max_explicit_priority {
+        Some(max_priority) => max_priority + 1,
+        None => routing_by_client.len() as i64 + 1,
+    }
+}
+
+fn default_download_client_routing_entry(priority: i64) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "category": "",
+        "recentQueuePriority": "",
+        "olderQueuePriority": "",
+        "removeCompleted": true,
+        "removeFailed": false,
+        "priority": priority,
+    })
+}
+
+fn library_path_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => MOVIES_PATH_KEY,
+        MediaFacet::Series => SERIES_PATH_KEY,
+        MediaFacet::Anime => ANIME_PATH_KEY,
+    }
+}
+
+fn root_folders_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => MOVIES_ROOT_FOLDERS_KEY,
+        MediaFacet::Series => SERIES_ROOT_FOLDERS_KEY,
+        MediaFacet::Anime => ANIME_ROOT_FOLDERS_KEY,
+    }
+}
+
+fn default_library_path(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => DEFAULT_MOVIE_LIBRARY_PATH,
+        MediaFacet::Series => DEFAULT_SERIES_LIBRARY_PATH,
+        MediaFacet::Anime => DEFAULT_ANIME_LIBRARY_PATH,
+    }
+}
+
+fn rename_template_global_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
+        MediaFacet::Series => RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
+        MediaFacet::Anime => RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+    }
+}
+
+fn default_rename_template(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => DEFAULT_RENAME_TEMPLATE_MOVIE,
+        MediaFacet::Series => DEFAULT_RENAME_TEMPLATE_SERIES,
+        MediaFacet::Anime => DEFAULT_RENAME_TEMPLATE_ANIME,
+    }
+}
+
+fn legacy_collision_policy_global_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY,
+        MediaFacet::Series => RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
+        MediaFacet::Anime => RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
+    }
+}
+
+fn legacy_missing_metadata_policy_global_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
+        MediaFacet::Series => RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY,
+        MediaFacet::Anime => RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,
+    }
+}
+
+fn nfo_write_on_import_key(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => NFO_WRITE_ON_IMPORT_MOVIE_KEY,
+        MediaFacet::Series => NFO_WRITE_ON_IMPORT_SERIES_KEY,
+        MediaFacet::Anime => NFO_WRITE_ON_IMPORT_ANIME_KEY,
+    }
+}
+
+fn plexmatch_write_on_import_key(facet: &MediaFacet) -> Option<&'static str> {
+    match facet {
+        MediaFacet::Movie => None,
+        MediaFacet::Series => Some(PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY),
+        MediaFacet::Anime => Some(PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY),
+    }
+}
+
+fn normalize_root_folders(entries: Vec<RootFolderEntry>) -> AppResult<Vec<RootFolderEntry>> {
+    let mut normalized = Vec::new();
+    let mut seen_paths = HashSet::new();
+    let mut default_index = None;
+
+    for entry in entries {
+        let path = entry.path.trim().to_string();
+        if path.is_empty() {
+            return Err(AppError::Validation(
+                "root folder path is required".to_string(),
+            ));
+        }
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        if entry.is_default && default_index.is_none() {
+            default_index = Some(normalized.len());
+        }
+        normalized.push(RootFolderEntry {
+            path,
+            is_default: false,
+        });
+    }
+
+    if normalized.is_empty() {
+        return Err(AppError::Validation(
+            "at least one root folder is required".to_string(),
+        ));
+    }
+
+    let default_index = default_index.unwrap_or(0);
+    for (index, entry) in normalized.iter_mut().enumerate() {
+        entry.is_default = index == default_index;
+    }
+
+    Ok(normalized)
+}
+
+fn ensure_quality_profiles_exist(
+    mut profiles: Vec<crate::QualityProfile>,
+) -> Vec<crate::QualityProfile> {
+    if profiles.is_empty() {
+        profiles.push(crate::default_quality_profile_for_search());
+        profiles.push(crate::default_quality_profile_1080p_for_search());
+    }
+
+    profiles
+}
+
+fn resolve_global_profile_id(
+    profiles: &[crate::QualityProfile],
+    candidate: Option<String>,
+) -> String {
+    let trimmed = candidate.unwrap_or_default();
+    if profiles.iter().any(|profile| profile.id == trimmed) {
+        return trimmed;
+    }
+
+    profiles
+        .first()
+        .map(|profile| profile.id.clone())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn merge_quality_profiles(
+    existing: Vec<crate::QualityProfile>,
+    updates: Vec<crate::QualityProfile>,
+) -> Vec<crate::QualityProfile> {
+    let mut merged = existing;
+    for update in updates {
+        if let Some(index) = merged.iter().position(|profile| profile.id == update.id) {
+            merged[index] = update;
+        } else {
+            merged.push(update);
+        }
+    }
+    merged
 }
 
 fn normalize_subtitle_languages(languages: Vec<SubtitleLanguagePref>) -> Vec<SubtitleLanguagePref> {
@@ -188,6 +519,36 @@ fn extract_languages_from_required_audio_rego(rego: &str) -> Vec<String> {
 }
 
 impl AppUseCase {
+    async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
+        if let Some(raw_json) = self
+            .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
+            .await?
+        {
+            return Ok(Some(raw_json));
+        }
+
+        self.read_setting_string_value(LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
+            .await
+    }
+
+    async fn emit_settings_saved(
+        &self,
+        actor: &User,
+        resource_type: &str,
+        resource_id: Option<String>,
+        changed_keys: Vec<String>,
+    ) {
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            resource_type.to_string(),
+            resource_id,
+            scryer_domain::ConfigurationChangeAction::Updated,
+        )
+        .await;
+
+        self.publish_settings_changed(changed_keys);
+    }
+
     pub(crate) async fn read_setting_bool_value(
         &self,
         key_name: &str,
@@ -240,6 +601,7 @@ impl AppUseCase {
         let value_json = serde_json::to_string(value)
             .map_err(|error| AppError::Repository(error.to_string()))?;
         self.services
+            .config
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
@@ -252,7 +614,7 @@ impl AppUseCase {
             .await
     }
 
-    pub(crate) async fn load_facet_required_audio_languages(
+    pub async fn load_facet_required_audio_languages(
         &self,
         scope_id: &str,
     ) -> AppResult<Vec<String>> {
@@ -266,12 +628,13 @@ impl AppUseCase {
         ))
     }
 
-    pub(crate) async fn load_title_required_audio_override(
+    pub async fn load_title_required_audio_override(
         &self,
         title_id: &str,
     ) -> AppResult<Option<Vec<String>>> {
         let raw_value = self
             .services
+            .config
             .settings
             .get_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
@@ -297,7 +660,6 @@ impl AppUseCase {
         &self,
         title_id: Option<&str>,
         scope_id: Option<&str>,
-        _quality_profile: Option<&crate::QualityProfile>,
     ) -> AppResult<Vec<String>> {
         if let Some(title_id) = title_id
             && let Some(languages) = self.load_title_required_audio_override(title_id).await?
@@ -318,8 +680,6 @@ impl AppUseCase {
     pub(crate) async fn resolve_scoring_persona(
         &self,
         scope_id: Option<&str>,
-        _quality_profile: Option<&crate::QualityProfile>,
-        _category_hint: Option<&str>,
     ) -> AppResult<ScoringPersona> {
         if let Some(scope_id) = scope_id
             && let Some(persona) = parse_scoring_persona_setting(
@@ -350,6 +710,7 @@ impl AppUseCase {
 
         let payload = languages.map(normalize_required_audio_languages);
         self.services
+            .config
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
@@ -373,6 +734,7 @@ impl AppUseCase {
 
         let normalized = normalize_required_audio_languages(languages);
         self.services
+            .config
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
@@ -416,6 +778,7 @@ impl AppUseCase {
 
         let profiles = self
             .services
+            .config
             .quality_profiles
             .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
             .await
@@ -476,6 +839,7 @@ impl AppUseCase {
 
             if effective_persona != global_persona {
                 self.services
+                    .config
                     .settings
                     .upsert_setting_json(
                         SETTINGS_SCOPE_SYSTEM,
@@ -495,6 +859,7 @@ impl AppUseCase {
 
         let managed_required_audio = self
             .services
+            .customization
             .rule_sets
             .list_rule_sets_by_managed_key_prefix("convenience:required-audio:")
             .await
@@ -551,6 +916,7 @@ impl AppUseCase {
                 .unwrap_or_default();
 
             self.services
+                .config
                 .settings
                 .upsert_setting_json(
                     SETTINGS_SCOPE_SYSTEM,
@@ -572,6 +938,7 @@ impl AppUseCase {
 
         for (title_id, languages) in title_overrides {
             self.services
+                .config
                 .settings
                 .upsert_setting_json(
                     SETTINGS_SCOPE_SYSTEM,
@@ -593,12 +960,18 @@ impl AppUseCase {
 
         for rule_set in managed_required_audio {
             self.services
+                .customization
                 .rule_sets
                 .delete_rule_set(&rule_set.id)
                 .await?;
         }
 
-        let legacy_dual_rules = self.services.rule_sets.list_rule_sets().await?;
+        let legacy_dual_rules = self
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await?;
         for rule_set in legacy_dual_rules {
             let managed_key = rule_set.managed_key.as_deref().unwrap_or_default();
             let description = rule_set.description.as_str();
@@ -608,6 +981,7 @@ impl AppUseCase {
                 || rego_source.contains("legacy-prefer-dual-audio:")
             {
                 self.services
+                    .customization
                     .rule_sets
                     .delete_rule_set(&rule_set.id)
                     .await?;
@@ -625,6 +999,7 @@ impl AppUseCase {
             })
             .collect();
         self.services
+            .config
             .quality_profiles
             .replace_quality_profiles(SETTINGS_SCOPE_SYSTEM, None, scrubbed_profiles)
             .await?;
@@ -638,10 +1013,11 @@ impl AppUseCase {
         self.rebuild_user_rules_engine().await?;
 
         if !changed_keys.is_empty() {
-            let _ = self.services.settings_changed_broadcast.send(changed_keys);
+            let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
         }
 
         self.services
+            .config
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
@@ -798,9 +1174,1152 @@ impl AppUseCase {
         self.load_acquisition_settings().await
     }
 
+    pub async fn setup_complete(&self) -> AppResult<bool> {
+        Ok(self
+            .read_setting_bool_value(SETUP_COMPLETE_KEY, None)
+            .await?
+            .unwrap_or(false))
+    }
+
+    pub async fn complete_setup(&self, actor: &User) -> AppResult<bool> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                SETUP_COMPLETE_KEY,
+                None,
+                encode_setting_json(&true)?,
+                "setup-wizard",
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        Ok(true)
+    }
+
+    pub async fn queue_tvdb_movies_scan(
+        &self,
+        actor: &User,
+        limit: i64,
+        source: &str,
+    ) -> AppResult<WorkflowOperationInfo> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        if limit <= 0 {
+            return Err(AppError::Validation(
+                "limit is required and must be greater than zero".into(),
+            ));
+        }
+
+        let source = source.trim();
+        if source.is_empty() {
+            return Err(AppError::Validation("source is required".into()));
+        }
+
+        self.services
+            .workflow
+            .workflow_operations
+            .create_workflow_operation(
+                "tvdb_movies_scan".to_string(),
+                "queued".to_string(),
+                Some(actor.id.clone()),
+                Some(
+                    serde_json::json!({
+                        "type": "tvdb_movies_scan",
+                        "limit": limit,
+                        "source": source,
+                    })
+                    .to_string(),
+                ),
+                None,
+                None,
+            )
+            .await
+    }
+
     pub async fn get_delay_profiles(&self, actor: &User) -> AppResult<Vec<crate::DelayProfile>> {
         require(actor, &Entitlement::ManageConfig)?;
         self.delay_profiles().await
+    }
+
+    async fn load_quality_profile_settings(&self) -> AppResult<QualityProfileSettings> {
+        let profiles = ensure_quality_profiles_exist(
+            self.services
+                .config
+                .quality_profiles
+                .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+                .await?,
+        );
+        let global_profile_id = resolve_global_profile_id(
+            &profiles,
+            self.read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
+                .await?,
+        );
+        let global_scoring_persona = parse_scoring_persona_setting(
+            self.read_setting_string_value(SCORING_PERSONA_KEY, None)
+                .await?,
+        )
+        .unwrap_or_default();
+
+        let mut category_selections = Vec::with_capacity(3);
+        let mut category_persona_selections = Vec::with_capacity(3);
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let override_profile_id = self
+                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(facet.as_str()))
+                .await?
+                .filter(|value| profiles.iter().any(|profile| profile.id == *value));
+            let effective_profile_id = override_profile_id
+                .clone()
+                .unwrap_or_else(|| global_profile_id.clone());
+            category_selections.push(QualityProfileSelection {
+                facet: facet.clone(),
+                inherits_global: override_profile_id.is_none(),
+                override_profile_id,
+                effective_profile_id,
+            });
+
+            let override_persona = parse_scoring_persona_setting(
+                self.read_setting_string_value(SCORING_PERSONA_KEY, Some(facet.as_str()))
+                    .await?,
+            );
+            let effective_persona = override_persona
+                .clone()
+                .unwrap_or_else(|| global_scoring_persona.clone());
+            category_persona_selections.push(FacetScoringPersonaSelection {
+                facet,
+                inherits_global: override_persona.is_none(),
+                override_persona,
+                effective_persona,
+            });
+        }
+
+        Ok(QualityProfileSettings {
+            profiles,
+            global_profile_id,
+            global_scoring_persona,
+            category_selections,
+            category_persona_selections,
+        })
+    }
+
+    pub async fn get_quality_profile_settings(
+        &self,
+        actor: &User,
+    ) -> AppResult<QualityProfileSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+        self.load_quality_profile_settings().await
+    }
+
+    pub async fn save_quality_profile_settings(
+        &self,
+        actor: &User,
+        input: SaveQualityProfileSettings,
+    ) -> AppResult<QualityProfileSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let profiles = if input.replace_existing {
+            input.profiles
+        } else {
+            merge_quality_profiles(
+                self.services
+                    .config
+                    .quality_profiles
+                    .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+                    .await?,
+                input.profiles,
+            )
+        };
+
+        let mut changed_keys = Vec::new();
+        if !profiles.is_empty() {
+            self.services
+                .config
+                .quality_profiles
+                .replace_quality_profiles(SETTINGS_SCOPE_SYSTEM, None, profiles.clone())
+                .await?;
+            self.upsert_system_setting_json(
+                QUALITY_PROFILE_CATALOG_KEY,
+                &profiles,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(QUALITY_PROFILE_CATALOG_KEY.to_string());
+        }
+
+        let current_profiles = ensure_quality_profiles_exist(
+            self.services
+                .config
+                .quality_profiles
+                .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+                .await?,
+        );
+        let valid_profile_ids = current_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<HashSet<_>>();
+
+        if let Some(global_profile_id) = input.global_profile_id {
+            let global_profile_id = global_profile_id.trim();
+            if !global_profile_id.is_empty() {
+                if !valid_profile_ids.contains(global_profile_id) {
+                    return Err(AppError::Validation(format!(
+                        "unknown quality profile '{global_profile_id}'"
+                    )));
+                }
+                self.upsert_system_setting_json(
+                    QUALITY_PROFILE_ID_KEY,
+                    &global_profile_id,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                if !changed_keys.iter().any(|key| key == QUALITY_PROFILE_ID_KEY) {
+                    changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
+                }
+            }
+        }
+
+        for selection in input.category_selections {
+            let value = if selection.inherit_global {
+                QUALITY_PROFILE_INHERIT_VALUE.to_string()
+            } else {
+                let profile_id = selection
+                    .profile_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "profile_id is required when inherit_global is false".to_string(),
+                        )
+                    })?;
+                if !valid_profile_ids.contains(profile_id) {
+                    return Err(AppError::Validation(format!(
+                        "unknown quality profile '{profile_id}'"
+                    )));
+                }
+                profile_id.to_string()
+            };
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    QUALITY_PROFILE_ID_KEY,
+                    Some(selection.facet.as_str().to_string()),
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            if !changed_keys.iter().any(|key| key == QUALITY_PROFILE_ID_KEY) {
+                changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
+            }
+        }
+
+        if let Some(global_scoring_persona) = input.global_scoring_persona {
+            self.upsert_system_setting_json(
+                SCORING_PERSONA_KEY,
+                &global_persona_as_setting(&global_scoring_persona),
+                Some(actor.id.clone()),
+            )
+            .await?;
+            if !changed_keys.iter().any(|key| key == SCORING_PERSONA_KEY) {
+                changed_keys.push(SCORING_PERSONA_KEY.to_string());
+            }
+        }
+
+        for selection in input.category_persona_selections {
+            let value = if selection.inherit_global {
+                QUALITY_PROFILE_INHERIT_VALUE.to_string()
+            } else {
+                global_persona_as_setting(&selection.persona.ok_or_else(|| {
+                    AppError::Validation(
+                        "persona is required when inherit_global is false".to_string(),
+                    )
+                })?)
+                .to_string()
+            };
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    SCORING_PERSONA_KEY,
+                    Some(selection.facet.as_str().to_string()),
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            if !changed_keys.iter().any(|key| key == SCORING_PERSONA_KEY) {
+                changed_keys.push(SCORING_PERSONA_KEY.to_string());
+            }
+        }
+
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "quality_profiles".to_string(),
+            None,
+            scryer_domain::ConfigurationChangeAction::Updated,
+        )
+        .await;
+        if !changed_keys.is_empty() {
+            self.publish_settings_changed(changed_keys);
+        }
+
+        self.load_quality_profile_settings().await
+    }
+
+    pub async fn delete_quality_profile(
+        &self,
+        actor: &User,
+        profile_id: &str,
+    ) -> AppResult<QualityProfileSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Err(AppError::Validation("profile_id is required".to_string()));
+        }
+
+        let current = self.load_quality_profile_settings().await?;
+        if current.global_profile_id == profile_id {
+            return Err(AppError::Validation(
+                "cannot delete this profile because it is set as the global default quality profile"
+                    .to_string(),
+            ));
+        }
+
+        for selection in &current.category_selections {
+            if selection.override_profile_id.as_deref() == Some(profile_id) {
+                return Err(AppError::Validation(format!(
+                    "cannot delete this profile because it is set as the quality profile override for {}",
+                    selection.facet.as_str(),
+                )));
+            }
+        }
+
+        let remaining_profiles = current
+            .profiles
+            .into_iter()
+            .filter(|profile| profile.id != profile_id)
+            .collect::<Vec<_>>();
+        self.services
+            .config
+            .quality_profiles
+            .replace_quality_profiles(SETTINGS_SCOPE_SYSTEM, None, remaining_profiles.clone())
+            .await?;
+        self.upsert_system_setting_json(
+            QUALITY_PROFILE_CATALOG_KEY,
+            &remaining_profiles,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "quality_profile".to_string(),
+            Some(profile_id.to_string()),
+            scryer_domain::ConfigurationChangeAction::Deleted,
+        )
+        .await;
+        self.publish_settings_changed(vec![
+            QUALITY_PROFILE_CATALOG_KEY.to_string(),
+            QUALITY_PROFILE_ID_KEY.to_string(),
+        ]);
+
+        self.load_quality_profile_settings().await
+    }
+
+    pub async fn get_media_settings(
+        &self,
+        actor: &User,
+        facet: MediaFacet,
+    ) -> AppResult<MediaSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let library_path = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                library_path_key(&facet),
+                None,
+            )
+            .await?
+            .unwrap_or_else(|| default_library_path(&facet).to_string());
+        let root_folders = self.root_folders_for_facet(&facet).await?;
+        let scoped_rename_template = self
+            .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet.as_str()))
+            .await?;
+        let global_rename_template = self
+            .read_setting_string_value(rename_template_global_key(&facet), None)
+            .await?;
+        let rename_template = scoped_rename_template
+            .or(global_rename_template)
+            .unwrap_or_else(|| default_rename_template(&facet).to_string());
+        let scoped_collision_policy = self
+            .read_setting_string_value(RENAME_COLLISION_POLICY_KEY, Some(facet.as_str()))
+            .await?;
+        let global_collision_policy = self
+            .read_setting_string_value(RENAME_COLLISION_POLICY_GLOBAL_KEY, None)
+            .await?;
+        let legacy_collision_policy = self
+            .read_setting_string_value(legacy_collision_policy_global_key(&facet), None)
+            .await?;
+        let rename_collision_policy = scoped_collision_policy
+            .or(global_collision_policy)
+            .or(legacy_collision_policy)
+            .unwrap_or_else(|| DEFAULT_RENAME_COLLISION_POLICY.to_string());
+        let scoped_missing_metadata_policy = self
+            .read_setting_string_value(RENAME_MISSING_METADATA_POLICY_KEY, Some(facet.as_str()))
+            .await?;
+        let global_missing_metadata_policy = self
+            .read_setting_string_value(RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, None)
+            .await?;
+        let legacy_missing_metadata_policy = self
+            .read_setting_string_value(legacy_missing_metadata_policy_global_key(&facet), None)
+            .await?;
+        let rename_missing_metadata_policy = scoped_missing_metadata_policy
+            .or(global_missing_metadata_policy)
+            .or(legacy_missing_metadata_policy)
+            .unwrap_or_else(|| DEFAULT_RENAME_MISSING_METADATA_POLICY.to_string());
+
+        Ok(MediaSettings {
+            library_path,
+            root_folders,
+            required_audio_languages: self
+                .load_facet_required_audio_languages(facet.as_str())
+                .await?,
+            rename_template,
+            rename_collision_policy,
+            rename_missing_metadata_policy,
+            filler_policy: if facet == MediaFacet::Anime {
+                Some(
+                    self.read_setting_string_value(ANIME_FILLER_POLICY_KEY, Some(facet.as_str()))
+                        .await?
+                        .unwrap_or_else(|| DEFAULT_FILLER_POLICY.to_string()),
+                )
+            } else {
+                None
+            },
+            recap_policy: if facet == MediaFacet::Anime {
+                Some(
+                    self.read_setting_string_value(ANIME_RECAP_POLICY_KEY, Some(facet.as_str()))
+                        .await?
+                        .unwrap_or_else(|| DEFAULT_RECAP_POLICY.to_string()),
+                )
+            } else {
+                None
+            },
+            monitor_specials: if facet == MediaFacet::Anime {
+                Some(
+                    self.read_setting_bool_value(ANIME_MONITOR_SPECIALS_KEY, Some(facet.as_str()))
+                        .await?
+                        .unwrap_or(false),
+                )
+            } else {
+                None
+            },
+            inter_season_movies: if facet == MediaFacet::Anime {
+                Some(
+                    self.read_setting_bool_value(
+                        ANIME_INTER_SEASON_MOVIES_KEY,
+                        Some(facet.as_str()),
+                    )
+                    .await?
+                    .unwrap_or(true),
+                )
+            } else {
+                None
+            },
+            monitor_filler_movies: if facet == MediaFacet::Anime {
+                Some(
+                    self.read_setting_bool_value(ANIME_MONITOR_FILLER_MOVIES_KEY, None)
+                        .await?
+                        .unwrap_or(false),
+                )
+            } else {
+                None
+            },
+            nfo_write_on_import: self
+                .read_setting_bool_value(nfo_write_on_import_key(&facet), None)
+                .await?
+                .unwrap_or(false),
+            plexmatch_write_on_import: match plexmatch_write_on_import_key(&facet) {
+                Some(key) => Some(
+                    self.read_setting_bool_value(key, None)
+                        .await?
+                        .unwrap_or(false),
+                ),
+                None => None,
+            },
+        })
+    }
+
+    pub async fn update_media_settings(
+        &self,
+        actor: &User,
+        facet: MediaFacet,
+        input: UpdateMediaSettings,
+    ) -> AppResult<MediaSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let mut changed_keys = Vec::new();
+
+        if let Some(root_folders) = input.root_folders {
+            let normalized = normalize_root_folders(root_folders)?;
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    root_folders_key(&facet),
+                    None,
+                    encode_setting_json(&normalized)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(root_folders_key(&facet).to_string());
+
+            let default_path = normalized
+                .iter()
+                .find(|entry| entry.is_default)
+                .map(|entry| entry.path.clone())
+                .unwrap_or_else(|| normalized[0].path.clone());
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    library_path_key(&facet),
+                    None,
+                    encode_setting_json(&default_path)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            if !changed_keys
+                .iter()
+                .any(|key| key == library_path_key(&facet))
+            {
+                changed_keys.push(library_path_key(&facet).to_string());
+            }
+        } else if let Some(library_path) = normalize_optional_string(input.library_path) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    library_path_key(&facet),
+                    None,
+                    encode_setting_json(&library_path)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(library_path_key(&facet).to_string());
+        }
+
+        if let Some(rename_template) = normalize_optional_string(input.rename_template) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    RENAME_TEMPLATE_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&rename_template)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(RENAME_TEMPLATE_KEY.to_string());
+        }
+
+        if let Some(required_audio_languages) = input.required_audio_languages {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    REQUIRED_AUDIO_LANGUAGES_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&normalize_required_audio_languages(
+                        required_audio_languages,
+                    ))?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(REQUIRED_AUDIO_LANGUAGES_KEY.to_string());
+        }
+
+        if let Some(policy) = normalize_optional_string(input.rename_collision_policy) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    RENAME_COLLISION_POLICY_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&policy)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(RENAME_COLLISION_POLICY_KEY.to_string());
+        }
+
+        if let Some(policy) = normalize_optional_string(input.rename_missing_metadata_policy) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    RENAME_MISSING_METADATA_POLICY_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&policy)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(RENAME_MISSING_METADATA_POLICY_KEY.to_string());
+        }
+
+        if let Some(value) = input.nfo_write_on_import {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    nfo_write_on_import_key(&facet),
+                    None,
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(nfo_write_on_import_key(&facet).to_string());
+        }
+
+        if let Some(value) = input.plexmatch_write_on_import {
+            let Some(key) = plexmatch_write_on_import_key(&facet) else {
+                return Err(AppError::Validation(
+                    "plexmatch_write_on_import is only valid for series and anime".to_string(),
+                ));
+            };
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    key,
+                    None,
+                    encode_setting_json(&value)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(key.to_string());
+        }
+
+        if facet == MediaFacet::Anime {
+            if let Some(value) = normalize_optional_string(input.filler_policy) {
+                self.services
+                    .config
+                    .settings
+                    .upsert_setting_json(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ANIME_FILLER_POLICY_KEY,
+                        Some(facet.as_str().to_string()),
+                        encode_setting_json(&value)?,
+                        SETTINGS_SOURCE_TYPED_GRAPHQL,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                changed_keys.push(ANIME_FILLER_POLICY_KEY.to_string());
+            }
+            if let Some(value) = normalize_optional_string(input.recap_policy) {
+                self.services
+                    .config
+                    .settings
+                    .upsert_setting_json(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ANIME_RECAP_POLICY_KEY,
+                        Some(facet.as_str().to_string()),
+                        encode_setting_json(&value)?,
+                        SETTINGS_SOURCE_TYPED_GRAPHQL,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                changed_keys.push(ANIME_RECAP_POLICY_KEY.to_string());
+            }
+            if let Some(value) = input.monitor_specials {
+                self.services
+                    .config
+                    .settings
+                    .upsert_setting_json(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ANIME_MONITOR_SPECIALS_KEY,
+                        Some(facet.as_str().to_string()),
+                        encode_setting_json(&value)?,
+                        SETTINGS_SOURCE_TYPED_GRAPHQL,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                changed_keys.push(ANIME_MONITOR_SPECIALS_KEY.to_string());
+            }
+            if let Some(value) = input.inter_season_movies {
+                self.services
+                    .config
+                    .settings
+                    .upsert_setting_json(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ANIME_INTER_SEASON_MOVIES_KEY,
+                        Some(facet.as_str().to_string()),
+                        encode_setting_json(&value)?,
+                        SETTINGS_SOURCE_TYPED_GRAPHQL,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                changed_keys.push(ANIME_INTER_SEASON_MOVIES_KEY.to_string());
+            }
+            if let Some(value) = input.monitor_filler_movies {
+                self.services
+                    .config
+                    .settings
+                    .upsert_setting_json(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ANIME_MONITOR_FILLER_MOVIES_KEY,
+                        None,
+                        encode_setting_json(&value)?,
+                        SETTINGS_SOURCE_TYPED_GRAPHQL,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                changed_keys.push(ANIME_MONITOR_FILLER_MOVIES_KEY.to_string());
+            }
+        } else if input.filler_policy.is_some()
+            || input.recap_policy.is_some()
+            || input.monitor_specials.is_some()
+            || input.inter_season_movies.is_some()
+            || input.monitor_filler_movies.is_some()
+        {
+            return Err(AppError::Validation(
+                "anime-specific settings require scope anime".to_string(),
+            ));
+        }
+
+        if changed_keys.is_empty() {
+            return Err(AppError::Validation(
+                "at least one media setting change is required".to_string(),
+            ));
+        }
+
+        self.emit_settings_saved(
+            actor,
+            "media_settings",
+            Some(facet.as_str().to_string()),
+            changed_keys,
+        )
+        .await;
+
+        self.get_media_settings(actor, facet).await
+    }
+
+    pub async fn get_library_paths(&self, actor: &User) -> AppResult<LibraryPathsSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        Ok(LibraryPathsSettings {
+            movie_path: self
+                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, MOVIES_PATH_KEY, None)
+                .await?
+                .unwrap_or_else(|| DEFAULT_MOVIE_LIBRARY_PATH.to_string()),
+            series_path: self
+                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, SERIES_PATH_KEY, None)
+                .await?
+                .unwrap_or_else(|| DEFAULT_SERIES_LIBRARY_PATH.to_string()),
+            anime_path: self
+                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, ANIME_PATH_KEY, None)
+                .await?
+                .unwrap_or_else(|| DEFAULT_ANIME_LIBRARY_PATH.to_string()),
+        })
+    }
+
+    pub async fn update_library_paths(
+        &self,
+        actor: &User,
+        input: UpdateLibraryPaths,
+    ) -> AppResult<LibraryPathsSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let movie_path = input.movie_path.trim().to_string();
+        let series_path = input.series_path.trim().to_string();
+        if movie_path.is_empty() || series_path.is_empty() {
+            return Err(AppError::Validation(
+                "movie_path and series_path are required".to_string(),
+            ));
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                MOVIES_PATH_KEY,
+                None,
+                encode_setting_json(&movie_path)?,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                SERIES_PATH_KEY,
+                None,
+                encode_setting_json(&series_path)?,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        let mut changed_keys = vec![MOVIES_PATH_KEY.to_string(), SERIES_PATH_KEY.to_string()];
+        if let Some(anime_path) = normalize_optional_string(input.anime_path) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    ANIME_PATH_KEY,
+                    None,
+                    encode_setting_json(&anime_path)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(ANIME_PATH_KEY.to_string());
+        }
+
+        self.emit_settings_saved(actor, "library_paths", None, changed_keys)
+            .await;
+        self.get_library_paths(actor).await
+    }
+
+    pub async fn save_external_import_library_paths(
+        &self,
+        actor: &User,
+        selection: ExternalImportLibraryPathsSelection,
+    ) -> AppResult<bool> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let mut saved_any = false;
+        for (key, value) in [
+            (MOVIES_PATH_KEY, selection.movie_path),
+            (SERIES_PATH_KEY, selection.series_path),
+            (ANIME_PATH_KEY, selection.anime_path),
+        ] {
+            let Some(path) = normalize_optional_string(value) else {
+                continue;
+            };
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    key,
+                    None,
+                    encode_setting_json(&path)?,
+                    "external-import",
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            saved_any = true;
+        }
+
+        Ok(saved_any)
+    }
+
+    pub async fn get_service_settings(&self, actor: &User) -> AppResult<ServiceSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        Ok(ServiceSettings {
+            tls_cert_path: self
+                .read_setting_string_value(TLS_CERT_PATH_KEY, None)
+                .await?
+                .unwrap_or_default(),
+            tls_key_path: self
+                .read_setting_string_value(TLS_KEY_PATH_KEY, None)
+                .await?
+                .unwrap_or_default(),
+        })
+    }
+
+    pub async fn update_service_settings(
+        &self,
+        actor: &User,
+        input: UpdateServiceSettings,
+    ) -> AppResult<ServiceSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let tls_cert_path = input.tls_cert_path.trim().to_string();
+        let tls_key_path = input.tls_key_path.trim().to_string();
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                TLS_CERT_PATH_KEY,
+                None,
+                encode_setting_json(&tls_cert_path)?,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                TLS_KEY_PATH_KEY,
+                None,
+                encode_setting_json(&tls_key_path)?,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "service_settings",
+            None,
+            vec![TLS_CERT_PATH_KEY.to_string(), TLS_KEY_PATH_KEY.to_string()],
+        )
+        .await;
+
+        self.get_service_settings(actor).await
+    }
+
+    pub async fn get_download_client_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let raw_json = self.load_download_client_routing_json(scope_id).await?;
+        let Some(raw_json) = raw_json else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut routing = entries
+            .into_iter()
+            .map(|(client_id, config)| {
+                let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
+                DownloadClientRoutingSettingsEntry {
+                    client_id,
+                    enabled: entry.enabled,
+                    category: entry.category,
+                    recent_queue_priority: entry.recent_queue_priority,
+                    older_queue_priority: entry.older_queue_priority,
+                    remove_completed: entry.remove_completed,
+                    remove_failed: entry.remove_failed,
+                }
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        Ok(routing)
+    }
+
+    pub async fn update_download_client_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+        entries: Vec<DownloadClientRoutingSettingsEntry>,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let mut payload = serde_json::Map::new();
+        for entry in entries {
+            let client_id = entry.client_id.trim();
+            if client_id.is_empty() {
+                return Err(AppError::Validation(
+                    "download client routing entry requires client_id".to_string(),
+                ));
+            }
+
+            payload.insert(
+                client_id.to_string(),
+                serde_json::json!({
+                    "enabled": entry.enabled,
+                    "category": normalize_optional_string(entry.category),
+                    "recentQueuePriority": normalize_optional_string(entry.recent_queue_priority),
+                    "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
+                    "removeCompleted": entry.remove_completed,
+                    "removeFailed": entry.remove_failed,
+                }),
+            );
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id.to_string()),
+                serde_json::Value::Object(payload).to_string(),
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "download_client_routing",
+            Some(scope_id.to_string()),
+            vec![DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string()],
+        )
+        .await;
+
+        self.get_download_client_routing(actor, scope_id).await
+    }
+
+    pub async fn ensure_download_client_routing_entry_for_client(
+        &self,
+        actor: &User,
+        client_id: &str,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        for scope_id in ["movie", "series", "anime"] {
+            let current = self.load_download_client_routing_json(scope_id).await?;
+            let mut payload = current
+                .as_deref()
+                .and_then(parse_json_object)
+                .unwrap_or_default();
+
+            if payload.contains_key(client_id) {
+                continue;
+            }
+
+            let next_priority = next_download_client_routing_priority(&payload);
+            payload.insert(
+                client_id.to_string(),
+                default_download_client_routing_entry(next_priority),
+            );
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                    Some(scope_id.to_string()),
+                    serde_json::Value::Object(payload).to_string(),
+                    "admin_graphql",
+                    Some(actor.id.clone()),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_indexer_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+    ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let Some(plan) = self.resolve_indexer_routing(Some(scope_id)).await else {
+            return Ok(Vec::new());
+        };
+
+        let mut routing = plan
+            .entries
+            .into_iter()
+            .map(|(indexer_id, entry)| IndexerRoutingSettingsEntry {
+                indexer_id,
+                enabled: entry.enabled,
+                categories: entry.categories,
+                priority: entry.priority as i32,
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by_key(|entry| (entry.priority, entry.indexer_id.clone()));
+        Ok(routing)
+    }
+
+    pub async fn update_indexer_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+        entries: Vec<IndexerRoutingSettingsEntry>,
+    ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let mut payload = serde_json::Map::new();
+        for entry in entries {
+            let indexer_id = entry.indexer_id.trim();
+            if indexer_id.is_empty() {
+                return Err(AppError::Validation(
+                    "indexer routing entry requires indexer_id".to_string(),
+                ));
+            }
+
+            let categories = entry
+                .categories
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+
+            payload.insert(
+                indexer_id.to_string(),
+                serde_json::json!({
+                    "enabled": entry.enabled,
+                    "categories": categories,
+                    "priority": entry.priority,
+                }),
+            );
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                INDEXER_ROUTING_SETTINGS_KEY,
+                Some(scope_id.to_string()),
+                serde_json::Value::Object(payload).to_string(),
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "indexer_routing",
+            Some(scope_id.to_string()),
+            vec![INDEXER_ROUTING_SETTINGS_KEY.to_string()],
+        )
+        .await;
+
+        self.get_indexer_routing(actor, scope_id).await
     }
 
     pub async fn update_subtitle_settings(
@@ -961,7 +2480,7 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Updated,
         )
         .await;
-        let _ = self.services.settings_changed_broadcast.send(changed_keys);
+        let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
 
         self.load_subtitle_settings().await
     }
@@ -1049,7 +2568,7 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Updated,
         )
         .await;
-        let _ = self.services.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.settings_changed_broadcast.send(vec![
             ACQUISITION_ENABLED_KEY.to_string(),
             ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY.to_string(),
             ACQUISITION_SAME_TIER_MIN_DELTA_KEY.to_string(),
@@ -1059,7 +2578,7 @@ impl AppUseCase {
             ACQUISITION_SYNC_INTERVAL_SECONDS_KEY.to_string(),
             ACQUISITION_BATCH_SIZE_KEY.to_string(),
         ]);
-        self.services.acquisition_wake.notify_one();
+        self.runtime.acquisition_wake.notify_one();
 
         self.load_acquisition_settings().await
     }
@@ -1103,10 +2622,10 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Saved,
         )
         .await;
-        let _ = self.services.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.settings_changed_broadcast.send(vec![
             crate::delay_profile::DELAY_PROFILE_CATALOG_KEY.to_string(),
         ]);
-        self.services.acquisition_wake.notify_one();
+        self.runtime.acquisition_wake.notify_one();
 
         Ok(profile)
     }
@@ -1144,10 +2663,10 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Deleted,
         )
         .await;
-        let _ = self.services.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.settings_changed_broadcast.send(vec![
             crate::delay_profile::DELAY_PROFILE_CATALOG_KEY.to_string(),
         ]);
-        self.services.acquisition_wake.notify_one();
+        self.runtime.acquisition_wake.notify_one();
 
         Ok(profile_id)
     }

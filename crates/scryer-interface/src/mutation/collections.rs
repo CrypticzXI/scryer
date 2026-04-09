@@ -1,8 +1,7 @@
-use async_graphql::{Context, Object, Result as GqlResult};
-
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{from_collection, from_episode};
 use crate::types::*;
+use async_graphql::{Context, Object, Result as GqlResult};
 
 #[derive(Default)]
 pub(crate) struct CollectionMutations;

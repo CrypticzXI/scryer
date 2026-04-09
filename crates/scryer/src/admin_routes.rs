@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use scryer_application::AppUseCase;
 use scryer_domain::{Entitlement, NewIndexerConfig};
-use scryer_infrastructure::SqliteServices;
+use scryer_infrastructure::SqliteSettingsStore;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::{map_app_error, resolve_actor_with_entitlement};
@@ -194,7 +194,7 @@ pub(crate) struct AdminSettingsQuery {
 }
 
 pub(crate) async fn admin_settings_list(
-    database: SqliteServices,
+    database: SqliteSettingsStore,
     app_use_case: AppUseCase,
     auth_enabled: bool,
     headers: HeaderMap,
@@ -304,7 +304,7 @@ pub(crate) fn migration_key_preference_key(key: &str) -> (i64, &str) {
     (version, key)
 }
 
-pub(crate) async fn admin_migrations_handler(database: SqliteServices) -> Response {
+pub(crate) async fn admin_migrations_handler(database: SqliteSettingsStore) -> Response {
     let applied = match database.list_applied_migrations().await {
         Ok(rows) => rows,
         Err(error) => {

@@ -35,12 +35,14 @@ where
             coordinator
                 .register_discovery_batch(batch.len(), track_file_total)
                 .await;
+            coordinator.publish_progress().await;
             if queued_batches_tx.send(Ok(batch)).await.is_err() {
                 return;
             }
         }
 
         coordinator.mark_discovery_complete(track_file_total).await;
+        coordinator.publish_progress().await;
     });
 
     queued_batches_rx
@@ -95,37 +97,34 @@ pub(crate) async fn wait_for_projected_library_scan_session(
     app: &AppUseCase,
     session_id: &str,
 ) -> AppResult<LibraryScanSession> {
-    let mut receiver = app.services.library_scan_tracker.subscribe();
+    let mut receiver = app.runtime.library_scan_tracker.subscribe();
 
     loop {
         if let Some(session) = app
-            .services
+            .runtime
             .library_scan_tracker
             .get_session(session_id)
             .await
-        {
-            if session.status == LibraryScanStatus::Failed
+            && (session.status == LibraryScanStatus::Failed
                 || matches!(
                     session.status,
                     LibraryScanStatus::Completed | LibraryScanStatus::Warning
                 )
-                || session.is_ready_to_complete()
-            {
-                return Ok(session);
-            }
+                || session.is_ready_to_complete())
+        {
+            return Ok(session);
         }
 
         let projected_session = load_projected_library_scan_session(app, session_id).await?;
-        if let Some(session) = projected_session {
-            if session.status == LibraryScanStatus::Failed
+        if let Some(session) = projected_session
+            && (session.status == LibraryScanStatus::Failed
                 || matches!(
                     session.status,
                     LibraryScanStatus::Completed | LibraryScanStatus::Warning
                 )
-                || session.is_ready_to_complete()
-            {
-                return Ok(session);
-            }
+                || session.is_ready_to_complete())
+        {
+            return Ok(session);
         }
 
         match receiver.recv().await {
@@ -142,16 +141,15 @@ pub(crate) async fn wait_for_projected_library_scan_session(
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                if let Some(session) = load_projected_library_scan_session(app, session_id).await? {
-                    if session.status == LibraryScanStatus::Failed
+                if let Some(session) = load_projected_library_scan_session(app, session_id).await?
+                    && (session.status == LibraryScanStatus::Failed
                         || matches!(
                             session.status,
                             LibraryScanStatus::Completed | LibraryScanStatus::Warning
                         )
-                        || session.is_ready_to_complete()
-                    {
-                        return Ok(session);
-                    }
+                        || session.is_ready_to_complete())
+                {
+                    return Ok(session);
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {

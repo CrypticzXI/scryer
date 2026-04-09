@@ -83,6 +83,7 @@ pub async fn execute_upgrade(
             // Record failed attempt + blocklist so this release isn't re-downloaded.
             let _ = app
                 .services
+                .workflow
                 .release_attempts
                 .record_release_attempt(
                     Some(title.id.clone()),
@@ -107,15 +108,11 @@ pub async fn execute_upgrade(
     } else {
         let category = crate::post_download_gate::facet_to_category_hint(&title.facet);
         let required_audio_languages = app
-            .resolve_required_audio_languages(
-                Some(&title.id),
-                Some(category),
-                Some(quality_profile),
-            )
+            .resolve_required_audio_languages(Some(&title.id), Some(category))
             .await
             .unwrap_or_default();
         let persona = app
-            .resolve_scoring_persona(Some(category), Some(quality_profile), Some(category))
+            .resolve_scoring_persona(Some(category))
             .await
             .unwrap_or_default();
         let decision = crate::post_download_gate::build_import_profile_decision(
@@ -186,6 +183,7 @@ pub async fn execute_upgrade(
     // 4. Import the new file
     let import_result = app
         .services
+        .workflow
         .file_importer
         .import_file(source_path, dest_path)
         .await;
@@ -211,6 +209,7 @@ pub async fn execute_upgrade(
     let old_episode_id = existing_file.episode_id.clone();
     if let Err(err) = app
         .services
+        .library
         .media_files
         .delete_media_file(&old_file_id)
         .await
@@ -237,11 +236,12 @@ pub async fn execute_upgrade(
     };
     let new_file_id = app
         .services
+        .library
         .media_files
         .insert_media_file(&media_file_input)
         .await?;
     crate::post_download_gate::persist_media_analysis_result(
-        &app.services.media_files,
+        &app.services.library.media_files,
         &new_file_id,
         &accepted,
     )
@@ -252,6 +252,7 @@ pub async fn execute_upgrade(
         if let Some(ref episode_id) = old_episode_id {
             let _ = app
                 .services
+                .library
                 .media_files
                 .link_file_to_episode(&new_file_id, episode_id)
                 .await;
@@ -260,6 +261,7 @@ pub async fn execute_upgrade(
         for episode_id in target_episode_ids {
             let _ = app
                 .services
+                .library
                 .media_files
                 .link_file_to_episode(&new_file_id, episode_id)
                 .await;
@@ -277,35 +279,33 @@ pub async fn execute_upgrade(
                 created_media_update(dest_path.to_string_lossy().to_string()),
             ]
         };
-        app.services
-            .append_domain_event(new_title_domain_event(
+        app.append_domain_event(new_title_domain_event(
+            None,
+            title,
+            DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
+                title: title_context_snapshot(title),
+                media_updates,
+                previous_file_id: Some(existing_file.id.clone()),
+                current_file_id: Some(new_file_id.clone()),
+                old_score: Some(old_score),
+                new_score: Some(final_score),
+            }),
+        ))
+        .await?;
+
+        if existing_file.file_path != dest_path.to_string_lossy() {
+            app.append_domain_event(new_title_domain_event(
                 None,
                 title,
-                DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
+                DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
                     title: title_context_snapshot(title),
-                    media_updates,
-                    previous_file_id: Some(existing_file.id.clone()),
-                    current_file_id: Some(new_file_id.clone()),
-                    old_score: Some(old_score),
-                    new_score: Some(final_score),
+                    media_updates: vec![deleted_media_update(existing_file.file_path.clone())],
+                    file_id: Some(existing_file.id.clone()),
+                    reason: MediaFileDeletedReason::UpgradeCleanup,
+                    episode_ids: target_episode_ids.to_vec(),
                 }),
             ))
             .await?;
-
-        if existing_file.file_path != dest_path.to_string_lossy() {
-            app.services
-                .append_domain_event(new_title_domain_event(
-                    None,
-                    title,
-                    DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
-                        title: title_context_snapshot(title),
-                        media_updates: vec![deleted_media_update(existing_file.file_path.clone())],
-                        file_id: Some(existing_file.id.clone()),
-                        reason: MediaFileDeletedReason::UpgradeCleanup,
-                        episode_ids: target_episode_ids.to_vec(),
-                    }),
-                ))
-                .await?;
         }
     }
 

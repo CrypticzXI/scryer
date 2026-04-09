@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::sync::broadcast;
 use tracing::warn;
 
-const BACKGROUND_LIBRARY_REFRESH_ENABLED: bool = false;
+const BACKGROUND_LIBRARY_REFRESH_ENABLED: bool = true;
 
 #[derive(Clone, Debug, serde::Serialize)]
 struct MetadataRefreshSummary {
@@ -96,6 +96,7 @@ impl AppUseCase {
         loop {
             let batch = self
                 .services
+                .events
                 .domain_events
                 .list(&DomainEventFilter {
                     after_sequence: Some(after_sequence),
@@ -136,13 +137,13 @@ impl AppUseCase {
 
     pub async fn list_jobs(&self, actor: &User) -> AppResult<Vec<JobDefinition>> {
         require(actor, &Entitlement::ManageConfig)?;
-        let next_runs = self.services.job_run_tracker.all_next_runs().await;
+        let next_runs = self.runtime.job_run_tracker.all_next_runs().await;
         Ok(crate::jobs::all_job_definitions(&next_runs))
     }
 
     pub async fn active_job_runs(&self, actor: &User) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
-        let runs = self.services.job_run_tracker.list_active().await;
+        let runs = self.runtime.job_run_tracker.list_active().await;
         if runs.is_empty() {
             self.load_active_job_run_projection().await
         } else {
@@ -158,7 +159,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
         let active_runs = {
-            let runs = self.services.job_run_tracker.list_active().await;
+            let runs = self.runtime.job_run_tracker.list_active().await;
             if runs.is_empty() {
                 self.load_active_job_run_projection().await?
             } else {
@@ -172,6 +173,7 @@ impl AppUseCase {
 
         let records = self
             .services
+            .events
             .job_runs
             .list_job_runs(Some(job_key), limit.max(1))
             .await?;
@@ -190,7 +192,7 @@ impl AppUseCase {
     pub async fn list_recent_job_runs(&self, actor: &User, limit: usize) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
         let active_runs = {
-            let runs = self.services.job_run_tracker.list_active().await;
+            let runs = self.runtime.job_run_tracker.list_active().await;
             if runs.is_empty() {
                 self.load_active_job_run_projection().await?
             } else {
@@ -204,6 +206,7 @@ impl AppUseCase {
 
         let records = self
             .services
+            .events
             .job_runs
             .list_job_runs(None, limit.max(1))
             .await?;
@@ -224,8 +227,8 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut receiver = app.services.job_run_tracker.subscribe();
-            let mut initial_runs = app.services.job_run_tracker.list_active().await;
+            let mut receiver = app.runtime.job_run_tracker.subscribe();
+            let mut initial_runs = app.runtime.job_run_tracker.list_active().await;
             if initial_runs.is_empty() {
                 initial_runs = match app.load_active_job_run_projection().await {
                     Ok(runs) => runs,
@@ -266,12 +269,11 @@ impl AppUseCase {
             .create_job_run_record(job_key, JobTriggerSource::Manual, Some(actor.id.clone()))
             .await?;
         let run_payload = JobRun::from_record(&run, None);
-        self.services
+        self.runtime
             .job_run_tracker
             .upsert_active_run(run_payload.clone())
             .await;
         let _ = self
-            .services
             .append_domain_event(new_job_run_domain_event(
                 Some(actor.id.clone()),
                 run.id.clone(),
@@ -305,12 +307,11 @@ impl AppUseCase {
             .create_job_run_record(job_key, trigger_source, None)
             .await?;
         let run_payload = JobRun::from_record(&run, None);
-        self.services
+        self.runtime
             .job_run_tracker
             .upsert_active_run(run_payload)
             .await;
         let _ = self
-            .services
             .append_domain_event(new_job_run_domain_event(
                 None,
                 run.id.clone(),
@@ -326,12 +327,11 @@ impl AppUseCase {
     }
 
     pub async fn set_job_next_run_at(&self, job_key: JobKey, next_run_at: chrono::DateTime<Utc>) {
-        self.services
+        self.runtime
             .job_run_tracker
             .set_next_run_at(job_key, next_run_at)
             .await;
         let _ = self
-            .services
             .append_domain_event(new_job_run_domain_event(
                 None,
                 job_key.as_str().to_string(),
@@ -344,7 +344,7 @@ impl AppUseCase {
     }
 
     async fn ensure_job_can_start(&self, job_key: JobKey) -> AppResult<()> {
-        if self.services.job_run_tracker.has_active_job(job_key).await {
+        if self.runtime.job_run_tracker.has_active_job(job_key).await {
             return Err(AppError::Validation(format!(
                 "{} is already running",
                 job_key.display_name()
@@ -352,7 +352,7 @@ impl AppUseCase {
         }
 
         if let Some(facet) = job_key_library_facet(job_key) {
-            let active_scans = self.services.library_scan_tracker.list_active().await;
+            let active_scans = self.runtime.library_scan_tracker.list_active().await;
             if active_scans
                 .into_iter()
                 .any(|session| session.facet == facet)
@@ -381,6 +381,7 @@ impl AppUseCase {
         };
 
         self.services
+            .events
             .job_runs
             .create_job_run(&JobRunRecord {
                 id: Id::new().0,
@@ -515,7 +516,7 @@ impl AppUseCase {
             }
             JobKey::HealthChecks => {
                 let results = self.run_health_checks().await;
-                *self.services.health_check_results.write().await = results.clone();
+                *self.runtime.health_check_results.write().await = results.clone();
                 let errors = results
                     .iter()
                     .filter(|result| matches!(result.status, HealthCheckStatus::Error))
@@ -556,6 +557,7 @@ impl AppUseCase {
             JobKey::StagedNzbPrune => {
                 let count = self
                     .services
+                    .workflow
                     .staged_nzb_store
                     .prune_staged_nzbs_older_than(Utc::now() - chrono::Duration::hours(1))
                     .await?;
@@ -588,8 +590,8 @@ impl AppUseCase {
         run.summary_json = summary_json;
         run.completed_at = Some(completed_at);
         run.updated_at = completed_at;
-        let updated = self.services.job_runs.update_job_run(&run).await?;
-        self.services
+        let updated = self.services.events.job_runs.update_job_run(&run).await?;
+        self.runtime
             .job_run_tracker
             .upsert_active_run(JobRun::from_record(&updated, library_scan_progress))
             .await;
@@ -607,7 +609,6 @@ impl AppUseCase {
             })
         };
         let _ = self
-            .services
             .append_domain_event(new_job_run_domain_event(
                 updated.actor_user_id.clone(),
                 updated.id.clone(),
@@ -625,13 +626,12 @@ impl AppUseCase {
         run.summary_text = Some(format!("Failed: {error_text}"));
         run.completed_at = Some(completed_at);
         run.updated_at = completed_at;
-        let updated = self.services.job_runs.update_job_run(&run).await?;
-        self.services
+        let updated = self.services.events.job_runs.update_job_run(&run).await?;
+        self.runtime
             .job_run_tracker
             .upsert_active_run(JobRun::from_record(&updated, None))
             .await;
         let _ = self
-            .services
             .append_domain_event(new_job_run_domain_event(
                 updated.actor_user_id.clone(),
                 updated.id.clone(),

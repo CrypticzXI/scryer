@@ -1,4 +1,4 @@
-use crate::AppUseCase;
+use crate::{AppError, AppUseCase};
 use chrono::Utc;
 use scryer_domain::{
     DomainEventPayload, DomainEventStream, DomainExternalIds, ExecutionMode, Id, MediaFacet,
@@ -29,6 +29,83 @@ pub struct PostProcessingContext {
     pub quality: Option<String>,
 }
 
+impl AppUseCase {
+    pub async fn list_post_processing_scripts(
+        &self,
+    ) -> crate::AppResult<Vec<PostProcessingScript>> {
+        self.services.customization.pp_scripts.list_scripts().await
+    }
+
+    pub async fn list_post_processing_script_runs(
+        &self,
+        script_id: &str,
+        limit: usize,
+    ) -> crate::AppResult<Vec<PostProcessingScriptRun>> {
+        self.services
+            .customization
+            .pp_scripts
+            .list_runs_for_script(script_id, limit)
+            .await
+    }
+
+    pub async fn create_post_processing_script(
+        &self,
+        script: PostProcessingScript,
+    ) -> crate::AppResult<PostProcessingScript> {
+        self.services
+            .customization
+            .pp_scripts
+            .create_script(script)
+            .await
+    }
+
+    pub async fn get_post_processing_script(
+        &self,
+        id: &str,
+    ) -> crate::AppResult<Option<PostProcessingScript>> {
+        self.services.customization.pp_scripts.get_script(id).await
+    }
+
+    pub async fn update_post_processing_script(
+        &self,
+        script: PostProcessingScript,
+    ) -> crate::AppResult<PostProcessingScript> {
+        self.services
+            .customization
+            .pp_scripts
+            .update_script(script)
+            .await
+    }
+
+    pub async fn delete_post_processing_script(&self, id: &str) -> crate::AppResult<()> {
+        self.services
+            .customization
+            .pp_scripts
+            .delete_script(id)
+            .await
+    }
+
+    pub async fn toggle_post_processing_script(
+        &self,
+        id: &str,
+    ) -> crate::AppResult<PostProcessingScript> {
+        let mut script = self
+            .services
+            .customization
+            .pp_scripts
+            .get_script(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("script {id} not found")))?;
+        script.enabled = !script.enabled;
+        script.updated_at = Utc::now();
+        self.services
+            .customization
+            .pp_scripts
+            .update_script(script)
+            .await
+    }
+}
+
 /// Spawn the post-processing pipeline for an imported file.
 /// Returns immediately; the pipeline runs in the background and records
 /// results per-script.
@@ -51,6 +128,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
     let scripts = ctx
         .app
         .services
+        .customization
         .pp_scripts
         .list_enabled_for_facet(facet_str)
         .await
@@ -80,7 +158,13 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
     for script in &blocking {
         let run = execute_script(script, &ctx, facet_str, &env_json).await;
         log_run_activity(&ctx, &run).await;
-        ctx.app.services.pp_scripts.record_run(run).await.ok();
+        ctx.app
+            .services
+            .customization
+            .pp_scripts
+            .record_run(run)
+            .await
+            .ok();
     }
 
     // Fire-and-forget scripts run in parallel.
@@ -111,7 +195,12 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
             };
             let run = execute_script(&script, &ff_ctx, &facet_str_owned, &env_json).await;
             log_run_activity(&ff_ctx, &run).await;
-            app.services.pp_scripts.record_run(run).await.ok();
+            app.services
+                .customization
+                .pp_scripts
+                .record_run(run)
+                .await
+                .ok();
         });
     }
 
@@ -430,7 +519,14 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
         _ => PostProcessingResult::Failed,
     };
 
-    if let Ok(Some(title)) = ctx.app.services.titles.get_by_id(&ctx.title_id).await {
+    if let Ok(Some(title)) = ctx
+        .app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&ctx.title_id)
+        .await
+    {
         ctx.app
             .emit_post_processing_completed_event(
                 ctx.actor_id.clone(),
@@ -451,7 +547,6 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
 
     let _ = ctx
         .app
-        .services
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),

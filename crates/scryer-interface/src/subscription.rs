@@ -30,6 +30,7 @@ fn empty_box_stream<T: Send + 'static>() -> BoxStream<'static, T> {
 
 async fn load_domain_events_for_projection(
     app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
     event_types: Vec<DomainEventType>,
 ) -> Result<(Vec<DomainEvent>, i64), scryer_application::AppError> {
     let mut events = Vec::new();
@@ -37,14 +38,15 @@ async fn load_domain_events_for_projection(
 
     loop {
         let batch = app
-            .services
-            .domain_events
-            .list(&DomainEventFilter {
-                event_types: Some(event_types.clone()),
-                after_sequence: Some(after_sequence),
-                limit: 500,
-                ..DomainEventFilter::default()
-            })
+            .list_domain_events(
+                actor,
+                &DomainEventFilter {
+                    event_types: Some(event_types.clone()),
+                    after_sequence: Some(after_sequence),
+                    limit: 500,
+                    ..DomainEventFilter::default()
+                },
+            )
             .await?;
         if batch.is_empty() {
             break;
@@ -87,11 +89,9 @@ fn library_scan_state_stream_from_domain_events(
 }
 
 async fn job_run_state_stream_from_domain_events(
-    app: scryer_application::AppUseCase,
+    receiver: tokio::sync::broadcast::Receiver<scryer_application::JobRun>,
     initial_runs: Vec<scryer_application::JobRun>,
 ) -> BoxStream<'static, JobRunPayload> {
-    let receiver = app.services.job_run_tracker.subscribe();
-
     let stream = unfold(
         (receiver, VecDeque::from(initial_runs)),
         move |(mut receiver, mut pending)| async move {
@@ -120,24 +120,24 @@ async fn job_run_state_stream_from_domain_events(
 
 async fn download_queue_state_stream_from_domain_events(
     app: scryer_application::AppUseCase,
+    actor: scryer_domain::User,
+    receiver: tokio::sync::broadcast::Receiver<i64>,
     include_all_activity: bool,
     include_history_only: bool,
 ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
-    let receiver = app.services.domain_event_broadcast.subscribe();
-
     let event_types = vec![
         DomainEventType::DownloadQueueItemUpserted,
         DomainEventType::DownloadQueueItemRemoved,
     ];
 
-    let (events, cursor) = match load_domain_events_for_projection(&app, event_types.clone()).await
-    {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            tracing::warn!("download_queue_state: initial load failed: {error}");
-            return empty_box_stream();
-        }
-    };
+    let (events, cursor) =
+        match load_domain_events_for_projection(&app, &actor, event_types.clone()).await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::warn!("download_queue_state: initial load failed: {error}");
+                return empty_box_stream();
+            }
+        };
 
     let initial_items = replay_download_queue_state(&events);
     let initial_snapshot = filter_download_queue_items(
@@ -159,6 +159,7 @@ async fn download_queue_state_stream_from_domain_events(
         (receiver, cursor, pending_initial, initial_items),
         move |(mut receiver, mut cursor, mut pending, mut items)| {
             let app = app.clone();
+            let actor = actor.clone();
             let event_types = event_types.clone();
             async move {
                 loop {
@@ -167,14 +168,15 @@ async fn download_queue_state_stream_from_domain_events(
                     }
 
                     let events = match app
-                        .services
-                        .domain_events
-                        .list(&DomainEventFilter {
-                            event_types: Some(event_types.clone()),
-                            after_sequence: Some(cursor),
-                            limit: 100,
-                            ..DomainEventFilter::default()
-                        })
+                        .list_domain_events(
+                            &actor,
+                            &DomainEventFilter {
+                                event_types: Some(event_types.clone()),
+                                after_sequence: Some(cursor),
+                                limit: 100,
+                                ..DomainEventFilter::default()
+                            },
+                        )
                         .await
                     {
                         Ok(events) if !events.is_empty() => events,
@@ -427,8 +429,18 @@ impl SubscriptionRoot {
             actor.id
         );
 
+        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!("download_queue sub: subscribe failed: {error}");
+                return empty_box_stream();
+            }
+        };
+
         download_queue_state_stream_from_domain_events(
             app,
+            actor,
+            receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
         )
@@ -461,8 +473,18 @@ impl SubscriptionRoot {
             return empty_box_stream();
         }
 
+        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!("download_queue_state sub: subscribe failed: {error}");
+                return empty_box_stream();
+            }
+        };
+
         download_queue_state_stream_from_domain_events(
             app,
+            actor,
+            receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
         )
@@ -573,7 +595,15 @@ impl SubscriptionRoot {
             }
         };
 
-        job_run_state_stream_from_domain_events(app, initial_runs).await
+        let receiver = match app.subscribe_job_run_state(&actor) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!("job_run_events: subscribe failed: {error}");
+                return empty_box_stream();
+            }
+        };
+
+        job_run_state_stream_from_domain_events(receiver, initial_runs).await
     }
 
     async fn job_run_state(&self, ctx: &Context<'_>) -> BoxStream<'static, JobRunPayload> {
@@ -605,7 +635,15 @@ impl SubscriptionRoot {
             }
         };
 
-        job_run_state_stream_from_domain_events(app, initial_runs).await
+        let receiver = match app.subscribe_job_run_state(&actor) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!("job_run_state: subscribe failed: {error}");
+                return empty_box_stream();
+            }
+        };
+
+        job_run_state_stream_from_domain_events(receiver, initial_runs).await
     }
 
     async fn service_log_lines(&self, ctx: &Context<'_>) -> BoxStream<'static, String> {

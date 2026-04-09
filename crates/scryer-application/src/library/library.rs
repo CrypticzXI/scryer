@@ -108,6 +108,7 @@ pub(crate) struct LibraryScanTitleWork {
     facet_plan: LibraryScanTitleFacetPlan,
     discovered_files: Option<Vec<LibraryFile>>,
     mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
 }
 
 impl LibraryScanTitleWork {
@@ -168,6 +169,7 @@ fn merge_library_scan_title_work(
 
             existing.title = work.title;
             existing.mode = work.mode;
+            existing.created_in_scan |= work.created_in_scan;
         }
         None => {
             workset.insert(title_id, work);

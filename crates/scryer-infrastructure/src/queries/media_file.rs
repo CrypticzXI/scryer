@@ -608,7 +608,7 @@ pub(crate) async fn delete_media_file_query(pool: &SqlitePool, file_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite_services::SqliteServices;
+    use crate::{SqliteCatalogStore, SqliteLibraryStateStore, SqliteServices};
     use chrono::Utc;
     use scryer_application::{MediaFileRepository, ShowRepository, TitleRepository};
     use scryer_domain::{Collection, CollectionType, Episode, MediaFacet, Title};
@@ -652,6 +652,14 @@ mod tests {
         }
     }
 
+    fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
+        SqliteCatalogStore::new(services)
+    }
+
+    fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
+        SqliteLibraryStateStore::new(services)
+    }
+
     #[tokio::test]
     async fn recycled_media_files_are_excluded_from_live_title_queries() {
         let db = std::env::temp_dir().join(format!(
@@ -661,9 +669,12 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
+        let catalog = catalog_store(&services);
+        let library_state = library_state_store(&services);
 
         let title = make_test_series_title("title-live-query");
-        <SqliteServices as TitleRepository>::create(&services, title.clone())
+        catalog
+            .create(title.clone())
             .await
             .expect("title should insert");
 
@@ -683,7 +694,8 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        <SqliteServices as ShowRepository>::create_collection(&services, collection.clone())
+        catalog
+            .create_collection(collection.clone())
             .await
             .expect("collection should insert");
 
@@ -729,58 +741,49 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        <SqliteServices as ShowRepository>::create_episode(&services, episode_one.clone())
+        catalog
+            .create_episode(episode_one.clone())
             .await
             .expect("episode one should insert");
-        <SqliteServices as ShowRepository>::create_episode(&services, episode_two.clone())
+        catalog
+            .create_episode(episode_two.clone())
             .await
             .expect("episode two should insert");
 
-        let live_file_id = <SqliteServices as MediaFileRepository>::insert_media_file(
-            &services,
-            &InsertMediaFileInput {
+        let live_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
                 title_id: title.id.clone(),
                 file_path: "/library/Show/Season 01/Show - S01E01.mkv".to_string(),
                 size_bytes: 1_000,
                 ..Default::default()
-            },
-        )
-        .await
-        .expect("live media file should insert");
-        <SqliteServices as MediaFileRepository>::link_file_to_episode(
-            &services,
-            &live_file_id,
-            &episode_one.id,
-        )
-        .await
-        .expect("live file should link");
+            })
+            .await
+            .expect("live media file should insert");
+        library_state
+            .link_file_to_episode(&live_file_id, &episode_one.id)
+            .await
+            .expect("live file should link");
 
-        let recycled_file_id = <SqliteServices as MediaFileRepository>::insert_media_file(
-            &services,
-            &InsertMediaFileInput {
+        let recycled_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
                 title_id: title.id.clone(),
                 file_path:
                     "/library/Show/.scryer-recycle/20260404_000000_deadbeef/Show - S01E02.mkv"
                         .to_string(),
                 size_bytes: 9_999,
                 ..Default::default()
-            },
-        )
-        .await
-        .expect("recycled media file should insert");
-        <SqliteServices as MediaFileRepository>::link_file_to_episode(
-            &services,
-            &recycled_file_id,
-            &episode_two.id,
-        )
-        .await
-        .expect("recycled file should link");
+            })
+            .await
+            .expect("recycled media file should insert");
+        library_state
+            .link_file_to_episode(&recycled_file_id, &episode_two.id)
+            .await
+            .expect("recycled file should link");
 
-        let live_files = <SqliteServices as MediaFileRepository>::list_media_files_for_title(
-            &services, &title.id,
-        )
-        .await
-        .expect("list media files should succeed");
+        let live_files = library_state
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files should succeed");
         assert_eq!(live_files.len(), 1);
         assert_eq!(live_files[0].id, live_file_id);
         assert_eq!(
@@ -788,22 +791,16 @@ mod tests {
             "/library/Show/Season 01/Show - S01E01.mkv"
         );
 
-        let size_summaries =
-            <SqliteServices as MediaFileRepository>::list_title_media_size_summaries(
-                &services,
-                std::slice::from_ref(&title.id),
-            )
+        let size_summaries = library_state
+            .list_title_media_size_summaries(std::slice::from_ref(&title.id))
             .await
             .expect("size summaries should succeed");
         assert_eq!(size_summaries.len(), 1);
         assert_eq!(size_summaries[0].title_id, title.id);
         assert_eq!(size_summaries[0].total_size_bytes, 1_000);
 
-        let episode_progress =
-            <SqliteServices as MediaFileRepository>::list_title_episode_progress_summaries(
-                &services,
-                std::slice::from_ref(&title.id),
-            )
+        let episode_progress = library_state
+            .list_title_episode_progress_summaries(std::slice::from_ref(&title.id))
             .await
             .expect("episode progress summaries should succeed");
         assert_eq!(episode_progress.len(), 1);

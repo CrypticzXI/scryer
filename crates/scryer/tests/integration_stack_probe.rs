@@ -13,9 +13,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::TestContext;
-use scryer_application::{SettingsRepository, ShowRepository, TitleRepository};
+use scryer_application::{MediaFileRepository, ShowRepository, TitleRepository};
 use scryer_domain::MediaFacet;
-use scryer_infrastructure::{SettingDefinitionSeed, SqliteServices};
+use scryer_infrastructure::SettingDefinitionSeed;
 
 const HAIKYU_TVDB_ID: i64 = 420_424;
 const MINIMUM_HAIKYU_IMPORTED_FILE_COUNT: usize = 12;
@@ -111,22 +111,6 @@ async fn run_haikyu_stack_probe() {
     )
     .await;
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let hydration_app = ctx.app.clone();
-    let hydration_token = token.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_hydration_loop(hydration_app, hydration_token).await;
-    });
-    let title_scan_app = ctx.app.clone();
-    let title_scan_token = token.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            title_scan_app,
-            title_scan_token,
-        )
-        .await;
-    });
-
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
 
     eprintln!("stack probe: first manual anime library scan");
@@ -145,7 +129,7 @@ async fn run_haikyu_stack_probe() {
     wait_for_library_scan_sessions_to_clear(&ctx).await;
 
     let titles = ctx
-        .db
+        .catalog
         .list(Some(MediaFacet::Anime), None)
         .await
         .expect("list anime titles after stack probe");
@@ -162,19 +146,14 @@ async fn run_haikyu_stack_probe() {
         "second manual scan should not force a metadata re-hydration for the same title",
     );
 
-    eprintln!("stack probe: manually re-enqueueing post-hydration title scan for existing title");
-    assert!(
-        ctx.app
-            .services
-            .library_scan_runtime
-            .enqueue_title_scan(titles[0].id.clone(), "integration_stack_probe")
-            .await,
-        "post-hydration queue should accept the replayed title scan"
-    );
-    sleep(Duration::from_secs(2)).await;
+    eprintln!("stack probe: manually rerunning title scan for existing title");
+    ctx.app
+        .scan_title_library(&admin, &titles[0].id)
+        .await
+        .expect("post-hydration title scan should succeed");
 
     let collections = ctx
-        .db
+        .catalog
         .list_collections_for_title(&titles[0].id)
         .await
         .expect("list anime collections after stack probe");
@@ -187,7 +166,7 @@ async fn run_haikyu_stack_probe() {
     );
 
     let media_files = ctx
-        .db
+        .library_state
         .list_media_files_for_title(&titles[0].id)
         .await
         .expect("list anime media files after stack probe");
@@ -196,12 +175,10 @@ async fn run_haikyu_stack_probe() {
         "expected most Haikyu!! files to be inserted during the stack probe, got {}",
         media_files.len()
     );
-
-    token.cancel();
 }
 
 async fn seed_media_path_settings(ctx: &TestContext) {
-    ctx.db
+    ctx.settings_store
         .batch_ensure_setting_definitions(vec![
             SettingDefinitionSeed {
                 category: "media".into(),
@@ -236,17 +213,17 @@ async fn seed_media_path_settings(ctx: &TestContext) {
 }
 
 async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
-    <SqliteServices as SettingsRepository>::upsert_setting_json(
-        &ctx.db,
-        "media",
-        key_name,
-        None,
-        serde_json::to_string(value).expect("serialize setting value"),
-        "integration_test",
-        None,
-    )
-    .await
-    .expect("upsert media path setting");
+    ctx.settings_store
+        .upsert_setting_value(
+            "media",
+            key_name,
+            None,
+            serde_json::to_string(value).expect("serialize setting value"),
+            "integration_test",
+            None,
+        )
+        .await
+        .expect("upsert media path setting");
 }
 
 async fn install_haikyu_metadata_fixture(ctx: &TestContext) {
@@ -520,7 +497,7 @@ async fn wait_for_haikyu_scan_to_settle(
         .unwrap_or_else(Instant::now);
     loop {
         let titles = ctx
-            .db
+            .catalog
             .list(Some(MediaFacet::Anime), None)
             .await
             .expect("list anime titles while waiting for stack probe scan");
@@ -528,12 +505,12 @@ async fn wait_for_haikyu_scan_to_settle(
             .iter()
             .find(|title| title.name == "Haikyu!!")
             .cloned();
-        let sessions = ctx.app.services.library_scan_tracker.list_active().await;
+        let sessions = ctx.app.active_library_scan_sessions().await;
 
         if last_log.elapsed() >= Duration::from_secs(1) {
             if let Some(title) = title.as_ref() {
                 let media_files = ctx
-                    .db
+                    .library_state
                     .list_media_files_for_title(&title.id)
                     .await
                     .expect("list media files while logging stack probe wait state");
@@ -568,12 +545,12 @@ async fn wait_for_haikyu_scan_to_settle(
             && let Some(metadata_fetched_at) = title.metadata_fetched_at
         {
             let collections = ctx
-                .db
+                .catalog
                 .list_collections_for_title(&title.id)
                 .await
                 .expect("list collections while waiting for stack probe scan");
             let media_files = ctx
-                .db
+                .library_state
                 .list_media_files_for_title(&title.id)
                 .await
                 .expect("list media files while waiting for stack probe scan");
@@ -598,14 +575,7 @@ async fn wait_for_haikyu_scan_to_settle(
 async fn wait_for_library_scan_sessions_to_clear(ctx: &TestContext) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if ctx
-            .app
-            .services
-            .library_scan_tracker
-            .list_active()
-            .await
-            .is_empty()
-        {
+        if ctx.app.active_library_scan_sessions().await.is_empty() {
             return;
         }
 

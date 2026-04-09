@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 use matroska_demuxer::{Frame, MatroskaFile, TrackType, TransferCharacteristics};
@@ -30,6 +31,7 @@ fn normalize_mkv_track_language(
 
 /// Parse an MKV/WebM file into a [`RawContainer`].
 pub(crate) fn parse_mkv(path: &Path) -> Result<RawContainer, MediaInfoError> {
+    require_ebml_header_signature(path)?;
     let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
     let mut mkv = MatroskaFile::open(file)
@@ -166,6 +168,24 @@ pub(crate) fn parse_mkv(path: &Path) -> Result<RawContainer, MediaInfoError> {
         num_chapters,
         tracks,
     })
+}
+
+fn require_ebml_header_signature(path: &Path) -> Result<(), MediaInfoError> {
+    const EBML_HEADER: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
+
+    let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    let mut header = [0_u8; 4];
+    let bytes_read = file
+        .read(&mut header)
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+
+    if bytes_read < EBML_HEADER.len() || header != EBML_HEADER {
+        return Err(MediaInfoError::Parse(
+            "matroska ebml header parsing failed".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn count_mkv_chapters<R: std::io::Read + std::io::Seek>(mkv: &MatroskaFile<R>) -> i32 {
@@ -571,6 +591,7 @@ fn parse_ebml_vint(data: &[u8]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MediaInfoError;
 
     fn make_ebml_element(id: &[u8], payload: &[u8]) -> Vec<u8> {
         assert!(payload.len() < 0x7F);
@@ -740,5 +761,16 @@ mod tests {
         assert!(should_replace_frame_rate(Some(1.0), 1000.0));
         assert!(!should_replace_frame_rate(Some(24.0), 6.0));
         assert!(!should_replace_frame_rate(Some(23.976), 24.0));
+    }
+
+    #[test]
+    fn parse_mkv_rejects_missing_ebml_header_immediately() {
+        let path = std::env::temp_dir().join(format!("scryer-invalid-{}.mkv", std::process::id()));
+        let file = std::fs::File::create(&path).expect("create invalid mkv");
+        file.set_len(60 * 1024 * 1024).expect("set sparse size");
+
+        let error = parse_mkv(&path).expect_err("invalid mkv should fail fast");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(error, MediaInfoError::Parse(message) if message.contains("ebml header")));
     }
 }

@@ -1,4 +1,6 @@
-//! Activity and domain-event publishing plus event-view shaping.
-//!
-//! Start with `domain_events.rs` for emitted events.
-//! Activity stream behavior lives in `activity.rs` and `activity_api.rs`.
+pub(crate) use crate::*;
+
+pub(crate) mod activity;
+pub(crate) mod activity_api;
+pub(crate) mod domain_events;
+pub(crate) mod event_views;

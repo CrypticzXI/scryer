@@ -45,9 +45,7 @@ async fn create_script(
         updated_at: chrono::Utc::now(),
     };
     ctx.app
-        .services
-        .pp_scripts
-        .create_script(script)
+        .create_post_processing_script(script)
         .await
         .expect("create script");
 }

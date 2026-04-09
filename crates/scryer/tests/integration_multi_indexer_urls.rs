@@ -11,11 +11,13 @@ use std::sync::Arc;
 use common::load_fixture;
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
-    MovieFacetHandler, SearchMode, SeriesFacetHandler,
+    MovieFacetHandler, SeriesFacetHandler,
 };
 use scryer_domain::{Entitlement, User};
 use scryer_infrastructure::{
-    FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient, SqliteServices,
+    FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient,
+    SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore,
+    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteWorkflowStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -54,6 +56,10 @@ async fn setup() -> (
     let db = SqliteServices::new(":memory:")
         .await
         .expect("in-memory SQLite");
+    let config_store = Arc::new(SqliteConfigStore::new(&db));
+    let release_store = Arc::new(SqliteReleaseStore::new(&db));
+    let settings_store = Arc::new(SqliteSettingsStore::new(&db));
+    let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
 
     // Load all three indexer plugins
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
@@ -68,7 +74,7 @@ async fn setup() -> (
         Arc::new(InMemoryIndexerStatsTracker::new(None));
 
     let indexer_client = MultiIndexerSearchClient::new(
-        Arc::new(db.clone()),
+        config_store.clone(),
         indexer_stats.clone(),
         plugin_provider.clone(),
     );
@@ -132,11 +138,14 @@ async fn setup() -> (
             updated_at: now,
         },
     ] {
-        db.create(config).await.expect("create indexer config");
+        config_store
+            .create(config)
+            .await
+            .expect("create indexer config");
     }
 
     scryer_application::DownloadClientConfigRepository::create(
-        &db,
+        &*config_store,
         scryer_domain::DownloadClientConfig {
             id: "nzbget-1".into(),
             name: "NZBGet".into(),
@@ -183,20 +192,22 @@ async fn setup() -> (
         },
     );
 
-    let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(db.clone());
-    let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(db.clone());
-    let users: Arc<dyn scryer_application::UserRepository> = Arc::new(db.clone());
+    let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
+    let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
+    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store.clone();
+    let users: Arc<dyn scryer_application::UserRepository> = catalog_store;
     let indexer_configs_repo: Arc<dyn scryer_application::IndexerConfigRepository> =
-        Arc::new(db.clone());
+        config_store.clone();
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-        Arc::new(db.clone());
-    let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> =
-        Arc::new(db.clone());
-    let settings: Arc<dyn scryer_application::SettingsRepository> = Arc::new(db.clone());
+        config_store.clone();
+    let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
+    let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-        Arc::new(db.clone());
+        settings_store.clone();
 
-    let mut services = AppServices::with_default_channels(
+    let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
+    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
+    let services = AppServices::builder(
         titles,
         shows,
         users,
@@ -208,20 +219,23 @@ async fn setup() -> (
         settings,
         quality_profiles,
         ":memory:".to_string(),
-    );
-    services.metadata_gateway = Arc::new(smg);
-    services.library_scanner = Arc::new(FileSystemLibraryScanner::new());
-    services.media_files = Arc::new(db.clone());
-    services.indexer_stats = indexer_stats;
-    services.plugin_provider = Some(plugin_provider);
-    services.plugin_installations = Arc::new(db.clone());
-    services.rule_sets = Arc::new(db.clone());
-    services.acquisition_state = Arc::new(db.clone());
-    services.wanted_items = Arc::new(db.clone());
-    services.download_submissions = Arc::new(db.clone());
-    services.pending_releases = Arc::new(db.clone());
-    services.pp_scripts = Arc::new(db.clone());
-    services.staged_nzb_store = staged_nzb_store;
+    )
+    .with_library_state_store(library_state_store)
+    .with_customization_store(customization_store)
+    .with_acquisition_state(workflow_store.clone())
+    .with_domain_events(workflow_store.clone())
+    .with_download_submissions(workflow_store.clone())
+    .with_import_artifacts(workflow_store.clone())
+    .with_imports(workflow_store.clone())
+    .with_job_runs(workflow_store.clone())
+    .with_system_info(settings_store)
+    .with_metadata_gateway(Arc::new(smg))
+    .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
+    .with_indexer_stats(indexer_stats)
+    .with_plugin_provider(plugin_provider)
+    .with_staged_nzb_store(staged_nzb_store)
+    .with_workflow_operations(workflow_store)
+    .build();
 
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
@@ -318,14 +332,16 @@ async fn multi_indexer_url_trace_anime_episode() {
     let _results = app
         .search_indexers_episode(
             &user,
-            "Demon Slayer".into(),
-            "02".into(),
-            "03".into(),
-            None,                  // imdb_id
-            Some("348545".into()), // tvdb_id
-            Some("1535".into()),   // anidb_id
-            Some("anime".into()),  // category
-            None,                  // absolute_episode
+            scryer_application::IndexerEpisodeSearchRequest {
+                title: "Demon Slayer".into(),
+                season: "02".into(),
+                episode: "03".into(),
+                imdb_id: None,
+                tvdb_id: Some("348545".into()),
+                anidb_id: Some("1535".into()),
+                category: Some("anime".into()),
+                absolute_episode: None,
+            },
         )
         .await
         .expect("search should succeed");
@@ -349,14 +365,16 @@ async fn multi_indexer_url_trace_tv_episode() {
     let _results = app
         .search_indexers_episode(
             &user,
-            "Breaking Bad".into(),
-            "05".into(),
-            "01".into(),
-            None,
-            Some("81189".into()), // tvdb_id
-            None,                 // anidb_id
-            Some("series".into()),
-            None,
+            scryer_application::IndexerEpisodeSearchRequest {
+                title: "Breaking Bad".into(),
+                season: "05".into(),
+                episode: "01".into(),
+                imdb_id: None,
+                tvdb_id: Some("81189".into()),
+                anidb_id: None,
+                category: Some("series".into()),
+                absolute_episode: None,
+            },
         )
         .await
         .expect("search should succeed");
@@ -387,11 +405,13 @@ async fn multi_indexer_url_trace_movie() {
     let _results = app
         .search_indexers(
             &user,
-            "The Matrix".into(),
-            Some("tt0133093".into()), // imdb_id
-            None,                     // tvdb_id
-            None,                     // anidb_id
-            Some("movie".into()),
+            scryer_application::IndexerSearchRequest {
+                query: "The Matrix".into(),
+                imdb_id: Some("tt0133093".into()),
+                tvdb_id: None,
+                anidb_id: None,
+                category: Some("movie".into()),
+            },
         )
         .await
         .expect("search should succeed");
@@ -434,11 +454,13 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
     let results = app
         .search_indexers(
             &user,
-            "Spirited Away".into(),
-            Some("tt0245429".into()), // imdb_id
-            None,                     // tvdb_id
-            Some("112".into()),       // anidb_id
-            Some("movie".into()),
+            scryer_application::IndexerSearchRequest {
+                query: "Spirited Away".into(),
+                imdb_id: Some("tt0245429".into()),
+                tvdb_id: None,
+                anidb_id: Some("112".into()),
+                category: Some("movie".into()),
+            },
         )
         .await
         .expect("search should succeed");
@@ -472,29 +494,22 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
 
 #[tokio::test]
 async fn multi_indexer_url_trace_season_pack() {
-    let (app, _user, tosho, nzbgeek, torznab) = setup().await;
+    let (app, user, tosho, nzbgeek, torznab) = setup().await;
 
     // Call the indexer client directly as the background acquisition loop would.
     // season=Some(2), episode=None signals a season pack search.
     // The acquisition loop builds "Title S02" as the query.
     let _results = app
-        .services
-        .indexer_client
-        .search(
-            "Demon Slayer S02".into(), // title + S02 for freetext matching
-            std::collections::HashMap::from([
-                ("tvdb_id".to_string(), "348545".to_string()),
-                ("anidb_id".to_string(), "1535".to_string()),
-            ]),
-            Some("anime".into()), // category
-            Some("anime".into()), // facet
-            None,                 // newznab_categories
-            None,                 // indexer_routing
-            SearchMode::Auto,
-            Some(2), // season
-            None,    // episode=None → season pack
-            None,    // absolute_episode
-            vec![],
+        .search_indexers_season(
+            &user,
+            scryer_application::IndexerSeasonSearchRequest {
+                title: "Demon Slayer".into(),
+                season: "02".into(),
+                imdb_id: None,
+                tvdb_id: Some("348545".into()),
+                anidb_id: Some("1535".into()),
+                category: Some("anime".into()),
+            },
         )
         .await
         .expect("search should succeed");

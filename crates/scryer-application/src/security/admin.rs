@@ -11,8 +11,8 @@ impl AppUseCase {
     pub async fn system_health(&self, actor: &User) -> AppResult<SystemHealth> {
         require(actor, &Entitlement::ManageConfig)?;
 
-        let titles = self.services.titles.list(None, None).await?;
-        let users = self.services.users.list_all().await?;
+        let titles = self.services.catalog.titles.list(None, None).await?;
+        let users = self.services.identity.users.list_all().await?;
         let recent_activity = self.recent_activity(actor, 12, 0).await?;
 
         let mut titles_movie = 0usize;
@@ -40,6 +40,7 @@ impl AppUseCase {
 
         let db_migration_version = self
             .services
+            .config
             .system_info
             .current_migration_version()
             .await
@@ -47,12 +48,14 @@ impl AppUseCase {
             .flatten();
         let db_pending_migrations = self
             .services
+            .config
             .system_info
             .pending_migration_count()
             .await
             .unwrap_or(0);
         let smg_cert_expires_at = self
             .services
+            .config
             .system_info
             .smg_cert_expires_at()
             .await
@@ -66,11 +69,11 @@ impl AppUseCase {
                 })
         });
 
-        let indexer_stats = self.services.indexer_stats.all_stats();
+        let indexer_stats = self.services.integrations.indexer_stats.all_stats();
 
         Ok(SystemHealth {
             service_ready: true,
-            db_path: self.services.db_path.clone(),
+            db_path: self.services.config.db_path.clone(),
             total_titles: titles.len(),
             monitored_titles,
             total_users: users.len(),
@@ -143,12 +146,13 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.services.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
             let mut cursor = 0_i64;
 
             loop {
                 let events = match app
                     .services
+                    .events
                     .domain_events
                     .list_after_sequence(cursor, 100)
                     .await
@@ -197,10 +201,17 @@ impl AppUseCase {
         }
         let desired_entitlements = User::all_entitlements();
 
-        if let Some(mut found) = self.services.users.get_by_username(username).await? {
+        if let Some(mut found) = self
+            .services
+            .identity
+            .users
+            .get_by_username(username)
+            .await?
+        {
             if !found.has_all_entitlements() {
                 found = self
                     .services
+                    .identity
                     .users
                     .update_entitlements(&found.id, desired_entitlements)
                     .await?;
@@ -209,6 +220,7 @@ impl AppUseCase {
             if found.password_hash.is_none() {
                 found = self
                     .services
+                    .identity
                     .users
                     .update_password_hash(&found.id, self.hash_password(password)?)
                     .await?;
@@ -224,7 +236,7 @@ impl AppUseCase {
             entitlements: desired_entitlements,
         };
 
-        let user = self.services.users.create(user).await?;
+        let user = self.services.identity.users.create(user).await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             None,
@@ -242,12 +254,12 @@ impl AppUseCase {
 
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.services.users.list_all().await
+        self.services.identity.users.list_all().await
     }
 
     pub async fn get_user(&self, actor: &User, user_id: &str) -> AppResult<Option<User>> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.services.users.get_by_id(user_id).await
+        self.services.identity.users.get_by_id(user_id).await
     }
 
     pub async fn create_user(
@@ -267,6 +279,7 @@ impl AppUseCase {
 
         if self
             .services
+            .identity
             .users
             .get_by_username(&username)
             .await?
@@ -285,7 +298,7 @@ impl AppUseCase {
             entitlements,
         };
 
-        let user = self.services.users.create(user).await?;
+        let user = self.services.identity.users.create(user).await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
@@ -302,6 +315,7 @@ impl AppUseCase {
         let password_hash = self.hash_password(password)?;
         let user = self
             .services
+            .identity
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
@@ -309,12 +323,11 @@ impl AppUseCase {
         Ok(user)
     }
 
-    pub async fn set_user_password(
+    pub async fn change_own_password(
         &self,
         actor: &User,
-        user_id: &str,
         password: String,
-        current_password: Option<String>,
+        current_password: String,
     ) -> AppResult<User> {
         if password.trim().is_empty() {
             return Err(AppError::Validation("password is required".into()));
@@ -322,31 +335,58 @@ impl AppUseCase {
 
         let existing = self
             .services
+            .identity
             .users
-            .get_by_id(user_id)
+            .get_by_id(&actor.id)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
+            .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
 
-        if existing.id == actor.id {
-            // Self-change: verify current password.
-            let current = current_password
-                .ok_or_else(|| AppError::Validation("current password is required".into()))?;
-            let hash = existing
-                .password_hash
-                .as_deref()
-                .ok_or_else(|| AppError::Validation("account has no password set".into()))?;
-            if !self.validate_password(&current, hash)? {
-                return Err(AppError::Unauthorized(
-                    "current password is incorrect".into(),
-                ));
-            }
-        } else {
-            require(actor, &Entitlement::ManageConfig)?;
+        let hash = existing
+            .password_hash
+            .as_deref()
+            .ok_or_else(|| AppError::Validation("account has no password set".into()))?;
+        if !self.validate_password(&current_password, hash)? {
+            return Err(AppError::Unauthorized(
+                "current password is incorrect".into(),
+            ));
+        }
+
+        self.update_user_password_hash(actor, &actor.id, password)
+            .await
+    }
+
+    pub async fn set_user_password(
+        &self,
+        actor: &User,
+        user_id: &str,
+        password: String,
+    ) -> AppResult<User> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        if user_id == actor.id {
+            return Err(AppError::Validation(
+                "use change_own_password to update your own password".into(),
+            ));
+        }
+
+        self.update_user_password_hash(actor, user_id, password)
+            .await
+    }
+
+    async fn update_user_password_hash(
+        &self,
+        actor: &User,
+        user_id: &str,
+        password: String,
+    ) -> AppResult<User> {
+        if password.trim().is_empty() {
+            return Err(AppError::Validation("password is required".into()));
         }
 
         let password_hash = self.hash_password(&password)?;
         let user = self
             .services
+            .identity
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
@@ -378,6 +418,7 @@ impl AppUseCase {
 
         let existing = self
             .services
+            .identity
             .users
             .get_by_id(user_id)
             .await?
@@ -391,6 +432,7 @@ impl AppUseCase {
 
         let user = self
             .services
+            .identity
             .users
             .update_entitlements(user_id, entitlements)
             .await?;
@@ -412,6 +454,7 @@ impl AppUseCase {
 
         let user = self
             .services
+            .identity
             .users
             .get_by_id(user_id)
             .await?
@@ -421,7 +464,7 @@ impl AppUseCase {
             return Err(AppError::Validation("cannot delete current user".into()));
         }
 
-        self.services.users.delete(user_id).await?;
+        self.services.identity.users.delete(user_id).await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),

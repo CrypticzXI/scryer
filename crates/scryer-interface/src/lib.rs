@@ -8,7 +8,6 @@ pub mod context;
 pub mod mappers;
 pub mod mutation;
 pub mod query;
-pub mod settings_graph;
 pub mod subscription;
 pub mod types;
 pub mod utils;

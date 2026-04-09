@@ -160,7 +160,7 @@ impl AppUseCase {
         info!("starting RSS sync cycle");
 
         // Load all monitored titles for matching
-        let titles = self.services.titles.list(None, None).await?;
+        let titles = self.services.catalog.titles.list(None, None).await?;
         let lookup = build_title_lookup(&titles);
 
         if lookup.is_empty() {
@@ -202,6 +202,7 @@ impl AppUseCase {
         // Fetch RSS feed (empty query = latest releases) from all indexers
         let rss_results = self
             .services
+            .integrations
             .indexer_client
             .search(
                 String::new(), // empty query = RSS feed
@@ -243,7 +244,7 @@ impl AppUseCase {
         );
 
         // Dedup against previously seen GUIDs (in-memory, resets on restart)
-        let mut seen_guids = self.services.rss_seen_guids.write().await;
+        let mut seen_guids = self.runtime.rss_seen_guids.write().await;
         let initial_seen_count = seen_guids.len();
 
         let mut new_results: Vec<IndexerSearchResult> = Vec::new();
@@ -320,7 +321,7 @@ impl AppUseCase {
 
         // For each matched title, score and potentially grab
         for (title_id, releases) in &matched_by_title {
-            let title = match self.services.titles.get_by_id(title_id).await {
+            let title = match self.services.catalog.titles.get_by_id(title_id).await {
                 Ok(Some(t)) => t,
                 _ => continue,
             };
@@ -328,6 +329,7 @@ impl AppUseCase {
             // Check if there's a wanted item for this title
             let wanted = self
                 .services
+                .workflow
                 .wanted_items
                 .get_wanted_item_for_title(title_id, None)
                 .await
@@ -512,6 +514,7 @@ impl AppUseCase {
 
             let wanted = match self
                 .services
+                .workflow
                 .wanted_items
                 .get_wanted_item_for_title(&title.id, Some(&episode_id))
                 .await
@@ -568,6 +571,7 @@ impl AppUseCase {
         // List collections (seasons) for this title, find the right one
         let collections = self
             .services
+            .catalog
             .shows
             .list_collections_for_title(title_id)
             .await
@@ -580,6 +584,7 @@ impl AppUseCase {
 
         let episodes = self
             .services
+            .catalog
             .shows
             .list_episodes_for_collection(&collection.id)
             .await
@@ -604,18 +609,20 @@ impl AppUseCase {
         runtime_minutes: Option<i32>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let quality_profile = self
-            .resolve_quality_profile(
+            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
                 title_tags,
-                imdb_id.as_deref(),
-                tvdb_id.as_deref(),
-                category.as_deref(),
-            )
+                imdb_id: imdb_id.as_deref(),
+                tvdb_id: tvdb_id.as_deref(),
+                category_hint: category.as_deref(),
+            })
             .await?;
-        let scope_id = self.quality_profile_scope_id(
-            imdb_id.as_deref(),
-            tvdb_id.as_deref(),
-            category.as_deref(),
-        );
+        let scope_id =
+            self.quality_profile_scope_id(crate::app_usecase_discovery::QualityProfileLookup {
+                title_tags,
+                imdb_id: imdb_id.as_deref(),
+                tvdb_id: tvdb_id.as_deref(),
+                category_hint: category.as_deref(),
+            });
         let indexer_routing = self.resolve_indexer_routing(scope_id.as_deref()).await;
 
         Ok(self
@@ -652,6 +659,7 @@ impl AppUseCase {
         // Load DB blocklist
         let db_blocklist: HashSet<String> = self
             .services
+            .workflow
             .release_attempts
             .list_failed_release_signatures_for_title(&title.id, 200)
             .await
@@ -705,12 +713,12 @@ impl AppUseCase {
             .map(|id| id.value.clone());
 
         let profile = self
-            .resolve_quality_profile(
-                &title.tags,
-                title.imdb_id.as_deref(),
-                tvdb_id.as_deref(),
-                Some(category),
-            )
+            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+                title_tags: &title.tags,
+                imdb_id: title.imdb_id.as_deref(),
+                tvdb_id: tvdb_id.as_deref(),
+                category_hint: Some(category),
+            })
             .await
             .unwrap_or_else(|_| crate::quality_profile::default_quality_profile_for_search());
 
@@ -724,7 +732,7 @@ impl AppUseCase {
         }
 
         let persona = self
-            .resolve_scoring_persona(Some(category), Some(&profile), Some(category))
+            .resolve_scoring_persona(Some(category))
             .await
             .unwrap_or_default();
         let thresholds = self.acquisition_thresholds(&persona).await;
@@ -764,6 +772,7 @@ impl AppUseCase {
 
         let _ = self
             .services
+            .workflow
             .wanted_items
             .insert_release_decision(&decision_record)
             .await;
@@ -776,6 +785,7 @@ impl AppUseCase {
         {
             let existing_files = self
                 .services
+                .library
                 .media_files
                 .list_media_files_for_title(&title.id)
                 .await
@@ -847,6 +857,7 @@ impl AppUseCase {
 
         let _ = self
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title.id.clone()),
@@ -875,6 +886,7 @@ impl AppUseCase {
 
         let grab_result = self
             .services
+            .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
@@ -912,6 +924,7 @@ impl AppUseCase {
 
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -927,6 +940,7 @@ impl AppUseCase {
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 let _ = self
                     .services
+                    .workflow
                     .download_submissions
                     .record_submission(DownloadSubmission {
                         title_id: title.id.clone(),
@@ -948,6 +962,7 @@ impl AppUseCase {
 
                 let _ = self
                     .services
+                    .workflow
                     .wanted_items
                     .transition_wanted_to_grabbed(&WantedGrabTransition {
                         id: wanted.id.clone(),
@@ -959,7 +974,6 @@ impl AppUseCase {
                     .await;
 
                 let _ = self
-                    .services
                     .append_domain_event(new_title_domain_event(
                         None,
                         title,
@@ -985,6 +999,7 @@ impl AppUseCase {
 
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),

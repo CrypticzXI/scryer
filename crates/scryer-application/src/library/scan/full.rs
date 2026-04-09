@@ -24,13 +24,19 @@ pub(super) async fn scan_library_movies(
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
     let discovered_files = app
         .services
+        .library
         .library_scanner
         .scan_library_batched(library_path, LIBRARY_SCAN_BATCH_SIZE)
         .await?;
     let mut queued_discovered_files =
         spawn_library_discovery_queue(app.clone(), session_id.to_string(), discovered_files, false);
 
-    let mut existing_titles = app.services.titles.list(Some(facet.clone()), None).await?;
+    let mut existing_titles = app
+        .services
+        .catalog
+        .titles
+        .list(Some(facet.clone()), None)
+        .await?;
     let (
         mut existing_titles_by_name,
         mut existing_titles_by_tvdb_id,
@@ -81,7 +87,7 @@ pub(super) async fn scan_library_movies(
         }
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-            app.services.metadata_gateway.clone(),
+            app.services.library.metadata_gateway.clone(),
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,
@@ -183,7 +189,12 @@ pub(super) async fn scan_library_series(
         false,
     );
 
-    let mut existing_titles = app.services.titles.list(Some(facet.clone()), None).await?;
+    let mut existing_titles = app
+        .services
+        .catalog
+        .titles
+        .list(Some(facet.clone()), None)
+        .await?;
     let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
         build_series_title_indexes(&existing_titles);
 
@@ -231,7 +242,7 @@ pub(super) async fn scan_library_series(
         }
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-            app.services.metadata_gateway.clone(),
+            app.services.library.metadata_gateway.clone(),
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,

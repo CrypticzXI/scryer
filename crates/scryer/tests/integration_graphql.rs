@@ -4,13 +4,18 @@ mod common;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
-    PendingRelease, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleRepository, WantedItem,
+    AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate,
+    InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
+    ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleRepository, WantedItem, WantedItemRepository,
 };
-use scryer_domain::{Collection, CollectionType, Episode, ExternalId, Id, MediaFacet, Title};
-use scryer_infrastructure::{FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteServices};
+use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title};
+use scryer_infrastructure::{
+    FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteCatalogStore, SqliteLibraryStateStore,
+    SqliteWorkflowStore,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use wiremock::matchers::{method, path};
@@ -78,18 +83,19 @@ async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &st
 }
 
 struct FailingMediaFileRepo {
-    inner: SqliteServices,
+    inner: SqliteLibraryStateStore,
     fail_file_id: String,
 }
 
 #[async_trait]
 impl MediaFileRepository for FailingMediaFileRepo {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
-        <SqliteServices as MediaFileRepository>::insert_media_file(&self.inner, input).await
+        <SqliteLibraryStateStore as MediaFileRepository>::insert_media_file(&self.inner, input)
+            .await
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
-        <SqliteServices as MediaFileRepository>::link_file_to_episode(
+        <SqliteLibraryStateStore as MediaFileRepository>::link_file_to_episode(
             &self.inner,
             file_id,
             episode_id,
@@ -98,15 +104,18 @@ impl MediaFileRepository for FailingMediaFileRepo {
     }
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
-        <SqliteServices as MediaFileRepository>::list_media_files_for_title(&self.inner, title_id)
-            .await
+        <SqliteLibraryStateStore as MediaFileRepository>::list_media_files_for_title(
+            &self.inner,
+            title_id,
+        )
+        .await
     }
 
     async fn list_title_media_size_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
-        <SqliteServices as MediaFileRepository>::list_title_media_size_summaries(
+        <SqliteLibraryStateStore as MediaFileRepository>::list_title_media_size_summaries(
             &self.inner,
             title_ids,
         )
@@ -117,7 +126,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
-        <SqliteServices as MediaFileRepository>::list_title_episode_progress_summaries(
+        <SqliteLibraryStateStore as MediaFileRepository>::list_title_episode_progress_summaries(
             &self.inner,
             title_ids,
         )
@@ -129,7 +138,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         file_id: &str,
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
-        <SqliteServices as MediaFileRepository>::update_media_file_analysis(
+        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_analysis(
             &self.inner,
             file_id,
             analysis,
@@ -144,7 +153,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         source_signature_scheme: Option<String>,
         source_signature_value: Option<String>,
     ) -> AppResult<()> {
-        <SqliteServices as MediaFileRepository>::update_media_file_source_signature(
+        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_source_signature(
             &self.inner,
             file_id,
             size_bytes,
@@ -161,7 +170,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
             )));
         }
 
-        <SqliteServices as MediaFileRepository>::update_media_file_path(
+        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_path(
             &self.inner,
             file_id,
             file_path,
@@ -170,25 +179,35 @@ impl MediaFileRepository for FailingMediaFileRepo {
     }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
-        <SqliteServices as MediaFileRepository>::mark_scan_failed(&self.inner, file_id, error).await
+        <SqliteLibraryStateStore as MediaFileRepository>::mark_scan_failed(
+            &self.inner,
+            file_id,
+            error,
+        )
+        .await
     }
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
-        <SqliteServices as MediaFileRepository>::get_media_file_by_id(&self.inner, file_id).await
-    }
-
-    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
-        <SqliteServices as MediaFileRepository>::get_media_file_by_path(&self.inner, file_path)
+        <SqliteLibraryStateStore as MediaFileRepository>::get_media_file_by_id(&self.inner, file_id)
             .await
     }
 
+    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        <SqliteLibraryStateStore as MediaFileRepository>::get_media_file_by_path(
+            &self.inner,
+            file_path,
+        )
+        .await
+    }
+
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
-        <SqliteServices as MediaFileRepository>::delete_media_file(&self.inner, file_id).await
+        <SqliteLibraryStateStore as MediaFileRepository>::delete_media_file(&self.inner, file_id)
+            .await
     }
 }
 
 struct FailingShowRepo {
-    inner: SqliteServices,
+    inner: SqliteCatalogStore,
     fail_collection_id: String,
     fail_path: String,
 }
@@ -196,67 +215,47 @@ struct FailingShowRepo {
 #[async_trait]
 impl ShowRepository for FailingShowRepo {
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
-        <SqliteServices as ShowRepository>::list_collections_for_title(&self.inner, title_id).await
+        self.inner.list_collections_for_title(title_id).await
     }
 
     async fn list_collections_for_titles(
         &self,
         title_ids: &[String],
     ) -> AppResult<HashMap<String, Vec<Collection>>> {
-        <SqliteServices as ShowRepository>::list_collections_for_titles(&self.inner, title_ids)
-            .await
+        self.inner.list_collections_for_titles(title_ids).await
     }
 
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
-        <SqliteServices as ShowRepository>::get_collection_by_id(&self.inner, collection_id).await
+        self.inner.get_collection_by_id(collection_id).await
     }
 
     async fn get_collection_by_ordered_path(
         &self,
         ordered_path: &str,
     ) -> AppResult<Option<Collection>> {
-        <SqliteServices as ShowRepository>::get_collection_by_ordered_path(
-            &self.inner,
-            ordered_path,
-        )
-        .await
+        self.inner
+            .get_collection_by_ordered_path(ordered_path)
+            .await
     }
 
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
-        <SqliteServices as ShowRepository>::create_collection(&self.inner, collection).await
+        self.inner.create_collection(collection).await
     }
 
     async fn update_collection(
         &self,
         collection_id: &str,
-        collection_type: Option<CollectionType>,
-        collection_index: Option<String>,
-        label: Option<String>,
-        ordered_path: Option<String>,
-        first_episode_number: Option<String>,
-        last_episode_number: Option<String>,
-        monitored: Option<bool>,
+        update: CollectionUpdate,
     ) -> AppResult<Collection> {
         if collection_id == self.fail_collection_id
-            && ordered_path.as_deref() == Some(self.fail_path.as_str())
+            && update.ordered_path.as_deref() == Some(self.fail_path.as_str())
         {
             return Err(AppError::Repository(format!(
                 "injected collection path failure for {collection_id}"
             )));
         }
 
-        <SqliteServices as ShowRepository>::update_collection(
-            &self.inner,
-            collection_id,
-            collection_type,
-            collection_index,
-            label,
-            ordered_path,
-            first_episode_number,
-            last_episode_number,
-            monitored,
-        )
-        .await
+        self.inner.update_collection(collection_id, update).await
     }
 
     async fn update_collection_interstitial_movie(
@@ -264,12 +263,9 @@ impl ShowRepository for FailingShowRepo {
         collection_id: &str,
         interstitial_movie: scryer_domain::InterstitialMovieMetadata,
     ) -> AppResult<Collection> {
-        <SqliteServices as ShowRepository>::update_collection_interstitial_movie(
-            &self.inner,
-            collection_id,
-            interstitial_movie,
-        )
-        .await
+        self.inner
+            .update_collection_interstitial_movie(collection_id, interstitial_movie)
+            .await
     }
 
     async fn update_collection_specials_movies(
@@ -277,12 +273,9 @@ impl ShowRepository for FailingShowRepo {
         collection_id: &str,
         specials_movies: Vec<scryer_domain::InterstitialMovieMetadata>,
     ) -> AppResult<Collection> {
-        <SqliteServices as ShowRepository>::update_collection_specials_movies(
-            &self.inner,
-            collection_id,
-            specials_movies,
-        )
-        .await
+        self.inner
+            .update_collection_specials_movies(collection_id, specials_movies)
+            .await
     }
 
     async fn update_interstitial_season_episode(
@@ -290,12 +283,9 @@ impl ShowRepository for FailingShowRepo {
         collection_id: &str,
         season_episode: Option<String>,
     ) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::update_interstitial_season_episode(
-            &self.inner,
-            collection_id,
-            season_episode,
-        )
-        .await
+        self.inner
+            .update_interstitial_season_episode(collection_id, season_episode)
+            .await
     }
 
     async fn set_collection_episodes_monitored(
@@ -303,83 +293,45 @@ impl ShowRepository for FailingShowRepo {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::set_collection_episodes_monitored(
-            &self.inner,
-            collection_id,
-            monitored,
-        )
-        .await
+        self.inner
+            .set_collection_episodes_monitored(collection_id, monitored)
+            .await
     }
 
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::delete_collection(&self.inner, collection_id).await
+        self.inner.delete_collection(collection_id).await
     }
 
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::delete_collections_for_title(&self.inner, title_id)
-            .await
+        self.inner.delete_collections_for_title(title_id).await
     }
 
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>> {
-        <SqliteServices as ShowRepository>::list_episodes_for_collection(&self.inner, collection_id)
-            .await
+        self.inner.list_episodes_for_collection(collection_id).await
     }
 
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
-        <SqliteServices as ShowRepository>::list_episodes_for_title(&self.inner, title_id).await
+        self.inner.list_episodes_for_title(title_id).await
     }
 
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
-        <SqliteServices as ShowRepository>::get_episode_by_id(&self.inner, episode_id).await
+        self.inner.get_episode_by_id(episode_id).await
     }
 
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
-        <SqliteServices as ShowRepository>::create_episode(&self.inner, episode).await
+        self.inner.create_episode(episode).await
     }
 
-    async fn update_episode(
-        &self,
-        episode_id: &str,
-        episode_type: Option<scryer_domain::EpisodeType>,
-        episode_number: Option<String>,
-        season_number: Option<String>,
-        episode_label: Option<String>,
-        title: Option<String>,
-        air_date: Option<String>,
-        duration_seconds: Option<i64>,
-        has_multi_audio: Option<bool>,
-        has_subtitle: Option<bool>,
-        monitored: Option<bool>,
-        collection_id: Option<String>,
-        overview: Option<String>,
-        tvdb_id: Option<String>,
-    ) -> AppResult<Episode> {
-        <SqliteServices as ShowRepository>::update_episode(
-            &self.inner,
-            episode_id,
-            episode_type,
-            episode_number,
-            season_number,
-            episode_label,
-            title,
-            air_date,
-            duration_seconds,
-            has_multi_audio,
-            has_subtitle,
-            monitored,
-            collection_id,
-            overview,
-            tvdb_id,
-        )
-        .await
+    async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
+        self.inner.update_episode(episode_id, update).await
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::delete_episode(&self.inner, episode_id).await
+        self.inner.delete_episode(episode_id).await
     }
 
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()> {
-        <SqliteServices as ShowRepository>::delete_episodes_for_title(&self.inner, title_id).await
+        self.inner.delete_episodes_for_title(title_id).await
     }
 
     async fn find_episode_by_title_and_numbers(
@@ -388,13 +340,9 @@ impl ShowRepository for FailingShowRepo {
         season_number: &str,
         episode_number: &str,
     ) -> AppResult<Option<Episode>> {
-        <SqliteServices as ShowRepository>::find_episode_by_title_and_numbers(
-            &self.inner,
-            title_id,
-            season_number,
-            episode_number,
-        )
-        .await
+        self.inner
+            .find_episode_by_title_and_numbers(title_id, season_number, episode_number)
+            .await
     }
 
     async fn find_episode_by_title_and_absolute_number(
@@ -402,12 +350,9 @@ impl ShowRepository for FailingShowRepo {
         title_id: &str,
         absolute_number: &str,
     ) -> AppResult<Option<Episode>> {
-        <SqliteServices as ShowRepository>::find_episode_by_title_and_absolute_number(
-            &self.inner,
-            title_id,
-            absolute_number,
-        )
-        .await
+        self.inner
+            .find_episode_by_title_and_absolute_number(title_id, absolute_number)
+            .await
     }
 
     async fn list_episodes_in_date_range(
@@ -415,28 +360,28 @@ impl ShowRepository for FailingShowRepo {
         start_inclusive: &str,
         end_inclusive: &str,
     ) -> AppResult<Vec<scryer_domain::CalendarEpisode>> {
-        <SqliteServices as ShowRepository>::list_episodes_in_date_range(
-            &self.inner,
-            start_inclusive,
-            end_inclusive,
-        )
-        .await
+        self.inner
+            .list_episodes_in_date_range(start_inclusive, end_inclusive)
+            .await
     }
 
     async fn list_primary_collection_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<scryer_application::PrimaryCollectionSummary>> {
-        <SqliteServices as ShowRepository>::list_primary_collection_summaries(
-            &self.inner,
-            title_ids,
-        )
-        .await
+        self.inner
+            .list_primary_collection_summaries(title_ids)
+            .await
     }
 }
 
 /// Helper to add a title and return the title ID.
 async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
+    let tvdb_id = match facet {
+        "movie" => "123456",
+        "tv" | "anime" => "345678",
+        _ => "123456",
+    };
     let body = gql(
         ctx,
         r#"mutation($input: AddTitleInput!) { addTitle(input: $input) { title { id name } } }"#,
@@ -446,7 +391,7 @@ async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
                 "facet": facet,
                 "monitored": true,
                 "tags": [],
-                "externalIds": [{ "source": "tvdb", "value": "999" }]
+                "externalIds": [{ "source": "tvdb", "value": tvdb_id }]
             }
         }),
     )
@@ -459,7 +404,7 @@ async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
 }
 
 async fn seed_typed_settings_definitions(ctx: &TestContext) {
-    ctx.db
+    ctx.settings_store
         .batch_ensure_setting_definitions(vec![
             SettingDefinitionSeed {
                 category: "subtitles".into(),
@@ -1059,7 +1004,11 @@ async fn create_series_scan_title(
         digital_release_date: None,
         folder_path: None,
     };
-    let title = ctx.db.create(title).await.expect("create series title");
+    let title = ctx
+        .catalog
+        .create(title)
+        .await
+        .expect("create series title");
 
     let collection = Collection {
         id: Id::new().0,
@@ -1078,7 +1027,7 @@ async fn create_series_scan_title(
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .db
+        .catalog
         .create_collection(collection)
         .await
         .expect("create season collection");
@@ -1131,7 +1080,7 @@ async fn create_catalog_title(
         folder_path: None,
     };
 
-    ctx.db.create(title).await.expect("create title")
+    ctx.catalog.create(title).await.expect("create title")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1161,7 +1110,7 @@ async fn create_series_monitoring_fixture(
     .await;
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1182,7 +1131,7 @@ async fn create_series_monitoring_fixture(
         .expect("create season collection");
 
     let episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1217,25 +1166,25 @@ async fn series_monitoring_summary(
     episode_id: &str,
 ) -> SeriesMonitoringSummary {
     let title = ctx
-        .db
+        .catalog
         .get_by_id(title_id)
         .await
         .expect("load title")
         .expect("title");
     let collection = ctx
-        .db
+        .catalog
         .get_collection_by_id(collection_id)
         .await
         .expect("load collection")
         .expect("collection");
     let episode = ctx
-        .db
+        .catalog
         .get_episode_by_id(episode_id)
         .await
         .expect("load episode")
         .expect("episode");
     let wanted_count = ctx
-        .db
+        .library_state
         .count_wanted_items(None, None, Some(title_id))
         .await
         .expect("count wanted items");
@@ -1291,7 +1240,7 @@ async fn create_series_scan_episode(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.db
+    ctx.catalog
         .create_episode(episode)
         .await
         .expect("create episode")
@@ -1317,7 +1266,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     .await;
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1338,7 +1287,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
         .expect("create season collection");
 
     let episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1372,7 +1321,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     std::fs::write(&file_path, b"anime-preview").expect("write preview file");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -1471,7 +1420,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
     std::fs::write(&file_path, b"anime-interstitial").expect("write interstitial file");
 
     let interstitial = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1516,7 +1465,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
         .expect("create interstitial collection");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -1582,7 +1531,9 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
 async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_collections() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    ctx.app.services.library_renamer = std::sync::Arc::new(FileSystemLibraryRenamer::new());
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
+    });
     let media_root = tempfile::tempdir().expect("media root tempdir");
 
     let title = create_catalog_title(
@@ -1599,7 +1550,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
     .await;
 
     let season_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1620,7 +1571,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("create season collection");
 
     let episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1651,7 +1602,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
     std::fs::write(&regular_file_path, b"anime-apply-episode").expect("write regular file");
 
     let regular_file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: regular_file_path.to_string_lossy().to_string(),
@@ -1673,7 +1624,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("write interstitial file");
 
     let interstitial_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1718,7 +1669,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("create interstitial collection");
 
     let interstitial_file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: interstitial_file_path.to_string_lossy().to_string(),
@@ -1759,25 +1710,25 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .to_string();
 
     let updated_regular_file = ctx
-        .db
+        .library_state
         .get_media_file_by_id(&regular_file_id)
         .await
         .expect("load updated regular media file")
         .expect("regular media file");
     let updated_interstitial_file = ctx
-        .db
+        .library_state
         .get_media_file_by_id(&interstitial_file_id)
         .await
         .expect("load updated interstitial media file")
         .expect("interstitial media file");
     let refreshed_season_collection = ctx
-        .db
+        .catalog
         .get_collection_by_id(&season_collection.id)
         .await
         .expect("load season collection")
         .expect("season collection");
     let refreshed_interstitial_collection = ctx
-        .db
+        .catalog
         .get_collection_by_id(&interstitial_collection.id)
         .await
         .expect("load interstitial collection")
@@ -1824,7 +1775,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
     std::fs::write(&file_path, b"movie-rename-preview").expect("write movie file");
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1844,7 +1795,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
         .await
         .expect("create movie collection");
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -1910,7 +1861,9 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
 async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    ctx.app.services.library_renamer = std::sync::Arc::new(FileSystemLibraryRenamer::new());
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
+    });
     let media_root = tempfile::tempdir().expect("media root tempdir");
 
     let title = create_catalog_title(
@@ -1932,7 +1885,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
     std::fs::write(&source_path, b"movie-apply-sync").expect("write movie file");
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1952,7 +1905,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         .await
         .expect("create movie collection");
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -1992,13 +1945,13 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         .to_string_lossy()
         .to_string();
     let updated_collection = ctx
-        .db
+        .catalog
         .get_collection_by_id(&collection.id)
         .await
         .expect("load movie collection")
         .expect("movie collection");
     let updated_file = ctx
-        .db
+        .library_state
         .get_media_file_by_id(&file_id)
         .await
         .expect("load movie media file")
@@ -2032,7 +1985,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     .await;
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2053,7 +2006,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         .expect("create season collection");
 
     let episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2088,7 +2041,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     let destination_path = season_dir.join("Tracked Collision Anime - S01E03 (012) - 1080p.mkv");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2115,7 +2068,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         true,
     )
     .await;
-    ctx.db
+    ctx.library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: owning_title.id,
             file_path: destination_path.to_string_lossy().to_string(),
@@ -2195,7 +2148,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
     std::fs::write(&source_path, b"tracked-movie-source").expect("write movie source");
     let destination_path = movie_dir.join("Tracked Collision Movie (2024) - 1080p.mkv");
 
-    ctx.db
+    ctx.catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2227,7 +2180,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
         true,
     )
     .await;
-    ctx.db
+    ctx.catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: owning_title.id,
@@ -2310,7 +2263,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     .await;
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2343,7 +2296,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     std::fs::write(&file_path, b"anime-range-preview").expect("write preview file");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -2432,7 +2385,7 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
     std::fs::write(&destination_path, b"untracked-movie-destination")
         .expect("write untracked destination");
 
-    ctx.db
+    ctx.catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2499,7 +2452,9 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
 async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    ctx.app.services.library_renamer = std::sync::Arc::new(FileSystemLibraryRenamer::new());
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
+    });
     let media_root = tempfile::tempdir().expect("media root tempdir");
 
     let title = create_catalog_title(
@@ -2516,7 +2471,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     .await;
 
     let collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2537,7 +2492,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         .expect("create season collection");
 
     let episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2571,7 +2526,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     std::fs::write(&source_path, b"anime-media-rollback").expect("write source file");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2586,9 +2541,11 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         .await
         .expect("link file to episode");
 
-    ctx.app.services.media_files = std::sync::Arc::new(FailingMediaFileRepo {
-        inner: ctx.db.clone(),
-        fail_file_id: file_id.clone(),
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_media_files(std::sync::Arc::new(FailingMediaFileRepo {
+            inner: ctx.library_state.clone(),
+            fail_file_id: file_id.clone(),
+        }))
     });
 
     let actor = ctx
@@ -2641,7 +2598,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     );
 
     let stored = ctx
-        .db
+        .library_state
         .get_media_file_by_id(&file_id)
         .await
         .expect("load media file")
@@ -2655,7 +2612,9 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
 async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_update_fails() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    ctx.app.services.library_renamer = std::sync::Arc::new(FileSystemLibraryRenamer::new());
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
+    });
     let media_root = tempfile::tempdir().expect("media root tempdir");
 
     let title = create_catalog_title(
@@ -2684,7 +2643,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .to_string();
 
     let interstitial = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2729,7 +2688,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .expect("create interstitial collection");
 
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2740,10 +2699,12 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .await
         .expect("insert interstitial media file");
 
-    ctx.app.services.shows = std::sync::Arc::new(FailingShowRepo {
-        inner: ctx.db.clone(),
-        fail_collection_id: interstitial.id.clone(),
-        fail_path: expected_path.clone(),
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_shows(std::sync::Arc::new(FailingShowRepo {
+            inner: SqliteCatalogStore::new(&ctx.db),
+            fail_collection_id: interstitial.id.clone(),
+            fail_path: expected_path.clone(),
+        }))
     });
 
     let actor = ctx
@@ -2786,13 +2747,13 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
     );
 
     let stored_file = ctx
-        .db
+        .library_state
         .get_media_file_by_id(&file_id)
         .await
         .expect("load interstitial media file")
         .expect("interstitial media file");
     let stored_collection = ctx
-        .db
+        .catalog
         .get_collection_by_id(&interstitial.id)
         .await
         .expect("load interstitial collection")
@@ -4103,7 +4064,7 @@ async fn graphql_traverses_core_graph_relationships() {
         digital_release_date: None,
         folder_path: None,
     };
-    let title = ctx.db.create(title).await.expect("create title");
+    let title = ctx.catalog.create(title).await.expect("create title");
 
     let collection = Collection {
         id: Id::new().0,
@@ -4122,7 +4083,7 @@ async fn graphql_traverses_core_graph_relationships() {
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .db
+        .catalog
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -4149,7 +4110,7 @@ async fn graphql_traverses_core_graph_relationships() {
         created_at: chrono::Utc::now(),
     };
     let episode = ctx
-        .db
+        .catalog
         .create_episode(episode)
         .await
         .expect("create episode");
@@ -4158,7 +4119,7 @@ async fn graphql_traverses_core_graph_relationships() {
         .path()
         .join("Graph.Traversal.Show.S01E01.1080p.WEB-DL.mkv");
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -4193,7 +4154,7 @@ async fn graphql_traverses_core_graph_relationships() {
         created_at: "2026-03-20T00:00:00Z".to_string(),
         updated_at: "2026-03-20T00:00:00Z".to_string(),
     };
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&wanted_item)
         .await
         .expect("seed wanted item");
@@ -5113,7 +5074,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
     .await;
 
     let season_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5134,7 +5095,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .expect("create season collection");
 
     let specials_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5155,7 +5116,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .expect("create specials collection");
 
     let season_zero_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5203,7 +5164,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             .path()
             .join(format!("Episode.Progress.Show.file-{index}.mkv"));
         let file_id = ctx
-            .db
+            .library_state
             .insert_media_file(&InsertMediaFileInput {
                 title_id: title.id.clone(),
                 file_path: file_path.to_string_lossy().to_string(),
@@ -5688,7 +5649,7 @@ async fn graphql_scan_title_library() {
     assert_eq!(files[0]["scanStatus"], "scan_failed");
 
     let persisted_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -5717,7 +5678,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         create_series_scan_title(&ctx, media_root.path(), "Attack on Titan", vec![]).await;
 
     let season_four = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5737,7 +5698,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         .await
         .expect("create season four collection");
     let episode_29 = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5762,7 +5723,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         .await
         .expect("create episode 29");
     let episode_30 = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5853,7 +5814,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
         create_series_scan_title(&ctx, media_root.path(), "Special Scan Show", vec![]).await;
 
     let specials_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5873,7 +5834,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
         .await
         .expect("create specials collection");
     let special_episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -5977,7 +5938,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
         created_at: chrono::Utc::now(),
     };
     let episode = ctx
-        .db
+        .catalog
         .create_episode(episode)
         .await
         .expect("create episode");
@@ -6056,7 +6017,7 @@ async fn graphql_scan_title_library_disables_season_folders_for_flat_layout() {
         .expect("scan title library");
 
     let persisted_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -6106,7 +6067,7 @@ async fn graphql_scan_title_library_preserves_existing_layout_when_ambiguous() {
         .expect("scan title library");
 
     let persisted_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -6197,22 +6158,6 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
         .mount(&ctx.smg_server)
         .await;
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let hydration_token = token.clone();
-    let hydration_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_hydration_loop(hydration_app, hydration_token).await;
-    });
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
-
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Test Show Name");
     std::fs::create_dir_all(&show_dir).expect("create show dir");
@@ -6253,7 +6198,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
     let mut hydrated_title = None;
     for _ in 0..20 {
         let titles = ctx
-            .db
+            .catalog
             .list(Some(MediaFacet::Series), None)
             .await
             .expect("list titles");
@@ -6265,14 +6210,18 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    token.cancel();
-
     let hydrated_title = hydrated_title.expect("title should hydrate");
     assert!(!hydrated_title.monitored);
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(None, None, Some(&hydrated_title.id), 10, 0)
+        .list_wanted_items(scryer_application::WantedItemsQuery {
+            status: None,
+            media_type: None,
+            title_id: Some(hydrated_title.id.clone()),
+            limit: 10,
+            offset: 0,
+        })
         .await
         .expect("list wanted items");
     assert!(wanted_items.is_empty());
@@ -6344,22 +6293,6 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
         .mount(&ctx.smg_server)
         .await;
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let hydration_token = token.clone();
-    let hydration_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_hydration_loop(hydration_app, hydration_token).await;
-    });
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
-
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Anime Scan [SubsPlease]");
     let season_dir = show_dir.join("Season 01");
@@ -6394,17 +6327,6 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
     .await;
     assert_no_errors(&update);
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
-
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let summary = ctx
         .app
@@ -6419,13 +6341,13 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         let titles = ctx
-            .db
+            .catalog
             .list(Some(MediaFacet::Anime), None)
             .await
             .expect("list anime titles");
         assert_eq!(titles.len(), 1);
         let files = ctx
-            .db
+            .library_state
             .list_media_files_for_title(&titles[0].id)
             .await
             .expect("list media files");
@@ -6438,8 +6360,6 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-
-    token.cancel();
 
     let hydrated_title = hydrated_title.expect("anime title should hydrate and relink files");
     assert_eq!(hydrated_title.name, "Anime Scan");
@@ -6496,7 +6416,7 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .db
+        .catalog
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -6536,17 +6456,6 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
     .await;
     assert_no_errors(&update);
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
-
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let summary = ctx
         .app
@@ -6555,12 +6464,12 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         .expect("scan anime library");
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.imported, 0);
-    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped, 0);
 
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         linked_files = ctx
-            .db
+            .library_state
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files");
@@ -6570,10 +6479,8 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 
-    token.cancel();
-
     let refreshed_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -6631,7 +6538,7 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .db
+        .catalog
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -6671,17 +6578,6 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
     .await;
     assert_no_errors(&update);
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
-
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let summary = ctx
         .app
@@ -6690,12 +6586,12 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
         .expect("scan series library");
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.imported, 0);
-    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped, 0);
 
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         linked_files = ctx
-            .db
+            .library_state
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files");
@@ -6706,7 +6602,7 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
     }
 
     let refreshed_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -6735,7 +6631,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
     seed_typed_settings_definitions(&ctx).await;
 
     let title = ctx
-        .db
+        .catalog
         .create(Title {
             id: Id::new().0,
             name: "Pending Series".to_string(),
@@ -6820,34 +6716,34 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
         .expect("scan series library");
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.imported, 0);
-    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped, 0);
 
     let refreshed_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
         .expect("title exists");
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    let episodes = ctx
+        .catalog
+        .list_episodes_for_title(&title.id)
+        .await
+        .expect("list episodes");
     assert_eq!(
         refreshed_title.folder_path.as_deref(),
         Some(show_dir.to_string_lossy().as_ref())
     );
     assert!(
-        ctx.app
-            .services
-            .library_scan_tracker
-            .list_active()
-            .await
-            .is_empty(),
+        ctx.app.active_library_scan_sessions().await.is_empty(),
         "scan session should complete when an existing unhydrated title is skipped",
     );
-    assert!(
-        ctx.db
-            .list_media_files_for_title(&title.id)
-            .await
-            .expect("list media files")
-            .is_empty()
-    );
+    assert!(media_files.is_empty());
+    assert!(episodes.is_empty());
 }
 
 #[tokio::test]
@@ -6898,7 +6794,7 @@ async fn library_series_scan_creates_unmonitored_titles() {
     assert_eq!(summary.skipped, 0);
 
     let titles = ctx
-        .db
+        .catalog
         .list(Some(MediaFacet::Series), None)
         .await
         .expect("list titles");
@@ -6959,13 +6855,10 @@ async fn library_series_scan_counts_new_title_files_before_post_hydration_scan_p
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.imported, 1);
 
-    let active_sessions = ctx.app.services.library_scan_tracker.list_active().await;
-    assert_eq!(active_sessions.len(), 1);
-    assert_eq!(active_sessions[0].facet, MediaFacet::Series);
-    assert!(active_sessions[0].file_total_known);
-    assert_eq!(active_sessions[0].file_progress.total, 1);
-    assert_eq!(active_sessions[0].file_progress.completed, 0);
-    assert_eq!(active_sessions[0].found_titles, 1);
+    assert!(
+        ctx.app.active_library_scan_sessions().await.is_empty(),
+        "scan session should complete before the synchronous scan call returns",
+    );
 }
 
 #[tokio::test]
@@ -7036,7 +6929,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     assert_eq!(summary.unmatched, 0);
 
     let refreshed_title = ctx
-        .db
+        .catalog
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -7044,7 +6937,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     assert_eq!(refreshed_title.name, "Existing Movie");
 
     let collections = ctx
-        .db
+        .catalog
         .list_collections_for_title(&title.id)
         .await
         .expect("list collections");
@@ -7055,7 +6948,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     );
 
     let media_files = ctx
-        .db
+        .library_state
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -7083,22 +6976,6 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
         .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
         .mount(&ctx.smg_server)
         .await;
-
-    let token = tokio_util::sync::CancellationToken::new();
-    let hydration_token = token.clone();
-    let hydration_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_hydration_loop(hydration_app, hydration_token).await;
-    });
-    let post_hydration_scan_token = token.clone();
-    let post_hydration_scan_app = ctx.app.clone();
-    tokio::spawn(async move {
-        scryer_application::start_background_post_hydration_title_scan_workers(
-            post_hydration_scan_app,
-            post_hydration_scan_token,
-        )
-        .await;
-    });
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let movie_dir = media_root.path().join("Test Movie Title (2024)");
@@ -7152,7 +7029,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     let mut hydrated_title = None;
     for _ in 0..20 {
         let titles = ctx
-            .db
+            .catalog
             .list(Some(MediaFacet::Movie), None)
             .await
             .expect("list titles");
@@ -7163,14 +7040,12 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    token.cancel();
-
     let hydrated_title = hydrated_title.expect("movie title should hydrate");
     assert_eq!(hydrated_title.name, "Test Movie Title");
     assert!(!hydrated_title.monitored);
 
     let collections = ctx
-        .db
+        .catalog
         .list_collections_for_title(&hydrated_title.id)
         .await
         .expect("list collections");
@@ -7182,7 +7057,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     );
 
     let media_files = ctx
-        .db
+        .library_state
         .list_media_files_for_title(&hydrated_title.id)
         .await
         .expect("list media files");
@@ -7195,7 +7070,13 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(None, None, Some(&hydrated_title.id), 10, 0)
+        .list_wanted_items(scryer_application::WantedItemsQuery {
+            status: None,
+            media_type: None,
+            title_id: Some(hydrated_title.id.clone()),
+            limit: 10,
+            offset: 0,
+        })
         .await
         .expect("list wanted items");
     assert!(wanted_items.is_empty());
@@ -7256,7 +7137,7 @@ async fn library_series_scan_handles_more_than_one_batch_of_titles() {
     assert_eq!(summary.unmatched, 0);
 
     let titles = ctx
-        .db
+        .catalog
         .list(Some(MediaFacet::Series), None)
         .await
         .expect("list titles");
@@ -7320,7 +7201,7 @@ async fn library_movie_scan_handles_more_than_one_batch_of_titles() {
     assert_eq!(summary.unmatched, 0);
 
     let titles = ctx
-        .db
+        .catalog
         .list(Some(MediaFacet::Movie), None)
         .await
         .expect("list titles");
@@ -7357,7 +7238,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     let ctx = TestContext::new().await;
     let id = add_test_title(&ctx, "Delete With Cleanup", "movie").await;
 
-    ctx.db
+    ctx.library_state
         .upsert_wanted_item(&WantedItem {
             id: Id::new().0,
             title_id: id.clone(),
@@ -7402,15 +7283,16 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed pending release");
-    ctx.db
-        .record_download_submission(
-            id.clone(),
-            "movie".to_string(),
-            "sabnzbd".to_string(),
-            "queue-delete".to_string(),
-            Some("Delete With Cleanup".to_string()),
-            None,
-        )
+    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    workflow_store
+        .record_submission(scryer_application::DownloadSubmission {
+            title_id: id.clone(),
+            facet: "movie".to_string(),
+            download_client_type: "sabnzbd".to_string(),
+            download_client_item_id: "queue-delete".to_string(),
+            source_title: Some("Delete With Cleanup".to_string()),
+            collection_id: None,
+        })
         .await
         .expect("seed download submission");
 
@@ -7439,8 +7321,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             .all(|entry| entry.title_id != id)
     );
     assert!(
-        ctx.db
-            .list_download_submissions_for_title(&id)
+        workflow_store
+            .list_for_title(&id)
             .await
             .expect("download submissions")
             .is_empty()
@@ -7995,7 +7877,7 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
     .await;
 
     let old_collection = ctx
-        .db
+        .catalog
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -8016,7 +7898,7 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
         .expect("create old collection");
 
     let old_episode = ctx
-        .db
+        .catalog
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -8046,7 +7928,7 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
     let file_path = season_dir.join("Broken.Series.Match.S01E01.1080p.WEB-DL.mkv");
     std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
     let file_id = ctx
-        .db
+        .library_state
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),

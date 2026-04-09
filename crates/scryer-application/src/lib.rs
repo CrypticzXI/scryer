@@ -1,97 +1,15 @@
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::module_inception, clippy::too_many_arguments)]
 
-#[path = "acquisition/decision_helpers.rs"]
-mod acquisition_decision_helpers;
-#[path = "acquisition/policy.rs"]
-mod acquisition_policy;
-#[path = "acquisition/search_queries.rs"]
-mod acquisition_search_queries;
-#[path = "acquisition/acquisition.rs"]
-mod acquisition_workflow;
-#[path = "events/activity.rs"]
-mod activity;
-#[path = "events/activity_api.rs"]
-mod app_usecase_activity;
-#[path = "security/admin.rs"]
-mod app_usecase_admin;
-#[path = "security/backup.rs"]
-mod app_usecase_backup;
-#[path = "catalog/discovery.rs"]
-mod app_usecase_discovery;
-#[path = "health/health.rs"]
-mod app_usecase_health;
-#[path = "jobs/housekeeping.rs"]
-mod app_usecase_housekeeping;
-#[path = "integration/indexer_test.rs"]
-mod app_usecase_indexer_test;
-#[path = "integration/integration.rs"]
-mod app_usecase_integration;
-#[path = "jobs/jobs.rs"]
-mod app_usecase_jobs;
-#[path = "notifications/notifications.rs"]
-mod app_usecase_notifications;
-#[path = "acquisition/pending.rs"]
-mod app_usecase_pending;
-#[path = "plugins/plugins.rs"]
-mod app_usecase_plugins;
-#[path = "import/post_processing.rs"]
-pub mod app_usecase_post_processing;
-#[path = "acquisition/rss.rs"]
-pub(crate) mod app_usecase_rss;
-#[path = "rules/rules.rs"]
-mod app_usecase_rules;
-#[path = "security/security.rs"]
-mod app_usecase_security;
-#[path = "settings/settings.rs"]
-mod app_usecase_settings;
-#[path = "subtitles/orchestration.rs"]
-mod app_usecase_subtitles;
-#[path = "catalog/title_images.rs"]
-mod app_usecase_title_images;
-#[path = "import/archive_extractor.rs"]
-pub(crate) mod archive_extractor;
-#[path = "media/audio_requirements.rs"]
-mod audio_requirements;
-#[path = "catalog/helpers.rs"]
-mod catalog_helpers;
-#[path = "catalog/catalog.rs"]
-mod catalog_workflow;
-#[path = "import/completed_download.rs"]
-pub mod completed_download_handler;
+mod acquisition;
+mod catalog;
 mod contracts;
-#[path = "acquisition/delay_profile.rs"]
-mod delay_profile;
-#[path = "events/domain_events.rs"]
-mod domain_events;
-#[path = "events/event_views.rs"]
-mod event_views;
-#[path = "catalog/facets/handler.rs"]
-pub(crate) mod facet_handler;
-#[path = "catalog/facets/movie.rs"]
-mod facet_movie;
-#[path = "catalog/facets/registry.rs"]
-mod facet_registry;
-#[path = "catalog/facets/series.rs"]
-mod facet_series;
-#[path = "import/failed_download.rs"]
-pub mod failed_download_handler;
-#[path = "library/filesystem_walk.rs"]
-pub mod filesystem_walk;
+mod events;
+mod health;
 mod helpers;
-#[path = "import/checks.rs"]
-pub(crate) mod import_checks;
-#[path = "import/parameters.rs"]
-mod import_parameters;
-#[path = "import/title_resolution.rs"]
-mod import_title_resolution;
-#[path = "import/import.rs"]
-mod import_workflow;
-#[path = "jobs/definitions.rs"]
+mod import;
+mod integration;
 mod jobs;
-#[path = "library/discovery.rs"]
-mod library_discovery;
-#[path = "library/rename.rs"]
-mod library_rename;
+mod library;
 #[path = "library/scan/scanner.rs"]
 mod library_scan;
 #[path = "library/scan/coordinator.rs"]
@@ -106,52 +24,62 @@ mod library_scan_progress;
 mod library_scan_titles;
 #[path = "library/scan/unmatched.rs"]
 mod library_scan_unmatched;
-#[path = "library/library.rs"]
-pub(crate) mod library_workflow;
-#[path = "plugins/managed_rules.rs"]
-pub mod managed_rules;
-#[path = "media/analyzer.rs"]
-mod media_analyzer;
-#[path = "media/language.rs"]
-mod media_language;
-#[path = "media/language_data.rs"]
-mod media_language_data;
-#[path = "library/nfo.rs"]
-pub(crate) mod nfo;
-pub(crate) mod normalize;
-#[path = "notifications/dispatcher.rs"]
-mod notification_dispatcher;
+mod media;
+mod notifications;
 mod null_repositories;
+mod plugins;
 mod ports;
-#[path = "import/post_download_gate.rs"]
-mod post_download_gate;
-#[path = "quality/profile.rs"]
-mod quality_profile;
-#[path = "library/recycle_bin.rs"]
-pub mod recycle_bin;
-#[path = "quality/release_dedup.rs"]
-pub mod release_dedup;
-#[path = "quality/release_group_db.rs"]
-mod release_group_db;
-#[path = "quality/release_parser.rs"]
-mod release_parser;
-#[path = "quality/scoring_weights.rs"]
-mod scoring_weights;
+mod quality;
+mod rules;
+mod security;
 mod services;
-#[path = "settings/keys.rs"]
-mod settings_keys;
+mod settings;
 pub mod subtitles;
-#[path = "library/title_matching.rs"]
-mod title_matching;
-#[path = "integration/tracked_downloads.rs"]
-pub mod tracked_downloads;
+pub mod testing;
 mod types;
-#[path = "import/upgrade.rs"]
-pub mod upgrade;
-#[path = "library/user_delete.rs"]
-mod user_delete;
-#[path = "rules/user_rule_input.rs"]
-mod user_rule_input;
+
+pub(crate) use acquisition::acquisition as acquisition_workflow;
+pub(crate) use acquisition::decision_helpers as acquisition_decision_helpers;
+pub(crate) use acquisition::delay_profile;
+pub(crate) use acquisition::policy as acquisition_policy;
+pub(crate) use acquisition::rss as app_usecase_rss;
+pub(crate) use acquisition::search_queries as acquisition_search_queries;
+pub(crate) use catalog::catalog as catalog_workflow;
+pub(crate) use catalog::discovery as app_usecase_discovery;
+pub(crate) use catalog::facets::handler as facet_handler;
+pub(crate) use catalog::helpers as catalog_helpers;
+pub(crate) use events::activity;
+pub(crate) use events::domain_events;
+pub(crate) use events::event_views;
+pub(crate) use import::archive_extractor;
+pub(crate) use import::checks as import_checks;
+pub(crate) use import::import as import_workflow;
+pub(crate) use import::parameters as import_parameters;
+pub(crate) use import::post_download_gate;
+pub(crate) use import::title_resolution as import_title_resolution;
+pub(crate) use integration::integration as app_usecase_integration;
+pub(crate) use library::discovery as library_discovery;
+pub(crate) use library::nfo;
+pub(crate) use library::rename as library_rename;
+pub(crate) use library::title_matching;
+pub(crate) use media::audio_requirements;
+pub(crate) use media::language_data as media_language_data;
+pub(crate) use quality::profile as quality_profile;
+pub(crate) use quality::release_group_db;
+pub(crate) use quality::release_parser;
+pub(crate) use quality::scoring_weights;
+pub(crate) use rules::user_rule_input;
+
+pub use import::completed_download as completed_download_handler;
+pub(crate) mod normalize;
+pub use import::failed_download as failed_download_handler;
+pub use import::post_processing as app_usecase_post_processing;
+pub use import::upgrade;
+pub use integration::tracked_downloads;
+pub use library::filesystem_walk;
+pub use library::recycle_bin;
+pub use plugins::managed_rules;
+pub use quality::release_dedup;
 
 use chrono::{DateTime, Duration, Utc};
 use rand_core::OsRng;
@@ -172,38 +100,38 @@ use tokio::sync::{Mutex, OnceCell, RwLock, Semaphore, broadcast};
 pub type AppResult<T> = Result<T, AppError>;
 
 use crate::quality_profile::resolve_profile_id_for_title;
-pub use acquisition_policy::AcquisitionThresholds;
+pub use acquisition::delay_profile::{
+    DELAY_PROFILE_CATALOG_KEY, DelayDecision, DelayProfile, PreferredProtocol, is_usenet_source,
+    parse_delay_profile_catalog, resolve_delay_decision, resolve_delay_profile,
+    validate_delay_profile_catalog,
+};
+pub use acquisition::policy::AcquisitionThresholds;
 pub use acquisition_workflow::start_background_acquisition_poller;
-pub use activity::{ActivityChannel, ActivityEvent, ActivityKind, ActivitySeverity};
-pub use app_usecase_backup::BackupService;
 pub use app_usecase_integration::start_download_queue_poller;
-pub use app_usecase_jobs::start_background_library_refresh_loop;
-pub use app_usecase_plugins::{RegistryPlugin, RulePackRegistryEntry, RulePackTemplate};
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
-pub use app_usecase_settings::{AcquisitionSettings, SubtitleSettings, UpdateSubtitleSettings};
-pub use app_usecase_subtitles::{spawn_subtitle_search_for_file, start_background_subtitle_poller};
-pub use app_usecase_title_images::start_background_banner_loop;
-pub use app_usecase_title_images::start_background_fanart_loop;
-pub use app_usecase_title_images::start_background_poster_loop;
 pub(crate) use audio_requirements::{
     missing_required_audio_languages, normalize_required_audio_languages,
     release_audio_language_hints,
 };
-pub use catalog_workflow::{
-    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+pub use catalog::facets::handler::{
+    FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
 };
+pub use catalog::facets::movie::MovieFacetHandler;
+pub use catalog::facets::registry::FacetRegistry;
+pub use catalog::facets::series::SeriesFacetHandler;
+pub use catalog::title_images::start_background_banner_loop;
+pub use catalog::title_images::start_background_fanart_loop;
+pub use catalog::title_images::start_background_poster_loop;
 pub use contracts::{
-    AudioStreamDetail, DownloadClientAddRequest, DownloadClientMarkImportedRequest,
-    DownloadClientStatus, DownloadSubmission, ImportArtifact, IndexerRoutingEntry,
-    IndexerRoutingPlan, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
-    NewBlocklistEntry, NewTitleHistoryEvent, PendingStagedNzb, SearchMode, StagedNzbRef,
-    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
-};
-pub use delay_profile::{
-    DELAY_PROFILE_CATALOG_KEY, DelayDecision, DelayProfile, PreferredProtocol, is_usenet_source,
-    parse_delay_profile_catalog, resolve_delay_decision, resolve_delay_profile,
-    validate_delay_profile_catalog,
+    AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
+    DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
+    DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate,
+    IndexerEpisodeSearchRequest, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSearchRequest,
+    IndexerSeasonSearchRequest, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
+    NewBlocklistEntry, NewTitleHistoryEvent, NotificationScopeIdUpdate, PendingStagedNzb,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubtitleStreamDetail,
+    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,
@@ -211,41 +139,49 @@ pub use event_views::{
     replay_download_queue_state, replay_job_next_runs, replay_library_scan_state,
     sorted_download_queue_items,
 };
-pub use facet_handler::{
-    FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
-};
-pub use facet_movie::MovieFacetHandler;
-pub use facet_registry::FacetRegistry;
-pub use facet_series::SeriesFacetHandler;
+pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, ActivitySeverity};
 pub use import_workflow::{
     ManualImportFileMapping, ManualImportFilePreview, ManualImportFileResult, ManualImportPreview,
     execute_manual_import, import_completed_download, preview_manual_import, retry_failed_import,
     try_import_completed_downloads,
 };
-pub use library_rename::{
+pub use jobs::jobs::start_background_library_refresh_loop;
+pub use library::rename::{
     LibraryRenamer, NullLibraryRenamer, RenameApplyItemResult, RenameApplyResult,
     RenameApplyStatus, RenameCollisionPolicy, RenameMissingMetadataPolicy, RenamePlan,
     RenamePlanItem, RenameWriteAction, build_rename_plan_fingerprint, render_rename_template,
 };
-pub use media_language::{
+pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
     normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
+};
+pub use plugins::plugins::{RegistryPlugin, RulePackRegistryEntry, RulePackTemplate};
+pub use security::backup::BackupService;
+pub use settings::settings::{
+    AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,
+    FacetScoringPersonaSelection, IndexerRoutingSettingsEntry, LibraryPathsSettings, MediaSettings,
+    QualityProfileSelection, QualityProfileSettings, SaveQualityProfileSettings, ServiceSettings,
+    SubtitleSettings, UpdateFacetScoringPersonaSelection, UpdateLibraryPaths, UpdateMediaSettings,
+    UpdateQualityProfileSelection, UpdateServiceSettings, UpdateSubtitleSettings,
+};
+pub use subtitles::orchestration::{
+    spawn_subtitle_search_for_file, start_background_subtitle_poller,
 };
 
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 4;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
 pub(crate) use helpers::{
     INDEXER_PROVIDER_NZBGEEK, INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES,
-    SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM, normalize_release_attempt_hint,
-    normalize_release_attempt_title, normalize_release_password, normalize_show_text_opt,
-    normalize_tags, parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, statvfs_path,
-    to_hex,
+    normalize_release_attempt_hint, normalize_release_attempt_title, normalize_release_password,
+    normalize_show_text_opt, normalize_tags, parsed_episode_lookup_season, require, sanitize_ids,
+    sha256_hex, statvfs_path, to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread};
-pub use jobs::{
+pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
 };
+pub use library::user_delete::DeletePreview;
 pub use library_scan::{
     AnibridgeSourceMapping, AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkMetadataResult,
     EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,
@@ -257,8 +193,8 @@ pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,
     LibraryScanTracker,
 };
-pub use media_analyzer::NativeMediaAnalyzer;
-pub use notification_dispatcher::start_notification_dispatcher;
+pub use media::analyzer::NativeMediaAnalyzer;
+pub use notifications::dispatcher::start_notification_dispatcher;
 pub use null_repositories::{
     NullAcquisitionStateRepository, NullBlocklistRepository, NullDomainEventRepository,
     NullDownloadSubmissionRepository, NullFileImporter, NullHousekeepingRepository,
@@ -269,6 +205,7 @@ pub use null_repositories::{
     NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
     NullStagedNzbStore, NullSystemInfoProvider, NullTitleHistoryRepository,
     NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
+    NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, DomainEventRepository, DownloadClient,
@@ -282,7 +219,14 @@ pub use ports::{
     ReleaseAttemptRepository, RuleSetRepository, SettingsRepository, ShowRepository,
     StagedNzbStore, SubtitleDownloadRepository, SystemInfoProvider, TitleHistoryRepository,
     TitleImageProcessor, TitleImageRepository, TitleRepository, UserRepository,
-    WantedItemRepository,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+};
+pub use quality::release_parser::{
+    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
+    parse_release_metadata,
+};
+pub use quality::scoring_weights::{
+    ScoringOverrides, ScoringPersona, ScoringWeights, build_weights, build_weights_for_category,
 };
 pub use quality_profile::{
     BLOCK_SCORE, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
@@ -291,17 +235,32 @@ pub use quality_profile::{
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
-pub use release_parser::{
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    parse_release_metadata,
-};
-pub use scoring_weights::{
-    ScoringOverrides, ScoringPersona, ScoringWeights, build_weights, build_weights_for_category,
-};
-pub use services::{AppServices, AppUseCase};
-pub use settings_keys::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+pub use services::{AppServices, AppServicesBuilder, AppUseCase};
+pub use settings::keys::{
+    ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
+    ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_FILLER_POLICY,
+    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
+    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
+    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
+    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY,
+    NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
+    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY,
+    RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY, RENAME_COLLISION_POLICY_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_KEY, RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
+    RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+    RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,
+    SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
+    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY,
 };
 pub(crate) use types::JwtClaims;
 pub use types::{
@@ -316,7 +275,6 @@ pub use types::{
     TitleReleaseBlocklistEntry, WantedCompleteTransition, WantedGrabTransition, WantedItem,
     WantedPauseTransition, WantedSearchTransition, WantedStatus,
 };
-pub use user_delete::DeletePreview;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {

@@ -446,6 +446,24 @@ where
     Ok(chunk)
 }
 
+fn count_candidates_with_metadata_lookup<T, F>(
+    candidates: &[T],
+    mut candidate_keys: F,
+) -> AppResult<usize>
+where
+    F: FnMut(&T) -> AppResult<Vec<BatchMetadataSearchKey>>,
+{
+    let mut count = 0usize;
+
+    for candidate in candidates {
+        if !candidate_keys(candidate)?.is_empty() {
+            count = count.saturating_add(1);
+        }
+    }
+
+    Ok(count)
+}
+
 pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateKeys>(
     metadata_gateway: Arc<dyn MetadataGateway>,
     coordinator: &LibraryScanCoordinator,
@@ -466,6 +484,12 @@ where
         return Ok((Vec::new(), MetadataSearchResults::new()));
     }
 
+    if batch_lookup_stats.logical_lookups > 0 {
+        coordinator
+            .add_metadata_total(batch_lookup_stats.logical_lookups)
+            .await;
+        coordinator.mark_metadata_total_known().await;
+    }
     coordinator.publish_progress().await;
 
     let mut pending_candidates = unresolved_candidates;
@@ -481,6 +505,14 @@ where
         pending_candidates = still_pending;
 
         if !ready_candidates.is_empty() {
+            let ready_lookup_count =
+                count_candidates_with_metadata_lookup(&ready_candidates, candidate_keys)?;
+            if ready_lookup_count > 0 {
+                coordinator
+                    .mark_metadata_completed(ready_lookup_count)
+                    .await;
+                coordinator.publish_progress().await;
+            }
             ready_batches.push(ready_candidates);
             continue;
         }
@@ -884,10 +916,12 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
+    type CountingSearchResults =
+        Arc<Mutex<HashMap<(String, String), Result<Vec<MetadataSearchItem>, String>>>>;
+
     #[derive(Clone, Default)]
     struct CountingMetadataGateway {
-        search_results:
-            Arc<Mutex<HashMap<(String, String), Result<Vec<MetadataSearchItem>, String>>>>,
+        search_results: CountingSearchResults,
         search_calls: Arc<Mutex<Vec<(String, String)>>>,
     }
 

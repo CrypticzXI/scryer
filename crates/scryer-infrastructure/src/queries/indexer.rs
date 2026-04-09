@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use scryer_application::{AppError, AppResult};
+use scryer_application::{AppError, AppResult, IndexerConfigUpdate};
 use scryer_domain::IndexerConfig;
 use sqlx::{Row, SqlitePool};
 
@@ -240,52 +240,41 @@ pub(crate) async fn create_indexer_config_query(
     Ok(config.clone())
 }
 
-#[expect(clippy::too_many_arguments)]
 pub(crate) async fn update_indexer_config_query(
     pool: &SqlitePool,
-    id: &str,
-    name: Option<String>,
-    provider_type: Option<String>,
-    base_url: Option<String>,
-    api_key_encrypted: Option<String>,
-    rate_limit_seconds: Option<i64>,
-    rate_limit_burst: Option<i64>,
-    is_enabled: Option<bool>,
-    enable_interactive_search: Option<bool>,
-    enable_auto_search: Option<bool>,
-    config_json: Option<String>,
+    update: &IndexerConfigUpdate,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<IndexerConfig> {
     let mut assignments = vec!["updated_at = ?".to_string()];
 
-    if name.is_some() {
+    if update.name.is_some() {
         assignments.push("name = ?".to_string());
     }
-    if provider_type.is_some() {
+    if update.provider_type.is_some() {
         assignments.push("provider_type = ?".to_string());
     }
-    if base_url.is_some() {
+    if update.base_url.is_some() {
         assignments.push("base_url = ?".to_string());
     }
-    if api_key_encrypted.is_some() {
+    if update.api_key_encrypted.is_some() {
         assignments.push("api_key_encrypted = ?".to_string());
     }
-    if rate_limit_seconds.is_some() {
+    if update.rate_limit_seconds.is_some() {
         assignments.push("rate_limit_seconds = ?".to_string());
     }
-    if rate_limit_burst.is_some() {
+    if update.rate_limit_burst.is_some() {
         assignments.push("rate_limit_burst = ?".to_string());
     }
-    if is_enabled.is_some() {
+    if update.is_enabled.is_some() {
         assignments.push("is_enabled = ?".to_string());
     }
-    if enable_interactive_search.is_some() {
+    if update.enable_interactive_search.is_some() {
         assignments.push("enable_interactive_search = ?".to_string());
     }
-    if enable_auto_search.is_some() {
+    if update.enable_auto_search.is_some() {
         assignments.push("enable_auto_search = ?".to_string());
     }
-    if config_json.is_some() {
+    if update.config_json.is_some() {
         assignments.push("config_json = ?".to_string());
     }
 
@@ -302,45 +291,45 @@ pub(crate) async fn update_indexer_config_query(
     let mut statement = sqlx::query(&sql);
     statement = statement.bind(Utc::now().to_rfc3339());
 
-    if let Some(name) = name {
+    if let Some(name) = update.name.as_ref() {
         statement = statement.bind(name);
     }
-    if let Some(provider_type) = provider_type {
+    if let Some(provider_type) = update.provider_type.as_ref() {
         statement = statement.bind(provider_type);
     }
-    if let Some(base_url) = base_url {
+    if let Some(base_url) = update.base_url.as_ref() {
         statement = statement.bind(base_url);
     }
-    if let Some(api_key) = api_key_encrypted {
-        let stored = maybe_encrypt_api_key(encryption_key, Some(&api_key))?;
+    if let Some(api_key) = update.api_key_encrypted.as_ref() {
+        let stored = maybe_encrypt_api_key(encryption_key, Some(api_key))?;
         statement = statement.bind(stored);
     }
-    if let Some(rate_limit_seconds) = rate_limit_seconds {
+    if let Some(rate_limit_seconds) = update.rate_limit_seconds {
         statement = statement.bind(rate_limit_seconds);
     }
-    if let Some(rate_limit_burst) = rate_limit_burst {
+    if let Some(rate_limit_burst) = update.rate_limit_burst {
         statement = statement.bind(rate_limit_burst);
     }
-    if let Some(is_enabled) = is_enabled {
+    if let Some(is_enabled) = update.is_enabled {
         statement = statement.bind(if is_enabled { 1_i64 } else { 0_i64 });
     }
-    if let Some(enable_interactive_search) = enable_interactive_search {
+    if let Some(enable_interactive_search) = update.enable_interactive_search {
         statement = statement.bind(if enable_interactive_search {
             1_i64
         } else {
             0_i64
         });
     }
-    if let Some(enable_auto_search) = enable_auto_search {
+    if let Some(enable_auto_search) = update.enable_auto_search {
         statement = statement.bind(if enable_auto_search { 1_i64 } else { 0_i64 });
     }
-    if let Some(config_json) = config_json {
+    if let Some(config_json) = update.config_json.as_ref() {
         let stored =
-            maybe_encrypt_config_json(encryption_key, Some(&config_json))?.unwrap_or_default();
+            maybe_encrypt_config_json(encryption_key, Some(config_json))?.unwrap_or_default();
         statement = statement.bind(stored);
     }
 
-    statement = statement.bind(id);
+    statement = statement.bind(&update.id);
 
     let result = statement
         .execute(pool)
@@ -348,12 +337,12 @@ pub(crate) async fn update_indexer_config_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("indexer config {}", id)));
+        return Err(AppError::NotFound(format!("indexer config {}", update.id)));
     }
 
-    get_indexer_config_query(pool, id, encryption_key)
+    get_indexer_config_query(pool, &update.id, encryption_key)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("indexer config {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("indexer config {}", update.id)))
 }
 
 pub(crate) async fn touch_indexer_last_error_query(

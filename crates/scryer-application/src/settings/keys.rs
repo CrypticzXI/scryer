@@ -1,4 +1,80 @@
+//! Shared settings scopes, keys, and defaults used across application,
+//! interface, and bootstrap layers.
+
+pub const SETTINGS_SCOPE_SYSTEM: &str = "system";
+pub const SETTINGS_SCOPE_MEDIA: &str = "media";
+pub const SETTINGS_SOURCE_TYPED_GRAPHQL: &str = "typed_graphql";
+
 pub const SCORING_PERSONA_KEY: &str = "quality.scoring_persona";
 pub const REQUIRED_AUDIO_LANGUAGES_KEY: &str = "audio.required_languages";
 pub const TITLE_REQUIRED_AUDIO_OVERRIDE_KEY: &str = "audio.required_languages.title_override";
 pub const AUDIO_PERSONA_MIGRATION_SENTINEL_KEY: &str = "audio_persona_settings_migrated";
+
+pub const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
+pub const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
+pub const DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY: &str = "download_client.default_category";
+pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
+pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
+pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
+pub const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
+
+pub const MOVIES_PATH_KEY: &str = "movies.path";
+pub const SERIES_PATH_KEY: &str = "series.path";
+pub const ANIME_PATH_KEY: &str = "anime.path";
+pub const MOVIES_ROOT_FOLDERS_KEY: &str = "movies.root_folders";
+pub const SERIES_ROOT_FOLDERS_KEY: &str = "series.root_folders";
+pub const ANIME_ROOT_FOLDERS_KEY: &str = "anime.root_folders";
+
+pub const TLS_CERT_PATH_KEY: &str = "tls.cert_path";
+pub const TLS_KEY_PATH_KEY: &str = "tls.key_path";
+
+pub const RENAME_TEMPLATE_KEY: &str = "rename.template";
+pub const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY: &str = "rename.template.movie.global";
+pub const RENAME_TEMPLATE_SERIES_GLOBAL_KEY: &str = "rename.template.series.global";
+pub const RENAME_TEMPLATE_ANIME_GLOBAL_KEY: &str = "rename.template.anime.global";
+
+pub const RENAME_COLLISION_POLICY_KEY: &str = "rename.collision_policy";
+pub const RENAME_COLLISION_POLICY_GLOBAL_KEY: &str = "rename.collision_policy.global";
+pub const RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY: &str = "rename.collision_policy.movie.global";
+pub const RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY: &str = "rename.collision_policy.series.global";
+pub const RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY: &str = "rename.collision_policy.anime.global";
+
+pub const RENAME_MISSING_METADATA_POLICY_KEY: &str = "rename.missing_metadata_policy";
+pub const RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY: &str = "rename.missing_metadata_policy.global";
+pub const RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY: &str =
+    "rename.missing_metadata_policy.movie.global";
+pub const RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY: &str =
+    "rename.missing_metadata_policy.series.global";
+pub const RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY: &str =
+    "rename.missing_metadata_policy.anime.global";
+
+pub const ANIME_FILLER_POLICY_KEY: &str = "anime.filler_policy";
+pub const ANIME_RECAP_POLICY_KEY: &str = "anime.recap_policy";
+pub const ANIME_MONITOR_SPECIALS_KEY: &str = "anime.monitor_specials";
+pub const ANIME_INTER_SEASON_MOVIES_KEY: &str = "anime.inter_season_movies";
+pub const ANIME_MONITOR_FILLER_MOVIES_KEY: &str = "anime.monitor_filler_movies";
+
+pub const NFO_WRITE_ON_IMPORT_MOVIE_KEY: &str = "nfo.write_on_import.movie";
+pub const NFO_WRITE_ON_IMPORT_SERIES_KEY: &str = "nfo.write_on_import.series";
+pub const NFO_WRITE_ON_IMPORT_ANIME_KEY: &str = "nfo.write_on_import.anime";
+pub const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY: &str = "plexmatch.write_on_import.series";
+pub const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY: &str = "plexmatch.write_on_import.anime";
+
+pub const POST_PROCESSING_SCRIPT_MOVIE_KEY: &str = "post_processing.script.movie";
+pub const POST_PROCESSING_SCRIPT_SERIES_KEY: &str = "post_processing.script.series";
+pub const POST_PROCESSING_SCRIPT_ANIME_KEY: &str = "post_processing.script.anime";
+pub const POST_PROCESSING_TIMEOUT_KEY: &str = "post_processing.timeout_secs";
+pub const SETUP_COMPLETE_KEY: &str = "setup.complete";
+
+pub const DEFAULT_MOVIE_LIBRARY_PATH: &str = "/data/movies";
+pub const DEFAULT_SERIES_LIBRARY_PATH: &str = "/data/series";
+pub const DEFAULT_ANIME_LIBRARY_PATH: &str = "/data/anime";
+pub const DEFAULT_RENAME_TEMPLATE_MOVIE: &str = "{title} ({year}) - {quality}.{ext}";
+pub const DEFAULT_RENAME_TEMPLATE_SERIES: &str =
+    "{title} - S{season:2}E{episode:2} - {quality}.{ext}";
+pub const DEFAULT_RENAME_TEMPLATE_ANIME: &str =
+    "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";
+pub const DEFAULT_RENAME_COLLISION_POLICY: &str = "skip";
+pub const DEFAULT_RENAME_MISSING_METADATA_POLICY: &str = "fallback_title";
+pub const DEFAULT_FILLER_POLICY: &str = "download_all";
+pub const DEFAULT_RECAP_POLICY: &str = "download_all";

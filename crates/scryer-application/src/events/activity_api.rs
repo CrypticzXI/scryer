@@ -29,7 +29,7 @@ async fn load_all_domain_events(
     loop {
         filter.after_sequence = Some(after_sequence);
         filter.limit = 500;
-        let batch = app.services.domain_events.list(&filter).await?;
+        let batch = app.services.events.domain_events.list(&filter).await?;
         if batch.is_empty() {
             break;
         }
@@ -69,7 +69,7 @@ where
         filter.before_sequence = before_sequence;
         filter.limit = 500;
 
-        let batch = app.services.domain_events.list(&filter).await?;
+        let batch = app.services.events.domain_events.list(&filter).await?;
         if batch.is_empty() {
             break;
         }
@@ -132,6 +132,7 @@ async fn load_library_scan_projection_events_after(
     after_sequence: i64,
 ) -> AppResult<Vec<DomainEvent>> {
     app.services
+        .events
         .domain_events
         .list(&DomainEventFilter {
             event_types: Some(LIBRARY_SCAN_DOMAIN_EVENT_TYPES.to_vec()),
@@ -143,6 +144,7 @@ async fn load_library_scan_projection_events_after(
 }
 
 const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
+    DomainEventType::TitleRematched,
     DomainEventType::ReleaseGrabbed,
     DomainEventType::ImportCompleted,
     DomainEventType::ImportRejected,
@@ -193,7 +195,12 @@ async fn project_title_history_page(
         domain_filter.before_sequence = before_sequence;
         domain_filter.limit = 500;
 
-        let batch = app.services.domain_events.list(&domain_filter).await?;
+        let batch = app
+            .services
+            .events
+            .domain_events
+            .list(&domain_filter)
+            .await?;
         if batch.is_empty() {
             break;
         }
@@ -245,7 +252,12 @@ async fn project_episode_title_history(
         domain_filter.before_sequence = before_sequence;
         domain_filter.limit = 500;
 
-        let batch = app.services.domain_events.list(&domain_filter).await?;
+        let batch = app
+            .services
+            .events
+            .domain_events
+            .list(&domain_filter)
+            .await?;
         if batch.is_empty() {
             break;
         }
@@ -282,7 +294,6 @@ impl AppUseCase {
         title: &Title,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 actor_user_id,
                 title,
@@ -308,7 +319,6 @@ impl AppUseCase {
         action: ConfigurationChangeAction,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_global_domain_event(
                 actor_user_id,
                 DomainEventPayload::ConfigurationChanged(ConfigurationChangedEventData {
@@ -331,7 +341,6 @@ impl AppUseCase {
         result_count: i64,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_global_domain_event(
                 actor_user_id,
                 DomainEventPayload::DiscoverySearchCompleted(DiscoverySearchCompletedEventData {
@@ -353,7 +362,6 @@ impl AppUseCase {
         reason: Option<String>,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 None,
                 title,
@@ -380,7 +388,6 @@ impl AppUseCase {
         result_count: i64,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 actor_user_id,
                 title,
@@ -409,7 +416,6 @@ impl AppUseCase {
         reason_code: impl Into<String>,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 actor_user_id,
                 title,
@@ -450,13 +456,11 @@ impl AppUseCase {
 
         let result = match title {
             Some(title) => {
-                self.services
-                    .append_domain_event(new_title_domain_event(actor_user_id, title, payload))
+                self.append_domain_event(new_title_domain_event(actor_user_id, title, payload))
                     .await
             }
             None => {
-                self.services
-                    .append_domain_event(new_global_domain_event(actor_user_id, payload))
+                self.append_domain_event(new_global_domain_event(actor_user_id, payload))
                     .await
             }
         };
@@ -472,7 +476,6 @@ impl AppUseCase {
         recovered_count: i64,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_global_domain_event(
                 actor_user_id,
                 DomainEventPayload::ImportRecoveryCompleted(ImportRecoveryCompletedEventData {
@@ -493,7 +496,6 @@ impl AppUseCase {
     ) {
         let item_id = item_id.into();
         if let Err(error) = self
-            .services
             .append_domain_event(new_download_queue_domain_event(
                 actor_user_id,
                 item_id.clone(),
@@ -520,7 +522,6 @@ impl AppUseCase {
     ) {
         let script_name = script_name.into();
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 actor_user_id,
                 title,
@@ -550,7 +551,6 @@ impl AppUseCase {
         provider: Option<String>,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 None,
                 title,
@@ -574,7 +574,6 @@ impl AppUseCase {
         reason: Option<String>,
     ) {
         if let Err(error) = self
-            .services
             .append_domain_event(new_title_domain_event(
                 None,
                 title,
@@ -669,7 +668,7 @@ impl AppUseCase {
         filter: &DomainEventFilter,
     ) -> AppResult<Vec<DomainEvent>> {
         require(actor, &Entitlement::ViewHistory)?;
-        self.services.domain_events.list(filter).await
+        self.services.events.domain_events.list(filter).await
     }
 
     pub async fn list_activity_events_after_sequence(
@@ -681,6 +680,7 @@ impl AppUseCase {
         require(actor, &Entitlement::ViewHistory)?;
         let events = self
             .services
+            .events
             .domain_events
             .list(&DomainEventFilter {
                 after_sequence: Some(after_sequence),
@@ -705,7 +705,7 @@ impl AppUseCase {
         let app = self.clone();
         let actor = actor.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.services.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
             let mut cursor = 0_i64;
 
             loop {
@@ -750,12 +750,12 @@ impl AppUseCase {
         actor: &User,
     ) -> AppResult<broadcast::Receiver<i64>> {
         require(actor, &Entitlement::ViewHistory)?;
-        Ok(self.services.domain_event_broadcast.subscribe())
+        Ok(self.runtime.domain_event_broadcast.subscribe())
     }
 
     pub fn subscribe_import_history(&self, actor: &User) -> AppResult<broadcast::Receiver<()>> {
         require(actor, &Entitlement::ViewHistory)?;
-        Ok(self.services.import_history_broadcast.subscribe())
+        Ok(self.runtime.import_history_broadcast.subscribe())
     }
 
     pub async fn active_library_scans(&self, actor: &User) -> AppResult<Vec<LibraryScanSession>> {
@@ -771,7 +771,7 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.services.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
             let (mut sessions, mut cursor) =
                 match load_active_library_scan_projection_state(&app).await {
                     Ok(state) => state,
@@ -834,7 +834,7 @@ impl AppUseCase {
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<String>>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        Ok(self.services.settings_changed_broadcast.subscribe())
+        Ok(self.runtime.settings_changed_broadcast.subscribe())
     }
 
     pub fn subscribe_download_queue_state(

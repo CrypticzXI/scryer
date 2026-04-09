@@ -52,7 +52,7 @@ pub trait BackupService {
 
 impl BackupService for AppUseCase {
     fn backup_dir(&self) -> PathBuf {
-        backup_dir_from_db_path(&self.services.db_path)
+        backup_dir_from_db_path(&self.services.config.db_path)
     }
 }
 
@@ -72,7 +72,11 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Repository("backup path is not valid UTF-8".into()))?
             .to_string();
 
-        self.services.system_info.vacuum_into(&dest_str).await?;
+        self.services
+            .config
+            .system_info
+            .vacuum_into(&dest_str)
+            .await?;
 
         let meta = std::fs::metadata(&dest)
             .map_err(|e| AppError::Repository(format!("failed to stat backup file: {e}")))?;

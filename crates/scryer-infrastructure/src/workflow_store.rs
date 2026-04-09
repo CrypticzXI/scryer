@@ -1,0 +1,410 @@
+use async_trait::async_trait;
+use scryer_application::{
+    AcquisitionStateRepository, AppError, AppResult, DomainEventRepository, DownloadSubmission,
+    DownloadSubmissionRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
+    JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource, SuccessfulGrabCommit,
+    WorkflowOperationInfo, WorkflowOperationRepository,
+};
+use scryer_domain::{DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, NewDomainEvent};
+
+use crate::SqliteServices;
+
+#[derive(Clone)]
+pub struct SqliteWorkflowStore {
+    pool: sqlx::SqlitePool,
+}
+
+impl SqliteWorkflowStore {
+    pub fn new(db: &SqliteServices) -> Self {
+        Self {
+            pool: db.pool().clone(),
+        }
+    }
+}
+
+fn parse_rfc3339_or_now(value: Option<String>) -> chrono::DateTime<chrono::Utc> {
+    value
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now)
+}
+
+fn job_run_record_from_workflow(record: crate::WorkflowOperationRecord) -> AppResult<JobRunRecord> {
+    let job_key = record
+        .job_key
+        .as_deref()
+        .and_then(JobKey::parse)
+        .ok_or_else(|| AppError::Repository("workflow operation missing valid job_key".into()))?;
+    let trigger_source = record
+        .trigger_source
+        .as_deref()
+        .and_then(JobTriggerSource::parse)
+        .ok_or_else(|| {
+            AppError::Repository("workflow operation missing valid trigger_source".into())
+        })?;
+    let status = JobRunStatus::parse(&record.status)
+        .ok_or_else(|| AppError::Repository("workflow operation missing valid status".into()))?;
+
+    Ok(JobRunRecord {
+        id: record.id,
+        job_key,
+        operation_type: record.operation_type,
+        status,
+        trigger_source,
+        actor_user_id: record.actor_user_id,
+        progress_json: record.progress_json,
+        summary_json: record.summary_json,
+        summary_text: record.summary_text,
+        error_text: record.error_text,
+        started_at: parse_rfc3339_or_now(record.started_at),
+        completed_at: record
+            .completed_at
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&chrono::Utc)),
+        created_at: parse_rfc3339_or_now(Some(record.created_at)),
+        updated_at: parse_rfc3339_or_now(Some(record.updated_at)),
+    })
+}
+
+#[async_trait]
+impl AcquisitionStateRepository for SqliteWorkflowStore {
+    async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
+        crate::queries::workflow::commit_successful_grab_query(&self.pool, commit).await
+    }
+}
+
+#[async_trait]
+impl DomainEventRepository for SqliteWorkflowStore {
+    async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
+        crate::queries::domain_event::append_domain_event_query(&self.pool, &event).await
+    }
+
+    async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>> {
+        crate::queries::domain_event::append_domain_events_query(&self.pool, &events).await
+    }
+
+    async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+        crate::queries::domain_event::list_domain_events_query(&self.pool, filter).await
+    }
+
+    async fn list_after_sequence(
+        &self,
+        after_sequence: i64,
+        limit: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        crate::queries::domain_event::list_domain_events_after_sequence_query(
+            &self.pool,
+            after_sequence,
+            limit,
+        )
+        .await
+    }
+
+    async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
+        crate::queries::domain_event::get_event_subscriber_offset_query(&self.pool, subscriber)
+            .await
+    }
+
+    async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()> {
+        crate::queries::domain_event::set_event_subscriber_offset_query(
+            &self.pool, subscriber, sequence,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl DownloadSubmissionRepository for SqliteWorkflowStore {
+    async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        crate::queries::workflow::record_download_submission_query(
+            &self.pool,
+            &submission.title_id,
+            &submission.facet,
+            &submission.download_client_type,
+            &submission.download_client_item_id,
+            submission.source_title.as_deref(),
+            submission.collection_id.as_deref(),
+        )
+        .await
+    }
+
+    async fn find_by_client_item_id(
+        &self,
+        download_client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        crate::queries::workflow::find_download_submission_query(
+            &self.pool,
+            download_client_type,
+            download_client_item_id,
+        )
+        .await
+    }
+
+    async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+        crate::queries::workflow::list_download_submissions_for_title_query(&self.pool, title_id)
+            .await
+    }
+
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+        crate::queries::workflow::delete_download_submissions_for_title_query(&self.pool, title_id)
+            .await
+    }
+
+    async fn delete_by_client_item_id(&self, download_client_item_id: &str) -> AppResult<()> {
+        crate::queries::workflow::delete_download_submission_by_client_item_id_query(
+            &self.pool,
+            download_client_item_id,
+        )
+        .await
+    }
+
+    async fn update_tracked_state(
+        &self,
+        download_client_type: &str,
+        download_client_item_id: &str,
+        tracked_state: &str,
+    ) -> AppResult<()> {
+        crate::queries::workflow::update_tracked_state_query(
+            &self.pool,
+            download_client_type,
+            download_client_item_id,
+            tracked_state,
+        )
+        .await
+    }
+
+    async fn get_tracked_state(
+        &self,
+        download_client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<String>> {
+        crate::queries::workflow::get_tracked_state_query(
+            &self.pool,
+            download_client_type,
+            download_client_item_id,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl ImportArtifactRepository for SqliteWorkflowStore {
+    async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
+        crate::queries::workflow::insert_import_artifact_query(&self.pool, &artifact).await
+    }
+
+    async fn list_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Vec<ImportArtifact>> {
+        crate::queries::workflow::list_import_artifacts_by_source_ref_query(
+            &self.pool,
+            source_system,
+            source_ref,
+        )
+        .await
+    }
+
+    async fn count_by_result(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        result: &str,
+    ) -> AppResult<u64> {
+        crate::queries::workflow::count_import_artifacts_by_result_query(
+            &self.pool,
+            source_system,
+            source_ref,
+            result,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl JobRunRepository for SqliteWorkflowStore {
+    async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        let record = crate::queries::workflow::create_job_workflow_operation_query(
+            &self.pool,
+            run.operation_type.clone(),
+            run.status.as_str().to_string(),
+            run.job_key.as_str().to_string(),
+            run.trigger_source.as_str().to_string(),
+            run.actor_user_id.clone(),
+            run.progress_json.clone(),
+            run.summary_json.clone(),
+            run.summary_text.clone(),
+            run.error_text.clone(),
+            Some(run.started_at.to_rfc3339()),
+            run.completed_at.map(|value| value.to_rfc3339()),
+        )
+        .await?;
+
+        job_run_record_from_workflow(record)
+    }
+
+    async fn update_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        let record = crate::queries::workflow::update_job_workflow_operation_query(
+            &self.pool,
+            &run.id,
+            run.status.as_str(),
+            run.progress_json.clone(),
+            run.summary_json.clone(),
+            run.summary_text.clone(),
+            run.error_text.clone(),
+            run.completed_at.map(|value| value.to_rfc3339()),
+        )
+        .await?;
+
+        job_run_record_from_workflow(record)
+    }
+
+    async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>> {
+        crate::queries::workflow::get_workflow_operation_by_id_query(&self.pool, run_id)
+            .await?
+            .map(job_run_record_from_workflow)
+            .transpose()
+    }
+
+    async fn list_job_runs(
+        &self,
+        job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        crate::queries::workflow::list_job_workflow_operations_query(
+            &self.pool,
+            job_key.map(JobKey::as_str),
+            limit as i64,
+        )
+        .await?
+        .into_iter()
+        .map(job_run_record_from_workflow)
+        .collect()
+    }
+
+    async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
+        crate::queries::workflow::list_active_job_workflow_operations_query(&self.pool)
+            .await?
+            .into_iter()
+            .map(job_run_record_from_workflow)
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ImportRepository for SqliteWorkflowStore {
+    async fn queue_import_request(
+        &self,
+        source_system: String,
+        source_ref: String,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        crate::queries::workflow::create_import_request_query(
+            &self.pool,
+            source_system,
+            source_ref,
+            import_type,
+            payload_json,
+        )
+        .await
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
+        crate::queries::workflow::get_import_by_id_query(&self.pool, id).await
+    }
+
+    async fn get_import_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Option<ImportRecord>> {
+        crate::queries::workflow::get_import_by_source_ref_query(
+            &self.pool,
+            source_system,
+            source_ref,
+        )
+        .await
+    }
+
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        crate::queries::workflow::update_import_status_query(
+            &self.pool,
+            import_id,
+            status.as_str(),
+            result_json,
+        )
+        .await
+    }
+
+    async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64> {
+        crate::queries::workflow::recover_stale_processing_imports_query(&self.pool, stale_seconds)
+            .await
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
+        crate::queries::workflow::list_pending_imports_query(&self.pool).await
+    }
+
+    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+        match crate::queries::workflow::get_import_by_source_ref_query(
+            &self.pool,
+            source_system,
+            source_ref,
+        )
+        .await?
+        {
+            Some(record) => Ok(matches!(
+                record.status,
+                ImportStatus::Completed | ImportStatus::Skipped
+            )),
+            None => Ok(false),
+        }
+    }
+
+    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
+        crate::queries::workflow::list_imports_query(&self.pool, limit as i64).await
+    }
+}
+
+#[async_trait]
+impl WorkflowOperationRepository for SqliteWorkflowStore {
+    async fn create_workflow_operation(
+        &self,
+        operation_type: String,
+        status: String,
+        actor_user_id: Option<String>,
+        progress_json: Option<String>,
+        started_at: Option<String>,
+        completed_at: Option<String>,
+    ) -> AppResult<WorkflowOperationInfo> {
+        crate::queries::workflow::create_workflow_operation_query(
+            &self.pool,
+            operation_type,
+            status,
+            actor_user_id,
+            progress_json,
+            started_at,
+            completed_at,
+        )
+        .await
+        .map(|record| WorkflowOperationInfo {
+            id: record.id,
+            operation_type: record.operation_type,
+            status: record.status,
+            actor_user_id: record.actor_user_id,
+            progress_json: record.progress_json,
+            started_at: record.started_at,
+            completed_at: record.completed_at,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        })
+    }
+}

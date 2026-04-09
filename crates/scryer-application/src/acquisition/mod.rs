@@ -1,4 +1,9 @@
-//! Acquisition orchestration, policy, RSS follow-up, and pending-release flow.
-//!
-//! Start with `acquisition.rs` for the main workflow.
-//! Policy tuning lives in `policy.rs`; delayed and pending-release handling lives in `pending.rs`.
+pub(crate) use crate::*;
+
+pub(crate) mod acquisition;
+pub(crate) mod decision_helpers;
+pub(crate) mod delay_profile;
+pub(crate) mod pending;
+pub(crate) mod policy;
+pub(crate) mod rss;
+pub(crate) mod search_queries;

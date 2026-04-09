@@ -10,6 +10,11 @@ use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{IndexerClient, IndexerPluginProvider, MetadataSearchQuery, SearchMode};
+use scryer_domain::User;
+
+fn admin() -> User {
+    User::new_admin("admin")
+}
 
 /// Create an IndexerClient backed by the built-in nzbgeek WASM plugin,
 /// configured to talk to the given wiremock URI.
@@ -734,9 +739,7 @@ async fn smg_search_tvdb() {
 
     let results = ctx
         .app
-        .services
-        .metadata_gateway
-        .search_tvdb("Test Movie", "movie", Some(2024))
+        .search_metadata_tvdb(&admin(), "Test Movie", "movie", Some(2024))
         .await
         .expect("search_tvdb should succeed");
 
@@ -765,9 +768,7 @@ async fn smg_search_tvdb_rich() {
 
     let results = ctx
         .app
-        .services
-        .metadata_gateway
-        .search_tvdb_rich("Test Movie", "movie", 25, "eng")
+        .search_metadata(&admin(), "Test Movie", "movie", 25, "eng")
         .await
         .expect("search_tvdb_rich should succeed");
 
@@ -796,30 +797,31 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
 
     let results = ctx
         .app
-        .services
-        .metadata_gateway
-        .search_tvdb_batch(&[
-            MetadataSearchQuery {
-                query: "  Test Movie  ".to_string(),
-                type_hint: "movie".to_string(),
-                year: Some(2024),
-            },
-            MetadataSearchQuery {
-                query: "Test Movie".to_string(),
-                type_hint: "movie".to_string(),
-                year: Some(2024),
-            },
-            MetadataSearchQuery {
-                query: "Test Series".to_string(),
-                type_hint: "series".to_string(),
-                year: None,
-            },
-            MetadataSearchQuery {
-                query: "   ".to_string(),
-                type_hint: "movie".to_string(),
-                year: None,
-            },
-        ])
+        .search_metadata_batch(
+            &admin(),
+            &[
+                MetadataSearchQuery {
+                    query: "  Test Movie  ".to_string(),
+                    type_hint: "movie".to_string(),
+                    year: Some(2024),
+                },
+                MetadataSearchQuery {
+                    query: "Test Movie".to_string(),
+                    type_hint: "movie".to_string(),
+                    year: Some(2024),
+                },
+                MetadataSearchQuery {
+                    query: "Test Series".to_string(),
+                    type_hint: "series".to_string(),
+                    year: None,
+                },
+                MetadataSearchQuery {
+                    query: "   ".to_string(),
+                    type_hint: "movie".to_string(),
+                    year: None,
+                },
+            ],
+        )
         .await
         .expect("search_tvdb_batch should succeed");
 
@@ -894,9 +896,7 @@ async fn smg_get_movie() {
 
     let movie = ctx
         .app
-        .services
-        .metadata_gateway
-        .get_movie(123456, "eng")
+        .get_metadata_movie(&admin(), 123456, "eng")
         .await
         .expect("get_movie should succeed");
 
@@ -925,9 +925,7 @@ async fn smg_get_series() {
 
     let series = ctx
         .app
-        .services
-        .metadata_gateway
-        .get_series(345678, "eng")
+        .get_metadata_series(&admin(), 345678, "eng")
         .await
         .expect("get_series should succeed");
 
@@ -952,9 +950,7 @@ async fn smg_handles_server_error() {
 
     let result = ctx
         .app
-        .services
-        .metadata_gateway
-        .search_tvdb("Test", "movie", None)
+        .search_metadata_tvdb(&admin(), "Test", "movie", None)
         .await;
 
     assert!(result.is_err(), "should fail on 500");

@@ -5,8 +5,8 @@ use std::time::UNIX_EPOCH;
 use async_trait::async_trait;
 use ring::digest as ring_digest;
 use scryer_domain::{
-    Collection, CollectionType, DomainEventPayload, Episode, MediaFacet, MediaFileRenamedEventData,
-    Title, User,
+    Collection, CollectionType, DomainEventPayload, Episode, ImportType, MediaFacet,
+    MediaFileRenamedEventData, Title, User,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -17,8 +17,8 @@ use crate::domain_events::{
 };
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::{
-    AppError, AppResult, AppUseCase, Entitlement, ParsedEpisodeMetadata, ParsedReleaseMetadata,
-    TitleMediaFile, parse_release_metadata, require,
+    AppError, AppResult, AppUseCase, CollectionUpdate, Entitlement, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata, require,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -228,6 +228,7 @@ impl AppUseCase {
 
         let title = self
             .services
+            .catalog
             .titles
             .get_by_id(title_id)
             .await?
@@ -261,7 +262,12 @@ impl AppUseCase {
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))
             .await?;
-        let mut titles = self.services.titles.list(Some(facet.clone()), None).await?;
+        let mut titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(facet.clone()), None)
+            .await?;
         titles.sort_by(|left, right| left.id.cmp(&right.id));
         self.build_rename_plan_for_titles(facet, &titles, None, settings)
             .await
@@ -290,6 +296,72 @@ impl AppUseCase {
         let preview = self.preview_rename_for_facet(actor, facet).await?;
         self.apply_previewed_rename_plan(actor, preview, plan_fingerprint)
             .await
+    }
+
+    pub async fn record_rename_apply_audit(
+        &self,
+        actor: &User,
+        operation: &str,
+        facet: &str,
+        title_id: Option<&str>,
+        idempotency_key: Option<&str>,
+        result: &RenameApplyResult,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageTitle)?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let plan_fingerprint = result.plan_fingerprint.clone();
+        let progress_json = serde_json::json!({
+            "operation": operation,
+            "facet": facet,
+            "title_id": title_id,
+            "idempotency_key": idempotency_key,
+            "plan_fingerprint": plan_fingerprint.clone(),
+            "total": result.total,
+            "applied": result.applied,
+            "skipped": result.skipped,
+            "failed": result.failed,
+        })
+        .to_string();
+
+        let _ = self
+            .services
+            .workflow
+            .workflow_operations
+            .create_workflow_operation(
+                operation.to_string(),
+                "completed".to_string(),
+                Some(actor.id.clone()),
+                Some(progress_json),
+                Some(now.clone()),
+                Some(now),
+            )
+            .await?;
+
+        let source_ref = if let Some(key) = idempotency_key {
+            format!("{operation}:{key}")
+        } else if let Some(title_id) = title_id {
+            format!("{operation}:title:{title_id}:{plan_fingerprint}")
+        } else {
+            format!("{operation}:facet:{facet}:{plan_fingerprint}")
+        };
+        let payload_json = serde_json::to_string(result).unwrap_or_else(|_| {
+            "{\"error\":\"failed_to_serialize_rename_apply_result\"}".to_string()
+        });
+
+        let _ = self
+            .services
+            .workflow
+            .imports
+            .queue_import_request(
+                "scryer_rename".to_string(),
+                source_ref,
+                ImportType::RenameApplyResult.as_str().to_string(),
+                payload_json,
+            )
+            .await?;
+
+        Ok(())
     }
 
     async fn read_rename_plan_settings(
@@ -322,11 +394,17 @@ impl AppUseCase {
         preview: RenamePlan,
     ) -> AppResult<RenameApplyResult> {
         self.services
+            .library
             .library_renamer
             .validate_targets(&preview)
             .await?;
 
-        let mut item_results = self.services.library_renamer.apply_plan(&preview).await?;
+        let mut item_results = self
+            .services
+            .library
+            .library_renamer
+            .apply_plan(&preview)
+            .await?;
         let mut applied = 0usize;
         let mut skipped = 0usize;
         let mut failed = 0usize;
@@ -410,6 +488,7 @@ impl AppUseCase {
                 } else {
                     let ids = self
                         .services
+                        .library
                         .media_files
                         .list_media_files_for_title(&title.id)
                         .await
@@ -456,7 +535,6 @@ impl AppUseCase {
                 })
                 .collect();
             if let Err(error) = self
-                .services
                 .append_domain_event(new_title_domain_event(
                     Some(actor.id.clone()),
                     &title,
@@ -484,12 +562,14 @@ impl AppUseCase {
     ) -> AppResult<Option<Title>> {
         let title_id = if let Some(media_file_id) = item.media_file_id.as_deref() {
             self.services
+                .library
                 .media_files
                 .get_media_file_by_id(media_file_id)
                 .await?
                 .map(|file| file.title_id)
         } else if let Some(collection_id) = item.collection_id.as_deref() {
             self.services
+                .catalog
                 .shows
                 .get_collection_by_id(collection_id)
                 .await?
@@ -499,7 +579,7 @@ impl AppUseCase {
         };
 
         match title_id {
-            Some(title_id) => self.services.titles.get_by_id(&title_id).await,
+            Some(title_id) => self.services.catalog.titles.get_by_id(&title_id).await,
             None => Ok(None),
         }
     }
@@ -514,6 +594,7 @@ impl AppUseCase {
         if let Some(media_file_id) = item.media_file_id.as_deref()
             && let Err(error) = self
                 .services
+                .library
                 .media_files
                 .update_media_file_path(media_file_id, final_path)
                 .await
@@ -526,16 +607,14 @@ impl AppUseCase {
         if let Some(collection_id) = item.collection_id.as_deref()
             && let Err(error) = self
                 .services
+                .catalog
                 .shows
                 .update_collection(
                     collection_id,
-                    None,
-                    None,
-                    None,
-                    Some(final_path.to_string()),
-                    None,
-                    None,
-                    None,
+                    CollectionUpdate {
+                        ordered_path: Some(final_path.to_string()),
+                        ..Default::default()
+                    },
                 )
                 .await
         {
@@ -557,6 +636,7 @@ impl AppUseCase {
         match item.write_action {
             RenameWriteAction::Move => match self
                 .services
+                .library
                 .library_renamer
                 .rollback(std::slice::from_ref(item))
                 .await
@@ -580,6 +660,7 @@ impl AppUseCase {
             && let Some(media_file_id) = item.media_file_id.as_deref()
             && let Err(error) = self
                 .services
+                .library
                 .media_files
                 .update_media_file_path(media_file_id, &item.current_path)
                 .await
@@ -613,7 +694,7 @@ impl AppUseCase {
         for title in titles {
             let mut title_items = self
                 .build_rename_plan_items_for_title(
-                    &title,
+                    title,
                     &settings.template,
                     &settings.collision_policy,
                     &settings.missing_metadata_policy,
@@ -643,11 +724,13 @@ impl AppUseCase {
     ) -> AppResult<Vec<RenamePlanItem>> {
         let collections = self
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await?;
         let media_files = self
             .services
+            .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await?;
@@ -665,6 +748,7 @@ impl AppUseCase {
             MediaFacet::Series | MediaFacet::Anime => {
                 let episodes = self
                     .services
+                    .catalog
                     .shows
                     .list_episodes_for_title(&title.id)
                     .await?;
@@ -711,6 +795,7 @@ impl AppUseCase {
             } else {
                 let loaded = self
                     .services
+                    .library
                     .media_files
                     .get_media_file_by_path(&proposed_path)
                     .await?;
@@ -722,6 +807,7 @@ impl AppUseCase {
             } else {
                 let loaded = self
                     .services
+                    .catalog
                     .shows
                     .get_collection_by_ordered_path(&proposed_path)
                     .await?;
@@ -1033,10 +1119,10 @@ fn rename_plan_item(
 fn prepare_rename_plan_source(
     item_ids: RenamePlanItemIds,
     current_path: Option<String>,
-) -> Result<RenamePlanSource, RenamePlanItem> {
+) -> Result<RenamePlanSource, Box<RenamePlanItem>> {
     let current_path = current_path.unwrap_or_default();
     if current_path.trim().is_empty() {
-        return Err(rename_plan_item(
+        return Err(Box::new(rename_plan_item(
             item_ids,
             current_path,
             None,
@@ -1046,7 +1132,7 @@ fn prepare_rename_plan_source(
             RenameWriteAction::Skip,
             None,
             None,
-        ));
+        )));
     }
 
     let current_file = PathBuf::from(&current_path);
@@ -1071,14 +1157,14 @@ fn prepare_rename_plan_source(
     };
 
     if source_metadata.as_ref().is_none_or(|meta| !meta.is_file()) {
-        return Err(source.build_item(
+        return Err(Box::new(source.build_item(
             item_ids,
             None,
             None,
             false,
             "source_not_file",
             RenameWriteAction::Error,
-        ));
+        )));
     }
 
     Ok(source)
@@ -1103,18 +1189,18 @@ fn resolve_rendered_rename_filename(
     tokens: &BTreeMap<String, String>,
     fallback_title: &str,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
-) -> Result<String, RenamePlanItem> {
+) -> Result<String, Box<RenamePlanItem>> {
     let mut rendered = render_rename_template(template, tokens);
     if rendered.is_empty() {
         if matches!(missing_metadata_policy, RenameMissingMetadataPolicy::Skip) {
-            return Err(source.build_item(
+            return Err(Box::new(source.build_item(
                 item_ids,
                 None,
                 None,
                 false,
                 "missing_metadata",
                 RenameWriteAction::Skip,
-            ));
+            )));
         }
         rendered = fallback_title.to_string();
     }
@@ -1296,7 +1382,7 @@ fn build_series_media_file_rename_plan_item(
         Some(source.file.file_path.clone()),
     ) {
         Ok(source_file) => source_file,
-        Err(item) => return item,
+        Err(item) => return *item,
     };
 
     let current_stem = source_file
@@ -1385,7 +1471,7 @@ fn build_series_media_file_rename_plan_item(
         missing_metadata_policy,
     ) {
         Ok(rendered) => rendered,
-        Err(item) => return item,
+        Err(item) => return *item,
     };
 
     finalize_rename_plan_item(
@@ -1742,7 +1828,7 @@ pub(crate) fn build_movie_rename_plan_item(
     let source_file =
         match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {
             Ok(source_file) => source_file,
-            Err(item) => return item,
+            Err(item) => return *item,
         };
     let current_stem = source_file
         .current_file
@@ -1791,7 +1877,7 @@ pub(crate) fn build_movie_rename_plan_item(
         missing_metadata_policy,
     ) {
         Ok(rendered) => rendered,
-        Err(item) => return item,
+        Err(item) => return *item,
     };
 
     finalize_rename_plan_item(

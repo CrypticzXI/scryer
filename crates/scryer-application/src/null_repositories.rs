@@ -25,7 +25,7 @@ use crate::{
     TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository,
     TitleImageBlob, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
     TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
-    WantedItemRepository,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -69,6 +69,26 @@ impl ImportRepository for NullImportRepository {
     }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
+    }
+}
+
+#[derive(Default)]
+pub struct NullWorkflowOperationRepository;
+
+#[async_trait]
+impl WorkflowOperationRepository for NullWorkflowOperationRepository {
+    async fn create_workflow_operation(
+        &self,
+        _operation_type: String,
+        _status: String,
+        _actor_user_id: Option<String>,
+        _progress_json: Option<String>,
+        _started_at: Option<String>,
+        _completed_at: Option<String>,
+    ) -> AppResult<WorkflowOperationInfo> {
+        Err(AppError::Repository(
+            "workflow operation repository is not configured".to_string(),
+        ))
     }
 }
 
@@ -1051,9 +1071,10 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
 #[cfg(test)]
 pub mod test_nulls {
     use crate::{
-        AppError, AppResult, DownloadClient, DownloadClientAddRequest,
-        DownloadClientConfigRepository, DownloadGrabResult, IndexerClient, IndexerRoutingPlan,
-        IndexerSearchResponse, PrimaryCollectionSummary, QualityProfile, QualityProfileRepository,
+        AppError, AppResult, CollectionUpdate, DownloadClient, DownloadClientAddRequest,
+        DownloadClientConfigRepository, DownloadClientConfigUpdate, DownloadGrabResult,
+        EpisodeUpdate, IndexerClient, IndexerRoutingPlan, IndexerSearchResponse,
+        PrimaryCollectionSummary, QualityProfile, QualityProfileRepository,
         ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
         SearchMode, ShowRepository, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
         TitleRepository, UserRepository,
@@ -1142,17 +1163,7 @@ pub mod test_nulls {
         async fn create_collection(&self, _: Collection) -> AppResult<Collection> {
             Err(AppError::Repository("not configured".into()))
         }
-        async fn update_collection(
-            &self,
-            _: &str,
-            _: Option<scryer_domain::CollectionType>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<bool>,
-        ) -> AppResult<Collection> {
+        async fn update_collection(&self, _: &str, _: CollectionUpdate) -> AppResult<Collection> {
             Err(AppError::Repository("not configured".into()))
         }
         async fn update_collection_interstitial_movie(
@@ -1197,23 +1208,7 @@ pub mod test_nulls {
         async fn create_episode(&self, _: Episode) -> AppResult<Episode> {
             Err(AppError::Repository("not configured".into()))
         }
-        async fn update_episode(
-            &self,
-            _: &str,
-            _: Option<scryer_domain::EpisodeType>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<i64>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<bool>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-        ) -> AppResult<Episode> {
+        async fn update_episode(&self, _: &str, _: EpisodeUpdate) -> AppResult<Episode> {
             Err(AppError::Repository("not configured".into()))
         }
         async fn delete_episode(&self, _: &str) -> AppResult<()> {
@@ -1336,15 +1331,7 @@ pub mod test_nulls {
         async fn create(&self, _: DownloadClientConfig) -> AppResult<DownloadClientConfig> {
             Err(AppError::Repository("not configured".into()))
         }
-        async fn update(
-            &self,
-            _: &str,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<String>,
-            _: Option<bool>,
-        ) -> AppResult<DownloadClientConfig> {
+        async fn update(&self, _: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig> {
             Err(AppError::Repository("not configured".into()))
         }
         async fn delete(&self, _: &str) -> AppResult<()> {

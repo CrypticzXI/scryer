@@ -567,9 +567,11 @@ async fn process_job_snapshot(
             continue;
         }
         if let Ok(Some(submission)) = app
-            .services
-            .download_submissions
-            .find_by_client_item_id(&item.client_type, &item.download_client_item_id)
+            .find_download_submission_by_client_item_id(
+                actor,
+                &item.client_type,
+                &item.download_client_item_id,
+            )
             .await
         {
             item.is_scryer_origin = true;

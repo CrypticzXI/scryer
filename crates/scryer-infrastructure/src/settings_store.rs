@@ -1,0 +1,268 @@
+use async_trait::async_trait;
+use scryer_application::{
+    AppError, AppResult, QualityProfile as ApplicationQualityProfile, QualityProfileRepository,
+    SettingsRepository, SystemInfoProvider,
+};
+use std::sync::{Arc, RwLock};
+
+use crate::SqliteServices;
+use crate::encryption::EncryptionKey;
+use crate::types::{MigrationStatus, SettingDefinitionSeed, SettingsValueRecord};
+
+#[derive(Clone)]
+pub struct SqliteSettingsStore {
+    pool: sqlx::SqlitePool,
+    encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
+}
+
+impl SqliteSettingsStore {
+    pub fn new(db: &SqliteServices) -> Self {
+        Self {
+            pool: db.pool().clone(),
+            encryption_key: db.encryption_key_state(),
+        }
+    }
+
+    fn encryption_key(&self) -> Option<EncryptionKey> {
+        self.encryption_key
+            .read()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    pub async fn batch_ensure_setting_definitions(
+        &self,
+        definitions: Vec<SettingDefinitionSeed>,
+    ) -> AppResult<()> {
+        crate::queries::settings::batch_ensure_setting_definitions_query(&self.pool, &definitions)
+            .await
+    }
+
+    pub async fn batch_get_settings_with_defaults(
+        &self,
+        keys: Vec<(String, String, Option<String>)>,
+    ) -> AppResult<Vec<Option<SettingsValueRecord>>> {
+        let encryption_key = self.encryption_key();
+        crate::queries::settings::batch_get_settings_with_defaults_query(
+            &self.pool,
+            &keys,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn batch_upsert_settings_if_not_overridden(
+        &self,
+        entries: Vec<(String, String, String, String)>,
+    ) -> AppResult<()> {
+        let encryption_key = self.encryption_key();
+        crate::queries::settings::batch_upsert_settings_if_not_overridden_query(
+            &self.pool,
+            &entries,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn list_settings_with_defaults(
+        &self,
+        scope: impl Into<String>,
+        scope_id: Option<String>,
+    ) -> AppResult<Vec<SettingsValueRecord>> {
+        let encryption_key = self.encryption_key();
+        let scope = scope.into();
+        crate::queries::settings::list_settings_with_defaults_query(
+            &self.pool,
+            &scope,
+            scope_id,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn get_setting_with_defaults(
+        &self,
+        scope: impl Into<String>,
+        key_name: impl Into<String>,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<SettingsValueRecord>> {
+        let encryption_key = self.encryption_key();
+        let scope = scope.into();
+        let key_name = key_name.into();
+        crate::queries::settings::get_setting_with_defaults_query(
+            &self.pool,
+            &scope,
+            &key_name,
+            scope_id,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn upsert_setting_value(
+        &self,
+        scope: impl Into<String>,
+        key_name: impl Into<String>,
+        scope_id: Option<String>,
+        value_json: impl Into<String>,
+        source: impl Into<String>,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<SettingsValueRecord> {
+        let encryption_key = self.encryption_key();
+        let scope = scope.into();
+        let key_name = key_name.into();
+        let value_json = value_json.into();
+        let source = source.into();
+        crate::queries::settings::upsert_setting_value_query(
+            &self.pool,
+            &scope,
+            &key_name,
+            scope_id,
+            &value_json,
+            &source,
+            updated_by_user_id,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn list_applied_migrations(&self) -> AppResult<Vec<MigrationStatus>> {
+        crate::migrations::list_applied_migrations(&self.pool).await
+    }
+}
+
+#[async_trait]
+impl SettingsRepository for SqliteSettingsStore {
+    async fn get_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        let encryption_key = self.encryption_key();
+        match crate::queries::settings::get_setting_with_defaults_query(
+            &self.pool,
+            scope,
+            key_name,
+            scope_id,
+            encryption_key.as_ref(),
+        )
+        .await?
+        {
+            Some(record) => Ok(Some(record.effective_value_json)),
+            None => Ok(None),
+        }
+    }
+
+    async fn upsert_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+        value_json: String,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let encryption_key = self.encryption_key();
+        crate::queries::settings::upsert_setting_value_query(
+            &self.pool,
+            scope,
+            key_name,
+            scope_id,
+            &value_json,
+            source,
+            updated_by_user_id,
+            encryption_key.as_ref(),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl QualityProfileRepository for SqliteSettingsStore {
+    async fn list_quality_profiles(
+        &self,
+        scope: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Vec<ApplicationQualityProfile>> {
+        crate::queries::quality::list_quality_profiles_query(&self.pool, scope, scope_id).await
+    }
+
+    async fn replace_quality_profiles(
+        &self,
+        scope: &str,
+        scope_id: Option<String>,
+        profiles: Vec<ApplicationQualityProfile>,
+    ) -> AppResult<()> {
+        crate::queries::quality::replace_quality_profiles_query(
+            &self.pool, scope, scope_id, profiles,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl SystemInfoProvider for SqliteSettingsStore {
+    async fn current_migration_version(&self) -> AppResult<Option<String>> {
+        let applied = crate::migrations::list_applied_migrations(&self.pool).await?;
+        let latest = applied
+            .iter()
+            .filter(|m| m.success)
+            .max_by_key(|m| {
+                m.migration_key
+                    .split('_')
+                    .next()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(-1)
+            })
+            .map(|m| m.migration_key.clone());
+        Ok(latest)
+    }
+
+    async fn pending_migration_count(&self) -> AppResult<usize> {
+        let applied = crate::migrations::list_applied_migrations(&self.pool).await?;
+        let applied_keys: std::collections::HashSet<String> = applied
+            .iter()
+            .filter(|m| m.success)
+            .map(|m| m.migration_key.clone())
+            .collect();
+        let embedded = crate::list_embedded_migrations()?;
+        Ok(embedded
+            .iter()
+            .filter(|m| !applied_keys.contains(&m.key))
+            .count())
+    }
+
+    async fn smg_cert_expires_at(&self) -> AppResult<Option<String>> {
+        let encryption_key = self.encryption_key();
+        match crate::queries::settings::get_setting_with_defaults_query(
+            &self.pool,
+            "system",
+            "smg.cert_expires_at",
+            None,
+            encryption_key.as_ref(),
+        )
+        .await?
+        {
+            Some(record) => {
+                let value = record.effective_value_json.trim_matches('"').to_string();
+                if value.is_empty() || value == "null" {
+                    Ok(None)
+                } else {
+                    Ok(Some(value))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
+        sqlx::query("VACUUM INTO ?")
+            .bind(dest_path)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        Ok(())
+    }
+}

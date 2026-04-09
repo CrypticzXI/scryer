@@ -1,12 +1,9 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
-use chrono::Utc;
-use scryer_application::RenameApplyResult;
-use scryer_domain::ImportType;
-use serde_json::json;
+use scryer_application::DeleteExecutionConfirmation;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-use crate::context::{actor_from_ctx, app_from_ctx, settings_db_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
     from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
 };
@@ -36,64 +33,6 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 
     Ok(Some(composite))
 }
-
-async fn record_rename_apply_audit(
-    db: &scryer_infrastructure::SqliteServices,
-    actor_user_id: &str,
-    operation: &str,
-    facet: &str,
-    title_id: Option<&str>,
-    idempotency_key: Option<&str>,
-    result: &RenameApplyResult,
-) -> Result<(), scryer_application::AppError> {
-    let now = Utc::now().to_rfc3339();
-    let plan_fingerprint = result.plan_fingerprint.clone();
-    let progress_json = json!({
-        "operation": operation,
-        "facet": facet,
-        "title_id": title_id,
-        "idempotency_key": idempotency_key,
-        "plan_fingerprint": plan_fingerprint.clone(),
-        "total": result.total,
-        "applied": result.applied,
-        "skipped": result.skipped,
-        "failed": result.failed,
-    })
-    .to_string();
-
-    let _ = db
-        .create_workflow_operation(
-            operation,
-            "completed",
-            Some(actor_user_id.to_string()),
-            Some(progress_json),
-            Some(now.clone()),
-            Some(now),
-        )
-        .await?;
-
-    let source_ref = if let Some(key) = idempotency_key {
-        format!("{operation}:{key}")
-    } else if let Some(title_id) = title_id {
-        format!("{operation}:title:{title_id}:{plan_fingerprint}")
-    } else {
-        format!("{operation}:facet:{facet}:{plan_fingerprint}")
-    };
-    let payload_json = serde_json::to_string(result)
-        .unwrap_or_else(|_| "{\"error\":\"failed_to_serialize_rename_apply_result\"}".to_string());
-
-    let _ = db
-        .create_import_request(
-            "scryer_rename".to_string(),
-            source_ref,
-            ImportType::RenameApplyResult.as_str().to_string(),
-            payload_json,
-        )
-        .await?;
-
-    Ok(())
-}
-
 #[derive(Default)]
 pub(crate) struct LibraryMutations;
 
@@ -135,7 +74,6 @@ impl LibraryMutations {
     ) -> GqlResult<MediaRenameApplyPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let db = settings_db_from_ctx(ctx)?;
         let MediaRenameApplyInput {
             facet,
             title_id,
@@ -150,16 +88,16 @@ impl LibraryMutations {
             .apply_rename_for_title(&actor, &title_id, facet, &fingerprint)
             .await
             .map_err(to_gql_error)?;
-        let _ = record_rename_apply_audit(
-            &db,
-            &actor.id,
-            "rename_apply_title",
-            facet_name,
-            Some(&title_id),
-            idempotency_key.as_deref(),
-            &result,
-        )
-        .await;
+        let _ = app
+            .record_rename_apply_audit(
+                &actor,
+                "rename_apply_title",
+                facet_name,
+                Some(&title_id),
+                idempotency_key.as_deref(),
+                &result,
+            )
+            .await;
 
         Ok(from_media_rename_apply(result))
     }
@@ -175,8 +113,12 @@ impl LibraryMutations {
             &actor,
             &input.file_id,
             input.delete_from_disk.unwrap_or(true),
-            input.preview_fingerprint.as_deref(),
-            input.typed_confirmation.as_deref(),
+            input
+                .preview_fingerprint
+                .map(|preview_fingerprint| DeleteExecutionConfirmation {
+                    preview_fingerprint,
+                    typed_confirmation: input.typed_confirmation,
+                }),
         )
         .await
         .map(|_| true)
@@ -190,7 +132,6 @@ impl LibraryMutations {
     ) -> GqlResult<MediaRenameApplyPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let db = settings_db_from_ctx(ctx)?;
         let MediaRenameBulkApplyInput {
             facet,
             fingerprint,
@@ -205,16 +146,16 @@ impl LibraryMutations {
             .apply_rename_for_facet(&actor, facet, &fingerprint)
             .await
             .map_err(to_gql_error)?;
-        let _ = record_rename_apply_audit(
-            &db,
-            &actor.id,
-            "rename_apply_facet",
-            facet_name,
-            None,
-            idempotency_key.as_deref(),
-            &result,
-        )
-        .await;
+        let _ = app
+            .record_rename_apply_audit(
+                &actor,
+                "rename_apply_facet",
+                facet_name,
+                None,
+                idempotency_key.as_deref(),
+                &result,
+            )
+            .await;
 
         Ok(from_media_rename_apply(result))
     }
@@ -222,38 +163,8 @@ impl LibraryMutations {
     async fn rehydrate_all_metadata(&self, ctx: &Context<'_>, language: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        let db = settings_db_from_ctx(ctx)?;
-
-        let language = language.trim().to_ascii_lowercase();
-        if language.is_empty() {
-            return Err(Error::new("language is required"));
-        }
-
-        // Save language preference
-        db.upsert_setting_value(
-            "system",
-            "metadata_language",
-            None,
-            &language,
-            "rehydrate_metadata",
-            Some(actor.id),
-        )
-        .await
-        .map_err(to_gql_error)?;
-
-        // Clear metadata_language on all titles to mark them stale
-        let cleared = app
-            .services
-            .titles
-            .clear_metadata_language_for_all()
-            .await
-            .map_err(to_gql_error)?;
-
-        let refreshed = app
-            .hydrate_all_titles_for_current_language()
+        let (cleared, refreshed) = app
+            .rehydrate_all_metadata(&actor, &language)
             .await
             .map_err(to_gql_error)?;
 

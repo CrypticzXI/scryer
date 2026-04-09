@@ -1,4 +1,5 @@
-use async_graphql::{Context, Error, Object, Result as GqlResult};
+use async_graphql::{Context, Object, Result as GqlResult};
+use scryer_application::{DeleteExecutionConfirmation, QueuedReleaseSelection};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{from_library_scan_summary, from_title};
@@ -59,9 +60,11 @@ impl TitleMutations {
             .add_title_and_queue_download(
                 &actor,
                 request,
-                source_hint,
-                source_kind,
-                source_title.clone(),
+                QueuedReleaseSelection {
+                    source_hint,
+                    source_kind,
+                    source_title: source_title.clone(),
+                },
             )
             .await
             .map_err(to_gql_error)?;
@@ -96,13 +99,9 @@ impl TitleMutations {
             let base_tags = match tags.take() {
                 Some(tags) => tags,
                 None => app
-                    .services
-                    .titles
-                    .get_by_id(&title_id)
+                    .get_title_tags_for_update(&actor, &title_id)
                     .await
-                    .map_err(to_gql_error)?
-                    .map(|title| title.tags)
-                    .ok_or_else(|| Error::new(format!("title not found: {title_id}")))?,
+                    .map_err(to_gql_error)?,
             };
             tags = Some(merge_title_option_tags(base_tags, options));
         }
@@ -141,8 +140,12 @@ impl TitleMutations {
             &actor,
             &input.title_id,
             input.delete_files_on_disk.unwrap_or(false),
-            input.preview_fingerprint.as_deref(),
-            input.typed_confirmation.as_deref(),
+            input
+                .preview_fingerprint
+                .map(|preview_fingerprint| DeleteExecutionConfirmation {
+                    preview_fingerprint,
+                    typed_confirmation: input.typed_confirmation,
+                }),
         )
         .await
         .map(|_| true)

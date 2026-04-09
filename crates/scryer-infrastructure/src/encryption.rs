@@ -292,7 +292,8 @@ async fn try_migrate_from_db(
 
 #[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
 async fn read_legacy_db_key(db: &crate::SqliteServices) -> Result<Option<EncryptionKey>, String> {
-    let record = db
+    let settings_store = crate::SqliteSettingsStore::new(db);
+    let record = settings_store
         .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, ENCRYPTION_KEY_SETTING, None)
         .await
         .map_err(|e| format!("failed to read encryption key setting: {e}"))?;
@@ -314,16 +315,17 @@ async fn read_legacy_db_key(db: &crate::SqliteServices) -> Result<Option<Encrypt
 
 #[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
 async fn clear_legacy_db_key(db: &crate::SqliteServices) -> Result<(), String> {
-    db.upsert_setting_value(
-        SETTINGS_SCOPE_SYSTEM,
-        ENCRYPTION_KEY_SETTING,
-        None,
-        serde_json::to_string("migrated").unwrap(),
-        "migration",
-        None,
-    )
-    .await
-    .map_err(|e| format!("failed to clear legacy DB key: {e}"))?;
+    crate::SqliteSettingsStore::new(db)
+        .upsert_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            ENCRYPTION_KEY_SETTING,
+            None,
+            serde_json::to_string("migrated").unwrap(),
+            "migration",
+            None,
+        )
+        .await
+        .map_err(|e| format!("failed to clear legacy DB key: {e}"))?;
     Ok(())
 }
 

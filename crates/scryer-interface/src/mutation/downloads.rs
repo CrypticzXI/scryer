@@ -1,5 +1,5 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
-use scryer_application::AppUseCase;
+use scryer_application::{AppUseCase, QueuedReleaseSelection};
 use scryer_domain::User;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -54,16 +54,16 @@ impl DownloadMutations {
             .queue_existing_title_download(
                 &actor,
                 &input.title_id,
-                input.release.source_hint,
-                source_kind,
-                input.release.source_title.clone(),
+                QueuedReleaseSelection {
+                    source_hint: input.release.source_hint,
+                    source_kind,
+                    source_title: input.release.source_title.clone(),
+                },
             )
             .await
             .map_err(to_gql_error)?;
         let title = app
-            .services
-            .titles
-            .get_by_id(&input.title_id)
+            .get_title_for_trigger_actions(&actor, &input.title_id)
             .await
             .map_err(to_gql_error)?
             .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;
@@ -121,22 +121,10 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
 
-        let completed_downloads = app
-            .services
-            .download_client
-            .list_completed_downloads()
+        let completed = app
+            .get_completed_download(&actor, &input.download_client_item_id)
             .await
             .map_err(to_gql_error)?;
-
-        let completed = completed_downloads
-            .into_iter()
-            .find(|cd| cd.download_client_item_id == input.download_client_item_id)
-            .ok_or_else(|| {
-                Error::new(format!(
-                    "completed download not found: {}",
-                    input.download_client_item_id
-                ))
-            })?;
 
         let import_result = app
             .trigger_manual_import(&actor, &completed, input.title_id.as_deref())

@@ -64,6 +64,7 @@ impl AppUseCase {
         // Supersede any existing waiting releases for this wanted item with a lower score
         let existing = self
             .services
+            .workflow
             .pending_releases
             .list_pending_releases_for_wanted_item(&wanted.id)
             .await
@@ -83,6 +84,7 @@ impl AppUseCase {
 
         match self
             .services
+            .workflow
             .pending_releases
             .insert_pending_release(&pending)
             .await
@@ -91,6 +93,7 @@ impl AppUseCase {
                 // Mark older, lower-scored releases as superseded
                 let _ = self
                     .services
+                    .workflow
                     .pending_releases
                     .supersede_pending_releases_for_wanted_item(&wanted.id, &pending.id)
                     .await;
@@ -122,6 +125,7 @@ impl AppUseCase {
 
         let expired = self
             .services
+            .workflow
             .pending_releases
             .list_expired_pending_releases(&now_str)
             .await?;
@@ -148,6 +152,7 @@ impl AppUseCase {
 
             let Some(wanted) = self
                 .services
+                .workflow
                 .wanted_items
                 .get_wanted_item_by_id(&wanted_item_id)
                 .await?
@@ -156,6 +161,7 @@ impl AppUseCase {
                 for pr in &releases {
                     let _ = self
                         .services
+                        .workflow
                         .pending_releases
                         .update_pending_release_status(&pr.id, PendingReleaseStatus::Expired, None)
                         .await;
@@ -168,6 +174,7 @@ impl AppUseCase {
                 for pr in &releases {
                     let _ = self
                         .services
+                        .workflow
                         .pending_releases
                         .update_pending_release_status(
                             &pr.id,
@@ -187,6 +194,7 @@ impl AppUseCase {
                         // Mark this one as grabbed
                         let _ = self
                             .services
+                            .workflow
                             .pending_releases
                             .update_pending_release_status(
                                 &pr.id,
@@ -197,6 +205,7 @@ impl AppUseCase {
                         // Mark siblings as superseded
                         let _ = self
                             .services
+                            .workflow
                             .pending_releases
                             .supersede_pending_releases_for_wanted_item(&wanted_item_id, &pr.id)
                             .await;
@@ -208,6 +217,7 @@ impl AppUseCase {
                         // This release couldn't be grabbed (blocklisted, etc) — try next
                         let _ = self
                             .services
+                            .workflow
                             .pending_releases
                             .update_pending_release_status(
                                 &pr.id,
@@ -224,6 +234,7 @@ impl AppUseCase {
                         );
                         let _ = self
                             .services
+                            .workflow
                             .pending_releases
                             .update_pending_release_status(
                                 &pr.id,
@@ -249,6 +260,7 @@ impl AppUseCase {
     /// List all pending releases that are waiting to be grabbed.
     pub async fn list_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
         self.services
+            .workflow
             .pending_releases
             .list_waiting_pending_releases()
             .await
@@ -260,7 +272,11 @@ impl AppUseCase {
         id: &str,
     ) -> AppResult<Option<PendingRelease>> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.services.pending_releases.get_pending_release(id).await
+        self.services
+            .workflow
+            .pending_releases
+            .get_pending_release(id)
+            .await
     }
 
     pub async fn list_pending_releases_for_wanted_item(
@@ -270,6 +286,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<PendingRelease>> {
         require(actor, &Entitlement::ManageConfig)?;
         self.services
+            .workflow
             .pending_releases
             .list_pending_releases_for_wanted_item(wanted_item_id)
             .await
@@ -279,6 +296,7 @@ impl AppUseCase {
     pub async fn force_grab_pending_release(&self, id: &str) -> AppResult<bool> {
         let pr = self
             .services
+            .workflow
             .pending_releases
             .get_pending_release(id)
             .await?;
@@ -295,6 +313,7 @@ impl AppUseCase {
         let now = Utc::now();
         let wanted = self
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_by_id(&pr.wanted_item_id)
             .await?
@@ -308,6 +327,7 @@ impl AppUseCase {
     pub async fn dismiss_pending_release(&self, id: &str) -> AppResult<bool> {
         let pr = self
             .services
+            .workflow
             .pending_releases
             .get_pending_release(id)
             .await?;
@@ -322,6 +342,7 @@ impl AppUseCase {
             )));
         }
         self.services
+            .workflow
             .pending_releases
             .update_pending_release_status(id, PendingReleaseStatus::Dismissed, None)
             .await?;
@@ -336,13 +357,14 @@ impl AppUseCase {
         now: &chrono::DateTime<Utc>,
     ) -> AppResult<bool> {
         // Load title
-        let Some(title) = self.services.titles.get_by_id(&pr.title_id).await? else {
+        let Some(title) = self.services.catalog.titles.get_by_id(&pr.title_id).await? else {
             return Ok(false);
         };
 
         // Check blocklist
         let db_blocklist: std::collections::HashSet<String> = self
             .services
+            .workflow
             .release_attempts
             .list_failed_release_signatures_for_title(&title.id, 200)
             .await
@@ -378,12 +400,12 @@ impl AppUseCase {
             .map(|id| id.value.clone());
 
         let profile = self
-            .resolve_quality_profile(
-                &title.tags,
-                title.imdb_id.as_deref(),
-                tvdb_id.as_deref(),
-                Some(category),
-            )
+            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+                title_tags: &title.tags,
+                imdb_id: title.imdb_id.as_deref(),
+                tvdb_id: tvdb_id.as_deref(),
+                category_hint: Some(category),
+            })
             .await
             .unwrap_or_else(|_| crate::quality_profile::default_quality_profile_for_search());
 
@@ -397,7 +419,7 @@ impl AppUseCase {
         }
 
         let persona = self
-            .resolve_scoring_persona(Some(category), Some(&profile), Some(category))
+            .resolve_scoring_persona(Some(category))
             .await
             .unwrap_or_default();
         let thresholds = self.acquisition_thresholds(&persona).await;
@@ -424,6 +446,7 @@ impl AppUseCase {
 
         let _ = self
             .services
+            .workflow
             .release_attempts
             .record_release_attempt(
                 Some(title.id.clone()),
@@ -454,6 +477,7 @@ impl AppUseCase {
 
         let grab_result = self
             .services
+            .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
@@ -492,6 +516,7 @@ impl AppUseCase {
 
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
@@ -515,6 +540,7 @@ impl AppUseCase {
                 let download_job_id = grab.job_id.clone();
 
                 self.services
+                    .workflow
                     .acquisition_state
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: wanted.id.clone(),
@@ -536,7 +562,6 @@ impl AppUseCase {
                     .await?;
 
                 let _ = self
-                    .services
                     .append_domain_event(new_title_domain_event(
                         None,
                         &title,
@@ -562,6 +587,7 @@ impl AppUseCase {
 
                 let _ = self
                     .services
+                    .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),

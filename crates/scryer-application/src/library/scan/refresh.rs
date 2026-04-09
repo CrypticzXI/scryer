@@ -1,6 +1,30 @@
 use super::*;
 use crate::library_scan_helpers::require_directory_library_path;
 
+async fn title_ready_for_background_refresh(app: &AppUseCase, title: &Title) -> AppResult<bool> {
+    let metadata_language = app.metadata_language().await;
+    if title.metadata_fetched_at.is_none()
+        || title.metadata_language.as_deref() != Some(metadata_language.as_str())
+    {
+        return Ok(false);
+    }
+
+    let Some(handler) = app.facet_registry.get(&title.facet) else {
+        return Ok(false);
+    };
+    if !handler.has_episodes() {
+        return Ok(true);
+    }
+
+    let episodes = app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await?;
+    Ok(!episodes.is_empty())
+}
+
 fn movie_refresh_entry_to_library_file(entry: &MovieTopLevelEntry) -> LibraryFile {
     LibraryFile {
         path: entry.path.to_string_lossy().to_string(),
@@ -33,10 +57,16 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
+    if !title_ready_for_background_refresh(app, title).await? {
+        summary.skipped += 1;
+        return Ok(());
+    }
+
     let probe_outcome =
         run_background_refresh_probe_with_delta(app, &title.id, folder_path, async {
             let file_scan = app
                 .services
+                .library
                 .library_scanner
                 .scan_directory_for_progress_with_metrics(folder_path.to_string_lossy().as_ref())
                 .await?;
@@ -47,6 +77,7 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
                 .collect::<HashSet<_>>();
             let existing_paths = app
                 .services
+                .library
                 .media_files
                 .list_media_files_for_title(&title.id)
                 .await?
@@ -75,6 +106,7 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
                     title.clone(),
                     discovered_files,
                     LibraryScanTitleWalkMode::Additive,
+                    false,
                 ),
             );
             summary.matched += 1;
@@ -92,10 +124,16 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
+    if !title_ready_for_background_refresh(app, title).await? {
+        summary.skipped += 1;
+        return Ok(());
+    }
+
     let probe_outcome =
         run_background_refresh_probe_with_delta(app, &title.id, &entry.path, async {
             let discovered_files = if entry.is_dir {
                 app.services
+                    .library
                     .library_scanner
                     .scan_directory_for_progress_with_metrics(entry.path.to_string_lossy().as_ref())
                     .await?
@@ -153,6 +191,7 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
                     discovered_files,
                     LibraryScanTitleWalkMode::Additive,
                     cleanup,
+                    false,
                 ),
             );
             summary.matched += 1;
@@ -181,7 +220,12 @@ pub(super) async fn background_refresh_series(
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
     let mut workset = HashMap::new();
 
-    let mut existing_titles = app.services.titles.list(Some(facet.clone()), None).await?;
+    let mut existing_titles = app
+        .services
+        .catalog
+        .titles
+        .list(Some(facet.clone()), None)
+        .await?;
     let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
         build_series_title_indexes(&existing_titles);
     let mut existing_titles_by_folder_path = build_series_title_folder_path_index(&existing_titles);
@@ -203,6 +247,7 @@ pub(super) async fn background_refresh_series(
         } else {
             unknown_folders.push(folder);
         }
+        coordinator.mark_title_match_completed(1).await;
     }
 
     for folder_batch in unknown_folders.chunks(LIBRARY_SCAN_BATCH_SIZE) {
@@ -210,7 +255,7 @@ pub(super) async fn background_refresh_series(
         let mut unresolved_candidates = Vec::new();
 
         for candidate in prepared_candidates {
-            if let Some(candidate) = process_series_refresh_candidate(
+            let candidate = process_series_refresh_candidate(
                 app,
                 actor,
                 facet,
@@ -222,14 +267,16 @@ pub(super) async fn background_refresh_series(
                 &mut existing_titles_by_folder_path,
                 &mut summary,
             )
-            .await?
-            {
+            .await?;
+            if let Some(candidate) = candidate {
                 unresolved_candidates.push(candidate);
+            } else {
+                coordinator.mark_title_match_completed(1).await;
             }
         }
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-            app.services.metadata_gateway.clone(),
+            app.services.library.metadata_gateway.clone(),
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,
@@ -255,6 +302,7 @@ pub(super) async fn background_refresh_series(
                     &mut summary,
                 )
                 .await?;
+                coordinator.mark_title_match_completed(1).await;
             }
 
             coordinator.publish_progress().await;
@@ -304,6 +352,7 @@ pub(super) async fn background_refresh_movies(
     let mut workset = HashMap::new();
     let mut existing_titles = app
         .services
+        .catalog
         .titles
         .list(Some(MediaFacet::Movie), None)
         .await?;
@@ -319,6 +368,7 @@ pub(super) async fn background_refresh_movies(
         .collect::<Vec<_>>();
     let collections_by_title = app
         .services
+        .catalog
         .shows
         .list_collections_for_titles(&existing_title_ids)
         .await
@@ -346,12 +396,10 @@ pub(super) async fn background_refresh_movies(
                 &mut summary,
             )
             .await?;
-            continue;
-        }
-
-        if entry.is_dir {
+        } else if entry.is_dir {
             let mut files = app
                 .services
+                .library
                 .library_scanner
                 .scan_library(entry.path.to_string_lossy().as_ref())
                 .await?;
@@ -359,6 +407,7 @@ pub(super) async fn background_refresh_movies(
         } else {
             unknown_files.push(movie_refresh_entry_to_library_file(&entry));
         }
+        coordinator.mark_title_match_completed(1).await;
     }
 
     for file_chunk in unknown_files.chunks(LIBRARY_SCAN_BATCH_SIZE) {
@@ -367,7 +416,7 @@ pub(super) async fn background_refresh_movies(
         let mut unresolved_candidates = Vec::new();
 
         for candidate in prepared_candidates {
-            if let Some(candidate) = process_movie_refresh_candidate(
+            let candidate = process_movie_refresh_candidate(
                 app,
                 actor,
                 candidate,
@@ -381,14 +430,16 @@ pub(super) async fn background_refresh_movies(
                 &mut existing_titles_by_probe_path,
                 &mut summary,
             )
-            .await?
-            {
+            .await?;
+            if let Some(candidate) = candidate {
                 unresolved_candidates.push(candidate);
+            } else {
+                coordinator.mark_title_match_completed(1).await;
             }
         }
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-            app.services.metadata_gateway.clone(),
+            app.services.library.metadata_gateway.clone(),
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,
@@ -416,6 +467,7 @@ pub(super) async fn background_refresh_movies(
                     &mut summary,
                 )
                 .await?;
+                coordinator.mark_title_match_completed(1).await;
             }
 
             coordinator.publish_progress().await;

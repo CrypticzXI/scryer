@@ -9,8 +9,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use serde_json::json;
 use tokio::net::TcpListener;
-use wiremock::MockServer;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
@@ -18,7 +20,9 @@ use scryer_application::{
 };
 use scryer_infrastructure::{
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteServices,
+    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteCatalogStore,
+    SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore, SqliteReleaseStore,
+    SqliteServices, SqliteSettingsStore,
 };
 use scryer_interface::{ApiSchema, build_schema};
 
@@ -35,7 +39,11 @@ pub struct TestContext {
     pub app_url: String,
     pub schema: ApiSchema,
     pub app: AppUseCase,
+    pub catalog: SqliteCatalogStore,
+    pub customization: SqliteCustomizationStore,
+    pub library_state: SqliteLibraryStateStore,
     pub db: SqliteServices,
+    pub settings_store: SqliteSettingsStore,
     pub staged_nzb_store: Arc<FileSystemStagedNzbStore>,
     pub staged_nzb_dir: tempfile::TempDir,
 }
@@ -46,6 +54,7 @@ impl TestContext {
         let nzbget_server = MockServer::start().await;
         let nzbgeek_server = MockServer::start().await;
         let smg_server = MockServer::start().await;
+        mount_default_smg_metadata_mocks(&smg_server).await;
 
         // In-memory SQLite with migrations applied
         let db = SqliteServices::new(":memory:")
@@ -58,6 +67,8 @@ impl TestContext {
                 .expect("failed to create staged nzb store"),
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
+        let release_store = Arc::new(SqliteReleaseStore::new(&db));
+        let settings_store = Arc::new(SqliteSettingsStore::new(&db));
 
         // Real clients pointed at wiremock URLs
         let nzbget = NzbgetDownloadClient::with_staged_nzb_store(
@@ -68,6 +79,8 @@ impl TestContext {
             staged_nzb_store.clone(),
             staged_nzb_pipeline_limit.clone(),
         );
+
+        let config_store = Arc::new(SqliteConfigStore::new(&db));
 
         // Build indexer client backed by built-in WASM plugins (using DynamicPluginProvider
         // so reload_plugins works in integration tests)
@@ -81,7 +94,7 @@ impl TestContext {
             scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),
         );
         let indexer_client = MultiIndexerSearchClient::new(
-            Arc::new(db.clone()),
+            config_store.clone(),
             indexer_stats.clone(),
             plugin_provider.clone(),
         );
@@ -96,21 +109,24 @@ impl TestContext {
             },
         );
 
-        // Build repository implementations — SqliteServices implements all repository traits
-        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(db.clone());
-        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(db.clone());
-        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(db.clone());
+        // Build repository implementations from the shared DB runtime.
+        let catalog_store = SqliteCatalogStore::new(&db);
+        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(catalog_store.clone());
+        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(catalog_store.clone());
+        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(catalog_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
-            Arc::new(db.clone());
+            config_store.clone();
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-            Arc::new(db.clone());
-        let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> =
-            Arc::new(db.clone());
-        let settings: Arc<dyn scryer_application::SettingsRepository> = Arc::new(db.clone());
+            config_store.clone();
+        let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
+        let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
         let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-            Arc::new(db.clone());
+            settings_store.clone();
 
-        let mut services = AppServices::with_default_channels(
+        let library_state_store = SqliteLibraryStateStore::new(&db);
+        let customization_store = SqliteCustomizationStore::new(&db);
+        let workflow_store = Arc::new(scryer_infrastructure::SqliteWorkflowStore::new(&db));
+        let services = AppServices::builder(
             titles,
             shows,
             users,
@@ -122,26 +138,24 @@ impl TestContext {
             settings,
             quality_profiles,
             ":memory:".to_string(),
-        );
-        services.metadata_gateway = Arc::new(metadata_gateway);
-        services.library_scanner = Arc::new(FileSystemLibraryScanner::new());
-        services.media_files = Arc::new(db.clone());
-        services.indexer_stats = indexer_stats;
-        services.plugin_provider = Some(plugin_provider);
-        services.plugin_installations = Arc::new(db.clone());
-        services.rule_sets = Arc::new(db.clone());
-        services.acquisition_state = Arc::new(db.clone());
-        services.domain_events = Arc::new(db.clone());
-        services.wanted_items = Arc::new(db.clone());
-        services.title_history = Arc::new(db.clone());
-        services.download_submissions = Arc::new(db.clone());
-        services.pending_releases = Arc::new(db.clone());
-        services.pp_scripts = Arc::new(db.clone());
-        services.staged_nzb_store = staged_nzb_store.clone();
-        services.staged_nzb_pipeline_limit = staged_nzb_pipeline_limit;
-        services.job_runs = Arc::new(db.clone());
-        services.library_probe_signatures = Arc::new(db.clone());
-        services.library_scan_unmatched_items = Arc::new(db.clone());
+        )
+        .with_library_state_store(Arc::new(library_state_store.clone()))
+        .with_customization_store(Arc::new(customization_store.clone()))
+        .with_acquisition_state(workflow_store.clone())
+        .with_domain_events(workflow_store.clone())
+        .with_download_submissions(workflow_store.clone())
+        .with_import_artifacts(workflow_store.clone())
+        .with_imports(workflow_store.clone())
+        .with_job_runs(workflow_store.clone())
+        .with_system_info(settings_store.clone())
+        .with_metadata_gateway(Arc::new(metadata_gateway))
+        .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
+        .with_indexer_stats(indexer_stats)
+        .with_plugin_provider(plugin_provider)
+        .with_staged_nzb_store(staged_nzb_store.clone())
+        .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
+        .with_workflow_operations(workflow_store)
+        .build();
 
         // Facet registry with all built-in facets
         let mut registry = FacetRegistry::new();
@@ -165,7 +179,7 @@ impl TestContext {
         );
 
         // Build the GraphQL schema with authentication disabled.
-        let schema = build_schema(app.clone(), db.clone(), false);
+        let schema = build_schema(app.clone(), false);
 
         // Start axum server on a random port
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -188,7 +202,11 @@ impl TestContext {
             app_url,
             schema,
             app,
+            catalog: catalog_store,
+            customization: customization_store,
+            library_state: library_state_store,
             db,
+            settings_store: settings_store.as_ref().clone(),
             staged_nzb_store,
             staged_nzb_dir,
         }
@@ -205,6 +223,89 @@ impl TestContext {
             .build()
             .expect("failed to build reqwest client")
     }
+}
+
+async fn mount_default_smg_metadata_mocks(server: &MockServer) {
+    let fixture = json!({
+        "data": {
+            "m0": {
+                "movie": {
+                    "tvdb_id": 123456,
+                    "name": "Test Movie Title",
+                    "slug": "test-movie-title",
+                    "year": 2024,
+                    "status": "Released",
+                    "overview": "A gripping tale of testing integration.",
+                    "poster_url": "https://artworks.thetvdb.com/banners/movies/123456/posters/test.jpg",
+                    "language": "eng",
+                    "runtime_minutes": 142,
+                    "sort_title": "Test Movie Title",
+                    "imdb_id": "tt1234567",
+                    "genres": ["Action", "Thriller"],
+                    "studio": "Test Studios",
+                    "tmdb_release_date": "2024-06-15"
+                }
+            },
+            "s0": {
+                "series": {
+                    "tvdb_id": 345678,
+                    "name": "Test Show Name",
+                    "sort_name": "Test Show Name",
+                    "slug": "test-show-name",
+                    "status": "Continuing",
+                    "year": 2023,
+                    "first_aired": "2023-09-15",
+                    "overview": "A compelling drama about software testing.",
+                    "network": "Test Network",
+                    "runtime_minutes": 45,
+                    "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
+                    "country": "usa",
+                    "genres": ["Drama", "Thriller"],
+                    "aliases": ["Testing Show", "QA Chronicles"],
+                    "tagged_aliases": [],
+                    "seasons": [
+                        {
+                            "tvdb_id": 1000001,
+                            "number": 1,
+                            "label": "Season 1",
+                            "episode_type": "default"
+                        }
+                    ],
+                    "episodes": [
+                        {
+                            "tvdb_id": 2000001,
+                            "episode_number": 1,
+                            "season_number": 1,
+                            "name": "Pilot",
+                            "aired": "2023-09-15",
+                            "runtime_minutes": 60,
+                            "is_filler": false,
+                            "is_recap": false,
+                            "language": "eng",
+                            "overview": "The team assembles.",
+                            "absolute_number": "1"
+                        }
+                    ],
+                    "anime_mappings": [],
+                    "anime_movies": []
+                }
+            }
+        }
+    })
+    .to_string();
+
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .with_priority(100)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+        .with_priority(100)
+        .mount(server)
+        .await;
 }
 
 /// Load a fixture file relative to the workspace `tests/fixtures/` directory.

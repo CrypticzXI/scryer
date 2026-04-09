@@ -680,7 +680,7 @@ async fn rego_engine_rebuilds_after_create() {
 
     // Before creating any rules, engine should be empty
     {
-        let engine = ctx.app.services.user_rules.read().unwrap();
+        let engine = ctx.app.user_rules_engine_snapshot();
         assert!(engine.is_empty(), "engine should start empty");
     }
 
@@ -688,7 +688,7 @@ async fn rego_engine_rebuilds_after_create() {
 
     // After creating, engine should have the user rule + any plugin-declared
     // scoring policies (e.g. nzbgeek_vote_penalty, nzbgeek_language_bonus).
-    let engine = ctx.app.services.user_rules.read().unwrap();
+    let engine = ctx.app.user_rules_engine_snapshot();
     assert!(
         engine.rule_count() >= 1,
         "engine should have at least 1 rule"
@@ -700,7 +700,7 @@ async fn rego_engine_simple_bonus() {
     let ctx = TestContext::new().await;
     create_rule(&ctx, "Simple Bonus", SIMPLE_BONUS_REGO).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input();
     let result = evaluator.evaluate(&input, "movie").unwrap();
@@ -715,7 +715,7 @@ async fn rego_engine_conditional_fires() {
     let ctx = TestContext::new().await;
     create_rule(&ctx, "Dual Audio Rule", DUAL_AUDIO_REGO).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input_with(|i| {
         i.release.is_dual_audio = true;
@@ -736,7 +736,7 @@ async fn rego_engine_conditional_skips() {
     let ctx = TestContext::new().await;
     create_rule(&ctx, "Dual Audio Rule", DUAL_AUDIO_REGO).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input_with(|i| {
         i.release.is_dual_audio = false;
@@ -755,7 +755,7 @@ async fn rego_engine_block_score() {
     let ctx = TestContext::new().await;
     create_rule(&ctx, "Block Rule", BLOCK_REGO).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input_with(|i| {
         i.release.is_atmos = false;
@@ -772,7 +772,7 @@ async fn rego_engine_facet_skipped() {
     let ctx = TestContext::new().await;
     create_rule_with_facets(&ctx, "Anime Only", SIMPLE_BONUS_REGO, &["anime"]).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input();
     let result = evaluator.evaluate(&input, "movie").unwrap();
@@ -789,7 +789,7 @@ async fn rego_engine_facet_matches() {
     let ctx = TestContext::new().await;
     create_rule_with_facets(&ctx, "Anime Only", SIMPLE_BONUS_REGO, &["anime"]).await;
 
-    let engine = ctx.app.services.user_rules.read().unwrap().clone();
+    let engine = ctx.app.user_rules_engine_snapshot();
     let mut evaluator = engine.evaluator();
     let input = test_input_with(|i| {
         i.context.category = "anime".to_string();
@@ -811,7 +811,7 @@ async fn rego_engine_disabled_excluded() {
 
     // Verify engine has the rule (plus any plugin-declared scoring policies)
     let count_with_rule = {
-        let engine = ctx.app.services.user_rules.read().unwrap();
+        let engine = ctx.app.user_rules_engine_snapshot();
         assert!(engine.rule_count() >= 1);
         engine.rule_count()
     };
@@ -827,7 +827,7 @@ async fn rego_engine_disabled_excluded() {
     .await;
 
     // Engine should have one fewer rule (the disabled user rule)
-    let engine = ctx.app.services.user_rules.read().unwrap();
+    let engine = ctx.app.user_rules_engine_snapshot();
     assert_eq!(
         engine.rule_count(),
         count_with_rule - 1,

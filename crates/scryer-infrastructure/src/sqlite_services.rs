@@ -1,23 +1,22 @@
-use scryer_application::{
-    AppError, AppResult, QualityProfile, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, TitleReleaseBlocklistEntry,
-};
-use scryer_domain::{
-    BlocklistEntry, DownloadClientConfig, Episode, ImportRecord, ImportStatus, TitleHistoryRecord,
-};
+use scryer_application::{AppError, AppResult, QualityProfile};
+use scryer_domain::{BlocklistEntry, Episode, TitleHistoryRecord};
+use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{DbCommand, spawn_db_command_worker};
-use crate::types::{MigrationMode, MigrationStatus, SettingsDefinitionRecord, SettingsValueRecord};
+use crate::encryption::EncryptionKey;
+use crate::types::MigrationMode;
 
 #[derive(Clone)]
-pub struct SqliteServices {
+pub struct DbRuntime {
     pub(crate) sender: mpsc::Sender<DbCommand>,
     pub(crate) pool: sqlx::SqlitePool,
-    db_path: String,
+    pub(crate) encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
 
-impl SqliteServices {
+pub type SqliteServices = DbRuntime;
+
+impl DbRuntime {
     /// Public pool accessor for cross-crate query access.
     pub fn pool(&self) -> &sqlx::SqlitePool {
         &self.pool
@@ -107,431 +106,22 @@ impl SqliteServices {
         Ok(Self {
             sender,
             pool,
-            db_path: path.as_ref().to_string(),
+            encryption_key: Arc::new(RwLock::new(None)),
         })
     }
 
-    pub fn sqlite_path(&self) -> AppResult<String> {
-        Ok(self.db_path.clone())
+    pub(crate) fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
+        self.encryption_key.clone()
     }
 
     pub async fn set_encryption_key(&self, key: crate::encryption::EncryptionKey) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::SetEncryptionKey {
-                key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
+        *self
+            .encryption_key
+            .write()
+            .map_err(|_| AppError::Repository("encryption key lock poisoned".to_string()))? =
+            Some(key);
 
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_applied_migrations(&self) -> AppResult<Vec<MigrationStatus>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListAppliedMigrations { reply: reply_tx })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn vacuum_into_db(&self, dest_path: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::VacuumInto {
-                dest_path: dest_path.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_workflow_operation(
-        &self,
-        operation_type: impl Into<String>,
-        status: impl Into<String>,
-        actor_user_id: Option<String>,
-        progress_json: Option<String>,
-        started_at: Option<String>,
-        completed_at: Option<String>,
-    ) -> AppResult<crate::types::WorkflowOperationRecord> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateWorkflowOperation {
-                operation_type: operation_type.into(),
-                status: status.into(),
-                actor_user_id,
-                progress_json,
-                started_at,
-                completed_at,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_release_download_attempt(
-        &self,
-        title_id: Option<String>,
-        source_hint: Option<String>,
-        source_title: Option<String>,
-        outcome: ReleaseDownloadAttemptOutcome,
-        error_message: Option<String>,
-        source_password: Option<String>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateReleaseDownloadAttempt {
-                title_id,
-                source_hint,
-                source_title,
-                outcome,
-                error_message,
-                source_password,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_import_request(
-        &self,
-        source_system: String,
-        source_ref: String,
-        import_type: String,
-        payload_json: String,
-    ) -> AppResult<String> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateImportRequest {
-                source_system,
-                source_ref,
-                import_type,
-                payload_json,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_failed_release_download_attempt_signatures(
-        &self,
-        limit: usize,
-    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListFailedReleaseDownloadAttempts {
-                limit: limit as i64,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        let records = reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))??;
-
-        Ok(records
-            .into_iter()
-            .map(|record| ReleaseDownloadFailureSignature {
-                source_hint: record.source_hint,
-                source_title: record.source_title,
-            })
-            .collect())
-    }
-
-    pub async fn list_failed_release_download_attempts_for_title(
-        &self,
-        title_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListFailedReleaseDownloadAttemptsForTitle {
-                title_id: title_id.to_string(),
-                limit: limit as i64,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        let records = reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))??;
-
-        Ok(records
-            .into_iter()
-            .map(|record| TitleReleaseBlocklistEntry {
-                source_hint: record.source_hint,
-                source_title: record.source_title,
-                error_message: record.error_message,
-                attempted_at: record.attempted_at,
-            })
-            .collect())
-    }
-
-    pub async fn get_latest_source_password(
-        &self,
-        title_id: Option<&str>,
-        source_hint: Option<&str>,
-        source_title: Option<&str>,
-    ) -> AppResult<Option<String>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetLatestSourcePassword {
-                title_id: title_id.map(|value| value.to_string()),
-                source_hint: source_hint.map(|value| value.to_string()),
-                source_title: source_title.map(|value| value.to_string()),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn record_download_submission(
-        &self,
-        title_id: String,
-        facet: String,
-        download_client_type: String,
-        download_client_item_id: String,
-        source_title: Option<String>,
-        collection_id: Option<String>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::RecordDownloadSubmission {
-                title_id,
-                facet,
-                download_client_type,
-                download_client_item_id,
-                source_title,
-                collection_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn commit_successful_grab(
-        &self,
-        commit: scryer_application::SuccessfulGrabCommit,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CommitSuccessfulGrab {
-                commit,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn find_download_submission(
-        &self,
-        download_client_type: &str,
-        download_client_item_id: &str,
-    ) -> AppResult<Option<scryer_application::DownloadSubmission>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::FindDownloadSubmission {
-                download_client_type: download_client_type.to_string(),
-                download_client_item_id: download_client_item_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_download_submissions_for_title(
-        &self,
-        title_id: &str,
-    ) -> AppResult<Vec<scryer_application::DownloadSubmission>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListDownloadSubmissionsForTitle {
-                title_id: title_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_download_submissions_for_title(&self, title_id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteDownloadSubmissionsForTitle {
-                title_id: title_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_download_submission_by_client_item_id(
-        &self,
-        download_client_item_id: &str,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteDownloadSubmissionByClientItemId {
-                download_client_item_id: download_client_item_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_tracked_state(
-        &self,
-        download_client_type: &str,
-        download_client_item_id: &str,
-        tracked_state: &str,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateTrackedState {
-                download_client_type: download_client_type.to_string(),
-                download_client_item_id: download_client_item_id.to_string(),
-                tracked_state: tracked_state.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn get_tracked_state(
-        &self,
-        download_client_type: &str,
-        download_client_item_id: &str,
-    ) -> AppResult<Option<String>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetTrackedState {
-                download_client_type: download_client_type.to_string(),
-                download_client_item_id: download_client_item_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn insert_import_artifact(
-        &self,
-        artifact: scryer_application::ImportArtifact,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::InsertImportArtifact {
-                artifact,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_import_artifacts_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Vec<scryer_application::ImportArtifact>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListImportArtifactsBySourceRef {
-                source_system: source_system.to_string(),
-                source_ref: source_ref.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn count_import_artifacts_by_result(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        result: &str,
-    ) -> AppResult<u64> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CountImportArtifactsByResult {
-                source_system: source_system.to_string(),
-                source_ref: source_ref.to_string(),
-                result: result.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        Ok(())
     }
 
     pub async fn upsert_library_scan_unmatched_item(
@@ -615,202 +205,13 @@ impl SqliteServices {
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
-
-    #[expect(clippy::too_many_arguments)]
-    pub async fn ensure_setting_definition(
-        &self,
-        category: impl Into<String>,
-        scope: impl Into<String>,
-        key_name: impl Into<String>,
-        data_type: impl Into<String>,
-        default_value_json: impl Into<String>,
-        is_sensitive: bool,
-        validation_json: Option<String>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::EnsureSettingDefinition {
-                category: category.into(),
-                scope: scope.into(),
-                key_name: key_name.into(),
-                data_type: data_type.into(),
-                default_value_json: default_value_json.into(),
-                is_sensitive,
-                validation_json,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn batch_ensure_setting_definitions(
-        &self,
-        definitions: Vec<crate::types::SettingDefinitionSeed>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::BatchEnsureSettingDefinitions {
-                definitions,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn batch_get_settings_with_defaults(
-        &self,
-        keys: Vec<(String, String, Option<String>)>,
-    ) -> AppResult<Vec<Option<SettingsValueRecord>>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::BatchGetSettingsWithDefaults {
-                keys,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn batch_upsert_settings_if_not_overridden(
-        &self,
-        entries: Vec<(String, String, String, String)>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::BatchUpsertSettingsIfNotOverridden {
-                entries,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_setting_definitions(
-        &self,
-        scope: Option<String>,
-    ) -> AppResult<Vec<SettingsDefinitionRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListSettingDefinitions {
-                scope,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_settings_with_defaults(
-        &self,
-        scope: impl Into<String>,
-        scope_id: Option<String>,
-    ) -> AppResult<Vec<SettingsValueRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListSettingsWithValues {
-                scope: scope.into(),
-                scope_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn get_setting_with_defaults(
-        &self,
-        scope: impl Into<String>,
-        key_name: impl Into<String>,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<SettingsValueRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetSettingWithDefaults {
-                scope: scope.into(),
-                key_name: key_name.into(),
-                scope_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn upsert_setting_value(
-        &self,
-        scope: impl Into<String>,
-        key_name: impl Into<String>,
-        scope_id: Option<String>,
-        value_json: impl Into<String>,
-        source: impl Into<String>,
-        updated_by_user_id: Option<String>,
-    ) -> AppResult<SettingsValueRecord> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpsertSettingValue {
-                scope: scope.into(),
-                key_name: key_name.into(),
-                scope_id,
-                value_json: value_json.into(),
-                source: source.into(),
-                updated_by_user_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
     pub async fn list_quality_profiles(
         &self,
         scope: impl Into<String>,
         scope_id: Option<String>,
     ) -> AppResult<Vec<QualityProfile>> {
-        #[expect(clippy::type_complexity)]
-        let (reply_tx, reply_rx): (
-            oneshot::Sender<AppResult<Vec<QualityProfile>>>,
-            oneshot::Receiver<AppResult<Vec<QualityProfile>>>,
-        ) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListQualityProfiles {
-                scope: scope.into(),
-                scope_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        let scope = scope.into();
+        crate::queries::quality::list_quality_profiles_query(&self.pool, &scope, scope_id).await
     }
 
     pub async fn replace_quality_profiles(
@@ -819,20 +220,11 @@ impl SqliteServices {
         scope_id: Option<String>,
         profiles: Vec<QualityProfile>,
     ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ReplaceQualityProfiles {
-                scope: scope.into(),
-                scope_id,
-                profiles_json: profiles,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        let scope = scope.into();
+        crate::queries::quality::replace_quality_profiles_query(
+            &self.pool, &scope, scope_id, profiles,
+        )
+        .await
     }
 
     pub async fn upsert_quality_profiles(
@@ -841,222 +233,52 @@ impl SqliteServices {
         scope_id: Option<String>,
         profiles: Vec<QualityProfile>,
     ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpsertQualityProfiles {
-                scope: scope.into(),
-                scope_id,
-                profiles_json: profiles,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        let scope = scope.into();
+        crate::queries::quality::upsert_quality_profiles_query(
+            &self.pool, &scope, scope_id, profiles,
+        )
+        .await
     }
 
     pub async fn delete_quality_profile(&self, profile_id: impl Into<String>) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteQualityProfile {
-                profile_id: profile_id.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetImportById {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetImportBySourceRef {
-                source_system: source_system.to_string(),
-                source_ref: source_ref.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_import_status(
-        &self,
-        import_id: &str,
-        status: ImportStatus,
-        result_json: Option<String>,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateImportStatus {
-                import_id: import_id.to_string(),
-                status: status.as_str().to_string(),
-                result_json,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::RecoverStaleProcessingImports {
-                stale_seconds,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListPendingImports { reply: reply_tx })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_imports(&self, limit: i64) -> AppResult<Vec<ImportRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListImports {
-                limit,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::quality::delete_quality_profile_query(&self.pool, &profile_id.into()).await
     }
 
     pub async fn insert_media_file(
         &self,
         input: &scryer_application::InsertMediaFileInput,
     ) -> AppResult<String> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::InsertMediaFile {
-                input: input.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::insert_media_file_query(&self.pool, input).await
     }
 
     pub async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::LinkFileToEpisode {
-                file_id: file_id.to_string(),
-                episode_id: episode_id.to_string(),
-                reply: reply_tx,
-            })
+        crate::queries::media_file::link_file_to_episode_query(&self.pool, file_id, episode_id)
             .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     pub async fn list_media_files_for_title(
         &self,
         title_id: &str,
     ) -> AppResult<Vec<scryer_application::TitleMediaFile>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListMediaFilesForTitle {
-                title_id: title_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::list_media_files_for_title_query(&self.pool, title_id).await
     }
 
     pub async fn list_title_media_size_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<scryer_application::TitleMediaSizeSummary>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListTitleMediaSizeSummaries {
-                title_ids: title_ids.to_vec(),
-                reply: reply_tx,
-            })
+        crate::queries::media_file::list_title_media_size_summaries_query(&self.pool, title_ids)
             .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     pub async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<scryer_application::TitleEpisodeProgressSummary>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListTitleEpisodeProgressSummaries {
-                title_ids: title_ids.to_vec(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::list_title_episode_progress_summaries_query(
+            &self.pool, title_ids,
+        )
+        .await
     }
 
     pub async fn update_media_file_analysis(
@@ -1064,19 +286,8 @@ impl SqliteServices {
         file_id: &str,
         analysis: scryer_application::MediaFileAnalysis,
     ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateMediaFileAnalysis {
-                file_id: file_id.to_string(),
-                analysis: Box::new(analysis),
-                reply: reply_tx,
-            })
+        crate::queries::media_file::update_media_file_analysis_query(&self.pool, file_id, &analysis)
             .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     pub async fn update_media_file_source_signature(
@@ -1086,104 +297,41 @@ impl SqliteServices {
         source_signature_scheme: Option<String>,
         source_signature_value: Option<String>,
     ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateMediaFileSourceSignature {
-                file_id: file_id.to_string(),
-                size_bytes,
-                source_signature_scheme,
-                source_signature_value,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::update_media_file_source_signature_query(
+            &self.pool,
+            file_id,
+            size_bytes,
+            source_signature_scheme.as_deref(),
+            source_signature_value.as_deref(),
+        )
+        .await
     }
 
     pub async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateMediaFilePath {
-                file_id: file_id.to_string(),
-                file_path: file_path.to_string(),
-                reply: reply_tx,
-            })
+        crate::queries::media_file::update_media_file_path_query(&self.pool, file_id, file_path)
             .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     pub async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::MarkMediaFileScanFailed {
-                file_id: file_id.to_string(),
-                error: error.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::mark_scan_failed_query(&self.pool, file_id, error).await
     }
 
     pub async fn get_media_file_by_id(
         &self,
         file_id: &str,
     ) -> AppResult<Option<scryer_application::TitleMediaFile>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetMediaFileById {
-                file_id: file_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::get_media_file_by_id_query(&self.pool, file_id).await
     }
 
     pub async fn get_media_file_by_path(
         &self,
         file_path: &str,
     ) -> AppResult<Option<scryer_application::TitleMediaFile>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetMediaFileByPath {
-                file_path: file_path.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::get_media_file_by_path_query(&self.pool, file_path).await
     }
 
     pub async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteMediaFile {
-                file_id: file_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
+        crate::queries::media_file::delete_media_file_query(&self.pool, file_id).await
     }
 
     pub async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
@@ -1524,118 +672,6 @@ impl SqliteServices {
             .send(DbCommand::ListReleaseDecisionsForWantedItem {
                 wanted_item_id: wanted_item_id.to_string(),
                 limit,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_download_client_configs(
-        &self,
-        client_type: Option<String>,
-    ) -> AppResult<Vec<DownloadClientConfig>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListDownloadClientConfigs {
-                client_type,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn get_download_client_config(
-        &self,
-        id: &str,
-    ) -> AppResult<Option<DownloadClientConfig>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::GetDownloadClientConfig {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_download_client_config(
-        &self,
-        config: DownloadClientConfig,
-    ) -> AppResult<DownloadClientConfig> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateDownloadClientConfig {
-                config,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_download_client_config(
-        &self,
-        id: &str,
-        name: Option<String>,
-        client_type: Option<String>,
-        base_url: Option<String>,
-        config_json: Option<String>,
-        is_enabled: Option<bool>,
-    ) -> AppResult<DownloadClientConfig> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateDownloadClientConfig {
-                id: id.to_string(),
-                name,
-                client_type,
-                base_url,
-                config_json,
-                is_enabled,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_download_client_config(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteDownloadClientConfig {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn reorder_download_client_configs(&self, ordered_ids: Vec<String>) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ReorderDownloadClientConfigs {
-                ordered_ids,
                 reply: reply_tx,
             })
             .await

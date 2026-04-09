@@ -9,12 +9,10 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
 use ring::digest;
 use scryer_application::{
     AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageSyncTask,
-    TitleImageVariantRecord,
+    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
 };
 use scryer_domain::Title;
 use sqlx::{Row, SqlitePool};
-use tokio::sync::oneshot;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -239,46 +237,6 @@ impl TitleImageProcessor for SqliteTitleImageProcessor {
         })
         .await
         .map_err(|err| AppError::Repository(format!("image encode task failed: {err}")))?
-    }
-}
-
-#[async_trait]
-impl TitleImageRepository for crate::sqlite_services::SqliteServices {
-    async fn list_titles_requiring_image_refresh(
-        &self,
-        kind: TitleImageKind,
-        limit: usize,
-    ) -> AppResult<Vec<TitleImageSyncTask>> {
-        list_titles_requiring_image_refresh_query(&self.pool, kind, limit).await
-    }
-
-    async fn replace_title_image(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(crate::commands::DbCommand::ReplaceTitleImage {
-                title_id: title_id.to_string(),
-                replacement: Box::new(replacement),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    async fn get_title_image_blob(
-        &self,
-        title_id: &str,
-        kind: TitleImageKind,
-        variant_key: &str,
-    ) -> AppResult<Option<TitleImageBlob>> {
-        get_title_image_blob_query(&self.pool, title_id, kind, variant_key).await
     }
 }
 

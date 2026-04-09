@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use scryer_application::{AppError, AppResult};
+use scryer_application::{AppError, AppResult, DownloadClientConfigUpdate};
 use scryer_domain::DownloadClientConfig;
 use sqlx::{Row, SqlitePool};
 
@@ -172,32 +172,23 @@ pub(crate) async fn create_download_client_config_query(
     Ok(config.clone())
 }
 
-#[expect(clippy::too_many_arguments)]
 pub(crate) async fn update_download_client_config_query(
     pool: &SqlitePool,
-    id: &str,
-    name: Option<String>,
-    client_type: Option<String>,
-    base_url: Option<String>,
-    config_json: Option<String>,
-    is_enabled: Option<bool>,
+    update: &DownloadClientConfigUpdate,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<DownloadClientConfig> {
     let mut assignments = vec!["updated_at = ?".to_string()];
 
-    if name.is_some() {
+    if update.name.is_some() {
         assignments.push("name = ?".to_string());
     }
-    if client_type.is_some() {
+    if update.client_type.is_some() {
         assignments.push("client_type = ?".to_string());
     }
-    if base_url.is_some() {
-        assignments.push("base_url = ?".to_string());
-    }
-    if config_json.is_some() {
+    if update.config_json.is_some() {
         assignments.push("config_json = ?".to_string());
     }
-    if is_enabled.is_some() {
+    if update.is_enabled.is_some() {
         assignments.push("is_enabled = ?".to_string());
     }
 
@@ -214,24 +205,21 @@ pub(crate) async fn update_download_client_config_query(
     let mut statement = sqlx::query(&sql);
     statement = statement.bind(Utc::now().to_rfc3339());
 
-    if let Some(name) = name {
+    if let Some(name) = update.name.as_ref() {
         statement = statement.bind(name);
     }
-    if let Some(client_type) = client_type {
+    if let Some(client_type) = update.client_type.as_ref() {
         statement = statement.bind(client_type);
     }
-    if let Some(base_url) = base_url {
-        statement = statement.bind(base_url);
-    }
-    if let Some(config_json) = config_json {
-        let stored = maybe_encrypt_config_json(encryption_key, &config_json)?;
+    if let Some(config_json) = update.config_json.as_ref() {
+        let stored = maybe_encrypt_config_json(encryption_key, config_json)?;
         statement = statement.bind(stored);
     }
-    if let Some(is_enabled) = is_enabled {
+    if let Some(is_enabled) = update.is_enabled {
         statement = statement.bind(if is_enabled { 1_i64 } else { 0_i64 });
     }
 
-    statement = statement.bind(id);
+    statement = statement.bind(&update.id);
 
     let result = statement
         .execute(pool)
@@ -239,12 +227,15 @@ pub(crate) async fn update_download_client_config_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("download client config {}", id)));
+        return Err(AppError::NotFound(format!(
+            "download client config {}",
+            update.id
+        )));
     }
 
-    get_download_client_config_query(pool, id, encryption_key)
+    get_download_client_config_query(pool, &update.id, encryption_key)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("download client config {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("download client config {}", update.id)))
 }
 
 pub(crate) async fn delete_download_client_config_query(

@@ -1,5 +1,5 @@
 use crate::{
-    AppError, AppResult, AppUseCase, ImportArtifact, WantedCompleteTransition,
+    AppError, AppResult, AppUseCase, CollectionUpdate, ImportArtifact, WantedCompleteTransition,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
@@ -51,6 +51,7 @@ pub async fn retry_failed_import(
 
     let record = app
         .services
+        .workflow
         .imports
         .get_import_by_id(import_id)
         .await?
@@ -68,8 +69,7 @@ pub async fn retry_failed_import(
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
 
     // Reset to processing
-    app.services
-        .update_import_status_and_notify(import_id, ImportStatus::Processing, None)
+    app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
     let started_at = Utc::now();
@@ -96,7 +96,6 @@ pub async fn retry_failed_import(
             };
             let result_json = serde_json::to_string(&result).ok();
             let _ = app
-                .services
                 .update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)
                 .await;
             Ok(result)
@@ -122,6 +121,7 @@ pub async fn try_import_completed_downloads(
     // TODO: increase to 600 (10 minutes) for production — large NAS copies can take a while
     match app
         .services
+        .workflow
         .imports
         .recover_stale_processing_imports(120)
         .await
@@ -163,6 +163,7 @@ pub async fn try_import_completed_downloads(
     // Fetch completed downloads from the download client (single RPC call)
     let completed_downloads = match app
         .services
+        .integrations
         .download_client
         .list_completed_downloads()
         .await
@@ -186,6 +187,7 @@ pub async fn try_import_completed_downloads(
         let source_ref = &item.download_client_item_id;
         match app
             .services
+            .workflow
             .imports
             .is_already_imported(&item.client_type, source_ref)
             .await
@@ -242,6 +244,7 @@ pub async fn try_import_completed_downloads(
             // Fallback: look up the download_submissions table
             match app
                 .services
+                .workflow
                 .download_submissions
                 .find_by_client_item_id(&completed.client_type, &completed.download_client_item_id)
                 .await
@@ -406,6 +409,7 @@ async fn remove_download_history_item(
 ) {
     if let Err(error) = app
         .services
+        .integrations
         .download_client
         .delete_queue_item(&completed.download_client_item_id, true)
         .await
@@ -431,6 +435,7 @@ pub async fn import_completed_download(
     // 1. DEDUP CHECK
     if app
         .services
+        .workflow
         .imports
         .is_already_imported(&completed.client_type, source_ref)
         .await?
@@ -465,6 +470,7 @@ pub async fn import_completed_download(
     };
     let import_id = app
         .services
+        .workflow
         .imports
         .queue_import_request(
             completed.client_type.clone(),
@@ -499,15 +505,13 @@ pub async fn import_completed_download(
         };
         let result_json = serde_json::to_string(&result).ok();
         let _ = app
-            .services
             .update_import_status_and_notify(&import_id, ImportStatus::Skipped, result_json)
             .await;
         return Ok(result);
     }
 
     // Mark as processing
-    app.services
-        .update_import_status_and_notify(&import_id, ImportStatus::Processing, None)
+    app.update_import_status_and_notify(&import_id, ImportStatus::Processing, None)
         .await?;
 
     // From here on, any error must update the import record to "failed" rather than
@@ -535,7 +539,6 @@ pub async fn import_completed_download(
             };
             let result_json = serde_json::to_string(&result).ok();
             let _ = app
-                .services
                 .update_import_status_and_notify(&import_id, ImportStatus::Failed, result_json)
                 .await;
             Ok(result)
@@ -557,7 +560,7 @@ async fn run_import(
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id") {
         let title_id = title_id.trim();
         if !title_id.is_empty() {
-            title = app.services.titles.get_by_id(title_id).await?;
+            title = app.services.catalog.titles.get_by_id(title_id).await?;
         }
     }
 
@@ -568,7 +571,7 @@ async fn run_import(
 
         title = match imdb_id {
             Some(target_imdb_id) => {
-                let titles = app.services.titles.list(None, None).await?;
+                let titles = app.services.catalog.titles.list(None, None).await?;
                 let mut matches = titles
                     .into_iter()
                     .filter(|title| {
@@ -591,7 +594,7 @@ async fn run_import(
     }
 
     if title.is_none() && parsed_completed_name.episode.is_none() {
-        let titles = app.services.titles.list(None, None).await?;
+        let titles = app.services.catalog.titles.list(None, None).await?;
         title = find_monitored_movie_title_from_release(&titles, &parsed_completed_name);
     }
 
@@ -615,8 +618,7 @@ async fn run_import(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
 
             let unmatched_msg = format!(
@@ -624,18 +626,17 @@ async fn run_import(
                 completed.name
             );
 
-            app.services
-                .append_domain_event(new_global_domain_event(
-                    Some(actor.id.clone()),
-                    DomainEventPayload::ImportRejected(ImportRejectedEventData {
-                        title: None,
-                        status: ImportStatus::Skipped,
-                        source_path: Some(completed.dest_dir.clone()),
-                        reason: Some(unmatched_msg),
-                        episode_ids: Vec::new(),
-                    }),
-                ))
-                .await?;
+            app.append_domain_event(new_global_domain_event(
+                Some(actor.id.clone()),
+                DomainEventPayload::ImportRejected(ImportRejectedEventData {
+                    title: None,
+                    status: ImportStatus::Skipped,
+                    source_path: Some(completed.dest_dir.clone()),
+                    reason: Some(unmatched_msg),
+                    episode_ids: Vec::new(),
+                }),
+            ))
+            .await?;
 
             return Ok(result);
         }
@@ -663,8 +664,7 @@ async fn run_import(
             completed_at: Utc::now(),
         };
         let result_json = serde_json::to_string(&result).ok();
-        app.services
-            .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+        app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
             .await?;
         return Ok(result);
     }
@@ -692,8 +692,7 @@ async fn run_import(
             completed_at: Utc::now(),
         };
         let result_json = serde_json::to_string(&result).ok();
-        app.services
-            .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+        app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
             .await?;
         return Ok(result);
     }
@@ -791,6 +790,7 @@ async fn import_movie_download(
     if title.folder_path.is_none() {
         let _ = app
             .services
+            .catalog
             .titles
             .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
             .await;
@@ -801,6 +801,7 @@ async fn import_movie_download(
     // Pre-import checks
     let existing_files = app
         .services
+        .library
         .media_files
         .list_media_files_for_title(&title.id)
         .await
@@ -850,16 +851,14 @@ async fn import_movie_download(
             completed_at: Utc::now(),
         };
         let result_json = serde_json::to_string(&result).ok();
-        app.services
-            .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+        app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
             .await?;
         return Ok(result);
     }
 
     // Upgrade check: if there are existing files, score and compare
     if !existing_files.is_empty() {
-        let (required_audio_languages, persona) =
-            resolve_import_audio_persona(app, title, &quality_profile).await;
+        let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             &quality_profile,
             &required_audio_languages,
@@ -937,13 +936,12 @@ async fn import_movie_download(
                         );
                         mark_wanted_completed(app, &title.id, None, None).await;
                         let result_json = serde_json::to_string(&result).ok();
-                        app.services
-                            .update_import_status_and_notify(
-                                import_id,
-                                ImportStatus::Completed,
-                                result_json,
-                            )
-                            .await?;
+                        app.update_import_status_and_notify(
+                            import_id,
+                            ImportStatus::Completed,
+                            result_json,
+                        )
+                        .await?;
                         return Ok(result);
                     }
                     Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
@@ -974,13 +972,12 @@ async fn import_movie_download(
                             completed_at: Utc::now(),
                         };
                         let result_json = serde_json::to_string(&result).ok();
-                        app.services
-                            .update_import_status_and_notify(
-                                import_id,
-                                ImportStatus::Skipped,
-                                result_json,
-                            )
-                            .await?;
+                        app.update_import_status_and_notify(
+                            import_id,
+                            ImportStatus::Skipped,
+                            result_json,
+                        )
+                        .await?;
                         return Ok(result);
                     }
                     Err(err) => {
@@ -997,6 +994,7 @@ async fn import_movie_download(
     // Import file
     let file_result = app
         .services
+        .workflow
         .file_importer
         .import_file(&source_video, &dest_path)
         .await?;
@@ -1056,8 +1054,7 @@ async fn import_movie_download(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
             Ok(result)
         }
@@ -1113,13 +1110,14 @@ async fn import_movie_download(
             };
             let imported_media_file_id = match app
                 .services
+                .library
                 .media_files
                 .insert_media_file(&media_file_input)
                 .await
             {
                 Ok(file_id) => {
                     crate::post_download_gate::persist_media_analysis_result(
-                        &app.services.media_files,
+                        &app.services.library.media_files,
                         &file_id,
                         &accepted,
                     )
@@ -1169,7 +1167,13 @@ async fn import_movie_download(
                 monitored: true,
                 created_at: Utc::now(),
             };
-            if let Err(err) = app.services.shows.create_collection(collection).await {
+            if let Err(err) = app
+                .services
+                .catalog
+                .shows
+                .create_collection(collection)
+                .await
+            {
                 tracing::warn!(
                     error = %err,
                     title_id = %title.id,
@@ -1219,24 +1223,22 @@ async fn import_movie_download(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
                 .await?;
 
-            app.services
-                .append_domain_event(new_title_domain_event(
-                    Some(actor.id.clone()),
-                    title,
-                    DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                        title: title_context_snapshot(title),
-                        media_updates: vec![created_media_update(
-                            dest_path.to_string_lossy().to_string(),
-                        )],
-                        imported_count: 1,
-                        episode_ids: Vec::new(),
-                    }),
-                ))
-                .await?;
+            app.append_domain_event(new_title_domain_event(
+                Some(actor.id.clone()),
+                title,
+                DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                    title: title_context_snapshot(title),
+                    media_updates: vec![created_media_update(
+                        dest_path.to_string_lossy().to_string(),
+                    )],
+                    imported_count: 1,
+                    episode_ids: Vec::new(),
+                }),
+            ))
+            .await?;
 
             Ok(result)
         }
@@ -1260,6 +1262,7 @@ async fn import_interstitial_movie_download(
     // Load the interstitial collection
     let collection = match app
         .services
+        .catalog
         .shows
         .get_collection_by_id(collection_id)
         .await?
@@ -1280,8 +1283,7 @@ async fn import_interstitial_movie_download(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
             return Ok(result);
         }
@@ -1304,8 +1306,7 @@ async fn import_interstitial_movie_download(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
             return Ok(result);
         }
@@ -1352,6 +1353,7 @@ async fn import_interstitial_movie_download(
     // Pre-import checks (same as movie import)
     let existing_files = app
         .services
+        .library
         .media_files
         .list_media_files_for_title(&title.id)
         .await
@@ -1371,8 +1373,7 @@ async fn import_interstitial_movie_download(
 
     // Upgrade check: if there's an existing file for this interstitial, score and compare
     if !collection_files.is_empty() {
-        let (required_audio_languages, persona) =
-            resolve_import_audio_persona(app, title, &quality_profile).await;
+        let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             &quality_profile,
             &required_audio_languages,
@@ -1450,13 +1451,12 @@ async fn import_interstitial_movie_download(
                             completed_at: Utc::now(),
                         };
                         let result_json = serde_json::to_string(&result).ok();
-                        app.services
-                            .update_import_status_and_notify(
-                                import_id,
-                                ImportStatus::Completed,
-                                result_json,
-                            )
-                            .await?;
+                        app.update_import_status_and_notify(
+                            import_id,
+                            ImportStatus::Completed,
+                            result_json,
+                        )
+                        .await?;
                         return Ok(result);
                     }
                     Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
@@ -1487,13 +1487,12 @@ async fn import_interstitial_movie_download(
                             completed_at: Utc::now(),
                         };
                         let result_json = serde_json::to_string(&result).ok();
-                        app.services
-                            .update_import_status_and_notify(
-                                import_id,
-                                ImportStatus::Skipped,
-                                result_json,
-                            )
-                            .await?;
+                        app.update_import_status_and_notify(
+                            import_id,
+                            ImportStatus::Skipped,
+                            result_json,
+                        )
+                        .await?;
                         return Ok(result);
                     }
                     Err(err) => {
@@ -1534,8 +1533,7 @@ async fn import_interstitial_movie_download(
                     completed_at: Utc::now(),
                 };
                 let result_json = serde_json::to_string(&result).ok();
-                app.services
-                    .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+                app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                     .await?;
                 return Ok(result);
             }
@@ -1552,6 +1550,7 @@ async fn import_interstitial_movie_download(
     // Import file (hardlink or copy)
     let file_result = app
         .services
+        .workflow
         .file_importer
         .import_file(&source_video, &dest_path)
         .await?;
@@ -1611,8 +1610,7 @@ async fn import_interstitial_movie_download(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            app.services
-                .update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
             return Ok(result);
         }
@@ -1631,6 +1629,7 @@ async fn import_interstitial_movie_download(
             // Persist media analysis from the gate
             let imported_media_file_id = if let Ok(file_id) = app
                 .services
+                .library
                 .media_files
                 .insert_media_file(&crate::InsertMediaFileInput {
                     title_id: title.id.clone(),
@@ -1650,7 +1649,7 @@ async fn import_interstitial_movie_download(
                 .await
             {
                 crate::post_download_gate::persist_media_analysis_result(
-                    &app.services.media_files,
+                    &app.services.library.media_files,
                     &file_id,
                     &accepted,
                 )
@@ -1680,16 +1679,14 @@ async fn import_interstitial_movie_download(
     // Update the interstitial collection with the file path
     if let Err(err) = app
         .services
+        .catalog
         .shows
         .update_collection(
             collection_id,
-            None,
-            None,
-            None,
-            Some(dest_path.to_string_lossy().to_string()),
-            None,
-            None,
-            None,
+            CollectionUpdate {
+                ordered_path: Some(dest_path.to_string_lossy().to_string()),
+                ..Default::default()
+            },
         )
         .await
     {
@@ -1765,24 +1762,22 @@ async fn import_interstitial_movie_download(
         completed_at: Utc::now(),
     };
     let result_json = serde_json::to_string(&result).ok();
-    app.services
-        .update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
+    app.update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
         .await?;
 
-    app.services
-        .append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
-            title,
-            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                title: title_context_snapshot(title),
-                media_updates: vec![created_media_update(
-                    dest_path.to_string_lossy().to_string(),
-                )],
-                imported_count: 1,
-                episode_ids: Vec::new(),
-            }),
-        ))
-        .await?;
+    app.append_domain_event(new_title_domain_event(
+        Some(actor.id.clone()),
+        title,
+        DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+            title: title_context_snapshot(title),
+            media_updates: vec![created_media_update(
+                dest_path.to_string_lossy().to_string(),
+            )],
+            imported_count: 1,
+            episode_ids: Vec::new(),
+        }),
+    ))
+    .await?;
 
     Ok(result)
 }
@@ -1796,6 +1791,7 @@ async fn mark_wanted_completed_for_collection(
     // Find the wanted item by iterating (since we don't have a direct lookup by collection_id)
     match app
         .services
+        .workflow
         .wanted_items
         .list_wanted_items(
             Some("wanted"),
@@ -1812,6 +1808,7 @@ async fn mark_wanted_completed_for_collection(
                     let now = Utc::now().to_rfc3339();
                     let _ = app
                         .services
+                        .workflow
                         .wanted_items
                         .transition_wanted_to_completed(&WantedCompleteTransition {
                             id: item.id.clone(),
@@ -1856,6 +1853,7 @@ async fn import_series_download(
     if title.folder_path.is_none() {
         let _ = app
             .services
+            .catalog
             .titles
             .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
             .await;
@@ -1977,26 +1975,24 @@ async fn import_series_download(
         completed_at: Utc::now(),
     };
     let result_json = serde_json::to_string(&result).ok();
-    app.services
-        .update_import_status_and_notify(import_id, status, result_json)
+    app.update_import_status_and_notify(import_id, status, result_json)
         .await?;
 
     if imported_count > 0 {
-        app.services
-            .append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                title,
-                DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                    title: title_context_snapshot(title),
-                    media_updates: imported_updates
-                        .into_iter()
-                        .map(|update| created_media_update(update.path))
-                        .collect(),
-                    imported_count: imported_count as i32,
-                    episode_ids: imported_episode_ids,
-                }),
-            ))
-            .await?;
+        app.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            title,
+            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: title_context_snapshot(title),
+                media_updates: imported_updates
+                    .into_iter()
+                    .map(|update| created_media_update(update.path))
+                    .collect(),
+                imported_count: imported_count as i32,
+                episode_ids: imported_episode_ids,
+            }),
+        ))
+        .await?;
     }
 
     Ok(result)
@@ -2105,6 +2101,7 @@ async fn import_single_episode_file(
     // Pre-import checks
     let existing_files = app
         .services
+        .library
         .media_files
         .list_media_files_for_title(&title.id)
         .await
@@ -2138,8 +2135,7 @@ async fn import_single_episode_file(
 
     // Upgrade check for episodes: find existing file for same dest path
     if !existing_files.is_empty() {
-        let (required_audio_languages, persona) =
-            resolve_import_audio_persona(app, title, quality_profile).await;
+        let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             quality_profile,
             &required_audio_languages,
@@ -2242,6 +2238,7 @@ async fn import_single_episode_file(
     // Import file (hardlink/copy)
     let file_result = app
         .services
+        .workflow
         .file_importer
         .import_file(source_video, &dest_path)
         .await?;
@@ -2344,11 +2341,12 @@ async fn import_single_episode_file(
     };
     let media_file_id = app
         .services
+        .library
         .media_files
         .insert_media_file(&media_file_input)
         .await?;
     crate::post_download_gate::persist_media_analysis_result(
-        &app.services.media_files,
+        &app.services.library.media_files,
         &media_file_id,
         &accepted,
     )
@@ -2371,6 +2369,7 @@ async fn import_single_episode_file(
     for episode in &target_episodes {
         if let Err(err) = app
             .services
+            .library
             .media_files
             .link_file_to_episode(&media_file_id, &episode.id)
             .await
@@ -2594,6 +2593,7 @@ pub(crate) async fn mark_wanted_completed(
 ) {
     match app
         .services
+        .workflow
         .wanted_items
         .get_wanted_item_for_title(title_id, episode_id)
         .await
@@ -2605,6 +2605,7 @@ pub(crate) async fn mark_wanted_completed(
 
             if let Err(err) = app
                 .services
+                .workflow
                 .wanted_items
                 .transition_wanted_to_completed(&WantedCompleteTransition {
                     id: wanted.id.clone(),
@@ -2636,12 +2637,12 @@ async fn resolve_import_quality_profile(
         .map(|external_id| external_id.value.as_str());
     let category_hint = crate::post_download_gate::facet_to_category_hint(&title.facet);
     match app
-        .resolve_quality_profile(
-            &title.tags,
-            title.imdb_id.as_deref(),
+        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &title.tags,
+            imdb_id: title.imdb_id.as_deref(),
             tvdb_id,
-            Some(category_hint),
-        )
+            category_hint: Some(category_hint),
+        })
         .await
     {
         Ok(profile) => profile,
@@ -2659,23 +2660,14 @@ async fn resolve_import_quality_profile(
 async fn resolve_import_audio_persona(
     app: &AppUseCase,
     title: &scryer_domain::Title,
-    quality_profile: &crate::QualityProfile,
 ) -> (Vec<String>, crate::ScoringPersona) {
     let category_hint = crate::post_download_gate::facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(category_hint),
-            Some(quality_profile),
-        )
+        .resolve_required_audio_languages(Some(&title.id), Some(category_hint))
         .await
         .unwrap_or_default();
     let persona = app
-        .resolve_scoring_persona(
-            Some(category_hint),
-            Some(quality_profile),
-            Some(category_hint),
-        )
+        .resolve_scoring_persona(Some(category_hint))
         .await
         .unwrap_or_default();
 
@@ -2696,6 +2688,7 @@ pub(crate) async fn resolve_target_episodes(
         let air_date_str = air_date.format("%Y-%m-%d").to_string();
         match app
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await
@@ -2705,6 +2698,7 @@ pub(crate) async fn resolve_target_episodes(
                 for collection in collections {
                     match app
                         .services
+                        .catalog
                         .shows
                         .list_episodes_for_collection(&collection.id)
                         .await
@@ -2754,6 +2748,7 @@ pub(crate) async fn resolve_target_episodes(
         let episode_str = episode_number.to_string();
         match app
             .services
+            .catalog
             .shows
             .find_episode_by_title_and_numbers(&title.id, &target_season, &episode_str)
             .await
@@ -2782,6 +2777,7 @@ pub(crate) async fn resolve_target_episodes(
     {
         match app
             .services
+            .catalog
             .shows
             .list_collections_for_title(&title.id)
             .await
@@ -2793,6 +2789,7 @@ pub(crate) async fn resolve_target_episodes(
                 {
                     match app
                         .services
+                        .catalog
                         .shows
                         .list_episodes_for_collection(&collection.id)
                         .await
@@ -2836,6 +2833,7 @@ pub(crate) async fn resolve_target_episodes(
             let episode_str = special_number.to_string();
             match app
                 .services
+                .catalog
                 .shows
                 .find_episode_by_title_and_numbers(&title.id, "0", &episode_str)
                 .await
@@ -2874,6 +2872,7 @@ pub(crate) async fn resolve_target_episodes(
             let absolute_episode_str = absolute_number.to_string();
             match app
                 .services
+                .catalog
                 .shows
                 .find_episode_by_title_and_absolute_number(&title.id, &absolute_episode_str)
                 .await
@@ -3021,6 +3020,7 @@ async fn persist_file_import_artifact(
         };
         if let Err(error) = app
             .services
+            .workflow
             .import_artifacts
             .insert_artifact(artifact)
             .await
@@ -3124,6 +3124,7 @@ pub async fn preview_manual_import(
     // Look up completed download to get dest_dir
     let completed_downloads = app
         .services
+        .integrations
         .download_client
         .list_completed_downloads()
         .await?;
@@ -3144,6 +3145,7 @@ pub async fn preview_manual_import(
     // Get all episodes for this title across all seasons
     let collections = app
         .services
+        .catalog
         .shows
         .list_collections_for_title(title_id)
         .await?;
@@ -3151,6 +3153,7 @@ pub async fn preview_manual_import(
     for collection in &collections {
         let episodes = app
             .services
+            .catalog
             .shows
             .list_episodes_for_collection(&collection.id)
             .await?;
@@ -3190,6 +3193,7 @@ pub async fn preview_manual_import(
                 let ep_str = ep_num.to_string();
                 if let Ok(Some(episode)) = app
                     .services
+                    .catalog
                     .shows
                     .find_episode_by_title_and_numbers(title_id, &season_str, &ep_str)
                     .await
@@ -3216,6 +3220,7 @@ pub async fn preview_manual_import(
                 let abs_str = abs.to_string();
                 if let Ok(Some(episode)) = app
                     .services
+                    .catalog
                     .shows
                     .find_episode_by_title_and_absolute_number(title_id, &abs_str)
                     .await
@@ -3279,6 +3284,7 @@ pub async fn execute_manual_import(
     require(actor, &Entitlement::TriggerActions)?;
     let title = app
         .services
+        .catalog
         .titles
         .get_by_id(title_id)
         .await?
@@ -3307,6 +3313,7 @@ pub async fn execute_manual_import(
         // Look up episode
         let episode = match app
             .services
+            .catalog
             .shows
             .get_episode_by_id(&mapping.episode_id)
             .await
@@ -3363,6 +3370,7 @@ pub async fn execute_manual_import(
         // Import file
         match app
             .services
+            .workflow
             .file_importer
             .import_file(source, &dest_path)
             .await
@@ -3387,12 +3395,14 @@ pub async fn execute_manual_import(
                 };
                 if let Ok(mf_id) = app
                     .services
+                    .library
                     .media_files
                     .insert_media_file(&media_file_input)
                     .await
                 {
                     let _ = app
                         .services
+                        .library
                         .media_files
                         .link_file_to_episode(&mf_id, &episode.id)
                         .await;
@@ -3439,21 +3449,20 @@ pub async fn execute_manual_import(
         .filter(|result| result.success)
         .map(|result| result.episode_id.clone())
         .collect::<Vec<_>>();
-    app.services
-        .append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
-            &title,
-            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                title: title_context_snapshot(&title),
-                media_updates: imported_updates
-                    .into_iter()
-                    .map(|update| created_media_update(update.path))
-                    .collect(),
-                imported_count: success_count as i32,
-                episode_ids,
-            }),
-        ))
-        .await?;
+    app.append_domain_event(new_title_domain_event(
+        Some(actor.id.clone()),
+        &title,
+        DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+            title: title_context_snapshot(&title),
+            media_updates: imported_updates
+                .into_iter()
+                .map(|update| created_media_update(update.path))
+                .collect(),
+            imported_count: success_count as i32,
+            episode_ids,
+        }),
+    ))
+    .await?;
 
     Ok(results)
 }

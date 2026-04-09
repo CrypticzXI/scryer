@@ -13,7 +13,7 @@ use tracing::{debug, trace};
 
 use crate::{AppError, AppResult, Id, JobRunTracker, LibraryScanSummary};
 
-const LIBRARY_SCAN_PROGRESS_PUSH_INTERVAL: Duration = Duration::from_millis(500);
+const LIBRARY_SCAN_PROGRESS_PUSH_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LibraryScanStatus {

@@ -1,4 +1,4 @@
-//! Rule-set workflows and user rule input handling.
-//!
-//! Start with `rules.rs` for rule CRUD and history.
-//! Request-shape helpers live in `user_rule_input.rs`.
+pub(crate) use crate::*;
+
+pub(crate) mod rules;
+pub(crate) mod user_rule_input;

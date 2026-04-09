@@ -167,11 +167,7 @@ pub(crate) async fn probe_and_validate(
 
     let category_hint = facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(category_hint),
-            Some(quality_profile),
-        )
+        .resolve_required_audio_languages(Some(&title.id), Some(category_hint))
         .await
         .unwrap_or_else(|error| {
             warn!(
@@ -199,11 +195,7 @@ pub(crate) async fn probe_and_validate(
         }
     }
     let persona = app
-        .resolve_scoring_persona(
-            Some(category_hint),
-            Some(quality_profile),
-            Some(category_hint),
-        )
+        .resolve_scoring_persona(Some(category_hint))
         .await
         .unwrap_or_else(|error| {
             warn!(
@@ -216,6 +208,7 @@ pub(crate) async fn probe_and_validate(
 
     let user_rules_engine = app
         .services
+        .customization
         .user_rules
         .read()
         .map(|guard| guard.clone())
@@ -570,11 +563,11 @@ pub(crate) async fn compute_acquisition_score(
     let (rescored, changes) = rescore_from_mediainfo(parsed, acceptance);
     let category = facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(Some(&title.id), Some(category), Some(profile))
+        .resolve_required_audio_languages(Some(&title.id), Some(category))
         .await
         .unwrap_or_default();
     let persona = app
-        .resolve_scoring_persona(Some(category), Some(profile), Some(category))
+        .resolve_scoring_persona(Some(category))
         .await
         .unwrap_or_default();
     let decision = build_import_profile_decision(
@@ -662,6 +655,7 @@ pub(crate) async fn reject_imported_file(
 
     let _ = app
         .services
+        .workflow
         .release_attempts
         .record_release_attempt(
             Some(title.id.clone()),
@@ -685,7 +679,6 @@ pub(crate) async fn reject_imported_file(
         }
     ));
     let _ = app
-        .services
         .append_domain_event(new_title_domain_event(
             actor_user_id.map(str::to_owned),
             title,
@@ -737,6 +730,7 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
     for episode_id in targets {
         match app
             .services
+            .workflow
             .wanted_items
             .get_wanted_item_for_title(title_id, episode_id)
             .await
@@ -745,6 +739,7 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
                 let next_search_at = now_str.clone();
                 let _ = app
                     .services
+                    .workflow
                     .wanted_items
                     .schedule_wanted_item_search(&WantedSearchTransition {
                         id: item.id.clone(),

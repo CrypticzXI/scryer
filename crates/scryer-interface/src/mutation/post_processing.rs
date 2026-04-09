@@ -41,9 +41,7 @@ impl PostProcessingMutations {
         };
 
         let created = app
-            .services
-            .pp_scripts
-            .create_script(script)
+            .create_post_processing_script(script)
             .await
             .map_err(to_gql_error)?;
 
@@ -58,9 +56,7 @@ impl PostProcessingMutations {
         let app = app_from_ctx(ctx)?;
 
         let mut script = app
-            .services
-            .pp_scripts
-            .get_script(&input.id)
+            .get_post_processing_script(&input.id)
             .await
             .map_err(to_gql_error)?
             .ok_or_else(|| async_graphql::Error::new(format!("script {} not found", input.id)))?;
@@ -104,9 +100,7 @@ impl PostProcessingMutations {
         script.updated_at = Utc::now();
 
         let updated = app
-            .services
-            .pp_scripts
-            .update_script(script)
+            .update_post_processing_script(script)
             .await
             .map_err(to_gql_error)?;
 
@@ -120,9 +114,7 @@ impl PostProcessingMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
 
-        app.services
-            .pp_scripts
-            .delete_script(&id)
+        app.delete_post_processing_script(&id)
             .await
             .map_err(to_gql_error)?;
 
@@ -136,21 +128,8 @@ impl PostProcessingMutations {
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
 
-        let mut script = app
-            .services
-            .pp_scripts
-            .get_script(&id)
-            .await
-            .map_err(to_gql_error)?
-            .ok_or_else(|| async_graphql::Error::new(format!("script {id} not found")))?;
-
-        script.enabled = !script.enabled;
-        script.updated_at = Utc::now();
-
         let updated = app
-            .services
-            .pp_scripts
-            .update_script(script)
+            .toggle_post_processing_script(&id)
             .await
             .map_err(to_gql_error)?;
 

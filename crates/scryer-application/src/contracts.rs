@@ -56,6 +56,204 @@ pub struct PendingStagedNzb {
     pub partial_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct IndexerConfigUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider_type: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_encrypted: Option<String>,
+    pub rate_limit_seconds: Option<i64>,
+    pub rate_limit_burst: Option<i64>,
+    pub is_enabled: Option<bool>,
+    pub enable_interactive_search: Option<bool>,
+    pub enable_auto_search: Option<bool>,
+    pub config_json: Option<String>,
+}
+
+impl IndexerConfigUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.provider_type.is_some()
+            || self.base_url.is_some()
+            || self.api_key_encrypted.is_some()
+            || self.rate_limit_seconds.is_some()
+            || self.rate_limit_burst.is_some()
+            || self.is_enabled.is_some()
+            || self.enable_interactive_search.is_some()
+            || self.enable_auto_search.is_some()
+            || self.config_json.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DownloadClientConfigUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub client_type: Option<String>,
+    pub config_json: Option<String>,
+    pub is_enabled: Option<bool>,
+}
+
+impl DownloadClientConfigUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.client_type.is_some()
+            || self.config_json.is_some()
+            || self.is_enabled.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerSearchRequest {
+    pub query: String,
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub anidb_id: Option<String>,
+    pub category: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerEpisodeSearchRequest {
+    pub title: String,
+    pub season: String,
+    pub episode: String,
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub anidb_id: Option<String>,
+    pub category: Option<String>,
+    pub absolute_episode: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerSeasonSearchRequest {
+    pub title: String,
+    pub season: String,
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub anidb_id: Option<String>,
+    pub category: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QueuedReleaseSelection {
+    pub source_hint: Option<String>,
+    pub source_kind: Option<DownloadSourceKind>,
+    pub source_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CollectionUpdate {
+    pub collection_type: Option<CollectionType>,
+    pub collection_index: Option<String>,
+    pub label: Option<String>,
+    pub ordered_path: Option<String>,
+    pub first_episode_number: Option<String>,
+    pub last_episode_number: Option<String>,
+    pub monitored: Option<bool>,
+}
+
+impl CollectionUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.collection_type.is_some()
+            || self.collection_index.is_some()
+            || self.label.is_some()
+            || self.ordered_path.is_some()
+            || self.first_episode_number.is_some()
+            || self.last_episode_number.is_some()
+            || self.monitored.is_some()
+    }
+
+    pub fn has_non_monitor_changes(&self) -> bool {
+        self.collection_type.is_some()
+            || self.collection_index.is_some()
+            || self.label.is_some()
+            || self.ordered_path.is_some()
+            || self.first_episode_number.is_some()
+            || self.last_episode_number.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EpisodeUpdate {
+    pub episode_type: Option<scryer_domain::EpisodeType>,
+    pub episode_number: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_label: Option<String>,
+    pub title: Option<String>,
+    pub air_date: Option<String>,
+    pub duration_seconds: Option<i64>,
+    pub has_multi_audio: Option<bool>,
+    pub has_subtitle: Option<bool>,
+    pub monitored: Option<bool>,
+    pub collection_id: Option<String>,
+    pub overview: Option<String>,
+    pub tvdb_id: Option<String>,
+}
+
+impl EpisodeUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.episode_type.is_some()
+            || self.episode_number.is_some()
+            || self.season_number.is_some()
+            || self.episode_label.is_some()
+            || self.title.is_some()
+            || self.air_date.is_some()
+            || self.duration_seconds.is_some()
+            || self.has_multi_audio.is_some()
+            || self.has_subtitle.is_some()
+            || self.monitored.is_some()
+            || self.collection_id.is_some()
+            || self.overview.is_some()
+            || self.tvdb_id.is_some()
+    }
+
+    pub fn has_non_monitor_changes(&self) -> bool {
+        self.episode_type.is_some()
+            || self.episode_number.is_some()
+            || self.season_number.is_some()
+            || self.episode_label.is_some()
+            || self.title.is_some()
+            || self.air_date.is_some()
+            || self.duration_seconds.is_some()
+            || self.has_multi_audio.is_some()
+            || self.has_subtitle.is_some()
+            || self.collection_id.is_some()
+            || self.overview.is_some()
+            || self.tvdb_id.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum NotificationScopeIdUpdate {
+    #[default]
+    NoChange,
+    Clear,
+    Set(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteExecutionConfirmation {
+    pub preview_fingerprint: String,
+    pub typed_confirmation: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WantedItemsQuery {
+    pub status: Option<String>,
+    pub media_type: Option<String>,
+    pub title_id: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseDecisionsQuery {
+    pub wanted_item_id: Option<String>,
+    pub title_id: Option<String>,
+    pub limit: i64,
+}
+
 /// Parsed media properties from media analysis — application-layer DTO.
 /// A single audio stream, mirroring `scryer_mediainfo::AudioStreamDetail`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

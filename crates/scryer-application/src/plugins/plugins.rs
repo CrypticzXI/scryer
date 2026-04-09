@@ -210,7 +210,7 @@ impl AppUseCase {
     /// Seed database rows for built-in plugins. Uses INSERT OR IGNORE so
     /// existing user toggles are preserved across restarts.
     pub async fn seed_builtin_plugins(&self) -> AppResult<()> {
-        let repo = &self.services.plugin_installations;
+        let repo = &self.services.customization.plugin_installations;
         repo.seed_builtin(
             "nzbgeek",
             "NZBGeek Indexer",
@@ -242,6 +242,7 @@ impl AppUseCase {
     pub async fn rebuild_plugin_provider(&self) -> AppResult<()> {
         let enabled = self
             .services
+            .customization
             .plugin_installations
             .get_enabled_plugin_wasm_bytes()
             .await?;
@@ -258,6 +259,7 @@ impl AppUseCase {
         // (must query all installations, not just enabled ones)
         let all_installations = self
             .services
+            .customization
             .plugin_installations
             .list_plugin_installations()
             .await?;
@@ -267,7 +269,7 @@ impl AppUseCase {
             .map(|inst| inst.provider_type.clone())
             .collect();
 
-        if let Some(ref provider) = self.services.plugin_provider {
+        if let Some(provider) = self.services.integrations.plugin_provider.available() {
             provider
                 .reload_plugins(&external_refs, &disabled_builtins)
                 .map_err(|e| {
@@ -275,7 +277,12 @@ impl AppUseCase {
                 })?;
         }
 
-        if let Some(ref provider) = self.services.download_client_plugin_provider {
+        if let Some(provider) = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available()
+        {
             provider
                 .reload_plugins(&external_refs, &disabled_builtins)
                 .map_err(|e| {
@@ -286,7 +293,7 @@ impl AppUseCase {
         }
 
         // Also rebuild notification plugin provider
-        if let Some(ref notif_provider) = self.services.notification_provider {
+        if let Some(notif_provider) = self.services.notifications.notification_provider() {
             notif_provider
                 .reload_plugins(&external_refs, &disabled_builtins)
                 .map_err(|e| {
@@ -306,7 +313,7 @@ impl AppUseCase {
     /// installed before the auto-create logic existed, or when the registry was
     /// stale at install time.
     pub async fn reconcile_indexer_configs(&self) -> AppResult<()> {
-        let Some(ref provider) = self.services.plugin_provider else {
+        let Some(provider) = self.services.integrations.plugin_provider.available() else {
             return Ok(());
         };
 
@@ -320,6 +327,7 @@ impl AppUseCase {
             }
             let existing = self
                 .services
+                .integrations
                 .indexer_configs
                 .list(Some(pt.clone()))
                 .await
@@ -346,7 +354,13 @@ impl AppUseCase {
                     created_at: now,
                     updated_at: now,
                 };
-                if let Err(e) = self.services.indexer_configs.create(config).await {
+                if let Err(e) = self
+                    .services
+                    .integrations
+                    .indexer_configs
+                    .create(config)
+                    .await
+                {
                     tracing::warn!(
                         error = %e,
                         provider_type = pt.as_str(),
@@ -373,7 +387,7 @@ impl AppUseCase {
         Vec<scryer_domain::ConfigFieldDef>,
         Option<String>,
     )> {
-        let Some(ref provider) = self.services.plugin_provider else {
+        let Some(provider) = self.services.integrations.plugin_provider.available() else {
             return vec![];
         };
         let mut seen = std::collections::HashSet::new();
@@ -400,7 +414,12 @@ impl AppUseCase {
         Vec<scryer_domain::ConfigFieldDef>,
         Option<String>,
     )> {
-        let Some(ref provider) = self.services.download_client_plugin_provider else {
+        let Some(provider) = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available()
+        else {
             return vec![];
         };
         let mut seen = std::collections::HashSet::new();
@@ -419,12 +438,69 @@ impl AppUseCase {
             .collect()
     }
 
+    pub async fn test_plugin_download_client_connection(
+        &self,
+        actor: &User,
+        client_type: &str,
+        config_json: &str,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let provider = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available()
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "test connection is not supported for client type '{}'",
+                    client_type.trim()
+                ))
+            })?;
+
+        let client_type = client_type.trim().to_lowercase();
+        let config_json = config_json.trim();
+        let config_json = if config_json.is_empty() {
+            "{}".to_string()
+        } else {
+            serde_json::to_string(
+                &serde_json::from_str::<serde_json::Value>(config_json).map_err(|error| {
+                    AppError::Validation(format!("invalid client config_json: {error}"))
+                })?,
+            )
+            .map_err(|error| AppError::Validation(format!("invalid client config_json: {error}")))?
+        };
+
+        let now = chrono::Utc::now();
+        let config = DownloadClientConfig {
+            id: "test-download-client".to_string(),
+            name: "Test Download Client".to_string(),
+            client_type: client_type.clone(),
+            config_json,
+            client_priority: 0,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let client = provider.client_for_config(&config).ok_or_else(|| {
+            AppError::Validation(format!(
+                "test connection is not supported for client type '{client_type}'"
+            ))
+        })?;
+        client.test_connection().await?;
+        Ok(())
+    }
+
     /// List available plugins by merging cached registry with local installations.
     pub async fn list_available_plugins(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
         require(actor, &Entitlement::ManageConfig)?;
 
         let installations = self
             .services
+            .customization
             .plugin_installations
             .list_plugin_installations()
             .await?;
@@ -432,6 +508,7 @@ impl AppUseCase {
         // Try to parse cached registry
         let registry_json = self
             .services
+            .customization
             .plugin_installations
             .get_registry_cache()
             .await?;
@@ -472,13 +549,15 @@ impl AppUseCase {
                 default_base_url: match entry.plugin_type.as_str() {
                     "download_client" => self
                         .services
+                        .integrations
                         .download_client_plugin_provider
-                        .as_ref()
+                        .available()
                         .and_then(|p| p.default_base_url_for_provider(&entry.provider_type)),
                     _ => self
                         .services
+                        .integrations
                         .plugin_provider
-                        .as_ref()
+                        .available()
                         .and_then(|p| p.default_base_url_for_provider(&entry.provider_type)),
                 },
                 is_installed: inst.is_some(),
@@ -519,13 +598,15 @@ impl AppUseCase {
                     default_base_url: match inst.plugin_type.as_str() {
                         "download_client" => self
                             .services
+                            .integrations
                             .download_client_plugin_provider
-                            .as_ref()
+                            .available()
                             .and_then(|p| p.default_base_url_for_provider(&inst.provider_type)),
                         _ => self
                             .services
+                            .integrations
                             .plugin_provider
-                            .as_ref()
+                            .available()
                             .and_then(|p| p.default_base_url_for_provider(&inst.provider_type)),
                     },
                     is_installed: true,
@@ -561,6 +642,7 @@ impl AppUseCase {
             .map_err(|e| AppError::Validation(format!("invalid plugin registry JSON: {e}")))?;
 
         self.services
+            .customization
             .plugin_installations
             .store_registry_cache(&body)
             .await?;
@@ -579,6 +661,7 @@ impl AppUseCase {
         // Look up plugin in cached registry
         let registry_json = self
             .services
+            .customization
             .plugin_installations
             .get_registry_cache()
             .await?
@@ -646,6 +729,7 @@ impl AppUseCase {
 
         let result = self
             .services
+            .customization
             .plugin_installations
             .create_plugin_installation(&installation, Some(&wasm_bytes))
             .await?;
@@ -658,12 +742,14 @@ impl AppUseCase {
         if is_indexer_plugin_type(&entry.plugin_type) {
             let default_url = self
                 .services
+                .integrations
                 .plugin_provider
-                .as_ref()
+                .available()
                 .and_then(|p| p.default_base_url_for_provider(&entry.provider_type));
             if let Some(ref default_url) = default_url {
                 let existing = self
                     .services
+                    .integrations
                     .indexer_configs
                     .list(Some(entry.provider_type.clone()))
                     .await
@@ -671,8 +757,9 @@ impl AppUseCase {
                 if existing.is_empty() {
                     let plugin_rate_limit = self
                         .services
+                        .integrations
                         .plugin_provider
-                        .as_ref()
+                        .available()
                         .and_then(|p| p.rate_limit_seconds_for_provider(&entry.provider_type));
                     let config = IndexerConfig {
                         id: Id::new().0,
@@ -692,7 +779,13 @@ impl AppUseCase {
                         created_at: now,
                         updated_at: now,
                     };
-                    if let Err(e) = self.services.indexer_configs.create(config).await {
+                    if let Err(e) = self
+                        .services
+                        .integrations
+                        .indexer_configs
+                        .create(config)
+                        .await
+                    {
                         tracing::warn!(error = %e, "failed to auto-create indexer config for plugin");
                     }
                 }
@@ -708,6 +801,7 @@ impl AppUseCase {
 
         let installation = self
             .services
+            .customization
             .plugin_installations
             .get_plugin_installation(plugin_id)
             .await?
@@ -723,18 +817,26 @@ impl AppUseCase {
         if is_indexer_plugin_type(&installation.plugin_type) {
             let configs = self
                 .services
+                .integrations
                 .indexer_configs
                 .list(Some(installation.provider_type.clone()))
                 .await
                 .unwrap_or_default();
             for config in configs {
-                if let Err(e) = self.services.indexer_configs.delete(&config.id).await {
+                if let Err(e) = self
+                    .services
+                    .integrations
+                    .indexer_configs
+                    .delete(&config.id)
+                    .await
+                {
                     tracing::warn!(error = %e, indexer = config.name, "failed to delete indexer config during plugin uninstall");
                 }
             }
         }
 
         self.services
+            .customization
             .plugin_installations
             .delete_plugin_installation(plugin_id)
             .await?;
@@ -754,6 +856,7 @@ impl AppUseCase {
 
         let mut installation = self
             .services
+            .customization
             .plugin_installations
             .get_plugin_installation(plugin_id)
             .await?
@@ -764,6 +867,7 @@ impl AppUseCase {
 
         let result = self
             .services
+            .customization
             .plugin_installations
             .update_plugin_installation(&installation, None)
             .await?;
@@ -782,6 +886,7 @@ impl AppUseCase {
 
         let installation = self
             .services
+            .customization
             .plugin_installations
             .get_plugin_installation(plugin_id)
             .await?
@@ -796,6 +901,7 @@ impl AppUseCase {
         // Look up in cached registry
         let registry_json = self
             .services
+            .customization
             .plugin_installations
             .get_registry_cache()
             .await?
@@ -863,6 +969,7 @@ impl AppUseCase {
 
         let result = self
             .services
+            .customization
             .plugin_installations
             .update_plugin_installation(&updated, Some(&wasm_bytes))
             .await?;
@@ -880,6 +987,7 @@ impl AppUseCase {
 
         let registry_json = self
             .services
+            .customization
             .plugin_installations
             .get_registry_cache()
             .await?;

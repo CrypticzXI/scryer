@@ -1449,17 +1449,7 @@ mod tests {
 
         async fn update(
             &self,
-            _id: &str,
-            _name: Option<String>,
-            _provider_type: Option<String>,
-            _base_url: Option<String>,
-            _api_key_encrypted: Option<String>,
-            _rate_limit_seconds: Option<i64>,
-            _rate_limit_burst: Option<i64>,
-            _is_enabled: Option<bool>,
-            _enable_interactive_search: Option<bool>,
-            _enable_auto_search: Option<bool>,
-            _config_json: Option<String>,
+            _update: scryer_application::IndexerConfigUpdate,
         ) -> AppResult<IndexerConfig> {
             Err(AppError::Validation("not implemented in test".into()))
         }
