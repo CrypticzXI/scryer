@@ -8,9 +8,18 @@ use scryer_domain::{
 };
 use serde_json::json;
 use tokio::sync::broadcast;
-use tracing::warn;
+use tracing::{info, warn};
 
-const BACKGROUND_LIBRARY_REFRESH_ENABLED: bool = true;
+fn background_library_refresh_enabled() -> bool {
+    std::env::var("SCRYER_BACKGROUND_LIBRARY_REFRESH")
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
 
 #[derive(Clone, Debug, serde::Serialize)]
 struct MetadataRefreshSummary {
@@ -446,7 +455,7 @@ impl AppUseCase {
             JobKey::BackgroundLibraryRefreshMovies
             | JobKey::BackgroundLibraryRefreshSeries
             | JobKey::BackgroundLibraryRefreshAnime => {
-                if !BACKGROUND_LIBRARY_REFRESH_ENABLED {
+                if !background_library_refresh_enabled() {
                     return Err(AppError::Validation(
                         "background library refresh is temporarily disabled".into(),
                     ));
@@ -650,9 +659,10 @@ pub async fn start_background_library_refresh_loop(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    if !BACKGROUND_LIBRARY_REFRESH_ENABLED {
-        warn!("background library refresh loop disabled");
-        token.cancelled().await;
+    if !background_library_refresh_enabled() {
+        info!(
+            "background library refresh loop is disabled (SCRYER_BACKGROUND_LIBRARY_REFRESH=false)"
+        );
         return;
     }
 

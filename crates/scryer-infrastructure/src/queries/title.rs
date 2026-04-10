@@ -1451,8 +1451,8 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let aliases_json = serde_json::to_string(&title.aliases)
         .map_err(|err| AppError::Repository(err.to_string()))?;
-    let tagged_aliases_json =
-        serde_json::to_string(&title.tagged_aliases).map_err(|err| AppError::Repository(err.to_string()))?;
+    let tagged_aliases_json = serde_json::to_string(&title.tagged_aliases)
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let metadata_fetched_at = title.metadata_fetched_at.map(|value| value.to_rfc3339());
 
     sqlx::query(

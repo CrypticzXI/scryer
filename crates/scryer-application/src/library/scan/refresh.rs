@@ -377,7 +377,7 @@ pub(super) async fn background_refresh_movies(
     let mut existing_titles_by_probe_path =
         build_movie_probe_path_indexes(root, &existing_titles, &collections_by_title);
 
-    let mut unknown_files = Vec::new();
+    let mut unknown_entries = Vec::new();
     for entry in entries {
         summary.scanned += 1;
         let entry_key = entry.path.to_string_lossy().to_string();
@@ -396,45 +396,49 @@ pub(super) async fn background_refresh_movies(
                 &mut summary,
             )
             .await?;
-        } else if entry.is_dir {
-            let mut files = app
-                .services
-                .library
-                .library_scanner
-                .scan_library(entry.path.to_string_lossy().as_ref())
-                .await?;
-            unknown_files.append(&mut files);
         } else {
-            unknown_files.push(movie_refresh_entry_to_library_file(&entry));
+            unknown_entries.push(entry);
         }
         coordinator.mark_title_match_completed(1).await;
     }
 
-    for file_chunk in unknown_files.chunks(LIBRARY_SCAN_BATCH_SIZE) {
-        let prepared_candidates =
-            prepare_movie_library_scan_candidates(file_chunk, library_path).await?;
+    for entry_chunk in unknown_entries.chunks(LIBRARY_SCAN_BATCH_SIZE) {
+        let prepared_entries = prepare_movie_library_scan_entries(
+            app.services.library.library_scanner.clone(),
+            entry_chunk,
+            library_path,
+        )
+        .await?;
         let mut unresolved_candidates = Vec::new();
 
-        for candidate in prepared_candidates {
-            let candidate = process_movie_refresh_candidate(
-                app,
-                actor,
-                candidate,
-                &mut workset,
-                &mut existing_titles,
-                &mut existing_titles_by_name,
-                &mut existing_titles_by_tvdb_id,
-                &mut existing_titles_by_imdb_id,
-                &mut existing_titles_by_tmdb_id,
-                root,
-                &mut existing_titles_by_probe_path,
-                &mut summary,
-            )
-            .await?;
-            if let Some(candidate) = candidate {
-                unresolved_candidates.push(candidate);
-            } else {
-                coordinator.mark_title_match_completed(1).await;
+        for prepared_entry in prepared_entries {
+            match prepared_entry {
+                PreparedMovieLibraryScanEntry::Candidate(candidate) => {
+                    let candidate = process_movie_refresh_candidate(
+                        app,
+                        actor,
+                        candidate,
+                        &mut workset,
+                        &mut existing_titles,
+                        &mut existing_titles_by_name,
+                        &mut existing_titles_by_tvdb_id,
+                        &mut existing_titles_by_imdb_id,
+                        &mut existing_titles_by_tmdb_id,
+                        root,
+                        &mut existing_titles_by_probe_path,
+                        &mut summary,
+                    )
+                    .await?;
+                    if let Some(candidate) = candidate {
+                        unresolved_candidates.push(candidate);
+                    } else {
+                        coordinator.mark_title_match_completed(1).await;
+                    }
+                }
+                PreparedMovieLibraryScanEntry::Skipped { .. } => {
+                    summary.skipped += 1;
+                    coordinator.mark_title_match_completed(1).await;
+                }
             }
         }
 

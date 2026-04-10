@@ -158,7 +158,17 @@ fn walk_scan_batches_blocking(
 ) -> AppResult<()> {
     let mut batch = Vec::with_capacity(batch_size.min(256));
 
-    FilesystemWalker::new().walk_with(&root_path, |walked_dir| {
+    let walker = if discover_movie_nfo {
+        FilesystemWalker::new()
+            .skip_movie_scan_junk_and_extras()
+            .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
+    } else {
+        FilesystemWalker::new()
+            .skip_library_scan_junk()
+            .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
+    };
+
+    walker.walk_with(&root_path, |walked_dir| {
         scan_walked_directory_blocking(
             &allowed_extensions,
             &root_path,
@@ -277,16 +287,19 @@ fn scan_directory_with_metrics_blocking(
     let mut stat_elapsed = Duration::ZERO;
     let mut files = Vec::new();
 
-    FilesystemWalker::new().walk_with(&root_path, |walked_dir| {
-        collect_directory_files_with_source_snapshot(
-            &allowed_extensions,
-            walked_dir,
-            include_source_snapshot,
-            &mut files,
-            &mut stat_elapsed,
-        )?;
-        Ok(true)
-    })?;
+    FilesystemWalker::new()
+        .skip_library_scan_junk()
+        .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
+        .walk_with(&root_path, |walked_dir| {
+            collect_directory_files_with_source_snapshot(
+                &allowed_extensions,
+                walked_dir,
+                include_source_snapshot,
+                &mut files,
+                &mut stat_elapsed,
+            )?;
+            Ok(true)
+        })?;
 
     let elapsed = started_at.elapsed();
     let walk_elapsed = elapsed.saturating_sub(stat_elapsed);
@@ -644,6 +657,112 @@ mod tests {
             files[0]
                 .path
                 .ends_with("Linked Season 1/Show - 1x01 - Episode.mkv")
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_directory_for_progress_with_metrics_skips_junk_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let show_dir = dir.path().join("Show");
+        let junk_dir = show_dir.join("@eaDir");
+        tokio::fs::create_dir_all(&junk_dir)
+            .await
+            .expect("junk dir");
+        tokio::fs::write(show_dir.join("Episode.S01E01.mkv"), b"video")
+            .await
+            .expect("episode");
+        tokio::fs::write(junk_dir.join("Episode.S01E02.mkv"), b"video")
+            .await
+            .expect("junk episode");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let result = scanner
+            .scan_directory_for_progress_with_metrics(show_dir.to_string_lossy().as_ref())
+            .await
+            .expect("scan directory");
+
+        assert_eq!(
+            result
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                show_dir
+                    .join("Episode.S01E01.mkv")
+                    .to_string_lossy()
+                    .to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_library_skips_movie_extras_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let extras_dir = dir.path().join("extras");
+        tokio::fs::create_dir_all(&extras_dir)
+            .await
+            .expect("extras dir");
+        tokio::fs::write(dir.path().join("Movie.Title.2024.mkv"), b"video")
+            .await
+            .expect("movie");
+        tokio::fs::write(extras_dir.join("Featurette.mkv"), b"video")
+            .await
+            .expect("featurette");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let files = scanner
+            .scan_library(dir.path().to_string_lossy().as_ref())
+            .await
+            .expect("scan library");
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                dir.path()
+                    .join("Movie.Title.2024.mkv")
+                    .to_string_lossy()
+                    .to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_directory_with_metrics_stops_descending_after_depth_three() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let level1 = dir.path().join("Season 1");
+        let level2 = level1.join("Disc 1");
+        let level3 = level2.join("Extras");
+        let level4 = level3.join("TooDeep");
+        tokio::fs::create_dir_all(&level4).await.expect("level4");
+        tokio::fs::write(level3.join("Episode.S01E01.mkv"), b"video")
+            .await
+            .expect("depth 3 file");
+        tokio::fs::write(level4.join("Episode.S01E02.mkv"), b"video")
+            .await
+            .expect("depth 4 file");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let result = scanner
+            .scan_directory_with_metrics(dir.path().to_string_lossy().as_ref())
+            .await
+            .expect("scan directory with metrics");
+
+        assert_eq!(
+            result
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                level3
+                    .join("Episode.S01E01.mkv")
+                    .to_string_lossy()
+                    .to_string()
+            ]
         );
     }
 }

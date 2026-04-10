@@ -237,7 +237,7 @@ pub(super) fn movie_title_work(
 fn merge_default_movie_title_work(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     title: Title,
-    file: LibraryFile,
+    discovered_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
 ) {
@@ -245,7 +245,7 @@ fn merge_default_movie_title_work(
         workset,
         movie_title_work(
             title,
-            vec![file],
+            discovered_files,
             mode,
             LibraryScanMovieCleanupContext::default(),
             created_in_scan,
@@ -495,7 +495,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
-    let file = candidate.file.clone();
+    let discovered_files = candidate.discovered_files.clone();
     let item_path = normalize_library_scan_item_path(&candidate.file.path);
 
     match resolve_movie_scan_candidate(
@@ -516,7 +516,7 @@ pub(super) async fn process_movie_full_scan_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Full,
                 false,
             );
@@ -530,7 +530,7 @@ pub(super) async fn process_movie_full_scan_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Full,
                 true,
             );
@@ -674,7 +674,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<()> {
-    let file = candidate.file.clone();
+    let discovered_files = candidate.discovered_files.clone();
     match resolve_movie_metadata_match(
         app,
         actor,
@@ -694,7 +694,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Full,
                 false,
             );
@@ -708,7 +708,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Full,
                 true,
             );
@@ -1074,7 +1074,8 @@ pub(super) async fn process_movie_refresh_candidate(
     existing_titles_by_probe_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
-    let file = candidate.file.clone();
+    let representative_path = candidate.file.path.clone();
+    let discovered_files = candidate.discovered_files.clone();
 
     match resolve_movie_scan_candidate(
         app,
@@ -1093,7 +1094,7 @@ pub(super) async fn process_movie_refresh_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Additive,
                 false,
             );
@@ -1101,11 +1102,16 @@ pub(super) async fn process_movie_refresh_candidate(
             Ok(None)
         }
         MovieCandidateResolution::ReadyCreated { index, title } => {
-            update_movie_probe_path_index(existing_titles_by_probe_path, root, &file.path, index);
+            update_movie_probe_path_index(
+                existing_titles_by_probe_path,
+                root,
+                &representative_path,
+                index,
+            );
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Additive,
                 true,
             );
@@ -1115,7 +1121,7 @@ pub(super) async fn process_movie_refresh_candidate(
         }
         MovieCandidateResolution::CreateFailed(error) => {
             warn!(
-                path = %file.path,
+                path = %representative_path,
                 error = %error,
                 "background movie refresh: failed to create title from NFO"
             );
@@ -1145,7 +1151,8 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     existing_titles_by_probe_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
-    let file = candidate.file.clone();
+    let representative_path = candidate.file.path.clone();
+    let discovered_files = candidate.discovered_files.clone();
     match resolve_movie_metadata_match(
         app,
         actor,
@@ -1164,7 +1171,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Additive,
                 false,
             );
@@ -1172,11 +1179,16 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             Ok(())
         }
         MovieMetadataResolution::ReadyCreated { index, title } => {
-            update_movie_probe_path_index(existing_titles_by_probe_path, root, &file.path, index);
+            update_movie_probe_path_index(
+                existing_titles_by_probe_path,
+                root,
+                &representative_path,
+                index,
+            );
             merge_default_movie_title_work(
                 workset,
                 title,
-                file,
+                discovered_files,
                 LibraryScanTitleWalkMode::Additive,
                 true,
             );
@@ -1186,7 +1198,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
         }
         MovieMetadataResolution::CreateFailed(error) => {
             warn!(
-                path = %file.path,
+                path = %representative_path,
                 error = %error,
                 "background movie refresh: failed to create title"
             );

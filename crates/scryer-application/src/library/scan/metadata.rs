@@ -2,19 +2,23 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::library_discovery::{extract_library_queries, normalize_folder_name, strip_year_suffix};
+use crate::library_discovery::{
+    MovieTopLevelEntry, extract_library_queries, matching_movie_nfo_path_async,
+    normalize_folder_name, strip_year_suffix,
+};
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{looks_like_movie_nfo, parse_nfo};
 use crate::title_matching::TitleMatchProfile;
 use crate::{
-    AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, MetadataGateway,
-    MetadataSearchItem, MetadataSearchQuery, parse_release_metadata,
+    AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, parse_release_metadata,
 };
 
 pub(crate) const METADATA_TYPE_MOVIE: &str = "movie";
 pub(crate) const METADATA_TYPE_SERIES: &str = "series";
 
 const LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE: usize = 20;
+const MOVIE_ENTRY_PREP_CONCURRENCY: usize = 8;
 const RADARR_MOVIE_NFO_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 #[cfg(test)]
@@ -89,6 +93,7 @@ impl MetadataLookupBatchStats {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) file: LibraryFile,
+    pub(crate) discovered_files: Vec<LibraryFile>,
     pub(crate) parsed_release: crate::ParsedReleaseMetadata,
     pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
     pub(crate) query: String,
@@ -98,6 +103,12 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) title_match_candidates: Vec<String>,
     pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PreparedMovieLibraryScanEntry {
+    Candidate(PreparedMovieLibraryScanCandidate),
+    Skipped { item_path: String },
 }
 
 #[derive(Clone, Debug)]
@@ -534,6 +545,7 @@ where
     Ok((ready_batches, batch_search_results))
 }
 
+#[cfg(test)]
 pub(crate) async fn prepare_movie_library_scan_candidates(
     files: &[LibraryFile],
     library_path: &str,
@@ -656,8 +668,194 @@ pub(crate) fn select_series_metadata_from_batch_results(
     Ok(None)
 }
 
+#[cfg(test)]
 async fn prepare_movie_library_scan_candidate(
     file: LibraryFile,
+    library_path: String,
+) -> AppResult<PreparedMovieLibraryScanCandidate> {
+    build_prepared_movie_library_scan_candidate(file.clone(), vec![file], library_path).await
+}
+
+pub(crate) async fn prepare_movie_library_scan_entries(
+    library_scanner: Arc<dyn LibraryScanner>,
+    entries: &[MovieTopLevelEntry],
+    library_path: &str,
+) -> AppResult<Vec<PreparedMovieLibraryScanEntry>> {
+    let mut prepared_results = vec![None; entries.len()];
+
+    for (chunk_index, entry_chunk) in entries.chunks(MOVIE_ENTRY_PREP_CONCURRENCY).enumerate() {
+        let mut prepare_set = tokio::task::JoinSet::new();
+        let chunk_start = chunk_index * MOVIE_ENTRY_PREP_CONCURRENCY;
+
+        for (offset, entry) in entry_chunk.iter().cloned().enumerate() {
+            let index = chunk_start + offset;
+            let library_path = library_path.to_string();
+            let library_scanner = library_scanner.clone();
+            prepare_set.spawn(async move {
+                Ok::<_, AppError>((
+                    index,
+                    prepare_movie_library_scan_entry(library_scanner, entry, library_path).await?,
+                ))
+            });
+        }
+
+        while let Some(result) = prepare_set.join_next().await {
+            let (index, candidate) =
+                result.map_err(|error| AppError::Repository(error.to_string()))??;
+            prepared_results[index] = Some(candidate);
+        }
+    }
+
+    Ok(prepared_results.into_iter().flatten().collect())
+}
+
+async fn prepare_movie_library_scan_entry(
+    library_scanner: Arc<dyn LibraryScanner>,
+    entry: MovieTopLevelEntry,
+    library_path: String,
+) -> AppResult<PreparedMovieLibraryScanEntry> {
+    let entry_path = entry.path.to_string_lossy().to_string();
+    let mut discovered_files = if entry.is_dir {
+        library_scanner
+            .scan_library(entry.path.to_string_lossy().as_ref())
+            .await?
+    } else {
+        vec![LibraryFile {
+            path: entry_path.clone(),
+            display_name: entry
+                .path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        }]
+    };
+
+    if discovered_files.is_empty() {
+        return Ok(PreparedMovieLibraryScanEntry::Skipped {
+            item_path: entry_path,
+        });
+    }
+
+    discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
+    let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
+
+    Ok(PreparedMovieLibraryScanEntry::Candidate(
+        build_prepared_movie_library_scan_candidate(file, discovered_files, library_path).await?,
+    ))
+}
+
+async fn build_movie_entry_representative_file(
+    entry: &MovieTopLevelEntry,
+    discovered_files: &[LibraryFile],
+) -> AppResult<LibraryFile> {
+    if !entry.is_dir {
+        let mut file = discovered_files
+            .first()
+            .cloned()
+            .ok_or_else(|| AppError::Repository("movie entry unexpectedly had no files".into()))?;
+        file.nfo_path = matching_movie_nfo_path_async(Path::new(&file.path)).await;
+        return Ok(file);
+    }
+
+    let primary_candidate = detect_primary_movie_entry_file(&entry.path, discovered_files).await?;
+    let mut file = if let Some(primary_path) = primary_candidate.as_ref() {
+        discovered_files
+            .iter()
+            .find(|candidate| &candidate.path == primary_path)
+            .cloned()
+            .unwrap_or_else(|| discovered_files[0].clone())
+    } else {
+        discovered_files[0].clone()
+    };
+
+    file.nfo_path =
+        directory_movie_nfo_path(&entry.path, &file.path, primary_candidate.as_deref()).await;
+    Ok(file)
+}
+
+async fn same_stem_movie_nfo_path(path: &Path) -> Option<String> {
+    let same_stem = path.with_extension("nfo");
+    if tokio::fs::metadata(&same_stem)
+        .await
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+    {
+        return Some(same_stem.to_string_lossy().to_string());
+    }
+
+    None
+}
+
+async fn directory_movie_nfo_path(
+    entry_path: &Path,
+    file_path: &str,
+    primary_candidate: Option<&str>,
+) -> Option<String> {
+    if let Some(nfo_path) = same_stem_movie_nfo_path(Path::new(file_path)).await {
+        return Some(nfo_path);
+    }
+
+    if primary_candidate == Some(file_path) {
+        let movie_nfo = entry_path.join("movie.nfo");
+        if tokio::fs::metadata(&movie_nfo)
+            .await
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
+            return Some(movie_nfo.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
+async fn detect_primary_movie_entry_file(
+    entry_path: &Path,
+    discovered_files: &[LibraryFile],
+) -> AppResult<Option<String>> {
+    let immediate_files = discovered_files
+        .iter()
+        .filter(|file| Path::new(&file.path).parent() == Some(entry_path))
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+
+    if immediate_files.len() == 1 {
+        let path = immediate_files[0].clone();
+        return Ok((!is_sample_video_candidate(Path::new(&path))).then_some(path));
+    }
+
+    if immediate_files.is_empty() {
+        return Ok(None);
+    }
+
+    let mut non_sample_videos = Vec::new();
+    for path in immediate_files {
+        if is_sample_video_candidate(Path::new(&path)) {
+            continue;
+        }
+        non_sample_videos.push(path);
+    }
+
+    Ok((non_sample_videos.len() == 1).then(|| non_sample_videos[0].clone()))
+}
+
+fn is_sample_video_candidate(path: &Path) -> bool {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    stem.contains("sample")
+}
+
+async fn build_prepared_movie_library_scan_candidate(
+    file: LibraryFile,
+    discovered_files: Vec<LibraryFile>,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
     let parsed_release = parse_release_metadata(
@@ -701,6 +899,7 @@ async fn prepare_movie_library_scan_candidate(
 
     Ok(PreparedMovieLibraryScanCandidate {
         file,
+        discovered_files,
         parsed_release,
         nfo_meta,
         query,
@@ -914,6 +1113,7 @@ mod tests {
         RichMetadataSearchItem, SeriesMetadata,
     };
     use async_trait::async_trait;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     type CountingSearchResults =
@@ -1075,6 +1275,7 @@ mod tests {
     ) -> PreparedMovieLibraryScanCandidate {
         PreparedMovieLibraryScanCandidate {
             file: build_library_file("/library/Movie/Movie.mkv"),
+            discovered_files: vec![build_library_file("/library/Movie/Movie.mkv")],
             parsed_release: crate::ParsedReleaseMetadata::default(),
             nfo_meta: None,
             query: search_candidates
@@ -1389,6 +1590,47 @@ mod tests {
             candidate.metadata_lookup_error.as_deref() == Some("repository: series rate limited")
                 && candidate.selected_metadata.is_none()
         }));
+    }
+
+    #[test]
+    fn sample_video_candidate_requires_sample_name_signal() {
+        assert!(is_sample_video_candidate(Path::new(
+            "/library/Movie/sample-featurette.mkv"
+        )));
+        assert!(!is_sample_video_candidate(Path::new(
+            "/library/Movie/Short.Film.2024.mkv"
+        )));
+    }
+
+    #[tokio::test]
+    async fn detect_primary_movie_entry_file_keeps_small_non_sample_video() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let movie_dir = dir.path().join("Short Film (2024)");
+        tokio::fs::create_dir_all(&movie_dir)
+            .await
+            .expect("movie dir");
+        let movie_path = movie_dir.join("Short.Film.2024.mkv");
+        tokio::fs::write(&movie_path, b"tiny-but-real")
+            .await
+            .expect("movie file");
+
+        let discovered_files = vec![LibraryFile {
+            path: movie_path.to_string_lossy().to_string(),
+            display_name: "Short.Film.2024".to_string(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        }];
+
+        let primary = detect_primary_movie_entry_file(&movie_dir, &discovered_files)
+            .await
+            .expect("primary");
+
+        assert_eq!(
+            primary.as_deref(),
+            Some(movie_path.to_string_lossy().as_ref())
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use super::*;
 use crate::library_discovery::{
     BackgroundRefreshProbeOutcome, MovieTopLevelEntry, elapsed_ms_u64, list_child_directories,
     list_movie_top_level_entries, matching_movie_nfo_path, run_background_refresh_probe_with_delta,
-    stream_child_directories_batched,
+    stream_child_directories_batched, stream_movie_top_level_entries_batched,
 };
 use crate::library_scan::{LibraryDirectoryScanResult, source_signature_from_std_metadata};
 use crate::library_scan_coordinator::LibraryScanCoordinator;
@@ -17,11 +17,12 @@ use crate::library_scan_helpers::{
 };
 use crate::library_scan_metadata::{
     MetadataLookupBatchStats, MetadataSearchResults, PreparedMovieLibraryScanCandidate,
-    PreparedSeriesLibraryScanCandidate, build_movie_metadata_batch_stats,
-    build_series_metadata_batch_stats, movie_candidate_batch_search_keys,
-    prepare_movie_library_scan_candidates, prepare_series_library_scan_candidates,
-    resolve_full_scan_metadata_batches, select_movie_metadata_from_batch_results,
-    select_series_metadata_from_batch_results, series_candidate_batch_search_keys,
+    PreparedMovieLibraryScanEntry, PreparedSeriesLibraryScanCandidate,
+    build_movie_metadata_batch_stats, build_series_metadata_batch_stats,
+    movie_candidate_batch_search_keys, prepare_movie_library_scan_entries,
+    prepare_series_library_scan_candidates, resolve_full_scan_metadata_batches,
+    select_movie_metadata_from_batch_results, select_series_metadata_from_batch_results,
+    series_candidate_batch_search_keys,
 };
 use crate::library_scan_titles::{
     append_movie_title, append_series_title, build_movie_probe_path_indexes,

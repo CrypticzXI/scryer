@@ -81,6 +81,7 @@ cargo test --workspace --locked
 cargo xtask --help
 cargo xtask ci clippy
 cargo xtask stack up
+cargo xtask stack up --seed
 cargo xtask release --dry-run
 
 # Frontend

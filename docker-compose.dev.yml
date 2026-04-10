@@ -59,6 +59,7 @@ services:
       SCRYER_METRICS: "true"
       SCRYER_WEB_UI_URL: http://nodejs:3000
       SCRYER_AUTH_ENABLED: "false"
+      SCRYER_BACKGROUND_LIBRARY_REFRESH: "false"
       RUST_LOG: "${RUST_LOG:-info,scryer_application::app_usecase_catalog=debug,scryer_application::app_usecase_library=debug,scryer_application::library_scan_coordinator=debug,scryer_application::library_scan_progress=debug,scryer_application::library_scan_title_registry=debug,scryer_infrastructure::queries::title=debug}"
       CARGO_TARGET_DIR: /cargo-target
       SCRYER_SMG_REGISTRATION_SECRET: ${SCRYER_SMG_REGISTRATION_SECRET}
@@ -167,16 +168,18 @@ services:
       - "3001:3000"
 
   seed:
-    image: alpine:latest
+    build:
+      context: .
+      dockerfile: docker/scryer-dev-runtime.Dockerfile
     container_name: scryer-seed
     depends_on:
       - scryer
     volumes:
-      - ./docker/seed-entrypoint.sh:/seed.sh:ro
+      - ./tmp/xtask-seed-target/release/xtask:/usr/local/bin/xtask:ro
       - ./dev-seed.json:/seed.json:ro
-    entrypoint: ["sh", "-c", "apk add --no-cache curl jq >/dev/null 2>&1 && sh /seed.sh /seed.json"]
     environment:
       SCRYER_URL: http://scryer:8080
+    command: ["/usr/local/bin/xtask", "seed", "dev", "--file", "/seed.json"]
     restart: "no"
     profiles: ["seed"]
 

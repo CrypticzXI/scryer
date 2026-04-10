@@ -8,6 +8,28 @@ use scryer_domain::VIDEO_EXTENSIONS;
 const LIBRARY_SCAN_DISCOVERY_WORK_QUEUE_CAPACITY: usize = 16;
 const LIBRARY_PROBE_SIGNATURE_DIRECTORY_SCHEME: &str = "immediate_children_v1";
 const LIBRARY_PROBE_SIGNATURE_FILE_SCHEME: &str = "file_snapshot_v1";
+pub(crate) const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize = 3;
+
+const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &["@eadir", ".@__thumb", "plex versions"];
+const LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES: &[&str] = &[
+    "extras",
+    "extrafanart",
+    "behind the scenes",
+    "deleted scenes",
+    "featurette",
+    "featurettes",
+    "interview",
+    "interviews",
+    "other",
+    "scene",
+    "scenes",
+    "sample",
+    "samples",
+    "short",
+    "shorts",
+    "trailer",
+    "trailers",
+];
 
 #[derive(Clone, Debug)]
 pub(crate) struct MovieTopLevelEntry {
@@ -17,6 +39,8 @@ pub(crate) struct MovieTopLevelEntry {
 
 type LibraryPathBatch = Vec<PathBuf>;
 pub(crate) type LibraryPathBatchReceiver = tokio::sync::mpsc::Receiver<AppResult<LibraryPathBatch>>;
+pub(crate) type MovieTopLevelEntryBatchReceiver =
+    tokio::sync::mpsc::Receiver<AppResult<Vec<MovieTopLevelEntry>>>;
 
 pub(crate) fn extract_library_queries(
     path: &str,
@@ -122,7 +146,11 @@ pub(crate) fn elapsed_ms_u64(started_at: Instant) -> u64 {
 }
 
 pub(crate) async fn list_child_directories(root: &Path) -> AppResult<Vec<PathBuf>> {
-    crate::filesystem_walk::FilesystemWalker::new().list_child_directories(root)
+    Ok(crate::filesystem_walk::FilesystemWalker::new()
+        .list_child_directories(root)?
+        .into_iter()
+        .filter(|path| !should_skip_library_top_level_entry(path, true))
+        .collect())
 }
 
 pub(crate) async fn stream_child_directories_batched(
@@ -148,6 +176,10 @@ pub(crate) async fn stream_child_directories_batched(
                 &root,
                 |path| {
                     if receiver_closed {
+                        return Ok(());
+                    }
+
+                    if should_skip_library_top_level_entry(&path, true) {
                         return Ok(());
                     }
 
@@ -196,12 +228,15 @@ pub(crate) async fn list_movie_top_level_entries(
         let file_type = entry.file_type().await.map_err(|error| {
             AppError::Repository(format!("failed to inspect {}: {error}", path.display()))
         })?;
-        if file_type.is_dir() {
+        if file_type.is_dir() && !should_skip_library_top_level_entry(&path, true) {
             results.push(MovieTopLevelEntry { path, is_dir: true });
             continue;
         }
 
-        if file_type.is_file() && is_allowed_video_path(&path) {
+        if file_type.is_file()
+            && !should_skip_library_top_level_entry(&path, false)
+            && is_allowed_video_path(&path)
+        {
             results.push(MovieTopLevelEntry {
                 path,
                 is_dir: false,
@@ -211,6 +246,155 @@ pub(crate) async fn list_movie_top_level_entries(
 
     results.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(results)
+}
+
+pub(crate) async fn stream_movie_top_level_entries_batched(
+    root: &Path,
+    batch_size: usize,
+) -> AppResult<MovieTopLevelEntryBatchReceiver> {
+    if batch_size == 0 {
+        return Err(AppError::Validation(
+            "batch size must be greater than 0".into(),
+        ));
+    }
+
+    let root = root.to_path_buf();
+    let (sender, receiver) = tokio::sync::mpsc::channel(LIBRARY_SCAN_DISCOVERY_WORK_QUEUE_CAPACITY);
+
+    tokio::spawn(async move {
+        let result = async {
+            let mut entries = tokio::fs::read_dir(&root).await.map_err(|error| {
+                AppError::Repository(format!("failed to read {}: {error}", root.display()))
+            })?;
+            let mut batch = Vec::with_capacity(batch_size.min(256));
+
+            while let Some(entry) = entries.next_entry().await.map_err(|error| {
+                AppError::Repository(format!("failed to read {}: {error}", root.display()))
+            })? {
+                let path = entry.path();
+                let file_type = entry.file_type().await.map_err(|error| {
+                    AppError::Repository(format!("failed to inspect {}: {error}", path.display()))
+                })?;
+                if file_type.is_dir() && !should_skip_library_top_level_entry(&path, true) {
+                    batch.push(MovieTopLevelEntry { path, is_dir: true });
+                } else if file_type.is_file()
+                    && !should_skip_library_top_level_entry(&path, false)
+                    && is_allowed_video_path(&path)
+                {
+                    batch.push(MovieTopLevelEntry {
+                        path,
+                        is_dir: false,
+                    });
+                }
+
+                if batch.len() >= batch_size {
+                    let next_batch = std::mem::take(&mut batch);
+                    if sender.send(Ok(next_batch)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            if !batch.is_empty() {
+                let _ = sender.send(Ok(batch)).await;
+            }
+
+            Ok::<(), AppError>(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            let _ = sender.send(Err(error)).await;
+        }
+    });
+
+    Ok(receiver)
+}
+
+pub(crate) fn is_ignored_library_dir_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized.starts_with('.') || LIBRARY_IGNORED_DIR_NAMES.contains(&normalized.as_str())
+}
+
+pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized == ".ds_store"
+        || normalized == "thumbs.db"
+        || normalized.starts_with("._")
+        || normalized.starts_with(".unmanic")
+}
+
+pub(crate) fn is_ignored_movie_subdir_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES.contains(&normalized.as_str())
+}
+
+pub(crate) fn should_skip_library_top_level_entry(path: &Path, is_dir: bool) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return true;
+    };
+
+    if is_dir {
+        is_ignored_library_dir_name(name)
+    } else {
+        is_ignored_library_file_name(name)
+    }
+}
+
+pub(crate) fn should_skip_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
+    let Some(relative) = path.strip_prefix(root).ok() else {
+        return false;
+    };
+
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if components.peek().is_some() {
+            if is_ignored_library_dir_name(name) {
+                return true;
+            }
+        } else if is_dir {
+            if is_ignored_library_dir_name(name) {
+                return true;
+            }
+        } else if is_ignored_library_file_name(name) {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub(crate) fn should_skip_movie_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
+    if should_skip_library_subpath(root, path, is_dir) {
+        return true;
+    }
+
+    let Some(relative) = path.strip_prefix(root).ok() else {
+        return false;
+    };
+
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if components.peek().is_some() || is_dir {
+            if is_ignored_movie_subdir_name(name) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn is_allowed_video_path(path: &Path) -> bool {
@@ -229,6 +413,29 @@ pub(crate) fn matching_movie_nfo_path(path: &Path) -> Option<String> {
     let parent = path.parent()?;
     let movie_nfo = parent.join("movie.nfo");
     if movie_nfo.is_file() {
+        return Some(movie_nfo.to_string_lossy().to_string());
+    }
+
+    None
+}
+
+pub(crate) async fn matching_movie_nfo_path_async(path: &Path) -> Option<String> {
+    let same_stem = path.with_extension("nfo");
+    if tokio::fs::metadata(&same_stem)
+        .await
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+    {
+        return Some(same_stem.to_string_lossy().to_string());
+    }
+
+    let parent = path.parent()?;
+    let movie_nfo = parent.join("movie.nfo");
+    if tokio::fs::metadata(&movie_nfo)
+        .await
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+    {
         return Some(movie_nfo.to_string_lossy().to_string());
     }
 
@@ -418,6 +625,10 @@ fn compute_library_probe_signature_blocking(path: PathBuf) -> AppResult<(String,
                 continue;
             };
 
+            if should_skip_library_top_level_entry(&child_path, kind == "dir") {
+                continue;
+            }
+
             let marker = child_metadata
                 .as_ref()
                 .map(metadata_probe_marker)
@@ -452,4 +663,72 @@ fn metadata_probe_marker(metadata: &std::fs::Metadata) -> String {
         .map(|value| format!("{}:{}", value.as_secs(), value.subsec_nanos()))
         .unwrap_or_else(|| "unknown".to_string());
     format!("{modified}|{}", metadata.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn list_child_directories_skips_library_junk_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        tokio::fs::create_dir_all(dir.path().join("Show A"))
+            .await
+            .expect("show a");
+        tokio::fs::create_dir_all(dir.path().join("@eaDir"))
+            .await
+            .expect("@eaDir");
+        tokio::fs::create_dir_all(dir.path().join(".stfolder"))
+            .await
+            .expect(".stfolder");
+
+        let child_dirs = list_child_directories(dir.path())
+            .await
+            .expect("child dirs");
+
+        assert_eq!(child_dirs, vec![dir.path().join("Show A")]);
+    }
+
+    #[tokio::test]
+    async fn list_movie_top_level_entries_skips_junk_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        tokio::fs::create_dir_all(dir.path().join("Movie A"))
+            .await
+            .expect("movie dir");
+        tokio::fs::create_dir_all(dir.path().join("@eaDir"))
+            .await
+            .expect("@eaDir");
+        tokio::fs::write(dir.path().join("Movie.B.2024.mkv"), b"video")
+            .await
+            .expect("movie file");
+        tokio::fs::write(dir.path().join(".DS_Store"), b"junk")
+            .await
+            .expect(".DS_Store");
+
+        let entries = list_movie_top_level_entries(dir.path())
+            .await
+            .expect("movie entries");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string())
+                .collect::<Vec<_>>(),
+            vec!["Movie A".to_string(), "Movie.B.2024.mkv".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_skip_movie_library_subpath_allows_sample_leaf_files() {
+        let root = Path::new("/library");
+        let path = Path::new("/library/Movie Title/Sample.2024.BluRay.mkv");
+
+        assert!(!should_skip_movie_library_subpath(root, path, false));
+    }
 }

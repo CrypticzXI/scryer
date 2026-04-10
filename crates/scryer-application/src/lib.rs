@@ -80,6 +80,8 @@ pub use library::filesystem_walk;
 pub use library::recycle_bin;
 pub use plugins::managed_rules;
 pub use quality::release_dedup;
+pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
+    library::discovery::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH;
 
 use chrono::{DateTime, Duration, Utc};
 use rand_core::OsRng;

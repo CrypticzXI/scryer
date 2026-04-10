@@ -258,8 +258,7 @@ impl AppUseCase {
                 absorb_walk_summary,
                 created_in_scan,
                 walk_result,
-            ) =
-                result.map_err(|error| AppError::Repository(error.to_string()))?;
+            ) = result.map_err(|error| AppError::Repository(error.to_string()))?;
 
             match walk_result {
                 Ok(walk_result) => {

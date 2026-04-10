@@ -11,6 +11,13 @@ enum WalkEntryKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalkFilterPolicy {
+    None,
+    LibraryScanJunkOnly,
+    MovieTitleScan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WalkReadBehavior {
     Fail,
     SkipUnreadableSubdirectories,
@@ -28,6 +35,8 @@ pub struct WalkedDirectory {
 #[derive(Clone, Debug)]
 pub struct FilesystemWalker {
     read_behavior: WalkReadBehavior,
+    filter_policy: WalkFilterPolicy,
+    max_depth: Option<usize>,
 }
 
 impl Default for FilesystemWalker {
@@ -40,11 +49,28 @@ impl FilesystemWalker {
     pub fn new() -> Self {
         Self {
             read_behavior: WalkReadBehavior::Fail,
+            filter_policy: WalkFilterPolicy::None,
+            max_depth: None,
         }
     }
 
     pub fn skip_unreadable_subdirectories(mut self) -> Self {
         self.read_behavior = WalkReadBehavior::SkipUnreadableSubdirectories;
+        self
+    }
+
+    pub fn skip_library_scan_junk(mut self) -> Self {
+        self.filter_policy = WalkFilterPolicy::LibraryScanJunkOnly;
+        self
+    }
+
+    pub fn skip_movie_scan_junk_and_extras(mut self) -> Self {
+        self.filter_policy = WalkFilterPolicy::MovieTitleScan;
+        self
+    }
+
+    pub fn max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = Some(max_depth);
         self
     }
 
@@ -101,16 +127,16 @@ impl FilesystemWalker {
                 root.display()
             ))
         })?;
-        let mut stack = vec![(root.to_path_buf(), root_visit_key)];
+        let mut stack = vec![(root.to_path_buf(), root_visit_key, 0usize)];
         let mut visited = HashSet::new();
         let mut has_visited_root = false;
 
-        while let Some((dir, visit_key)) = stack.pop() {
+        while let Some((dir, visit_key, depth)) = stack.pop() {
             if !visited.insert(visit_key.clone()) {
                 continue;
             }
 
-            let listing = match self.read_directory(&dir) {
+            let mut listing = match self.read_directory(&dir) {
                 Ok(listing) => listing,
                 Err(error)
                     if has_visited_root
@@ -127,15 +153,18 @@ impl FilesystemWalker {
             };
 
             has_visited_root = true;
-            stack.extend(listing.subdirs.iter().rev().cloned().map(|path| {
-                let child_visit_key = visit_key_for_child(
-                    &visit_key,
-                    &path,
-                    listing.symlinked_subdirs.contains(&path),
-                )
-                .unwrap_or_else(|_| path.clone());
-                (path, child_visit_key)
-            }));
+            self.apply_walk_filter(root, &mut listing);
+            if self.max_depth.is_none_or(|max_depth| depth < max_depth) {
+                stack.extend(listing.subdirs.iter().rev().cloned().map(|path| {
+                    let child_visit_key = visit_key_for_child(
+                        &visit_key,
+                        &path,
+                        listing.symlinked_subdirs.contains(&path),
+                    )
+                    .unwrap_or_else(|_| path.clone());
+                    (path, child_visit_key, depth.saturating_add(1))
+                }));
+            }
             if !visitor(listing)? {
                 return Ok(());
             }
@@ -205,6 +234,32 @@ impl FilesystemWalker {
             filenames_lower,
             symlinked_subdirs,
         })
+    }
+
+    fn apply_walk_filter(&self, root: &Path, listing: &mut WalkedDirectory) {
+        match self.filter_policy {
+            WalkFilterPolicy::None => {}
+            WalkFilterPolicy::LibraryScanJunkOnly => {
+                listing.subdirs.retain(|path| {
+                    !crate::library_discovery::should_skip_library_subpath(root, path, true)
+                });
+                listing.files.retain(|path| {
+                    !crate::library_discovery::should_skip_library_subpath(root, path, false)
+                });
+            }
+            WalkFilterPolicy::MovieTitleScan => {
+                listing.subdirs.retain(|path| {
+                    !crate::library_discovery::should_skip_movie_library_subpath(root, path, true)
+                });
+                listing.files.retain(|path| {
+                    !crate::library_discovery::should_skip_movie_library_subpath(root, path, false)
+                });
+            }
+        }
+
+        listing
+            .symlinked_subdirs
+            .retain(|path| listing.subdirs.contains(path));
     }
 }
 

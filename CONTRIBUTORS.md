@@ -49,6 +49,14 @@ The frontend is a **Vite + React 19 + React Router 7** single-page application w
 - **Node.js** 22+ and npm
 - **Docker** and Docker Compose
 
+### macOS Privacy & Security
+
+If `cargo build`, `cargo xtask`, or other Rust commands stall around `build-script-build`, macOS is likely blocking newly compiled local binaries from your terminal app.
+
+Enable your terminal under `System Settings -> Privacy & Security -> Developer Tools`, then fully quit and reopen it.
+
+`spctl developer-mode enable-terminal` only helps `Terminal.app`. If you use Ghostty, iTerm, WezTerm, or another terminal, you must allow that specific app in the Developer Tools list.
+
 ## Development Stack
 
 The dev stack is orchestrated via Docker Compose:
@@ -56,6 +64,8 @@ The dev stack is orchestrated via Docker Compose:
 ```bash
 cargo xtask stack up
 ```
+
+Use `cargo xtask stack up --seed` when you also want the one-shot seed container to run.
 
 This brings up:
 - NZBGet container (download client for testing)

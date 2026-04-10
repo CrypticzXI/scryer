@@ -85,10 +85,28 @@ struct StackArgs {
 
 #[derive(Subcommand)]
 enum StackCommand {
-    Up,
+    Up(StackUpArgs),
     Down(StackDownArgs),
     Logs(StackLogsArgs),
-    Restart,
+    Restart(StackRestartArgs),
+}
+
+#[derive(Args)]
+struct StackUpArgs {
+    #[arg(
+        long,
+        help = "Also run the one-shot seed container after the stack is up"
+    )]
+    seed: bool,
+}
+
+#[derive(Args)]
+struct StackRestartArgs {
+    #[arg(
+        long,
+        help = "Also run the one-shot seed container after the stack is back up"
+    )]
+    seed: bool,
 }
 
 #[derive(Args)]
@@ -200,12 +218,12 @@ fn main() -> Result<()> {
             CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
         },
         Commands::Stack(args) => match args.command {
-            StackCommand::Up => stack_up(&ctx),
+            StackCommand::Up(args) => stack_up(&ctx, args),
             StackCommand::Down(args) => stack_down(&ctx, args),
             StackCommand::Logs(args) => stack_logs(&ctx, args),
-            StackCommand::Restart => {
+            StackCommand::Restart(args) => {
                 stack_down(&ctx, StackDownArgs { all: false })?;
-                stack_up(&ctx)
+                stack_up(&ctx, StackUpArgs { seed: args.seed })
             }
         },
         Commands::Nzbget(args) => match args.command {
@@ -219,6 +237,10 @@ fn main() -> Result<()> {
             ProfileCommand::Hotpaths(args) => profile_hotpaths(&ctx, args),
         },
     }
+}
+
+fn seed_dev(ctx: &TaskContext, args: SeedDevArgs) -> Result<()> {
+    seed::run(ctx, args)
 }
 
 fn step(message: impl AsRef<str>) {
@@ -1056,7 +1078,7 @@ fn docker_capture(ctx: &TaskContext, args: &[String]) -> Result<String> {
     run_capture(&mut command)
 }
 
-fn stack_up(ctx: &TaskContext) -> Result<()> {
+fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     let (compose_base, _, _) = compose_command(ctx)?;
     // SAFETY: xtask is a single-process CLI and the env var only needs to apply
     // to child docker-compose invocations during this command.
@@ -1077,7 +1099,6 @@ fn stack_up(ctx: &TaskContext) -> Result<()> {
     ] {
         fs::create_dir_all(ctx.path(path))?;
     }
-
     let restart_services = env_list(
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
@@ -1133,10 +1154,75 @@ fn stack_up(ctx: &TaskContext) -> Result<()> {
     if restart_services.iter().any(|service| service == "nodejs") || proxy_requested {
         wait_for_nodejs()?;
     }
+    if args.seed {
+        ensure_seed_xtask_binary(ctx)?;
+        compose_up(ctx, &compose_base, false, &["seed".to_string()])?;
+    }
     if proxy_requested {
         compose_up(ctx, &compose_base, true, &["proxy".to_string()])?;
     }
     Ok(())
+}
+
+fn ensure_seed_xtask_binary(ctx: &TaskContext) -> Result<()> {
+    let binary = ctx.path("tmp/xtask-seed-target/release/xtask");
+    if binary.is_file() {
+        return Ok(());
+    }
+
+    step("Building Linux xtask binary for the seed container");
+    let mut docker_build = ctx.command("docker");
+    docker_build.args([
+        "build",
+        "-q",
+        "-f",
+        "docker/scryer-dev-runtime.Dockerfile",
+        ".",
+    ]);
+    let image = run_capture(&mut docker_build)?.trim().to_string();
+    if image.is_empty() {
+        bail!("failed to resolve dev runtime image id for seed binary build");
+    }
+
+    let target_dir = ctx.path("tmp/xtask-seed-target");
+    fs::create_dir_all(&target_dir)?;
+    let uid = capture_command_text(ctx, "id", &["-u"]).unwrap_or_else(|_| "0".to_string());
+    let gid = capture_command_text(ctx, "id", &["-g"]).unwrap_or_else(|_| "0".to_string());
+    let mut docker_run = ctx.command("docker");
+    docker_run.args([
+        "run",
+        "--rm",
+        "--user",
+        &format!("{uid}:{gid}"),
+        "-v",
+        &format!("{}:/workspace", ctx.repo_root.display()),
+        "-w",
+        "/workspace",
+        &image,
+        "cargo",
+        "build",
+        "-p",
+        "xtask",
+        "--release",
+        "--target-dir",
+        "/workspace/tmp/xtask-seed-target",
+    ]);
+    run_checked(&mut docker_run)?;
+
+    if !binary.is_file() {
+        bail!(
+            "seed xtask binary missing after build: {}",
+            binary.display()
+        );
+    }
+    ok(format!("Seed binary ready at {}", binary.display()));
+    Ok(())
+}
+
+fn capture_command_text(ctx: &TaskContext, program: &str, args: &[&str]) -> Result<String> {
+    let mut command = ctx.command(program);
+    command.args(args);
+    Ok(run_capture(&mut command)?.trim().to_string())
 }
 
 fn compose_up(
@@ -1381,10 +1467,6 @@ fn nzbget_down(ctx: &TaskContext) -> Result<()> {
         println!("NZBGet is not running.");
     }
     Ok(())
-}
-
-fn seed_dev(ctx: &TaskContext, args: SeedDevArgs) -> Result<()> {
-    seed::run(ctx, args)
 }
 
 fn profile_hotpaths(ctx: &TaskContext, args: ProfileHotpathsArgs) -> Result<()> {

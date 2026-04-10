@@ -688,6 +688,7 @@ cargo nextest run --workspace --locked
 cargo xtask --help
 cargo xtask ci clippy
 cargo xtask stack up
+cargo xtask stack up --seed
 ./scripts/stack-restart.sh
 cd apps/scryer-web && npm ci && npm run build
 ```
