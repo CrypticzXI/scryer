@@ -768,7 +768,7 @@ async fn smg_search_tvdb_rich() {
 
     let results = ctx
         .app
-        .search_metadata(&admin(), "Test Movie", "movie", 25, "eng")
+        .search_metadata(&admin(), "Test Movie", "movie", 25, "eng", None)
         .await
         .expect("search_tvdb_rich should succeed");
 
@@ -782,6 +782,35 @@ async fn smg_search_tvdb_rich() {
         results[0].overview.is_some(),
         "rich search should have overview"
     );
+}
+
+#[tokio::test]
+async fn smg_search_tvdb_rich_includes_year_hint() {
+    let ctx = TestContext::new().await;
+    let fixture = load_fixture("smg/search_tvdb_rich.json");
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .and(query_param(
+            "variables",
+            r#"{"query":"Test Movie","type":"movie","limit":25,"language":"eng","year":2024}"#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let results = ctx
+        .app
+        .search_metadata(&admin(), "Test Movie", "movie", 25, "eng", Some(2024))
+        .await
+        .expect("search_tvdb_rich with year should succeed");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "Test Movie Title");
 }
 
 #[tokio::test]

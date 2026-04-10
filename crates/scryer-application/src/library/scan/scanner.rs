@@ -225,6 +225,7 @@ pub trait MetadataGateway: Send + Sync {
         type_hint: &str,
         limit: i32,
         language: &str,
+        year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>>;
 
     async fn search_tvdb_multi(
@@ -435,6 +436,7 @@ impl MetadataGateway for NullMetadataGateway {
         _type_hint: &str,
         _limit: i32,
         _language: &str,
+        _year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
         Err(AppError::Repository(
             "metadata gateway is not configured".into(),

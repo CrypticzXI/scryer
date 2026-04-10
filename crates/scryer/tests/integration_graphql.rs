@@ -18,7 +18,7 @@ use scryer_infrastructure::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
@@ -7647,6 +7647,41 @@ async fn graphql_search_metadata_movie() {
             }
         }"#,
         json!({ "query": "Test Movie", "type": "movie" }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let results = body["data"]["searchMetadata"].as_array().unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["name"], "Test Movie Title");
+}
+
+#[tokio::test]
+async fn graphql_search_metadata_movie_accepts_year_hint() {
+    let ctx = TestContext::new().await;
+    let fixture = load_fixture("smg/search_tvdb_rich.json");
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .and(query_param(
+            "variables",
+            r#"{"query":"Test Movie","type":"movie","limit":25,"language":"eng","year":2024}"#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let body = gql(
+        &ctx,
+        r#"query($query: String!, $type: String!, $year: Int) {
+            searchMetadata(query: $query, type: $type, year: $year) {
+                tvdbId name year type overview posterUrl
+            }
+        }"#,
+        json!({ "query": "Test Movie", "type": "movie", "year": 2024 }),
     )
     .await;
     assert_no_errors(&body);

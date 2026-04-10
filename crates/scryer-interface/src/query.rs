@@ -1348,6 +1348,7 @@ impl QueryRoot {
         #[graphql(name = "type")] type_hint: String,
         #[graphql(default = 25)] limit: i32,
         #[graphql(default_with = "\"eng\".to_string()")] language: String,
+        year: Option<i32>,
     ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1356,7 +1357,7 @@ impl QueryRoot {
         }
         let limit = limit.clamp(1, 100);
         let results = app
-            .search_metadata(&actor, &query, &type_hint, limit, &language)
+            .search_metadata(&actor, &query, &type_hint, limit, &language, year)
             .await
             .map_err(to_gql_error)?;
         Ok(results.into_iter().map(from_metadata_search_item).collect())

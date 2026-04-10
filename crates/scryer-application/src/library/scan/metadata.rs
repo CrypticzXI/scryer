@@ -1503,6 +1503,7 @@ mod tests {
             _type_hint: &str,
             _limit: i32,
             _language: &str,
+            _year: Option<i32>,
         ) -> AppResult<Vec<RichMetadataSearchItem>> {
             panic!("unused in test")
         }
@@ -1699,10 +1700,9 @@ mod tests {
     #[test]
     fn select_best_match_accepts_single_same_year_prefix_match() {
         let results = vec![MetadataSearchItem {
-            id: "tvdb-3".to_string(),
+            tvdb_id: "tvdb-3".to_string(),
             name: "Ralph Breaks the Internet".to_string(),
             year: Some(2018),
-            kind: "movie".to_string(),
         }];
         let raw_candidates = vec!["RALPH BREAKS THE INTERNET WRECK IT RALPH 2".to_string()];
         let (candidates, reduced) =
@@ -1717,7 +1717,7 @@ mod tests {
         )
         .expect("single same-year prefix match");
 
-        assert_eq!(selected.id, "tvdb-3");
+        assert_eq!(selected.tvdb_id, "tvdb-3");
     }
 
     #[test]

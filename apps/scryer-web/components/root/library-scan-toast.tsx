@@ -80,25 +80,12 @@ export function LibraryScanToast({
     session.titleMatchTotalKnown,
     terminal,
   );
-  const hydrationPercent = percentForPhase(
-    session.hydrationProgress,
-    session.hydrationTotalKnown,
-    terminal,
-  );
   const mediaAnalysisPercent = percentForPhase(
     session.mediaAnalysisProgress,
     session.mediaAnalysisTotalKnown,
     terminal,
   );
-  const hydrationDone =
-    session.hydrationProgress.completed + session.hydrationProgress.failed;
-  const hydrationActive =
-    session.hydrationProgress.total > 0 &&
-    hydrationDone < session.hydrationProgress.total;
   const titleMatchIndeterminate = !terminal && !session.titleMatchTotalKnown;
-  const hydrationIndeterminate =
-    !terminal &&
-    (!session.hydrationTotalKnown || (hydrationActive && hydrationDone === 0));
   const mediaAnalysisIndeterminate =
     !terminal && !session.mediaAnalysisTotalKnown;
 
@@ -124,24 +111,6 @@ export function LibraryScanToast({
         </div>
 
         <div className="space-y-3">
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-foreground">
-              {t("settings.libraryScanFetchingMetadata")}
-            </p>
-            <ActivityProgressBar
-              percent={hydrationPercent}
-              indeterminate={hydrationIndeterminate}
-              remainingLabel={phaseLabel(
-                session.status,
-                session.hydrationProgress,
-                session.hydrationTotalKnown,
-                t("settings.libraryScanNoMetadataNeeded"),
-                t,
-              )}
-              colorClass="bg-emerald-500"
-            />
-          </div>
-
           <div className="space-y-1">
             <p className="text-xs font-medium text-foreground">
               {t("settings.libraryScanTitleMatch")}

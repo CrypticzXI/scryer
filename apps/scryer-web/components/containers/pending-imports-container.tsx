@@ -178,6 +178,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           query: searchQuery.trim(),
           type: facet?.tvdbSearchType ?? "movie",
           limit: 8,
+          year: activeItem?.yearHint ?? null,
         })
         .toPromise()
         .then(({ data, error: queryError }) => {
@@ -210,7 +211,15 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeItemId, client, facet?.tvdbSearchType, searchQuery, setGlobalStatus, t]);
+  }, [
+    activeItem?.yearHint,
+    activeItemId,
+    client,
+    facet?.tvdbSearchType,
+    searchQuery,
+    setGlobalStatus,
+    t,
+  ]);
 
   React.useEffect(() => {
     if (!activeItemId) {
@@ -422,14 +431,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                                 onClick={() => void handleResolve(String(result.tvdbId))}
                                 disabled={isResolving}
                               >
-                                {isResolving ? (
-                                  <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    {t("pendingImports.resolving")}
-                                  </>
-                                ) : (
-                                  t("pendingImports.match")
-                                )}
+                                {t("pendingImports.match")}
                               </Button>
                             </div>
                           </div>

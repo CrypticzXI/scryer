@@ -981,12 +981,13 @@ impl AppUseCase {
         type_hint: &str,
         limit: i32,
         language: &str,
+        year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
             .library
             .metadata_gateway
-            .search_tvdb_rich(query, type_hint, limit, language)
+            .search_tvdb_rich(query, type_hint, limit, language, year)
             .await
     }
 

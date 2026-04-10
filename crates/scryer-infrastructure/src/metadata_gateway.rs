@@ -86,8 +86,8 @@ const SEARCH_TVDB_BATCH_QUERY: &str = r#"
 "#;
 
 const SEARCH_TVDB_RICH_QUERY: &str = r#"
-  query SearchTvdbRich($query: String!, $type: String, $limit: Int, $language: String) {
-    searchTvdb(query: $query, type: $type, limit: $limit, language: $language) {
+  query SearchTvdbRich($query: String!, $type: String, $limit: Int, $language: String, $year: Int) {
+    searchTvdb(query: $query, type: $type, limit: $limit, language: $language, year: $year) {
       results {
         tvdb_id
         name
@@ -1860,12 +1860,14 @@ impl MetadataGateway for MetadataGatewayClient {
         type_hint: &str,
         limit: i32,
         language: &str,
+        year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
         let variables = json!({
             "query": query,
             "type": type_hint,
             "limit": limit,
             "language": language,
+            "year": year,
         });
 
         let data: SearchTvdbRichResponse = self

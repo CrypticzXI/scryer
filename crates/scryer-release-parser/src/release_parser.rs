@@ -2073,7 +2073,7 @@ fn parse_edition_at(tokens: &[String], index: usize) -> Option<(String, usize)> 
 
 fn is_noise_token(token: &str) -> bool {
     if token.len() <= 1 {
-        return token != "/" && !token.chars().all(|character| character.is_ascii_digit());
+        return token != "/";
     }
 
     if is_hex_token(token) || parse_year(token).is_some() || parse_quality(token).is_some() {
@@ -2231,8 +2231,8 @@ fn collect_normalized_title_tokens(
         .unwrap_or_default();
     let release_group_tokens = release_group.map(split_title).unwrap_or_default();
 
-    for token in tokens {
-        if is_noise_token(token) {
+    for (index, token) in tokens.iter().enumerate() {
+        if is_noise_token(token) && !should_preserve_inline_title_token(tokens, index) {
             continue;
         }
 
@@ -2253,6 +2253,33 @@ fn collect_normalized_title_tokens(
     }
 
     out
+}
+
+fn should_preserve_inline_title_token(tokens: &[String], index: usize) -> bool {
+    let token = tokens.get(index).map(String::as_str).unwrap_or_default();
+    if token.len() == 1 && token.chars().all(|character| character.is_ascii_digit()) {
+        return index
+            .checked_sub(1)
+            .and_then(|value| tokens.get(value))
+            .map(String::as_str)
+            .is_some_and(is_inline_title_neighbor);
+    }
+
+    if token.len() > 2 || !is_language_token(token) {
+        return false;
+    }
+
+    let previous = index
+        .checked_sub(1)
+        .and_then(|value| tokens.get(value))
+        .map(String::as_str);
+    let next = tokens.get(index + 1).map(String::as_str);
+
+    previous.is_some_and(is_inline_title_neighbor) && next.is_some_and(is_inline_title_neighbor)
+}
+
+fn is_inline_title_neighbor(token: &str) -> bool {
+    token.chars().any(|character| character.is_alphabetic()) && !is_noise_token(token)
 }
 
 fn normalize_title_tokens(
@@ -3176,6 +3203,7 @@ fn parse_series_episode_core(tokens: &[String]) -> Option<ParsedEpisodeMetadata>
                 && idx > 0
                 && parse_quality(digit_part).is_none()
                 && is_reasonable_episode_number(digit_part.parse::<u32>().ok()?)
+                && (digit_part.len() > 1 || pending_episode_anchor || pending_season.is_some())
                 && (digit_part.len() <= 3
                     || (digit_part.len() == 4 && parse_year(digit_part).is_none()))
                 && !next_is_numeric

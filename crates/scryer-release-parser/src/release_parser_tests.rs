@@ -1810,7 +1810,10 @@ fn dts_hd_ma_does_not_leak_into_normalized_title() {
 fn ralph_breaks_the_internet_keeps_full_title_tokens() {
     let p = parse_release_metadata("Ralph Breaks the Internet Wreck-It Ralph 2");
     assert_eq!(p.release_group, None);
-    assert_eq!(p.normalized_title, "RALPH BREAKS THE INTERNET WRECK IT RALPH 2");
+    assert_eq!(
+        p.normalized_title,
+        "RALPH BREAKS THE INTERNET WRECK IT RALPH 2"
+    );
 }
 
 #[test]

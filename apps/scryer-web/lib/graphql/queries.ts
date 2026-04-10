@@ -1556,8 +1556,8 @@ const METADATA_SEARCH_FIELDS = `
     runtimeMinutes
     sortTitle`;
 
-export const searchMetadataQuery = `query SearchMetadata($query: String!, $type: String!, $limit: Int, $language: String! = "eng") {
-  searchMetadata(query: $query, type: $type, limit: $limit, language: $language) {${METADATA_SEARCH_FIELDS}
+export const searchMetadataQuery = `query SearchMetadata($query: String!, $type: String!, $limit: Int, $language: String! = "eng", $year: Int) {
+  searchMetadata(query: $query, type: $type, limit: $limit, language: $language, year: $year) {${METADATA_SEARCH_FIELDS}
   }
 }`;
 

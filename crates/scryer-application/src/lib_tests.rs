@@ -997,6 +997,7 @@ impl MetadataGateway for MockMetadataGateway {
         _type_hint: &str,
         _limit: i32,
         _language: &str,
+        _year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
         Err(AppError::Repository("not implemented in tests".into()))
     }
@@ -1205,6 +1206,7 @@ impl MetadataGateway for EmptySearchMetadataGateway {
         _type_hint: &str,
         _limit: i32,
         _language: &str,
+        _year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
         Ok(Vec::new())
     }
