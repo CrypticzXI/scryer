@@ -110,6 +110,8 @@ impl TitleRepository for MockTitleRepo {
         title.year = metadata.year;
         title.overview = metadata.overview;
         title.poster_url = metadata.poster_url;
+        title.banner_url = metadata.banner_url;
+        title.background_url = metadata.background_url;
         title.sort_title = metadata.sort_title;
         title.slug = metadata.slug;
         title.imdb_id = metadata.imdb_id;
@@ -123,6 +125,7 @@ impl TitleRepository for MockTitleRepo {
         title.country = metadata.country;
         title.aliases = metadata.aliases;
         title.metadata_language = metadata.metadata_language;
+        title.metadata_fetched_at = Some(chrono::Utc::now());
         Ok(title.clone())
     }
 
@@ -162,6 +165,16 @@ impl TitleRepository for MockTitleRepo {
         Ok(())
     }
 
+    async fn clear_folder_path(&self, id: &str) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let title = list
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+        title.folder_path = None;
+        Ok(())
+    }
+
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
         let mut list = self.store.lock().await;
         let mut count = 0u64;
@@ -189,6 +202,202 @@ impl MockUserRepo {
 
     fn list_all_call_count(&self) -> usize {
         self.list_all_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default, Clone)]
+struct MockMediaFileRepo {
+    store: Arc<Mutex<Vec<TitleMediaFile>>>,
+}
+
+#[async_trait]
+impl MediaFileRepository for MockMediaFileRepo {
+    async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
+        let id = Id::new().0;
+        self.store.lock().await.push(TitleMediaFile {
+            id: id.clone(),
+            title_id: input.title_id.clone(),
+            episode_id: None,
+            file_path: input.file_path.clone(),
+            size_bytes: input.size_bytes,
+            source_signature_scheme: input.source_signature_scheme.clone(),
+            source_signature_value: input.source_signature_value.clone(),
+            quality_label: input.quality_label.clone(),
+            scan_status: "pending".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            video_codec: None,
+            video_width: None,
+            video_height: None,
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: Vec::new(),
+            audio_streams: Vec::new(),
+            subtitle_languages: Vec::new(),
+            subtitle_codecs: Vec::new(),
+            subtitle_streams: Vec::new(),
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+            scene_name: input.scene_name.clone(),
+            release_group: input.release_group.clone(),
+            source_type: input.source_type.clone(),
+            resolution: input.resolution.clone(),
+            video_codec_parsed: input.video_codec_parsed.clone(),
+            audio_codec_parsed: input.audio_codec_parsed.clone(),
+            acquisition_score: input.acquisition_score,
+            scoring_log: input.scoring_log.clone(),
+            indexer_source: input.indexer_source.clone(),
+            grabbed_release_title: input.grabbed_release_title.clone(),
+            grabbed_at: input.grabbed_at.clone(),
+            edition: input.edition.clone(),
+            original_file_path: input.original_file_path.clone(),
+            release_hash: input.release_hash.clone(),
+        });
+        Ok(id)
+    }
+
+    async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        entry.episode_id = Some(episode_id.to_string());
+        Ok(())
+    }
+
+    async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|entry| entry.title_id == title_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_title_media_size_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaSizeSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_title_episode_progress_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn update_media_file_analysis(
+        &self,
+        file_id: &str,
+        analysis: MediaFileAnalysis,
+    ) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        entry.scan_status = "scanned".to_string();
+        entry.video_codec = analysis.video_codec;
+        entry.video_width = analysis.video_width;
+        entry.video_height = analysis.video_height;
+        entry.video_bitrate_kbps = analysis.video_bitrate_kbps;
+        entry.video_bit_depth = analysis.video_bit_depth;
+        entry.video_hdr_format = analysis.video_hdr_format;
+        entry.video_frame_rate = analysis.video_frame_rate;
+        entry.video_profile = analysis.video_profile;
+        entry.audio_codec = analysis.audio_codec;
+        entry.audio_channels = analysis.audio_channels;
+        entry.audio_bitrate_kbps = analysis.audio_bitrate_kbps;
+        entry.audio_languages = analysis.audio_languages;
+        entry.audio_streams = analysis.audio_streams;
+        entry.subtitle_languages = analysis.subtitle_languages;
+        entry.subtitle_codecs = analysis.subtitle_codecs;
+        entry.subtitle_streams = analysis.subtitle_streams;
+        entry.has_multiaudio = analysis.has_multiaudio;
+        entry.duration_seconds = analysis.duration_seconds;
+        entry.num_chapters = analysis.num_chapters;
+        entry.container_format = analysis.container_format;
+        Ok(())
+    }
+
+    async fn update_media_file_source_signature(
+        &self,
+        file_id: &str,
+        size_bytes: i64,
+        source_signature_scheme: Option<String>,
+        source_signature_value: Option<String>,
+    ) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        entry.size_bytes = size_bytes;
+        entry.source_signature_scheme = source_signature_scheme;
+        entry.source_signature_value = source_signature_value;
+        Ok(())
+    }
+
+    async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        entry.file_path = file_path.to_string();
+        Ok(())
+    }
+
+    async fn mark_scan_failed(&self, file_id: &str, _error: &str) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        entry.scan_status = "failed".to_string();
+        Ok(())
+    }
+
+    async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .find(|entry| entry.id == file_id)
+            .cloned())
+    }
+
+    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .find(|entry| entry.file_path == file_path)
+            .cloned())
+    }
+
+    async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
+        let mut list = self.store.lock().await;
+        let position = list
+            .iter()
+            .position(|entry| entry.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        list.remove(position);
+        Ok(())
     }
 }
 
@@ -1067,6 +1276,19 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
         }
 
         Ok(item.id.clone())
+    }
+
+    async fn get_library_scan_unmatched_item(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<LibraryScanUnmatchedItem>> {
+        Ok(self
+            .items
+            .lock()
+            .await
+            .iter()
+            .find(|item| item.id == id)
+            .cloned())
     }
 
     async fn delete_library_scan_unmatched_item(
@@ -2054,6 +2276,20 @@ fn bootstrap_with_scan_unmatched_tracking(
     library_scanner: Arc<MutableLibraryScanner>,
     unmatched_items: Arc<TrackingLibraryScanUnmatchedItemRepo>,
 ) -> (AppUseCase, User) {
+    bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items,
+        Arc::new(EmptySearchMetadataGateway),
+    )
+}
+
+fn bootstrap_with_scan_unmatched_and_metadata_tracking(
+    settings: Arc<StoredSettingsRepo>,
+    library_scanner: Arc<MutableLibraryScanner>,
+    unmatched_items: Arc<TrackingLibraryScanUnmatchedItemRepo>,
+    metadata_gateway: Arc<dyn MetadataGateway>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
@@ -2063,6 +2299,7 @@ fn bootstrap_with_scan_unmatched_tracking(
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
+    let media_files = Arc::new(MockMediaFileRepo::default());
 
     let services = AppServices::builder(
         titles,
@@ -2078,8 +2315,9 @@ fn bootstrap_with_scan_unmatched_tracking(
         String::new(),
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
-    .with_metadata_gateway(Arc::new(EmptySearchMetadataGateway))
+    .with_metadata_gateway(metadata_gateway)
     .with_library_scanner(library_scanner)
+    .with_media_files(media_files)
     .with_library_scan_unmatched_items(unmatched_items)
     .build_partial_for_tests();
 
@@ -2117,6 +2355,33 @@ fn build_test_library_file(path: &str) -> LibraryFile {
         size_bytes: None,
         source_signature_scheme: None,
         source_signature_value: None,
+    }
+}
+
+fn build_test_unmatched_item(
+    id: &str,
+    facet: MediaFacet,
+    scan_root: &str,
+    item_path: &str,
+    display_name: &str,
+    query: &str,
+    year_hint: Option<i32>,
+) -> LibraryScanUnmatchedItem {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    LibraryScanUnmatchedItem {
+        id: id.to_string(),
+        facet,
+        scan_session_id: "scan-session-1".to_string(),
+        scan_root: scan_root.to_string(),
+        item_path: item_path.to_string(),
+        display_name: display_name.to_string(),
+        query: query.to_string(),
+        year_hint,
+        reason_code: "no_metadata_match".to_string(),
+        error_message: None,
+        search_attempts: vec![],
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
     }
 }
 
@@ -2206,8 +2471,35 @@ async fn series_full_scan_persists_unmatched_folders() {
         .await;
     let library_scanner = Arc::new(MutableLibraryScanner::default());
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
-    let (app, user) =
-        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items.clone(),
+        Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                123_456,
+                MovieMetadata {
+                    tvdb_id: 123_456,
+                    name: "Existing Movie".into(),
+                    slug: "existing-movie".into(),
+                    year: Some(2020),
+                    content_status: "Released".into(),
+                    overview: "Existing overview".into(),
+                    poster_url: "https://example.com/poster.jpg".into(),
+                    banner_url: None,
+                    background_url: None,
+                    language: "eng".into(),
+                    runtime_minutes: 98,
+                    sort_title: "Existing Movie".into(),
+                    imdb_id: "tt0654321".into(),
+                    anidb_id: None,
+                    genres: vec!["Drama".into()],
+                    studio: "Existing Studio".into(),
+                    tmdb_release_date: Some("2020-01-01".into()),
+                },
+            )]),
+        }),
+    );
 
     let summary = app
         .scan_library(&user, MediaFacet::Series)
@@ -2231,6 +2523,288 @@ async fn series_full_scan_persists_unmatched_folders() {
             .join("Unknown Show (2020)")
             .to_string_lossy()
             .to_string()
+    );
+}
+
+#[tokio::test]
+async fn pending_import_counts_and_items_are_facet_scoped() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) =
+        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-1",
+            MediaFacet::Movie,
+            "/movies",
+            "/movies/Unknown.Movie.2020.mkv",
+            "Unknown Movie",
+            "Unknown Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed movie item");
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "series-1",
+            MediaFacet::Series,
+            "/series",
+            "/series/Unknown Show (2020)",
+            "Unknown Show (2020)",
+            "Unknown Show",
+            Some(2020),
+        ))
+        .await
+        .expect("seed series item");
+
+    let counts = app
+        .pending_import_counts(&user)
+        .await
+        .expect("pending import counts");
+    assert_eq!(counts.movie, 1);
+    assert_eq!(counts.series, 1);
+    assert_eq!(counts.anime, 0);
+
+    let movie_items = app
+        .pending_imports(&user, MediaFacet::Movie, 50, 0)
+        .await
+        .expect("movie pending imports");
+    assert_eq!(movie_items.total, 1);
+    assert_eq!(movie_items.items.len(), 1);
+    assert_eq!(movie_items.items[0].display_name, "Unknown Movie");
+    assert_eq!(movie_items.items[0].path, "/movies/Unknown.Movie.2020.mkv");
+    assert_eq!(movie_items.items[0].folder_path, None);
+
+    let series_items = app
+        .pending_imports(&user, MediaFacet::Series, 50, 0)
+        .await
+        .expect("series pending imports");
+    assert_eq!(series_items.total, 1);
+    assert_eq!(series_items.items.len(), 1);
+    assert_eq!(
+        series_items.items[0].folder_path.as_deref(),
+        Some("/series/Unknown Show (2020)")
+    );
+}
+
+#[tokio::test]
+async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_path = tempdir.path().join("Unknown.Movie.2020.mkv");
+    std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )])
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items.clone(),
+        Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                123_456,
+                MovieMetadata {
+                    tvdb_id: 123_456,
+                    name: "Matched Movie".into(),
+                    slug: "matched-movie".into(),
+                    year: Some(2020),
+                    content_status: "Released".into(),
+                    overview: "Matched overview".into(),
+                    poster_url: "https://example.com/poster.jpg".into(),
+                    banner_url: None,
+                    background_url: None,
+                    language: "eng".into(),
+                    runtime_minutes: 101,
+                    sort_title: "Matched Movie".into(),
+                    imdb_id: "tt0123456".into(),
+                    anidb_id: None,
+                    genres: vec!["Drama".into()],
+                    studio: "Test Studio".into(),
+                    tmdb_release_date: Some("2020-01-01".into()),
+                },
+            )]),
+        }),
+    );
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-resolve-1",
+            MediaFacet::Movie,
+            tempdir.path().to_string_lossy().as_ref(),
+            movie_path.to_string_lossy().as_ref(),
+            "Unknown Movie",
+            "Matched Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed pending import");
+
+    let result = app
+        .resolve_pending_import(&user, "movie-resolve-1", "123456")
+        .await
+        .expect("resolve pending import");
+
+    assert!(result.created);
+    assert!(!result.title.monitored);
+    assert_eq!(result.title.name, "Matched Movie");
+    assert!(
+        result.library_scan.scanned
+            + result.library_scan.matched
+            + result.library_scan.imported
+            + result.library_scan.skipped
+            + result.library_scan.unmatched
+            > 0
+    );
+    assert!(unmatched_items.items().await.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_pending_import_failure_keeps_pending_item() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_path = tempdir.path().join("Unknown.Movie.2020.mkv");
+    std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )])
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) =
+        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-resolve-failure-1",
+            MediaFacet::Movie,
+            tempdir.path().to_string_lossy().as_ref(),
+            movie_path.to_string_lossy().as_ref(),
+            "Unknown Movie",
+            "Matched Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed pending import");
+
+    let error = app
+        .resolve_pending_import(&user, "movie-resolve-failure-1", "999999")
+        .await
+        .expect_err("resolution should fail without metadata");
+    assert!(!error.to_string().trim().is_empty());
+    assert_eq!(unmatched_items.items().await.len(), 1);
+    assert!(
+        app.list_titles(&user, Some(MediaFacet::Movie), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_path = tempdir.path().join("Missing.Movie.2020.mkv");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner.set_library_files(vec![]).await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) =
+        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+
+    let existing_title = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Existing Movie".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "123456".to_string(),
+                }],
+                min_availability: None,
+                poster_url: None,
+                year: Some(2020),
+                overview: None,
+                sort_title: None,
+                slug: None,
+                runtime_minutes: None,
+                language: None,
+                content_status: None,
+            },
+        )
+        .await
+        .expect("seed existing title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&existing_title.id, "/existing/movies/Existing Movie")
+        .await
+        .expect("set original folder path");
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-resolve-existing-failure-1",
+            MediaFacet::Movie,
+            tempdir.path().to_string_lossy().as_ref(),
+            movie_path.to_string_lossy().as_ref(),
+            "Unknown Movie",
+            "Existing Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed pending import");
+
+    let error = app
+        .resolve_pending_import(&user, "movie-resolve-existing-failure-1", "123456")
+        .await
+        .expect_err("resolution should fail when scan finds no files");
+    assert!(!error.to_string().trim().is_empty());
+    assert_eq!(unmatched_items.items().await.len(), 1);
+
+    let refreshed_title = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&existing_title.id)
+        .await
+        .expect("load existing title")
+        .expect("existing title should still exist");
+    assert_eq!(
+        refreshed_title.folder_path.as_deref(),
+        Some("/existing/movies/Existing Movie")
     );
 }
 

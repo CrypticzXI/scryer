@@ -42,6 +42,7 @@ export function LibraryScanProgressProvider({
     Record<string, ReturnType<typeof setTimeout>>
   >({});
   const shownToastIdsRef = React.useRef<Set<string>>(new Set());
+  const refreshedPendingImportSessionsRef = React.useRef<Set<string>>(new Set());
 
   const getSessionById = React.useCallback(
     (sessionId: string) =>
@@ -52,6 +53,10 @@ export function LibraryScanProgressProvider({
   React.useEffect(() => {
     for (const session of sessions) {
       if (isTerminal(session.status)) {
+        if (!refreshedPendingImportSessionsRef.current.has(session.sessionId)) {
+          window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+          refreshedPendingImportSessionsRef.current.add(session.sessionId);
+        }
         const existingTimer = dismissTimersRef.current[session.sessionId];
         if (!existingTimer) {
           dismissTimersRef.current[session.sessionId] = setTimeout(() => {
@@ -67,6 +72,7 @@ export function LibraryScanProgressProvider({
           clearTimeout(existingTimer);
           delete dismissTimersRef.current[session.sessionId];
         }
+        refreshedPendingImportSessionsRef.current.delete(session.sessionId);
       }
 
       if (!shownToastIdsRef.current.has(session.sessionId)) {
@@ -86,6 +92,7 @@ export function LibraryScanProgressProvider({
         clearTimeout(timer);
       }
       shownToastIdsRef.current.clear();
+      refreshedPendingImportSessionsRef.current.clear();
     },
     [],
   );

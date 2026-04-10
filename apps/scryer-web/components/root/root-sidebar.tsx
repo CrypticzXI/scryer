@@ -34,6 +34,8 @@ import { ChevronRight, Monitor, Moon, Rainbow, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { getNextTheme, getThemeLabel } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import type { PendingImportCounts } from "@/lib/types";
+import { pendingImportCountForView } from "@/lib/types";
 
 type NavItem = {
   id: ViewId;
@@ -48,6 +50,7 @@ type RootSidebarProps = {
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
   entitlements: string[];
+  pendingImportCounts: PendingImportCounts | null;
   children?: React.ReactNode;
   onNavigate: (
     nextView: ViewId,
@@ -159,6 +162,7 @@ function RootSidebarContent({
   contentSettingsSection,
   systemSection,
   entitlements,
+  pendingImportCounts,
   children,
   onNavigate,
 }: RootSidebarProps) {
@@ -196,6 +200,11 @@ function RootSidebarContent({
     [entitlements],
   );
 
+  const hasPendingImportsForView = React.useCallback(
+    (viewId: ViewId) => pendingImportCountForView(pendingImportCounts, viewId) > 0,
+    [pendingImportCounts],
+  );
+
   const handleNavigate = React.useCallback(
     (
       event: React.MouseEvent,
@@ -226,6 +235,10 @@ function RootSidebarContent({
     if (view === "movies" || view === "series" || view === "anime") {
       if (contentSettingsSection === "overview") {
         return getMediaOverviewLabel(view, t);
+      }
+
+      if (contentSettingsSection === "import") {
+        return t("nav.import");
       }
 
       if (isSettingsSubPage(contentSettingsSection)) {
@@ -300,7 +313,11 @@ function RootSidebarContent({
                               handleNavigate(event, "system", undefined, undefined, systemSection);
                               return;
                             }
-                            handleNavigate(event, item.id, undefined, contentSettingsSection);
+                            const nextContentSection =
+                              contentSettingsSection === "import" && !hasPendingImportsForView(item.id)
+                                ? "overview"
+                                : contentSettingsSection;
+                            handleNavigate(event, item.id, undefined, nextContentSection);
                           }}
                         >
                           <Icon className="h-4 w-4" />
@@ -354,6 +371,18 @@ function RootSidebarContent({
                                     {getMediaOverviewLabel(item.id, t)}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
+                                {hasPendingImportsForView(item.id) ? (
+                                  <SidebarMenuSubItem>
+                                    <SidebarMenuSubButton
+                                      isActive={contentSettingsSection === "import"}
+                                      onClick={(event) => {
+                                        handleNavigate(event, item.id, undefined, "import");
+                                      }}
+                                    >
+                                      {t("nav.import")}
+                                    </SidebarMenuSubButton>
+                                  </SidebarMenuSubItem>
+                                ) : null}
                                 <SidebarMenuSubItem>
                                   <Collapsible open={isSettingsSubPage(contentSettingsSection)}>
                                     <SidebarMenuSubButton

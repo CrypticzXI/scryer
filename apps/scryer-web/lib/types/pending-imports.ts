@@ -1,0 +1,81 @@
+export type PendingImportCounts = {
+  movie: number;
+  series: number;
+  anime: number;
+};
+
+export type PendingImportSearchAttempt = {
+  query: string;
+  resultCount: number;
+  topResults: string[];
+  summary: string;
+};
+
+export type PendingImportItem = {
+  id: string;
+  facet: "movie" | "tv" | "anime";
+  displayName: string;
+  path: string;
+  folderPath?: string | null;
+  query: string;
+  yearHint?: number | null;
+  reason: string;
+  searchAttempts: PendingImportSearchAttempt[];
+};
+
+export type PendingImportConnection = {
+  total: number;
+  items: PendingImportItem[];
+};
+
+export type ResolvePendingImportResult = {
+  title: {
+    id: string;
+    name: string;
+    facet: string;
+    monitored: boolean;
+  };
+  created: boolean;
+  libraryScan: {
+    scanned: number;
+    matched: number;
+    imported: number;
+    skipped: number;
+    unmatched: number;
+  };
+};
+
+export function pendingImportCountForView(
+  counts: PendingImportCounts | null | undefined,
+  view: string,
+): number {
+  if (!counts) {
+    return 0;
+  }
+
+  switch (view) {
+    case "movies":
+      return counts.movie;
+    case "series":
+      return counts.series;
+    case "anime":
+      return counts.anime;
+    default:
+      return 0;
+  }
+}
+
+export function pendingImportFacetValueForView(
+  view: string,
+): "movie" | "tv" | "anime" {
+  switch (view) {
+    case "movies":
+      return "movie";
+    case "series":
+      return "tv";
+    case "anime":
+      return "anime";
+    default:
+      throw new Error(`unsupported pending import view: ${view}`);
+  }
+}

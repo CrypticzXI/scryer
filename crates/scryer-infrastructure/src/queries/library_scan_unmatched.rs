@@ -119,6 +119,26 @@ pub(crate) async fn delete_library_scan_unmatched_item_query(
     Ok(())
 }
 
+pub(crate) async fn get_library_scan_unmatched_item_query(
+    pool: &SqlitePool,
+    id: &str,
+) -> AppResult<Option<LibraryScanUnmatchedItem>> {
+    let row = sqlx::query(
+        "SELECT id, facet, scan_session_id, scan_root, item_path, display_name, query,
+                year_hint, reason_code, error_message, search_attempts_json, created_at, updated_at
+         FROM library_scan_unmatched_items
+         WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    row.as_ref()
+        .map(row_to_library_scan_unmatched_item)
+        .transpose()
+}
+
 pub(crate) async fn list_library_scan_unmatched_items_query(
     pool: &SqlitePool,
     facet: Option<MediaFacet>,

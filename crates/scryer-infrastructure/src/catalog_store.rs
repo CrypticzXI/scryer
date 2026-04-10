@@ -90,6 +90,10 @@ impl TitleRepository for SqliteCatalogStore {
         title::set_title_folder_path_query(&self.pool, id, folder_path).await
     }
 
+    async fn clear_folder_path(&self, id: &str) -> AppResult<()> {
+        title::clear_title_folder_path_query(&self.pool, id).await
+    }
+
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
         title::clear_metadata_language_for_all_query(&self.pool).await
     }

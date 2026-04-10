@@ -1556,6 +1556,53 @@ pub struct LibraryScanSummaryPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct PendingImportCountsPayload {
+    pub movie: i32,
+    pub series: i32,
+    pub anime: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingImportSearchAttemptPayload {
+    pub query: String,
+    pub result_count: i32,
+    pub top_results: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingImportItemPayload {
+    pub id: String,
+    pub facet: MediaFacetValue,
+    pub display_name: String,
+    pub path: String,
+    pub folder_path: Option<String>,
+    pub query: String,
+    pub year_hint: Option<i32>,
+    pub reason: String,
+    pub search_attempts: Vec<PendingImportSearchAttemptPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingImportConnectionPayload {
+    pub total: i32,
+    pub items: Vec<PendingImportItemPayload>,
+}
+
+#[derive(InputObject)]
+pub struct ResolvePendingImportInput {
+    pub pending_import_id: String,
+    pub tvdb_id: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ResolvePendingImportPayload {
+    pub title: TitlePayload,
+    pub created: bool,
+    pub library_scan: LibraryScanSummaryPayload,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct DeletePreviewPayload {
     pub fingerprint: String,
     pub total_file_count: i32,

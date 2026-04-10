@@ -681,6 +681,10 @@ mod tests {
             Ok(())
         }
 
+        async fn clear_folder_path(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
             Ok(0)
         }

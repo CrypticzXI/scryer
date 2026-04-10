@@ -4,6 +4,7 @@ pub(crate) mod discovery;
 pub mod filesystem_walk;
 pub(crate) mod library;
 pub(crate) mod nfo;
+pub(crate) mod pending_imports;
 pub mod recycle_bin;
 pub(crate) mod rename;
 pub(crate) mod title_matching;

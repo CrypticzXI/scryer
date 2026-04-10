@@ -269,13 +269,15 @@ pub use types::{
     BackupInfo, DiskSpaceInfo, DownloadGrabResult, DownloadHistoryPage, DownloadSourceKind,
     FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
     IndexerQueryStats, IndexerSearchResponse, IndexerSearchResult, JwtAuthConfig,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, PendingRelease,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, PendingImportConnection,
+    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingRelease,
     PendingReleaseStatus, PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob,
-    TitleImageKind, TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask,
-    TitleImageVariantRecord, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
-    TitleReleaseBlocklistEntry, WantedCompleteTransition, WantedGrabTransition, WantedItem,
-    WantedPauseTransition, WantedSearchTransition, WantedStatus,
+    ReleaseDownloadFailureSignature, ResolvePendingImportResult, SystemHealth,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
+    TitleMediaSizeSummary, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
+    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
+    WantedSearchTransition, WantedStatus,
 };
 
 #[derive(Debug, thiserror::Error)]

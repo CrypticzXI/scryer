@@ -71,6 +71,7 @@ export function MovieOverviewShell() {
   const routeCommandPalette = useMemo(() => {
     return buildRouteCommands({
       t,
+      pendingImportCounts: null,
       onNavigate: navigateTo,
     });
   }, [navigateTo, t]);
@@ -103,6 +104,7 @@ export function MovieOverviewShell() {
                   contentSettingsSection="overview"
                   systemSection="overview"
                   entitlements={[]}
+                  pendingImportCounts={null}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

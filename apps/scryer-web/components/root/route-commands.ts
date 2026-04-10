@@ -14,6 +14,8 @@ import type {
   ViewId,
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
+import type { PendingImportCounts } from "@/lib/types";
+import { pendingImportCountForView } from "@/lib/types";
 
 export type RouteCommand = {
   id: string;
@@ -26,6 +28,7 @@ export type RouteCommand = {
 
 type BuildRouteCommandsArgs = {
   t: Translate;
+  pendingImportCounts: PendingImportCounts | null;
   onNavigate: (
     nextView: ViewId,
     nextSettingsSection?: SettingsSection,
@@ -46,25 +49,45 @@ function buildNavigate(
   };
 }
 
-export function buildRouteCommands({ t, onNavigate }: BuildRouteCommandsArgs): RouteCommand[] {
-  const mediaCommands = FACET_REGISTRY.flatMap((f) => [
-    {
-      id: `${f.viewId}-overview`,
-      label: t(f.overviewLabelKey),
-      description: t(f.navLabelKey),
-      keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
-      icon: f.icon,
-      onSelect: buildNavigate(onNavigate, f.viewId as ViewId),
-    },
-    {
+export function buildRouteCommands({
+  t,
+  pendingImportCounts,
+  onNavigate,
+}: BuildRouteCommandsArgs): RouteCommand[] {
+  const mediaCommands = FACET_REGISTRY.flatMap((f) => {
+    const commands: RouteCommand[] = [
+      {
+        id: `${f.viewId}-overview`,
+        label: t(f.overviewLabelKey),
+        description: t(f.navLabelKey),
+        keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
+        icon: f.icon,
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId),
+      },
+    ];
+
+    if (pendingImportCountForView(pendingImportCounts, f.viewId) > 0) {
+      commands.push({
+        id: `${f.viewId}-import`,
+        label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
+        description: t("nav.import"),
+        keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
+        icon: f.icon,
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
+      });
+    }
+
+    commands.push({
       id: `${f.viewId}-settings`,
       label: t(f.settingsLabelKey),
       description: t(f.settingsLabelKey),
       keywords: [f.viewId, f.id, "settings", "media", "paths", "folder"],
       icon: Settings,
       onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "general"),
-    },
-  ]);
+    });
+
+    return commands;
+  });
 
   return [
     ...mediaCommands,

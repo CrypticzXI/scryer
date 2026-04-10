@@ -943,7 +943,7 @@ fn parse_source(token: &str, next: Option<&str>) -> Option<SourceResult> {
         "FUNI" | "FUNIMATION" => Some("Funimation"),
         "HIDIVE" => Some("HIDIVE"),
         "STAN" => Some("Stan"),
-        "IT" | "ITUNES" => Some("iTunes"),
+        "ITUNES" => Some("iTunes"),
         "BILI" => Some("Bilibili"),
         "HOTSTAR" => Some("Hotstar"),
         "BBC" | "BBCI" | "IPLAYER" => Some("BBC iPlayer"),
@@ -1405,10 +1405,6 @@ fn extract_release_group(raw_title: &str, tokens: &[String]) -> Option<String> {
         return Some(group);
     }
 
-    if let Some(group) = extract_release_group_from_raw_suffix(raw_title) {
-        return Some(group);
-    }
-
     let has_release_signal = tokens.iter().any(|token| {
         parse_year(token).is_some()
             || parse_quality(token).is_some()
@@ -1426,6 +1422,10 @@ fn extract_release_group(raw_title: &str, tokens: &[String]) -> Option<String> {
 
     if !has_release_signal {
         return None;
+    }
+
+    if let Some(group) = extract_release_group_from_raw_suffix(raw_title) {
+        return Some(group);
     }
 
     extract_release_group_from_tokens(tokens)
@@ -1702,6 +1702,12 @@ fn split_release_token(token: &str) -> Vec<String> {
         let third = raw_parts.get(index + 2).map(|value| value.as_str());
 
         if let Some(next_value) = next {
+            if (current == "DTS-HD" || current == "DTSHD") && next_value == "MA" {
+                parts.push("DTSMA".to_string());
+                index += 2;
+                continue;
+            }
+
             if (current == "H" || current == "X") && (next_value == "264" || next_value == "265") {
                 parts.push(format!("{current}.{next_value}"));
                 index += 2;
@@ -2067,7 +2073,7 @@ fn parse_edition_at(tokens: &[String], index: usize) -> Option<(String, usize)> 
 
 fn is_noise_token(token: &str) -> bool {
     if token.len() <= 1 {
-        return token != "/";
+        return token != "/" && !token.chars().all(|character| character.is_ascii_digit());
     }
 
     if is_hex_token(token) || parse_year(token).is_some() || parse_quality(token).is_some() {
@@ -2107,6 +2113,9 @@ fn is_noise_token(token: &str) -> bool {
             | "TRUEHD"
             | "ATMOS"
             | "DTS"
+            | "DTSHD"
+            | "DTSMA"
+            | "DTSX"
             | "H264"
             | "H265"
             | "X264"

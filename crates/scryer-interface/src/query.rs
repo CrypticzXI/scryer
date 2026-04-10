@@ -14,10 +14,11 @@ use crate::mappers::{
     from_download_client_routing_entry, from_download_queue_item, from_episode,
     from_health_check_result, from_indexer_config, from_indexer_routing_entry, from_job_definition,
     from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
-    from_media_settings, from_pending_release, from_provider_type, from_quality_profile_settings,
-    from_release_decision, from_service_settings, from_system_health, from_title,
-    from_title_history_page, from_title_history_record, from_title_media_file,
-    from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_media_settings, from_pending_import_connection, from_pending_import_counts,
+    from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
+    from_service_settings, from_system_health, from_title, from_title_history_page,
+    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
+    from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -606,6 +607,35 @@ impl QueryRoot {
             .into_iter()
             .map(from_library_scan_session)
             .collect())
+    }
+
+    async fn pending_import_counts(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<PendingImportCountsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let counts = app
+            .pending_import_counts(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_pending_import_counts(counts))
+    }
+
+    async fn pending_imports(
+        &self,
+        ctx: &Context<'_>,
+        facet: MediaFacetValue,
+        #[graphql(default = 50)] limit: i64,
+        #[graphql(default = 0)] offset: i64,
+    ) -> GqlResult<PendingImportConnectionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let connection = app
+            .pending_imports(&actor, facet.into_domain(), limit, offset)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_pending_import_connection(connection))
     }
 
     async fn jobs(&self, ctx: &Context<'_>) -> GqlResult<Vec<JobDefinitionPayload>> {

@@ -193,6 +193,47 @@ pub struct FixTitleMatchResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PendingImportCounts {
+    pub movie: i64,
+    pub series: i64,
+    pub anime: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingImportSearchAttempt {
+    pub query: String,
+    pub result_count: usize,
+    pub top_results: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingImportItem {
+    pub id: String,
+    pub facet: scryer_domain::MediaFacet,
+    pub display_name: String,
+    pub path: String,
+    pub folder_path: Option<String>,
+    pub query: String,
+    pub year_hint: Option<i32>,
+    pub reason: String,
+    pub search_attempts: Vec<PendingImportSearchAttempt>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PendingImportConnection {
+    pub total: i64,
+    pub items: Vec<PendingImportItem>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvePendingImportResult {
+    pub title: scryer_domain::Title,
+    pub created: bool,
+    pub library_scan: LibraryScanSummary,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WantedStatus {

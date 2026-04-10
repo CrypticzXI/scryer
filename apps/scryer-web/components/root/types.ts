@@ -15,7 +15,14 @@ export type SettingsSection =
   | "post-processing"
   | "subtitles"
   | "recycleBin";
-export type ContentSettingsSection = "overview" | "settings" | "general" | "quality" | "renaming" | "routing";
+export type ContentSettingsSection =
+  | "overview"
+  | "import"
+  | "settings"
+  | "general"
+  | "quality"
+  | "renaming"
+  | "routing";
 
 export type Translate = (
   key: string,

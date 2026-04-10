@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { LayoutGrid, LayoutList } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { ViewId } from "@/components/root/types";
+import type { ContentSettingsSection, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
@@ -36,7 +36,6 @@ import type {
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 type Facet = "movie" | "tv" | "anime";
-type ContentSettingsSection = "overview" | "settings" | "general" | "quality" | "renaming" | "routing";
 
 type ParsedQualityProfile = {
   id: string;

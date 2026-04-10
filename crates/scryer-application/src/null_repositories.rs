@@ -1041,6 +1041,13 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
         ))
     }
 
+    async fn get_library_scan_unmatched_item(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<LibraryScanUnmatchedItem>> {
+        Ok(None)
+    }
+
     async fn delete_library_scan_unmatched_item(
         &self,
         _facet: scryer_domain::MediaFacet,
@@ -1133,6 +1140,9 @@ pub mod test_nulls {
             Ok(())
         }
         async fn set_folder_path(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+        async fn clear_folder_path(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
         async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {

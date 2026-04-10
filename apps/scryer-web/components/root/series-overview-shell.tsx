@@ -94,6 +94,7 @@ export function SeriesOverviewShell() {
   const routeCommandPalette = useMemo(() => {
     return buildRouteCommands({
       t,
+      pendingImportCounts: null,
       onNavigate: navigateTo,
     });
   }, [navigateTo, t]);
@@ -126,6 +127,7 @@ export function SeriesOverviewShell() {
                   contentSettingsSection="overview"
                   systemSection="overview"
                   entitlements={[]}
+                  pendingImportCounts={null}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::library_discovery::{
-    MovieTopLevelEntry, extract_library_queries, matching_movie_nfo_path_async,
-    normalize_folder_name, strip_year_suffix,
+    MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver, extract_library_queries,
+    matching_movie_nfo_path_async, normalize_folder_name, strip_year_suffix,
 };
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{looks_like_movie_nfo, parse_nfo};
@@ -19,6 +19,8 @@ pub(crate) const METADATA_TYPE_SERIES: &str = "series";
 
 const LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE: usize = 20;
 const MOVIE_ENTRY_PREP_CONCURRENCY: usize = 8;
+const MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE: usize = MOVIE_ENTRY_PREP_CONCURRENCY;
+const LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY: usize = 16;
 const RADARR_MOVIE_NFO_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 #[cfg(test)]
@@ -110,6 +112,9 @@ pub(crate) enum PreparedMovieLibraryScanEntry {
     Candidate(PreparedMovieLibraryScanCandidate),
     Skipped { item_path: String },
 }
+
+pub(crate) type PreparedMovieLibraryScanEntryBatchReceiver =
+    tokio::sync::mpsc::Receiver<AppResult<Vec<PreparedMovieLibraryScanEntry>>>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedSeriesLibraryScanCandidate {
@@ -475,6 +480,159 @@ where
     Ok(count)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StreamingMetadataProgressUpdate {
+    pub(crate) total_delta: usize,
+    pub(crate) completed_delta: usize,
+    pub(crate) total_known: bool,
+}
+
+impl StreamingMetadataProgressUpdate {
+    pub(crate) fn has_changes(self) -> bool {
+        self.total_delta > 0 || self.completed_delta > 0 || self.total_known
+    }
+}
+
+pub(crate) struct StreamingMovieMetadataResolver {
+    metadata_gateway: Arc<dyn MetadataGateway>,
+    search_results: MetadataSearchResults,
+    pending_candidates: Vec<PreparedMovieLibraryScanCandidate>,
+    metadata_lookup_stats: MetadataLookupBatchStats,
+    accounted_search_keys: HashSet<BatchMetadataSearchKey>,
+}
+
+impl StreamingMovieMetadataResolver {
+    pub(crate) fn new(metadata_gateway: Arc<dyn MetadataGateway>) -> Self {
+        Self {
+            metadata_gateway,
+            search_results: MetadataSearchResults::new(),
+            pending_candidates: Vec::new(),
+            metadata_lookup_stats: MetadataLookupBatchStats::default(),
+            accounted_search_keys: HashSet::new(),
+        }
+    }
+
+    pub(crate) async fn ingest_candidates(
+        &mut self,
+        candidates: Vec<PreparedMovieLibraryScanCandidate>,
+    ) -> AppResult<(
+        Vec<Vec<PreparedMovieLibraryScanCandidate>>,
+        StreamingMetadataProgressUpdate,
+    )> {
+        let batch_lookup_stats =
+            register_streaming_movie_metadata_batch(&candidates, &mut self.accounted_search_keys)?;
+        self.metadata_lookup_stats.absorb(batch_lookup_stats);
+        self.pending_candidates.extend(candidates);
+
+        let mut progress = StreamingMetadataProgressUpdate {
+            total_delta: batch_lookup_stats.logical_lookups,
+            completed_delta: 0,
+            total_known: false,
+        };
+        let ready_batches = self.resolve_pending_ready_batches(&mut progress).await?;
+
+        Ok((ready_batches, progress))
+    }
+
+    pub(crate) async fn finish(
+        &mut self,
+    ) -> AppResult<(
+        Vec<Vec<PreparedMovieLibraryScanCandidate>>,
+        StreamingMetadataProgressUpdate,
+    )> {
+        let mut progress = StreamingMetadataProgressUpdate {
+            total_delta: 0,
+            completed_delta: 0,
+            total_known: true,
+        };
+        let ready_batches = self.resolve_pending_ready_batches(&mut progress).await?;
+        Ok((ready_batches, progress))
+    }
+
+    pub(crate) fn search_results(&self) -> &MetadataSearchResults {
+        &self.search_results
+    }
+
+    pub(crate) fn stats(&self) -> MetadataLookupBatchStats {
+        self.metadata_lookup_stats
+    }
+
+    async fn resolve_pending_ready_batches(
+        &mut self,
+        progress: &mut StreamingMetadataProgressUpdate,
+    ) -> AppResult<Vec<Vec<PreparedMovieLibraryScanCandidate>>> {
+        let mut ready_batches = Vec::new();
+
+        while !self.pending_candidates.is_empty() {
+            let pending_candidates = std::mem::take(&mut self.pending_candidates);
+            let (ready_candidates, still_pending) = split_ready_metadata_candidates(
+                pending_candidates,
+                &self.search_results,
+                movie_candidate_batch_search_keys,
+            )?;
+            self.pending_candidates = still_pending;
+
+            if !ready_candidates.is_empty() {
+                progress.completed_delta =
+                    progress
+                        .completed_delta
+                        .saturating_add(count_candidates_with_metadata_lookup(
+                            &ready_candidates,
+                            movie_candidate_batch_search_keys,
+                        )?);
+                ready_batches.push(ready_candidates);
+                continue;
+            }
+
+            let search_chunk = next_metadata_search_chunk(
+                &self.pending_candidates,
+                &self.search_results,
+                LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE,
+                movie_candidate_batch_search_keys,
+            )?;
+            if search_chunk.is_empty() {
+                return Err(AppError::Repository(
+                    "movie metadata search chunk unexpectedly empty".into(),
+                ));
+            }
+
+            self.search_results.extend(
+                execute_batch_metadata_searches(self.metadata_gateway.clone(), search_chunk)
+                    .await?,
+            );
+        }
+
+        Ok(ready_batches)
+    }
+}
+
+fn register_streaming_movie_metadata_batch(
+    candidates: &[PreparedMovieLibraryScanCandidate],
+    accounted_search_keys: &mut HashSet<BatchMetadataSearchKey>,
+) -> AppResult<MetadataLookupBatchStats> {
+    let mut stats = MetadataLookupBatchStats::default();
+    let mut total_requested_searches = 0usize;
+
+    for candidate in candidates {
+        let keys = movie_candidate_batch_search_keys(candidate)?;
+        if keys.is_empty() {
+            continue;
+        }
+
+        stats.logical_lookups = stats.logical_lookups.saturating_add(1);
+        total_requested_searches = total_requested_searches.saturating_add(keys.len());
+
+        for key in keys {
+            if accounted_search_keys.insert(key) {
+                stats.executed_requests = stats.executed_requests.saturating_add(1);
+            }
+        }
+    }
+
+    stats.coalesced_requests = total_requested_searches.saturating_sub(stats.executed_requests);
+    Ok(stats)
+}
+
 pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateKeys>(
     metadata_gateway: Arc<dyn MetadataGateway>,
     coordinator: &LibraryScanCoordinator,
@@ -707,6 +865,119 @@ pub(crate) async fn prepare_movie_library_scan_entries(
     }
 
     Ok(prepared_results.into_iter().flatten().collect())
+}
+
+pub(crate) fn stream_prepared_movie_library_scan_entries(
+    library_scanner: Arc<dyn LibraryScanner>,
+    mut discovered_entries: MovieTopLevelEntryBatchReceiver,
+    library_path: String,
+    batch_size: usize,
+) -> AppResult<PreparedMovieLibraryScanEntryBatchReceiver> {
+    if batch_size == 0 {
+        return Err(AppError::Validation(
+            "batch size must be greater than 0".into(),
+        ));
+    }
+
+    let (prepared_tx, prepared_rx) =
+        tokio::sync::mpsc::channel(LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY);
+    let flush_batch_size = batch_size.min(MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE).max(1);
+
+    tokio::spawn(async move {
+        let mut pending_entries = VecDeque::new();
+        let mut prepare_set = tokio::task::JoinSet::new();
+        let mut prepared_batch = Vec::with_capacity(flush_batch_size.min(256));
+        let mut discovery_closed = false;
+
+        loop {
+            while prepare_set.len() < MOVIE_ENTRY_PREP_CONCURRENCY {
+                let Some(entry) = pending_entries.pop_front() else {
+                    break;
+                };
+                let library_scanner = library_scanner.clone();
+                let library_path = library_path.clone();
+                prepare_set.spawn(async move {
+                    prepare_movie_library_scan_entry(library_scanner, entry, library_path).await
+                });
+            }
+
+            if prepared_batch.len() >= flush_batch_size {
+                let next_batch = std::mem::take(&mut prepared_batch);
+                if prepared_tx.send(Ok(next_batch)).await.is_err() {
+                    return;
+                }
+                continue;
+            }
+
+            if discovery_closed && pending_entries.is_empty() && prepare_set.is_empty() {
+                break;
+            }
+
+            if prepare_set.is_empty() {
+                match discovered_entries.recv().await {
+                    Some(Ok(batch)) => pending_entries.extend(batch),
+                    Some(Err(error)) => {
+                        let _ = prepared_tx.send(Err(error)).await;
+                        return;
+                    }
+                    None => discovery_closed = true,
+                }
+                continue;
+            }
+
+            if discovery_closed {
+                match prepare_set.join_next().await {
+                    Some(Ok(Ok(entry))) => prepared_batch.push(entry),
+                    Some(Ok(Err(error))) => {
+                        let _ = prepared_tx.send(Err(error)).await;
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        let _ = prepared_tx
+                            .send(Err(AppError::Repository(error.to_string())))
+                            .await;
+                        return;
+                    }
+                    None => {}
+                }
+                continue;
+            }
+
+            tokio::select! {
+                Some(result) = prepare_set.join_next() => {
+                    match result {
+                        Ok(Ok(entry)) => prepared_batch.push(entry),
+                        Ok(Err(error)) => {
+                            let _ = prepared_tx.send(Err(error)).await;
+                            return;
+                        }
+                        Err(error) => {
+                            let _ = prepared_tx
+                                .send(Err(AppError::Repository(error.to_string())))
+                                .await;
+                            return;
+                        }
+                    }
+                }
+                maybe_batch = discovered_entries.recv() => {
+                    match maybe_batch {
+                        Some(Ok(batch)) => pending_entries.extend(batch),
+                        Some(Err(error)) => {
+                            let _ = prepared_tx.send(Err(error)).await;
+                            return;
+                        }
+                        None => discovery_closed = true,
+                    }
+                }
+            }
+        }
+
+        if !prepared_batch.is_empty() {
+            let _ = prepared_tx.send(Ok(prepared_batch)).await;
+        }
+    });
+
+    Ok(prepared_rx)
 }
 
 async fn prepare_movie_library_scan_entry(
@@ -1099,6 +1370,22 @@ pub(crate) fn select_best_match(
     }
 
     let match_year = year.map(|value| value as i32)?;
+    let same_year_matches = results
+        .iter()
+        .filter(|item| item.year == Some(match_year))
+        .collect::<Vec<_>>();
+
+    if same_year_matches.len() == 1 {
+        let candidate = same_year_matches[0];
+        let candidate_key = crate::title_matching::canonical_lookup_key(&candidate.name);
+        if title_match_candidates.iter().any(|query_key| {
+            query_key.starts_with(&format!("{candidate_key} "))
+                || candidate_key.starts_with(&format!("{query_key} "))
+        }) {
+            return Some(candidate.clone());
+        }
+    }
+
     reduced_matches
         .into_iter()
         .find(|item| item.year == Some(match_year))
@@ -1109,12 +1396,13 @@ pub(crate) fn select_best_match(
 mod tests {
     use super::*;
     use crate::{
-        AnibridgeSourceMapping, BulkMetadataResult, MovieMetadata, MultiMetadataSearchResult,
-        RichMetadataSearchItem, SeriesMetadata,
+        AnibridgeSourceMapping, BulkMetadataResult, LibraryFileBatchReceiver, MovieMetadata,
+        MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata,
     };
     use async_trait::async_trait;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     type CountingSearchResults =
         Arc<Mutex<HashMap<(String, String), Result<Vec<MetadataSearchItem>, String>>>>;
@@ -1255,6 +1543,53 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct DelayedLibraryScanner {
+        responses: Arc<Mutex<HashMap<String, (u64, Vec<LibraryFile>)>>>,
+    }
+
+    impl DelayedLibraryScanner {
+        fn set_response(&self, root: &str, delay_ms: u64, files: Vec<LibraryFile>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(root.to_string(), (delay_ms, files));
+        }
+    }
+
+    #[async_trait]
+    impl LibraryScanner for DelayedLibraryScanner {
+        async fn scan_library(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+            let (delay_ms, files) = self
+                .responses
+                .lock()
+                .unwrap()
+                .get(root)
+                .cloned()
+                .unwrap_or_default();
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Ok(files)
+        }
+
+        async fn scan_library_batched(
+            &self,
+            _root: &str,
+            _batch_size: usize,
+        ) -> AppResult<LibraryFileBatchReceiver> {
+            panic!("unused in test")
+        }
+
+        async fn scan_directory_batched(
+            &self,
+            _root: &str,
+            _batch_size: usize,
+        ) -> AppResult<LibraryFileBatchReceiver> {
+            panic!("unused in test")
+        }
+    }
+
     fn build_library_file(path: &str) -> LibraryFile {
         LibraryFile {
             path: path.to_string(),
@@ -1332,7 +1667,7 @@ mod tests {
             "/library",
         );
 
-        assert_eq!(queries, vec!["DUNE MA".to_string(), "Dune".to_string()]);
+        assert_eq!(queries, vec!["DUNE".to_string()]);
         assert_eq!(year, Some(2021));
     }
 
@@ -1345,6 +1680,44 @@ mod tests {
 
         assert_eq!(queries, vec!["DUNE TWO".to_string(), "Dune".to_string()]);
         assert_eq!(year, Some(2024));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_full_ralph_breaks_the_internet_title() {
+        let (queries, year) = extract_library_queries(
+            "/library/Ralph Breaks the Internet Wreck-It Ralph 2 (2018)/Ralph Breaks the Internet Wreck-It Ralph 2.mkv",
+            "/library",
+        );
+
+        assert_eq!(
+            queries,
+            vec!["RALPH BREAKS THE INTERNET WRECK IT RALPH 2".to_string()]
+        );
+        assert_eq!(year, Some(2018));
+    }
+
+    #[test]
+    fn select_best_match_accepts_single_same_year_prefix_match() {
+        let results = vec![MetadataSearchItem {
+            id: "tvdb-3".to_string(),
+            name: "Ralph Breaks the Internet".to_string(),
+            year: Some(2018),
+            kind: "movie".to_string(),
+        }];
+        let raw_candidates = vec!["RALPH BREAKS THE INTERNET WRECK IT RALPH 2".to_string()];
+        let (candidates, reduced) =
+            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
+
+        let selected = select_best_match(
+            &results,
+            Some(2018),
+            &candidates,
+            &reduced,
+            TitleMatchProfile::Movie,
+        )
+        .expect("single same-year prefix match");
+
+        assert_eq!(selected.id, "tvdb-3");
     }
 
     #[test]
@@ -1590,6 +1963,174 @@ mod tests {
             candidate.metadata_lookup_error.as_deref() == Some("repository: series rate limited")
                 && candidate.selected_metadata.is_none()
         }));
+    }
+
+    #[tokio::test]
+    async fn stream_prepared_movie_library_scan_entries_emits_batches_before_discovery_closes() {
+        let scanner = DelayedLibraryScanner::default();
+        scanner.set_response(
+            "/library/Fast Movie",
+            10,
+            vec![build_library_file(
+                "/library/Fast Movie/Fast.Movie.2024.mkv",
+            )],
+        );
+        scanner.set_response(
+            "/library/Slow Movie",
+            250,
+            vec![build_library_file(
+                "/library/Slow Movie/Slow.Movie.2024.mkv",
+            )],
+        );
+
+        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
+        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
+            Arc::new(scanner),
+            entry_rx,
+            "/library".to_string(),
+            1,
+        )
+        .expect("prepared entry stream");
+
+        entry_tx
+            .send(Ok(vec![
+                MovieTopLevelEntry {
+                    path: PathBuf::from("/library/Fast Movie"),
+                    is_dir: true,
+                },
+                MovieTopLevelEntry {
+                    path: PathBuf::from("/library/Slow Movie"),
+                    is_dir: true,
+                },
+            ]))
+            .await
+            .expect("send discovery batch");
+
+        let first_batch = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
+            .await
+            .expect("first prepared batch should arrive before discovery closes")
+            .expect("prepared entry stream should stay open")
+            .expect("prepared batch");
+
+        assert_eq!(first_batch.len(), 1);
+        match &first_batch[0] {
+            PreparedMovieLibraryScanEntry::Candidate(candidate) => {
+                assert_eq!(candidate.file.display_name, "Fast.Movie.2024");
+            }
+            PreparedMovieLibraryScanEntry::Skipped { item_path } => {
+                panic!("unexpected skipped entry for {item_path}");
+            }
+        }
+
+        drop(entry_tx);
+
+        let second_batch = tokio::time::timeout(Duration::from_millis(500), prepared_rx.recv())
+            .await
+            .expect("second prepared batch should arrive after discovery closes")
+            .expect("prepared entry stream should stay open")
+            .expect("prepared batch");
+
+        assert_eq!(second_batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_prepared_movie_library_scan_entries_does_not_wait_for_large_input_batch_size() {
+        let scanner = DelayedLibraryScanner::default();
+        for index in 0..9 {
+            let folder = format!("/library/Movie {index}");
+            let file = format!("{folder}/Movie.{index}.2024.mkv");
+            scanner.set_response(&folder, 5, vec![build_library_file(&file)]);
+        }
+
+        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
+        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
+            Arc::new(scanner),
+            entry_rx,
+            "/library".to_string(),
+            128,
+        )
+        .expect("prepared entry stream");
+
+        entry_tx
+            .send(Ok((0..9)
+                .map(|index| MovieTopLevelEntry {
+                    path: PathBuf::from(format!("/library/Movie {index}")),
+                    is_dir: true,
+                })
+                .collect()))
+            .await
+            .expect("send discovery batch");
+
+        let first_batch = tokio::time::timeout(Duration::from_millis(250), prepared_rx.recv())
+            .await
+            .expect("first prepared batch should flush before 128 entries are ready")
+            .expect("prepared entry stream should stay open")
+            .expect("prepared batch");
+
+        assert_eq!(first_batch.len(), MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE);
+
+        drop(entry_tx);
+
+        let second_batch = tokio::time::timeout(Duration::from_millis(250), prepared_rx.recv())
+            .await
+            .expect("remaining prepared batch should arrive")
+            .expect("prepared entry stream should stay open")
+            .expect("prepared batch");
+
+        assert_eq!(second_batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn streaming_movie_metadata_resolver_reuses_search_results_and_delays_total_known() {
+        let gateway = CountingMetadataGateway::default();
+        gateway.set_search_results(
+            METADATA_TYPE_MOVIE,
+            "Dune",
+            vec![MetadataSearchItem {
+                tvdb_id: "movie-1".into(),
+                name: "Dune".into(),
+                year: Some(2021),
+            }],
+        );
+
+        let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()));
+
+        let (first_ready, first_progress) = resolver
+            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])])
+            .await
+            .expect("first incremental metadata batch");
+
+        assert_eq!(first_progress.total_delta, 1);
+        assert_eq!(first_progress.completed_delta, 1);
+        assert!(!first_progress.total_known);
+        assert_eq!(first_ready.len(), 1);
+        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+
+        let (second_ready, second_progress) = resolver
+            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])])
+            .await
+            .expect("second incremental metadata batch");
+
+        assert_eq!(second_progress.total_delta, 1);
+        assert_eq!(second_progress.completed_delta, 1);
+        assert!(!second_progress.total_known);
+        assert_eq!(second_ready.len(), 1);
+        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+
+        let (final_ready, final_progress) = resolver
+            .finish()
+            .await
+            .expect("final incremental metadata batch");
+
+        assert!(final_ready.is_empty());
+        assert_eq!(final_progress.total_delta, 0);
+        assert_eq!(final_progress.completed_delta, 0);
+        assert!(final_progress.total_known);
+
+        let stats = resolver.stats();
+        assert_eq!(stats.logical_lookups, 2);
+        assert_eq!(stats.executed_requests, 1);
+        assert_eq!(stats.coalesced_requests, 1);
     }
 
     #[test]

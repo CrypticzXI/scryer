@@ -29,6 +29,7 @@ pub trait TitleRepository: Send + Sync {
     ) -> AppResult<Title>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()>;
+    async fn clear_folder_path(&self, id: &str) -> AppResult<()>;
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64>;
 }
 
@@ -374,6 +375,11 @@ pub trait LibraryScanUnmatchedItemRepository: Send + Sync {
         &self,
         item: &LibraryScanUnmatchedItem,
     ) -> AppResult<String>;
+
+    async fn get_library_scan_unmatched_item(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<LibraryScanUnmatchedItem>>;
 
     async fn delete_library_scan_unmatched_item(
         &self,

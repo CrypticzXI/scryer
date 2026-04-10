@@ -6,6 +6,7 @@ use std::sync::{LazyLock, Mutex};
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
     from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
+    from_resolve_pending_import_result,
 };
 use crate::types::*;
 
@@ -65,6 +66,20 @@ impl LibraryMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_summary(summary))
+    }
+
+    async fn resolve_pending_import(
+        &self,
+        ctx: &Context<'_>,
+        input: ResolvePendingImportInput,
+    ) -> GqlResult<ResolvePendingImportPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .resolve_pending_import(&actor, &input.pending_import_id, &input.tvdb_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_resolve_pending_import_result(result))
     }
 
     async fn apply_media_rename(

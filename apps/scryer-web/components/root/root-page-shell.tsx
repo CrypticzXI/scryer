@@ -16,6 +16,7 @@ import { GlobalSearchProvider } from "@/components/root/global-search-provider";
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
+import { backendClient } from "@/lib/graphql/urql-client";
 import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
@@ -44,6 +45,9 @@ import {
 } from "@/lib/utils/routing";
 import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
+import { pendingImportCountsQuery } from "@/lib/graphql/queries";
+import type { PendingImportCounts } from "@/lib/types";
+import { pendingImportCountForView } from "@/lib/types";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -77,6 +81,10 @@ const WantedContainer = lazy(() =>
 
 const ImportHistoryContainer = lazy(() =>
   import("@/components/containers/import-history-container").then((m) => ({ default: m.ImportHistoryContainer })),
+);
+
+const PendingImportsContainer = lazy(() =>
+  import("@/components/containers/pending-imports-container").then((m) => ({ default: m.PendingImportsContainer })),
 );
 
 const INSTALL_BANNER_DISMISSED_KEY = "scryer.pwa.installBannerDismissed";
@@ -134,6 +142,9 @@ function MainContent({
   }
   if (view === "system") {
     return <SystemContainer key={`system-${systemSection}`} systemSection={systemSection} />;
+  }
+  if (isMediaView(view) && contentSettingsSection === "import") {
+    return <PendingImportsContainer key={`${view}-imports`} view={view} />;
   }
   if (isMediaView(view) && overviewTitleId) {
     return (
@@ -286,6 +297,7 @@ function AuthenticatedHomePage({
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw, {
     onServiceRestarting: useCallback(() => setServiceRestarting(true), [setServiceRestarting]),
   });
+  const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -321,6 +333,40 @@ function AuthenticatedHomePage({
   }, []);
 
   const onCatalogChanged = useCallback(() => {}, []);
+
+  const refreshPendingImportCounts = useCallback(async () => {
+    try {
+      const { data, error } = await backendClient.query(pendingImportCountsQuery, {}).toPromise();
+      if (error) {
+        throw error;
+      }
+      if (data?.pendingImportCounts) {
+        setPendingImportCounts(data.pendingImportCounts as PendingImportCounts);
+      } else {
+        setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
+      }
+    } catch {
+      setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPendingImportCounts();
+  }, [refreshPendingImportCounts]);
+
+  useEffect(() => {
+    const handlePendingImportsRefresh = () => {
+      void refreshPendingImportCounts();
+    };
+    window.addEventListener("scryer:pendingImportsRefresh", handlePendingImportsRefresh);
+    const intervalId = window.setInterval(() => {
+      void refreshPendingImportCounts();
+    }, 30_000);
+    return () => {
+      window.removeEventListener("scryer:pendingImportsRefresh", handlePendingImportsRefresh);
+      window.clearInterval(intervalId);
+    };
+  }, [refreshPendingImportCounts]);
 
   const activeFacet = useMemo<Facet>(() => facetForView(view)?.id ?? "movie", [view]);
   const queueFacet = activeFacet;
@@ -405,9 +451,10 @@ function AuthenticatedHomePage({
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
       t,
+      pendingImportCounts,
       onNavigate: navigateTo,
     }),
-    [navigateTo, t],
+    [navigateTo, pendingImportCounts, t],
   );
 
   const routeCommandPaletteConfig = useMemo(
@@ -433,6 +480,18 @@ function AuthenticatedHomePage({
     () => navigateTo(view, undefined, "overview"),
     [navigateTo, view],
   );
+
+  useEffect(() => {
+    if (!isMediaView(view) || contentSettingsSection !== "import" || !pendingImportCounts) {
+      return;
+    }
+
+    if (pendingImportCountForView(pendingImportCounts, view) > 0) {
+      return;
+    }
+
+    navigateTo(view, undefined, "overview");
+  }, [contentSettingsSection, navigateTo, pendingImportCounts, view]);
 
   return (
     <ScryerGraphqlProvider language={uiLanguage}>
@@ -495,6 +554,7 @@ function AuthenticatedHomePage({
                   contentSettingsSection={contentSettingsSection}
                   systemSection={systemSection}
                   entitlements={entitlements}
+                  pendingImportCounts={pendingImportCounts}
                   onNavigate={navigateTo}
                 >
                   <main className={view === "wanted" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>

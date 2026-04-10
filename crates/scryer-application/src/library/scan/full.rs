@@ -13,6 +13,73 @@ async fn finalize_full_library_scan(
     Ok(())
 }
 
+async fn apply_streaming_metadata_progress(
+    coordinator: &LibraryScanCoordinator,
+    progress: StreamingMetadataProgressUpdate,
+) {
+    if progress.total_delta > 0 {
+        coordinator.add_metadata_total(progress.total_delta).await;
+    }
+    if progress.completed_delta > 0 {
+        coordinator
+            .mark_metadata_completed(progress.completed_delta)
+            .await;
+    }
+    if progress.total_known {
+        coordinator.mark_metadata_total_known().await;
+    }
+    if progress.has_changes() {
+        coordinator.publish_progress().await;
+    }
+}
+
+async fn process_ready_movie_candidate_batches(
+    app: &AppUseCase,
+    actor: &User,
+    facet: &MediaFacet,
+    library_path: &str,
+    session_id: &str,
+    coordinator: &LibraryScanCoordinator,
+    ready_candidate_batches: Vec<Vec<PreparedMovieLibraryScanCandidate>>,
+    batch_search_results: &MetadataSearchResults,
+    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    existing_titles: &mut Vec<Title>,
+    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
+    summary: &mut LibraryScanSummary,
+    unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
+) -> AppResult<()> {
+    for ready_candidates in ready_candidate_batches {
+        for candidate in ready_candidates {
+            process_resolved_movie_full_scan_candidate(
+                app,
+                actor,
+                facet,
+                library_path,
+                session_id,
+                coordinator,
+                candidate,
+                batch_search_results,
+                workset,
+                existing_titles,
+                existing_titles_by_name,
+                existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
+                summary,
+                unmatched_items,
+            )
+            .await?;
+        }
+
+        coordinator.publish_progress().await;
+    }
+
+    Ok(())
+}
+
 pub(super) async fn scan_library_movies(
     app: &AppUseCase,
     actor: &User,
@@ -25,7 +92,7 @@ pub(super) async fn scan_library_movies(
     let root = require_directory_library_path(library_path)?;
     let discovered_entries =
         stream_movie_top_level_entries_batched(root, LIBRARY_SCAN_BATCH_SIZE).await?;
-    let mut queued_discovered_entries = spawn_library_discovery_queue(
+    let queued_discovered_entries = spawn_library_discovery_queue(
         app.clone(),
         session_id.to_string(),
         discovered_entries,
@@ -46,101 +113,110 @@ pub(super) async fn scan_library_movies(
     ) = build_movie_title_indexes(&existing_titles);
 
     let mut summary = LibraryScanSummary::default();
-    let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
     let mut seen_paths = HashSet::new();
     let mut unmatched_items = Vec::new();
     let mut workset = HashMap::new();
-    let mut discovered_entries = Vec::new();
+    let mut prepared_entries = stream_prepared_movie_library_scan_entries(
+        app.services.library.library_scanner.clone(),
+        queued_discovered_entries,
+        library_path.to_string(),
+        LIBRARY_SCAN_BATCH_SIZE,
+    )?;
+    let mut metadata_resolver =
+        StreamingMovieMetadataResolver::new(app.services.library.metadata_gateway.clone());
 
-    while let Some(entry_chunk_result) = queued_discovered_entries.recv().await {
-        let entry_chunk = entry_chunk_result?;
-        if entry_chunk.is_empty() {
+    while let Some(prepared_batch_result) = prepared_entries.recv().await {
+        let prepared_batch = prepared_batch_result?;
+        if prepared_batch.is_empty() {
             continue;
         }
-        discovered_entries.extend(entry_chunk);
-    }
 
-    let prepared_entries = prepare_movie_library_scan_entries(
-        app.services.library.library_scanner.clone(),
-        &discovered_entries,
-        library_path,
-    )
-    .await?;
-    let mut unresolved_candidates = Vec::new();
+        let mut unresolved_candidates = Vec::new();
 
-    for prepared_entry in prepared_entries {
-        match prepared_entry {
-            PreparedMovieLibraryScanEntry::Candidate(candidate) => {
-                summary.scanned += 1;
-                let item_path = normalize_library_scan_item_path(&candidate.file.path);
-                if !item_path.is_empty() {
-                    seen_paths.insert(item_path);
+        for prepared_entry in prepared_batch {
+            match prepared_entry {
+                PreparedMovieLibraryScanEntry::Candidate(candidate) => {
+                    summary.scanned += 1;
+                    let item_path = normalize_library_scan_item_path(&candidate.file.path);
+                    if !item_path.is_empty() {
+                        seen_paths.insert(item_path);
+                    }
+
+                    if let Some(candidate) = process_movie_full_scan_candidate(
+                        app,
+                        actor,
+                        facet,
+                        &coordinator,
+                        candidate,
+                        &mut workset,
+                        &mut existing_titles,
+                        &mut existing_titles_by_name,
+                        &mut existing_titles_by_tvdb_id,
+                        &mut existing_titles_by_imdb_id,
+                        &mut existing_titles_by_tmdb_id,
+                        &mut summary,
+                    )
+                    .await?
+                    {
+                        unresolved_candidates.push(candidate);
+                    }
                 }
-
-                if let Some(candidate) = process_movie_full_scan_candidate(
-                    app,
-                    actor,
-                    facet,
-                    &coordinator,
-                    candidate,
-                    &mut workset,
-                    &mut existing_titles,
-                    &mut existing_titles_by_name,
-                    &mut existing_titles_by_tvdb_id,
-                    &mut existing_titles_by_imdb_id,
-                    &mut existing_titles_by_tmdb_id,
-                    &mut summary,
-                )
-                .await?
-                {
-                    unresolved_candidates.push(candidate);
+                PreparedMovieLibraryScanEntry::Skipped { item_path } => {
+                    summary.scanned += 1;
+                    summary.skipped += 1;
+                    clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+                    coordinator.mark_title_match_completed(1).await;
                 }
-            }
-            PreparedMovieLibraryScanEntry::Skipped { item_path } => {
-                summary.scanned += 1;
-                summary.skipped += 1;
-                clear_library_scan_unmatched_item(app, facet, &item_path).await?;
-                coordinator.mark_title_match_completed(1).await;
             }
         }
-    }
 
-    let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-        app.services.library.metadata_gateway.clone(),
-        &coordinator,
-        unresolved_candidates,
-        &mut metadata_lookup_stats,
-        build_movie_metadata_batch_stats,
-        movie_candidate_batch_search_keys,
-        "movie metadata search chunk unexpectedly empty",
-    )
-    .await?;
-
-    for ready_candidates in ready_candidate_batches {
-        for candidate in ready_candidates {
-            process_resolved_movie_full_scan_candidate(
-                app,
-                actor,
-                facet,
-                library_path,
-                session_id,
-                &coordinator,
-                candidate,
-                &batch_search_results,
-                &mut workset,
-                &mut existing_titles,
-                &mut existing_titles_by_name,
-                &mut existing_titles_by_tvdb_id,
-                &mut existing_titles_by_imdb_id,
-                &mut existing_titles_by_tmdb_id,
-                &mut summary,
-                &mut unmatched_items,
-            )
+        let (ready_candidate_batches, metadata_progress) = metadata_resolver
+            .ingest_candidates(unresolved_candidates)
             .await?;
-        }
-
-        coordinator.publish_progress().await;
+        apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
+        process_ready_movie_candidate_batches(
+            app,
+            actor,
+            facet,
+            library_path,
+            session_id,
+            &coordinator,
+            ready_candidate_batches,
+            metadata_resolver.search_results(),
+            &mut workset,
+            &mut existing_titles,
+            &mut existing_titles_by_name,
+            &mut existing_titles_by_tvdb_id,
+            &mut existing_titles_by_imdb_id,
+            &mut existing_titles_by_tmdb_id,
+            &mut summary,
+            &mut unmatched_items,
+        )
+        .await?;
     }
+
+    let (ready_candidate_batches, metadata_progress) = metadata_resolver.finish().await?;
+    apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
+    let metadata_lookup_stats = metadata_resolver.stats();
+    process_ready_movie_candidate_batches(
+        app,
+        actor,
+        facet,
+        library_path,
+        session_id,
+        &coordinator,
+        ready_candidate_batches,
+        metadata_resolver.search_results(),
+        &mut workset,
+        &mut existing_titles,
+        &mut existing_titles_by_name,
+        &mut existing_titles_by_tvdb_id,
+        &mut existing_titles_by_imdb_id,
+        &mut existing_titles_by_tmdb_id,
+        &mut summary,
+        &mut unmatched_items,
+    )
+    .await?;
 
     summary.absorb(
         &app.execute_library_scan_workset(actor, session_id, workset)

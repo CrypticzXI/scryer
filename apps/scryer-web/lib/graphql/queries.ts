@@ -1561,6 +1561,36 @@ export const searchMetadataQuery = `query SearchMetadata($query: String!, $type:
   }
 }`;
 
+export const pendingImportCountsQuery = `query PendingImportCounts {
+  pendingImportCounts {
+    movie
+    series
+    anime
+  }
+}`;
+
+export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $limit: Int = 50, $offset: Int = 0) {
+  pendingImports(facet: $facet, limit: $limit, offset: $offset) {
+    total
+    items {
+      id
+      facet
+      displayName
+      path
+      folderPath
+      query
+      yearHint
+      reason
+      searchAttempts {
+        query
+        resultCount
+        topResults
+        summary
+      }
+    }
+  }
+}`;
+
 export const searchMetadataMultiQuery = `query SearchMetadataMulti($query: String!, $limit: Int, $language: String! = "eng") {
   searchMetadataMulti(query: $query, limit: $limit, language: $language) {
     movies {${METADATA_SEARCH_FIELDS}

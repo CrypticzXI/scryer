@@ -20,7 +20,8 @@ use crate::queries::housekeeping::{
 };
 use crate::queries::library_scan_unmatched::{
     count_library_scan_unmatched_items_query, delete_library_scan_unmatched_item_query,
-    list_library_scan_unmatched_items_query, upsert_library_scan_unmatched_item_query,
+    get_library_scan_unmatched_item_query, list_library_scan_unmatched_items_query,
+    upsert_library_scan_unmatched_item_query,
 };
 use crate::queries::media_file::{
     delete_media_file_query, get_media_file_by_id_query, get_media_file_by_path_query,
@@ -101,6 +102,13 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         item: &LibraryScanUnmatchedItem,
     ) -> AppResult<String> {
         upsert_library_scan_unmatched_item_query(&self.db.pool, item).await
+    }
+
+    async fn get_library_scan_unmatched_item(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<LibraryScanUnmatchedItem>> {
+        get_library_scan_unmatched_item_query(&self.db.pool, id).await
     }
 
     async fn delete_library_scan_unmatched_item(

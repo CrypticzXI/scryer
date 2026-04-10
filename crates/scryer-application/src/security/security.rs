@@ -16,6 +16,7 @@ impl AppUseCase {
             runtime: assembly.runtime,
             auth,
             facet_registry,
+            pending_import_resolution_locks: Arc::new(std::sync::Mutex::new(HashSet::new())),
             jwt_signing_keys: Arc::new(RwLock::new(HashMap::new())),
             jwt_signing_keys_loaded: Arc::new(OnceCell::new()),
             jwt_signing_keys_seed_lock: Arc::new(Mutex::new(())),

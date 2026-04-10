@@ -1798,6 +1798,22 @@ fn verify_red_notice_bluray_not_webdl() {
 }
 
 #[test]
+fn dts_hd_ma_does_not_leak_into_normalized_title() {
+    let p =
+        parse_release_metadata("Dune.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT");
+    assert_eq!(p.normalized_title, "DUNE");
+    assert_eq!(p.year, Some(2021));
+    assert!(p.audio_codecs.iter().any(|codec| codec == "DTSMA"));
+}
+
+#[test]
+fn ralph_breaks_the_internet_keeps_full_title_tokens() {
+    let p = parse_release_metadata("Ralph Breaks the Internet Wreck-It Ralph 2");
+    assert_eq!(p.release_group, None);
+    assert_eq!(p.normalized_title, "RALPH BREAKS THE INTERNET WRECK IT RALPH 2");
+}
+
+#[test]
 fn verify_youtube_still_detected() {
     let p = parse_release_metadata("Documentary.2024.1080p.YOUTUBE.WEB-DL.AAC2.0.H.264-GROUP");
     assert_eq!(p.source.as_deref(), Some("WEB-DL"));

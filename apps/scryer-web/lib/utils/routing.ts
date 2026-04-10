@@ -30,6 +30,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
 
 export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   overview: "overview",
+  import: "import",
   settings: "settings",
   general: "settings/general",
   quality: "settings/quality",

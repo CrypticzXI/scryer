@@ -3,11 +3,12 @@ use scryer_application::{
     FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport,
     IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
     LibraryScanSummary, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
     PendingRelease, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
     QualityProfileSelection, QualityProfileSettings, RegistryPlugin, RenameApplyItemResult,
-    RenameApplyResult, RenamePlan, RenamePlanItem, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
-    WorkflowOperationInfo,
+    RenameApplyResult, RenamePlan, RenamePlanItem, ResolvePendingImportResult, RssSyncReport,
+    ScoringEntry, ScoringSource, ServiceSettings, SystemHealth, TitleHistoryPage,
+    TitleReleaseBlocklistEntry, WorkflowOperationInfo,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
@@ -561,6 +562,68 @@ pub(crate) fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryS
         imported: summary.imported as i32,
         skipped: summary.skipped as i32,
         unmatched: summary.unmatched as i32,
+    }
+}
+
+pub(crate) fn from_pending_import_counts(
+    counts: PendingImportCounts,
+) -> PendingImportCountsPayload {
+    PendingImportCountsPayload {
+        movie: counts.movie as i32,
+        series: counts.series as i32,
+        anime: counts.anime as i32,
+    }
+}
+
+fn from_pending_import_search_attempt(
+    attempt: PendingImportSearchAttempt,
+) -> PendingImportSearchAttemptPayload {
+    PendingImportSearchAttemptPayload {
+        query: attempt.query,
+        result_count: attempt.result_count as i32,
+        top_results: attempt.top_results,
+        summary: attempt.summary,
+    }
+}
+
+pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPayload {
+    PendingImportItemPayload {
+        id: item.id,
+        facet: MediaFacetValue::from_domain(item.facet),
+        display_name: item.display_name,
+        path: item.path,
+        folder_path: item.folder_path,
+        query: item.query,
+        year_hint: item.year_hint,
+        reason: item.reason,
+        search_attempts: item
+            .search_attempts
+            .into_iter()
+            .map(from_pending_import_search_attempt)
+            .collect(),
+    }
+}
+
+pub(crate) fn from_pending_import_connection(
+    connection: PendingImportConnection,
+) -> PendingImportConnectionPayload {
+    PendingImportConnectionPayload {
+        total: connection.total as i32,
+        items: connection
+            .items
+            .into_iter()
+            .map(from_pending_import_item)
+            .collect(),
+    }
+}
+
+pub(crate) fn from_resolve_pending_import_result(
+    result: ResolvePendingImportResult,
+) -> ResolvePendingImportPayload {
+    ResolvePendingImportPayload {
+        title: from_title(result.title),
+        created: result.created,
+        library_scan: from_library_scan_summary(result.library_scan),
     }
 }
 

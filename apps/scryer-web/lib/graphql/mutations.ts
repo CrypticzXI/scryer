@@ -191,6 +191,25 @@ export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($input: Title
   }
 }`;
 
+export const resolvePendingImportMutation = `mutation ResolvePendingImport($input: ResolvePendingImportInput!) {
+  resolvePendingImport(input: $input) {
+    created
+    libraryScan {
+      scanned
+      matched
+      imported
+      skipped
+      unmatched
+    }
+    title {
+      id
+      name
+      facet
+      monitored
+    }
+  }
+}`;
+
 export const triggerJobMutation = `mutation TriggerJob($jobKey: JobKeyValue!) {
   triggerJob(jobKey: $jobKey) {
 ${JOB_RUN_FIELDS}

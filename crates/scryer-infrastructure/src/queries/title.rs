@@ -1538,6 +1538,15 @@ pub(crate) async fn set_title_folder_path_query(
     Ok(())
 }
 
+pub(crate) async fn clear_title_folder_path_query(pool: &SqlitePool, id: &str) -> AppResult<()> {
+    sqlx::query("UPDATE titles SET folder_path = NULL WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(())
+}
+
 pub(crate) async fn update_title_metadata_query(
     pool: &SqlitePool,
     id: &str,
