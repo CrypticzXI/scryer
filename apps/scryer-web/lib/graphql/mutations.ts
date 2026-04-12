@@ -181,6 +181,13 @@ export const scanLibraryMutation = `mutation ScanLibrary($facet: MediaFacetValue
   }
 }`;
 
+export const cancelLibraryScanMutation = `mutation CancelLibraryScan($input: CancelLibraryScanInput!) {
+  cancelLibraryScan(input: $input) {
+    sessionId
+    accepted
+  }
+}`;
+
 export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($input: TitleIdInput!) {
   scanTitleLibrary(input: $input) {
     scanned

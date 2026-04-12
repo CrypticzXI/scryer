@@ -256,6 +256,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
         video_frame_rate: analysis.video_frame_rate.clone(),
         video_profile: analysis.video_profile.clone(),
         audio_codec: analysis.audio_codec.clone(),
+        audio_profile: analysis.audio_profile.clone(),
         audio_channels: analysis.audio_channels,
         audio_bitrate_kbps: analysis.audio_bitrate_kbps,
         audio_languages,
@@ -264,6 +265,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
             .iter()
             .map(|stream| scryer_rules::AudioStreamDoc {
                 codec: stream.codec.clone(),
+                profile: stream.profile.clone(),
                 channels: stream.channels,
                 language: stream
                     .language
@@ -427,7 +429,9 @@ mod tests {
         assert_eq!(value["context"]["search_mode"], "post_download");
         assert_eq!(value["context"]["existing_score"], 900);
         assert_eq!(value["file"]["num_chapters"], 0);
+        assert_eq!(value["file"]["audio_profile"], "LC");
         assert_eq!(value["file"]["audio_streams"][0]["codec"], "aac");
+        assert_eq!(value["file"]["audio_streams"][0]["profile"], "LC");
     }
 
     #[test]

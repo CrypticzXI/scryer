@@ -539,6 +539,7 @@ fn apply_job_run_event(
             LibraryScanStatus::Discovering => JobRunStatus::Discovering,
             LibraryScanStatus::Running => JobRunStatus::Running,
             LibraryScanStatus::Completed => JobRunStatus::Completed,
+            LibraryScanStatus::Canceled => JobRunStatus::Warning,
             LibraryScanStatus::Warning => JobRunStatus::Warning,
             LibraryScanStatus::Failed => JobRunStatus::Failed,
         };
@@ -594,11 +595,13 @@ fn apply_job_run_event(
         DomainEventPayload::LibraryScanStarted(_)
         | DomainEventPayload::LibraryScanProgressed(_)
         | DomainEventPayload::LibraryScanCompleted(_)
+        | DomainEventPayload::LibraryScanCanceled(_)
         | DomainEventPayload::LibraryScanFailed(_) => {
             let session_id = match &event.payload {
                 DomainEventPayload::LibraryScanStarted(data) => data.session_id.as_str(),
                 DomainEventPayload::LibraryScanProgressed(data) => data.session_id.as_str(),
                 DomainEventPayload::LibraryScanCompleted(data) => data.session_id.as_str(),
+                DomainEventPayload::LibraryScanCanceled(data) => data.session_id.as_str(),
                 DomainEventPayload::LibraryScanFailed(data) => data.session_id.as_str(),
                 _ => unreachable!(),
             };

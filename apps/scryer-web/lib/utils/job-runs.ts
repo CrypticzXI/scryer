@@ -27,6 +27,7 @@ function normalizeLibraryScanStatus(value: unknown): LibraryScanStatus {
     case "discovering":
     case "running":
     case "completed":
+    case "canceled":
     case "warning":
     case "failed":
       return value;

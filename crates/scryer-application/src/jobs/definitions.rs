@@ -464,6 +464,7 @@ impl JobRun {
                 LibraryScanStatus::Discovering => JobRunStatus::Discovering,
                 LibraryScanStatus::Running => JobRunStatus::Running,
                 LibraryScanStatus::Completed => JobRunStatus::Completed,
+                LibraryScanStatus::Canceled => JobRunStatus::Warning,
                 LibraryScanStatus::Warning => JobRunStatus::Warning,
                 LibraryScanStatus::Failed => JobRunStatus::Failed,
             }
@@ -647,6 +648,7 @@ impl JobRunTracker {
                 LibraryScanStatus::Discovering => JobRunStatus::Discovering,
                 LibraryScanStatus::Running => JobRunStatus::Running,
                 LibraryScanStatus::Completed => JobRunStatus::Completed,
+                LibraryScanStatus::Canceled => JobRunStatus::Warning,
                 LibraryScanStatus::Warning => JobRunStatus::Warning,
                 LibraryScanStatus::Failed => JobRunStatus::Failed,
             };

@@ -21,6 +21,7 @@ type LibraryScanDomainEventType =
   | "library_scan_title_discovered"
   | "library_scan_progressed"
   | "library_scan_completed"
+  | "library_scan_canceled"
   | "library_scan_failed";
 
 type DomainEventEnvelope = {
@@ -71,6 +72,7 @@ function isLibraryScanEventType(
     value === "library_scan_title_discovered" ||
     value === "library_scan_progressed" ||
     value === "library_scan_completed" ||
+    value === "library_scan_canceled" ||
     value === "library_scan_failed"
   );
 }
@@ -104,6 +106,7 @@ function normalizeStatus(value: unknown): LibraryScanStatus {
     case "discovering":
     case "running":
     case "completed":
+    case "canceled":
     case "warning":
     case "failed":
       return value;
@@ -139,7 +142,12 @@ function normalizeSummary(value: unknown): LibraryScanSummary | null {
 }
 
 function isTerminal(status: LibraryScanStatus): boolean {
-  return status === "completed" || status === "warning" || status === "failed";
+  return (
+    status === "completed" ||
+    status === "canceled" ||
+    status === "warning" ||
+    status === "failed"
+  );
 }
 
 function emptyPhaseProgress() {
@@ -452,6 +460,22 @@ function applyLibraryScanEvent(
     }
 
     case "library_scan_completed": {
+      const payload = normalizePhasePayload(event);
+      if (!payload) {
+        return sessionsById;
+      }
+
+      const next =
+        sessionsById[payload.sessionId] ?? sessionFromPhase(event, payload);
+      applyProgressPayload(next, payload, event, true);
+
+      return {
+        ...sessionsById,
+        [payload.sessionId]: next,
+      };
+    }
+
+    case "library_scan_canceled": {
       const payload = normalizePhasePayload(event);
       if (!payload) {
         return sessionsById;

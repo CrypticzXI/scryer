@@ -1104,6 +1104,7 @@ async fn import_movie_download(
                 resolution: parsed.quality.clone(),
                 video_codec_parsed: parsed.video_codec.clone(),
                 audio_codec_parsed: parsed.audio.clone(),
+                audio_channels_parsed: parsed.audio_channels.clone(),
                 original_file_path: Some(source_video.to_string_lossy().to_string()),
                 acquisition_score: Some(acq_score),
                 ..Default::default()
@@ -1642,6 +1643,7 @@ async fn import_interstitial_movie_download(
                     resolution: parsed.quality.clone(),
                     video_codec_parsed: parsed.video_codec.clone(),
                     audio_codec_parsed: parsed.audio.clone(),
+                    audio_channels_parsed: parsed.audio_channels.clone(),
                     original_file_path: Some(source_video.to_string_lossy().to_string()),
                     acquisition_score: Some(acq_score),
                     ..Default::default()
@@ -2335,6 +2337,7 @@ async fn import_single_episode_file(
         resolution: parsed.quality.clone(),
         video_codec_parsed: parsed.video_codec.clone(),
         audio_codec_parsed: parsed.audio.clone(),
+        audio_channels_parsed: parsed.audio_channels.clone(),
         original_file_path: Some(source_video.to_string_lossy().to_string()),
         acquisition_score: Some(acq_score),
         ..Default::default()
@@ -3390,6 +3393,7 @@ pub async fn execute_manual_import(
                     resolution: quality_label,
                     video_codec_parsed: parsed.video_codec.clone(),
                     audio_codec_parsed: parsed.audio.clone(),
+                    audio_channels_parsed: parsed.audio_channels.clone(),
                     original_file_path: Some(source.to_string_lossy().to_string()),
                     ..Default::default()
                 };

@@ -504,6 +504,8 @@ mod tests {
             resolution: None,
             video_codec_parsed: None,
             audio_codec_parsed: None,
+            audio_profile: None,
+            audio_channels_parsed: None,
             acquisition_score: None,
             scoring_log: None,
             indexer_source: None,

@@ -358,14 +358,18 @@ impl AppUseCase {
         }
     }
 
-    pub(crate) async fn hydrate_titles_bulk(
+    pub(crate) async fn hydrate_titles_bulk_cancellable(
         &self,
         targets: Vec<HydrationTarget>,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> AppResult<HydrationBatchOutcome> {
         let language = self.metadata_language().await;
         let mut outcome = HydrationBatchOutcome::default();
 
-        for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
+        'chunks: for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
+            if crate::library::library::library_scan_cancel_requested(cancel_token) {
+                break;
+            }
             let mut movie_targets = Vec::new();
             let mut series_targets = Vec::new();
 
@@ -406,12 +410,19 @@ impl AppUseCase {
                 .map(|(_, tvdb_id)| *tvdb_id)
                 .collect::<Vec<_>>();
 
-            let bulk_result = self
-                .services
-                .library
-                .metadata_gateway
-                .get_metadata_bulk(&movie_ids, &series_ids, &language)
-                .await;
+            let bulk_result = await_cancellable(
+                cancel_token,
+                self.services.library.metadata_gateway.get_metadata_bulk(
+                    &movie_ids,
+                    &series_ids,
+                    &language,
+                ),
+            )
+            .await;
+
+            let Some(bulk_result) = bulk_result else {
+                break;
+            };
 
             let bulk_result = match bulk_result {
                 Ok(result) => result,
@@ -428,6 +439,9 @@ impl AppUseCase {
             };
 
             for (target, tvdb_id) in movie_targets {
+                if crate::library::library::library_scan_cancel_requested(cancel_token) {
+                    break 'chunks;
+                }
                 let title_id = target.title.id.clone();
                 if let Some(movie) = bulk_result.movies.get(&tvdb_id) {
                     let result = super::movie_to_hydration_result(movie.clone(), &language);
@@ -468,6 +482,9 @@ impl AppUseCase {
             }
 
             for (target, tvdb_id) in series_targets {
+                if crate::library::library::library_scan_cancel_requested(cancel_token) {
+                    break 'chunks;
+                }
                 let title_id = target.title.id.clone();
                 if let Some(series) = bulk_result.series.get(&tvdb_id) {
                     let result = super::series_to_hydration_result(series.clone(), &language);
@@ -509,6 +526,13 @@ impl AppUseCase {
         }
 
         Ok(outcome)
+    }
+
+    pub(crate) async fn hydrate_titles_bulk(
+        &self,
+        targets: Vec<HydrationTarget>,
+    ) -> AppResult<HydrationBatchOutcome> {
+        self.hydrate_titles_bulk_cancellable(targets, None).await
     }
 
     /// Apply a [`HydrationResult`] to a title: persist metadata, create

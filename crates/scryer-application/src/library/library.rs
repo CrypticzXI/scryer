@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::library_discovery::{
@@ -216,6 +217,22 @@ struct TitleScanFinalizeOutcome {
     title_updated: bool,
 }
 
+#[derive(Clone, Debug)]
+enum StartedLibraryScanOutcome {
+    Completed(LibraryScanSummary),
+    Canceled(LibraryScanSummary),
+}
+
+#[derive(Clone, Debug)]
+struct InvalidLibraryRoot {
+    path: String,
+    reason: String,
+}
+
+pub(crate) fn library_scan_cancel_requested(token: Option<&CancellationToken>) -> bool {
+    token.is_some_and(CancellationToken::is_cancelled)
+}
+
 async fn flush_title_scan_progress_batch(
     app: &AppUseCase,
     session_id: Option<&str>,
@@ -241,6 +258,74 @@ async fn flush_title_scan_progress_batch(
 }
 
 impl AppUseCase {
+    pub(crate) async fn ensure_library_scan_cancellation_token(
+        &self,
+        session_id: &str,
+        mode: LibraryScanMode,
+    ) -> Option<CancellationToken> {
+        if mode != LibraryScanMode::Full {
+            return None;
+        }
+
+        let mut tokens = self.runtime.library_scan_cancellation_tokens.lock().await;
+        if let Some(existing) = tokens.get(session_id).cloned() {
+            return Some(existing);
+        }
+
+        let token = CancellationToken::new();
+        tokens.insert(session_id.to_string(), token.clone());
+        Some(token)
+    }
+
+    async fn library_scan_cancellation_token(&self, session_id: &str) -> Option<CancellationToken> {
+        self.runtime
+            .library_scan_cancellation_tokens
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+    }
+
+    pub(crate) async fn clear_library_scan_cancellation_token(&self, session_id: &str) {
+        self.runtime
+            .library_scan_cancellation_tokens
+            .lock()
+            .await
+            .remove(session_id);
+    }
+
+    pub async fn cancel_library_scan(
+        &self,
+        actor: &User,
+        session_id: &str,
+    ) -> AppResult<CancelLibraryScanResult> {
+        require(actor, &Entitlement::ManageTitle)?;
+
+        let session = self
+            .runtime
+            .library_scan_tracker
+            .get_session(session_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("library scan session {session_id}")))?;
+
+        if session.mode != LibraryScanMode::Full {
+            return Err(AppError::Validation(
+                "only full library scans can be canceled".into(),
+            ));
+        }
+
+        let token = self
+            .library_scan_cancellation_token(session_id)
+            .await
+            .ok_or_else(|| AppError::Validation("library scan session is not cancelable".into()))?;
+        token.cancel();
+
+        Ok(CancelLibraryScanResult {
+            session_id: session_id.to_string(),
+            accepted: true,
+        })
+    }
+
     pub async fn scan_library(
         &self,
         actor: &User,
@@ -260,6 +345,8 @@ impl AppUseCase {
         let (_coordinator, session) =
             LibraryScanCoordinator::start(self.clone(), facet.clone(), LibraryScanMode::Full, None)
                 .await?;
+        self.ensure_library_scan_cancellation_token(&session.session_id, LibraryScanMode::Full)
+            .await;
         let mut session_guard =
             LibraryScanSessionDropGuard::new(self.clone(), session.session_id.clone());
 
@@ -282,6 +369,9 @@ impl AppUseCase {
                     facet = facet.as_str(),
                     "library scan task failed"
                 );
+                LibraryScanCoordinator::new(app.clone(), session_id.clone())
+                    .fail()
+                    .await;
             }
         });
 
@@ -308,6 +398,8 @@ impl AppUseCase {
         let mut session_guard =
             LibraryScanSessionDropGuard::new(self.clone(), session.session_id.clone());
 
+        self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
+            .await;
         let result = self
             .run_started_library_scan_session(actor, facet, &session.session_id, mode)
             .await;
@@ -321,7 +413,8 @@ impl AppUseCase {
         session_guard.disarm();
 
         match result {
-            Ok(summary) => {
+            Ok(StartedLibraryScanOutcome::Completed(summary))
+            | Ok(StartedLibraryScanOutcome::Canceled(summary)) => {
                 let projected_session =
                     wait_for_projected_library_scan_session(self, &session.session_id).await?;
 
@@ -341,50 +434,173 @@ impl AppUseCase {
         facet: MediaFacet,
         session_id: &str,
         mode: LibraryScanMode,
-    ) -> AppResult<LibraryScanSummary> {
-        let library_path = self.read_library_path_for_scan_facet(&facet).await?;
+    ) -> AppResult<StartedLibraryScanOutcome> {
+        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
+        let cancel_token = self.library_scan_cancellation_token(session_id).await;
         let summary = self
-            .execute_started_library_scan_session(actor, &facet, &library_path, session_id, mode)
+            .execute_started_library_scan_session(
+                actor,
+                &facet,
+                &library_paths,
+                session_id,
+                mode,
+                cancel_token.clone(),
+            )
             .await?;
-        self.finalize_started_library_scan_session(session_id, &summary)
-            .await;
-        Ok(summary)
+        if library_scan_cancel_requested(cancel_token.as_ref()) {
+            self.cancel_started_library_scan_session(session_id, &summary)
+                .await;
+            Ok(StartedLibraryScanOutcome::Canceled(summary))
+        } else {
+            self.finalize_started_library_scan_session(session_id, &summary)
+                .await;
+            Ok(StartedLibraryScanOutcome::Completed(summary))
+        }
     }
 
-    async fn read_library_path_for_scan_facet(&self, facet: &MediaFacet) -> AppResult<String> {
-        let path_key = match facet {
-            MediaFacet::Movie => "movies.path",
-            MediaFacet::Series => "series.path",
-            MediaFacet::Anime => "anime.path",
-        };
+    async fn read_library_paths_for_scan_facet(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<Vec<String>> {
+        let configured_roots = self.root_folders_for_facet(facet).await?;
+        let mut roots = Vec::with_capacity(configured_roots.len());
+        let mut seen_roots = HashSet::new();
 
-        self.read_setting_string_value_for_scope(super::SETTINGS_SCOPE_MEDIA, path_key, None)
-            .await?
-            .ok_or_else(|| AppError::Validation(format!("{path_key} is not configured")))
+        for root in configured_roots {
+            let path = root.path.trim().to_string();
+            if path.is_empty() || !seen_roots.insert(path.clone()) {
+                continue;
+            }
+            roots.push(path);
+        }
+
+        if roots.is_empty() {
+            return Err(AppError::Validation(format!(
+                "{} library roots are not configured",
+                facet.as_str()
+            )));
+        }
+
+        Ok(roots)
     }
 
     async fn execute_started_library_scan_session(
         &self,
         actor: &User,
         facet: &MediaFacet,
-        library_path: &str,
+        library_paths: &[String],
         session_id: &str,
         mode: LibraryScanMode,
+        cancel_token: Option<CancellationToken>,
     ) -> AppResult<LibraryScanSummary> {
-        match (mode, facet) {
-            (LibraryScanMode::Full, MediaFacet::Movie) => {
-                scan_library_movies(self, actor, facet, library_path, session_id).await
-            }
-            (LibraryScanMode::Full, MediaFacet::Series | MediaFacet::Anime) => {
-                scan_library_series(self, actor, facet, library_path, session_id).await
-            }
-            (LibraryScanMode::Additive, MediaFacet::Movie) => {
-                background_refresh_movies(self, actor, library_path, session_id).await
-            }
-            (LibraryScanMode::Additive, MediaFacet::Series | MediaFacet::Anime) => {
-                background_refresh_series(self, actor, facet, library_path, session_id).await
+        let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
+        let mut valid_roots = Vec::new();
+        let mut invalid_roots = Vec::new();
+
+        for library_path in library_paths {
+            match tokio::fs::metadata(library_path).await {
+                Ok(metadata) if metadata.is_dir() => valid_roots.push(library_path.as_str()),
+                Ok(_) => invalid_roots.push(InvalidLibraryRoot {
+                    path: library_path.clone(),
+                    reason: "path exists but is not a directory".to_string(),
+                }),
+                Err(error) => invalid_roots.push(InvalidLibraryRoot {
+                    path: library_path.clone(),
+                    reason: error.to_string(),
+                }),
             }
         }
+
+        if valid_roots.is_empty() {
+            if let Some(invalid_root) = invalid_roots.first() {
+                return Err(AppError::Validation(format!(
+                    "library path is not a directory: {}",
+                    invalid_root.path
+                )));
+            }
+
+            return Err(AppError::Validation(format!(
+                "{} library roots are not configured",
+                facet.as_str()
+            )));
+        }
+
+        let mut summary = LibraryScanSummary::default();
+
+        if !invalid_roots.is_empty() {
+            warn!(
+                session_id = %session_id,
+                facet = facet.as_str(),
+                invalid_root_count = invalid_roots.len(),
+                valid_root_count = valid_roots.len(),
+                "skipping invalid library roots during scan"
+            );
+            for invalid_root in &invalid_roots {
+                warn!(
+                    session_id = %session_id,
+                    facet = facet.as_str(),
+                    library_path = %invalid_root.path,
+                    reason = %invalid_root.reason,
+                    "skipping invalid library root"
+                );
+            }
+
+            summary.skipped = summary.skipped.saturating_add(invalid_roots.len());
+            coordinator.add_metadata_total(invalid_roots.len()).await;
+            coordinator.mark_metadata_failed(invalid_roots.len()).await;
+            coordinator.publish_progress().await;
+        }
+
+        let valid_root_count = valid_roots.len();
+
+        for (root_index, library_path) in valid_roots.into_iter().enumerate() {
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                break;
+            }
+            let finalize_discovery_on_drain =
+                mode == LibraryScanMode::Full && root_index + 1 == valid_root_count;
+            let root_summary = match (mode.clone(), facet) {
+                (LibraryScanMode::Full, MediaFacet::Movie) => {
+                    scan_library_movies(
+                        self,
+                        actor,
+                        facet,
+                        library_path,
+                        session_id,
+                        finalize_discovery_on_drain,
+                        cancel_token.clone(),
+                    )
+                    .await?
+                }
+                (LibraryScanMode::Full, MediaFacet::Series | MediaFacet::Anime) => {
+                    scan_library_series(
+                        self,
+                        actor,
+                        facet,
+                        library_path,
+                        session_id,
+                        finalize_discovery_on_drain,
+                        cancel_token.clone(),
+                    )
+                    .await?
+                }
+                (LibraryScanMode::Additive, MediaFacet::Movie) => {
+                    background_refresh_movies(self, actor, library_path, session_id).await?
+                }
+                (LibraryScanMode::Additive, MediaFacet::Series | MediaFacet::Anime) => {
+                    background_refresh_series(self, actor, facet, library_path, session_id).await?
+                }
+            };
+            summary.absorb(&root_summary);
+        }
+
+        if mode == LibraryScanMode::Additive || library_scan_cancel_requested(cancel_token.as_ref())
+        {
+            coordinator.mark_discovery_complete(false).await;
+            coordinator.publish_progress().await;
+        }
+
+        Ok(summary)
     }
 
     async fn finalize_started_library_scan_session(
@@ -396,6 +612,16 @@ impl AppUseCase {
         coordinator.set_summary(summary.clone()).await;
         coordinator.publish_progress().await;
         coordinator.maybe_complete().await;
+    }
+
+    async fn cancel_started_library_scan_session(
+        &self,
+        session_id: &str,
+        summary: &LibraryScanSummary,
+    ) {
+        let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
+        coordinator.set_summary(summary.clone()).await;
+        coordinator.cancel().await;
     }
 
     pub(crate) async fn background_library_refresh_with_tracking(
@@ -429,6 +655,9 @@ impl AppUseCase {
                 .await;
         }
 
-        result
+        result.map(|outcome| match outcome {
+            StartedLibraryScanOutcome::Completed(summary)
+            | StartedLibraryScanOutcome::Canceled(summary) => summary,
+        })
     }
 }

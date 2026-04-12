@@ -6,6 +6,8 @@ pub struct AppRuntimeState {
     pub import_history_broadcast: broadcast::Sender<()>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
     pub library_scan_tracker: LibraryScanTracker,
+    pub library_scan_cancellation_tokens:
+        Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     pub job_run_tracker: JobRunTracker,
     pub acquisition_wake: Arc<tokio::sync::Notify>,
     pub poster_wake: Arc<tokio::sync::Notify>,
@@ -28,6 +30,7 @@ impl Default for AppRuntimeState {
             import_history_broadcast: import_history_tx,
             settings_changed_broadcast: settings_changed_tx,
             library_scan_tracker: LibraryScanTracker::new(),
+            library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
             job_run_tracker: JobRunTracker::new(),
             acquisition_wake: Arc::new(tokio::sync::Notify::new()),
             poster_wake: Arc::new(tokio::sync::Notify::new()),

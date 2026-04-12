@@ -182,6 +182,154 @@ function formatWantedPhase(phase: WantedSearchPhase) {
   return phase.replaceAll("_", " ");
 }
 
+type SubtitleInventoryEntry = {
+  id: string;
+  label: string;
+  secondaryLabel: string;
+  metadataLabel: string | null;
+  blacklistableDownloadId: string | null;
+};
+
+function SubtitleInventorySelect({
+  mediaFile,
+  subtitleDownloads,
+  blacklistingId,
+  onRequestBlacklistSubtitle,
+}: {
+  mediaFile: TitleMediaFile;
+  subtitleDownloads: SubtitleDownloadRecord[];
+  blacklistingId: string | null | undefined;
+  onRequestBlacklistSubtitle?: (downloadId: string) => void;
+}) {
+  const t = useTranslate();
+  const entries = React.useMemo<SubtitleInventoryEntry[]>(() => {
+    const unknownLabel = t("label.unknown");
+    const embeddedEntries: SubtitleInventoryEntry[] = mediaFile.subtitleStreams.length > 0
+      ? mediaFile.subtitleStreams.map((stream, index) => {
+          const language = stream.language?.trim() || mediaFile.subtitleLanguages[index]?.trim() || unknownLabel;
+          const secondaryBits = [
+            t("subtitle.embedded"),
+            stream.forced ? t("subtitle.forced") : null,
+            stream.default ? t("label.default") : null,
+          ].filter(Boolean) as string[];
+          const metadataBits = [
+            stream.codec?.trim() || null,
+            stream.name?.trim() || null,
+          ].filter(Boolean) as string[];
+
+          return {
+            id: `embedded:${mediaFile.id}:${index}:${language}`,
+            label: language,
+            secondaryLabel: secondaryBits.join(" • "),
+            metadataLabel: metadataBits.length > 0 ? metadataBits.join(" • ") : null,
+            blacklistableDownloadId: null,
+          };
+        })
+      : (mediaFile.subtitleLanguages ?? []).map((language, index) => ({
+          id: `embedded:${mediaFile.id}:${index}:${language}`,
+          label: language?.trim() || unknownLabel,
+          secondaryLabel: t("subtitle.embedded"),
+          metadataLabel: null,
+          blacklistableDownloadId: null,
+        }));
+
+    const downloadEntries = subtitleDownloads.map((download) => {
+      const secondaryBits = [
+        download.provider,
+        download.hearingImpaired ? t("subtitle.hearingImpaired") : null,
+        download.forced ? t("subtitle.forced") : null,
+        download.aiTranslated ? t("subtitle.aiTranslated") : null,
+        download.machineTranslated ? t("subtitle.machineTranslated") : null,
+      ].filter(Boolean) as string[];
+      const metadataBits = [
+        download.uploader?.trim() || null,
+        download.score != null ? t("subtitle.score", { score: download.score }) : null,
+        download.releaseInfo?.trim()
+          ? `${t("subtitle.releaseInfo")}: ${download.releaseInfo.trim()}`
+          : null,
+      ].filter(Boolean) as string[];
+
+      return {
+        id: `download:${download.id}`,
+        label: download.language?.trim() || unknownLabel,
+        secondaryLabel: secondaryBits.join(" • "),
+        metadataLabel: metadataBits.length > 0 ? metadataBits.join(" • ") : null,
+        blacklistableDownloadId: download.id,
+      };
+    });
+
+    return [...embeddedEntries, ...downloadEntries];
+  }, [mediaFile.id, mediaFile.subtitleLanguages, mediaFile.subtitleStreams, subtitleDownloads, t]);
+
+  const [selectedEntryId, setSelectedEntryId] = React.useState<string | undefined>(entries[0]?.id);
+
+  React.useEffect(() => {
+    setSelectedEntryId((current) => (
+      current && entries.some((entry) => entry.id === current)
+        ? current
+        : entries[0]?.id
+    ));
+  }, [entries]);
+
+  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? entries[0] ?? null;
+  const subtitleCountText = t("mediaFile.subtitleCount", { count: entries.length });
+  const summaryLine = [subtitleCountText, selectedEntry?.metadataLabel].filter(Boolean).join(" • ");
+
+  if (entries.length === 0) {
+    return <span className="text-xs text-muted-foreground">{t("subtitle.noResults")}</span>;
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex items-start gap-2">
+        <Select value={selectedEntry?.id} onValueChange={setSelectedEntryId}>
+          <SelectTrigger className="w-full min-w-0">
+            <SelectValue aria-label={selectedEntry ? `${selectedEntry.label} ${selectedEntry.secondaryLabel}` : subtitleCountText}>
+              {selectedEntry ? (
+                <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+                  <span className="w-full truncate">{selectedEntry.label}</span>
+                  <span className="w-full truncate text-xs text-muted-foreground">
+                    {selectedEntry.secondaryLabel}
+                  </span>
+                </span>
+              ) : (
+                <span className="truncate text-left">{subtitleCountText}</span>
+              )}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent className="max-h-[320px]">
+            {entries.map((entry) => (
+              <SelectItem key={entry.id} value={entry.id}>
+                <span className="flex min-w-0 flex-col items-start gap-0.5">
+                  <span className="w-full truncate font-medium">{entry.label}</span>
+                  <span className="w-full truncate text-xs text-muted-foreground">
+                    {entry.secondaryLabel}
+                  </span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selectedEntry?.blacklistableDownloadId && onRequestBlacklistSubtitle ? (
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="h-9 w-9 shrink-0"
+            title={t("subtitle.blacklist")}
+            aria-label={t("subtitle.blacklist")}
+            disabled={blacklistingId === selectedEntry.blacklistableDownloadId}
+            onClick={() => onRequestBlacklistSubtitle(selectedEntry.blacklistableDownloadId!)}
+          >
+            <Ban className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">{summaryLine}</p>
+    </div>
+  );
+}
+
 // ─── title settings ──────────────────────────────────────────────────────────
 
 const INHERIT_VALUE = "__inherit__";
@@ -941,48 +1089,18 @@ export function MovieOverviewView({
                         {t("subtitle.search")}
                       </Button>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {embeddedLangs.map((lang: string) => (
-                        <span
-                          key={`emb-${lang}`}
-                          className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300"
-                        >
-                          {lang}
-                          <span className="text-emerald-500/60">{t("subtitle.embedded")}</span>
-                        </span>
-                      ))}
-                      {downloads.map((dl) => (
-                        <span
-                          key={dl.id}
-                          className="group inline-flex items-center gap-1 rounded bg-blue-500/15 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-300"
-                          title={[
-                            dl.provider,
-                            dl.uploader ? `by ${dl.uploader}` : null,
-                            dl.score != null ? `score: ${dl.score}` : null,
-                            dl.releaseInfo,
-                          ].filter(Boolean).join(" \u2022 ")}
-                        >
-                          {dl.language}
-                          <span className="text-blue-500/60">
-                            {dl.provider}
-                            {dl.hearingImpaired ? " HI" : ""}
-                            {dl.forced ? " F" : ""}
-                          </span>
-                          <button
-                            type="button"
-                            className="ml-0.5 hidden rounded p-0.5 text-blue-500/60 hover:bg-red-500/20 hover:text-red-400 group-hover:inline-flex"
-                            title={t("subtitle.blacklist")}
-                            disabled={blacklistingId === dl.id}
-                            onClick={() => onRequestBlacklistSubtitle?.(dl.id)}
-                          >
-                            <Ban className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                      {!hasAny ? (
+                    {hasAny ? (
+                      <SubtitleInventorySelect
+                        mediaFile={mf}
+                        subtitleDownloads={downloads}
+                        blacklistingId={blacklistingId}
+                        onRequestBlacklistSubtitle={onRequestBlacklistSubtitle}
+                      />
+                    ) : (
+                      <div className="mt-2">
                         <span className="text-xs text-muted-foreground">{t("subtitle.noResults")}</span>
-                      ) : null}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

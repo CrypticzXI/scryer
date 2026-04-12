@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future;
 
 pub(crate) const INHERIT_QUALITY_PROFILE_VALUE: &str = "__inherit__";
 pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 4] =
@@ -162,4 +163,35 @@ pub(crate) fn sanitize_ids(ids: Vec<ExternalId>) -> Vec<ExternalId> {
             }
         })
         .collect()
+}
+
+pub(crate) async fn await_cancellable<T, F>(
+    cancel_token: Option<&tokio_util::sync::CancellationToken>,
+    future: F,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    let Some(token) = cancel_token else {
+        return Some(future.await);
+    };
+
+    tokio::pin!(future);
+    tokio::select! {
+        _ = token.cancelled() => None,
+        value = &mut future => Some(value),
+    }
+}
+
+pub(crate) async fn await_cancellable_app_result<T, F>(
+    cancel_token: Option<&tokio_util::sync::CancellationToken>,
+    future: F,
+) -> AppResult<Option<T>>
+where
+    F: Future<Output = AppResult<T>>,
+{
+    match await_cancellable(cancel_token, future).await {
+        Some(result) => result.map(Some),
+        None => Ok(None),
+    }
 }

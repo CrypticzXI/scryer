@@ -840,11 +840,13 @@ mod tests {
                 video_frame_rate: Some("23.976".to_string()),
                 video_profile: Some("Main 10".to_string()),
                 audio_codec: Some("eac3".to_string()),
+                audio_profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
                 audio_channels: Some(6),
                 audio_bitrate_kbps: Some(640),
                 audio_languages: vec!["eng".to_string(), "jpn".to_string()],
                 audio_streams: vec![scryer_rules::AudioStreamDoc {
                     codec: Some("eac3".to_string()),
+                    profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
                     channels: Some(6),
                     language: Some("eng".to_string()),
                     bitrate_kbps: Some(640),

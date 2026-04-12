@@ -4,6 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
+use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
     AppUseCase, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
     normalize_release_attempt_hint, normalize_release_attempt_title,
@@ -91,6 +92,7 @@ pub(crate) fn build_media_file_analysis(
         video_frame_rate: analysis.video_frame_rate.clone(),
         video_profile: analysis.video_profile.clone(),
         audio_codec: analysis.audio_codec.clone(),
+        audio_profile: analysis.audio_profile.clone(),
         audio_channels: analysis.audio_channels,
         audio_bitrate_kbps: analysis.audio_bitrate_kbps,
         audio_languages,
@@ -99,6 +101,7 @@ pub(crate) fn build_media_file_analysis(
             .iter()
             .map(|stream| crate::AudioStreamDetail {
                 codec: stream.codec.clone(),
+                profile: stream.profile.clone(),
                 channels: stream.channels,
                 language: stream
                     .language
@@ -307,41 +310,37 @@ pub(crate) fn rescore_from_mediainfo(
 
     let mut merged = parsed.clone();
     let mut changes = Vec::new();
+    let resolved = resolve_release_labels_from_analysis(
+        analysis.video_height,
+        analysis.video_codec.as_deref(),
+        analysis.audio_codec.as_deref(),
+        analysis.audio_profile.as_deref(),
+        analysis.audio_channels,
+        &analysis.audio_streams,
+    );
 
     // Override resolution from video height
-    if let Some(height) = analysis.video_height {
-        let detected = match height {
-            h if h >= 2100 => Some("2160p"),
-            h if h >= 1000 => Some("1080p"),
-            h if h >= 700 => Some("720p"),
-            h if h >= 480 => Some("480p"),
-            _ => None,
-        };
-        if let Some(detected) = detected
-            && merged.quality.as_deref() != Some(detected)
-        {
-            changes.push(format!(
-                "resolution: {} → {}",
-                merged.quality.as_deref().unwrap_or("?"),
-                detected
-            ));
-            merged.quality = Some(detected.to_string());
-        }
+    if let Some(ref detected) = resolved.quality
+        && merged.quality.as_deref() != Some(detected.as_str())
+    {
+        changes.push(format!(
+            "resolution: {} → {}",
+            merged.quality.as_deref().unwrap_or("?"),
+            detected
+        ));
+        merged.quality = Some(detected.clone());
     }
 
     // Override video codec (map mediainfo names → release parser names)
-    if let Some(ref mediainfo_codec) = analysis.video_codec {
-        let normalized = normalize_mediainfo_video_codec(mediainfo_codec);
-        if let Some(normalized) = normalized
-            && merged.video_codec.as_deref() != Some(normalized)
-        {
-            changes.push(format!(
-                "video_codec: {} → {}",
-                merged.video_codec.as_deref().unwrap_or("?"),
-                normalized
-            ));
-            merged.video_codec = Some(normalized.to_string());
-        }
+    if let Some(ref normalized) = resolved.video_codec
+        && merged.video_codec.as_deref() != Some(normalized.as_str())
+    {
+        changes.push(format!(
+            "video_codec: {} → {}",
+            merged.video_codec.as_deref().unwrap_or("?"),
+            normalized
+        ));
+        merged.video_codec = Some(normalized.clone());
     }
 
     if analysis.video_bit_depth.unwrap_or_default() >= 10 && !merged.is_10bit {
@@ -372,58 +371,36 @@ pub(crate) fn rescore_from_mediainfo(
     }
 
     // Override audio: iterate all streams to find best codec and max channels.
+    if let Some(ref normalized) = resolved.audio_codec
+        && merged.audio.as_deref() != Some(normalized.as_str())
+    {
+        changes.push(format!(
+            "audio: {} → {}",
+            merged.audio.as_deref().unwrap_or("?"),
+            normalized
+        ));
+        merged.audio = Some(normalized.clone());
+    }
+
+    if let Some(ref ch_str) = resolved.audio_channels
+        && merged.audio_channels.as_deref() != Some(ch_str.as_str())
+    {
+        changes.push(format!(
+            "audio_channels: {} → {}",
+            merged.audio_channels.as_deref().unwrap_or("?"),
+            ch_str
+        ));
+        merged.audio_channels = Some(ch_str.clone());
+    }
+
     if !analysis.audio_streams.is_empty() {
-        let best_stream = analysis
-            .audio_streams
-            .iter()
-            .max_by_key(|s| audio_codec_rank(s.codec.as_deref().unwrap_or("")));
-
-        if let Some(best) = best_stream
-            && let Some(ref codec) = best.codec
-        {
-            let normalized = normalize_mediainfo_audio_codec(codec);
-            if let Some(normalized) = normalized
-                && merged.audio.as_deref() != Some(normalized)
-            {
-                changes.push(format!(
-                    "audio: {} → {}",
-                    merged.audio.as_deref().unwrap_or("?"),
-                    normalized
-                ));
-                merged.audio = Some(normalized.to_string());
-            }
-        }
-
-        let max_channels = analysis
-            .audio_streams
-            .iter()
-            .filter_map(|s| s.channels)
-            .max();
-        if let Some(channels) = max_channels {
-            let ch_str = format_audio_channels(channels);
-            if merged.audio_channels.as_deref() != Some(&ch_str) {
-                changes.push(format!(
-                    "audio_channels: {} → {}",
-                    merged.audio_channels.as_deref().unwrap_or("?"),
-                    ch_str
-                ));
-                merged.audio_channels = Some(ch_str);
-            }
-        }
-
         // Detect multi-audio from stream count
         if analysis.audio_streams.len() > 1 && !merged.is_dual_audio {
             changes.push("dual_audio: detected multiple audio tracks".to_string());
             merged.is_dual_audio = true;
         }
 
-        // Detect Atmos from stream codec names
-        let has_atmos = analysis.audio_streams.iter().any(|s| {
-            s.codec
-                .as_deref()
-                .is_some_and(|c| c.to_ascii_lowercase().contains("atmos"))
-        });
-        if has_atmos && !merged.is_atmos {
+        if resolved.is_atmos && !merged.is_atmos {
             changes.push("atmos: detected from audio streams".to_string());
             merged.is_atmos = true;
         }
@@ -431,124 +408,6 @@ pub(crate) fn rescore_from_mediainfo(
 
     (merged, changes)
 }
-
-/// Map mediainfo video codec names to release-parser canonical names.
-fn normalize_mediainfo_video_codec(codec: &str) -> Option<&'static str> {
-    match codec.to_ascii_lowercase().as_str() {
-        "hevc" | "h265" | "h.265" | "hvc1" | "hev1" => Some("H.265"),
-        "h264" | "h.264" | "avc" | "avc1" => Some("H.264"),
-        "av1" | "av01" => Some("AV1"),
-        "vp9" => Some("VP9"),
-        "mpeg4" | "mp4v" | "xvid" | "divx" => Some("MPEG-4"),
-        _ => None,
-    }
-}
-
-/// Map mediainfo audio codec names to release-parser canonical names.
-fn normalize_mediainfo_audio_codec(codec: &str) -> Option<&'static str> {
-    let lower = codec.to_ascii_lowercase();
-    if lower.contains("truehd") && lower.contains("atmos") {
-        return Some("TrueHD Atmos");
-    }
-    if lower.contains("truehd") {
-        return Some("TrueHD");
-    }
-    if lower.contains("dts") && lower.contains("atmos") {
-        return Some("DTS:X");
-    }
-    if lower.contains("dts-hd ma") || lower.contains("dts-hd master") {
-        return Some("DTS-HD MA");
-    }
-    if lower.contains("dts-hd") {
-        return Some("DTS-HD");
-    }
-    if lower.contains("dts") {
-        return Some("DTS");
-    }
-    if lower.contains("e-ac-3") || lower.contains("eac3") || lower.contains("dd+") {
-        if lower.contains("atmos") {
-            return Some("EAC3 Atmos");
-        }
-        return Some("EAC3");
-    }
-    if lower.contains("ac-3") || lower.contains("ac3") {
-        return Some("AC3");
-    }
-    if lower.contains("flac") {
-        return Some("FLAC");
-    }
-    if lower.contains("aac") {
-        return Some("AAC");
-    }
-    if lower.contains("mp3") || lower.contains("mpeg audio") {
-        return Some("MP3");
-    }
-    if lower.contains("opus") {
-        return Some("Opus");
-    }
-    if lower.contains("vorbis") {
-        return Some("Vorbis");
-    }
-    if lower.contains("pcm") || lower.contains("lpcm") {
-        return Some("PCM");
-    }
-    None
-}
-
-/// Rank audio codecs for "best track" selection when iterating streams.
-fn audio_codec_rank(codec: &str) -> i32 {
-    let lower = codec.to_ascii_lowercase();
-    if lower.contains("truehd") && lower.contains("atmos") {
-        return 100;
-    }
-    if lower.contains("truehd") {
-        return 90;
-    }
-    if lower.contains("dts") && lower.contains("atmos") {
-        return 95;
-    }
-    if lower.contains("dts-hd ma") || lower.contains("dts-hd master") {
-        return 85;
-    }
-    if lower.contains("flac") {
-        return 80;
-    }
-    if lower.contains("e-ac-3") || lower.contains("eac3") || lower.contains("dd+") {
-        return 70;
-    }
-    if lower.contains("dts-hd") {
-        return 65;
-    }
-    if lower.contains("dts") {
-        return 60;
-    }
-    if lower.contains("ac-3") || lower.contains("ac3") {
-        return 50;
-    }
-    if lower.contains("aac") {
-        return 40;
-    }
-    if lower.contains("opus") {
-        return 40;
-    }
-    if lower.contains("mp3") {
-        return 30;
-    }
-    20
-}
-
-/// Format channel count to standard notation (e.g., 6 → "5.1", 8 → "7.1").
-fn format_audio_channels(channels: i32) -> String {
-    match channels {
-        8 => "7.1".to_string(),
-        7 => "6.1".to_string(),
-        6 => "5.1".to_string(),
-        2 => "2.0".to_string(),
-        1 => "1.0".to_string(),
-        n => format!("{n}.0"),
-    }
-}
-
 /// Compute acquisition score from a gate acceptance, applying mediainfo rescoring.
 /// Returns the final score and the rescored parsed metadata (for logging).
 pub(crate) async fn compute_acquisition_score(

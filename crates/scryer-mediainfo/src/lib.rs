@@ -33,6 +33,32 @@ impl From<std::io::Error> for MediaInfoError {
     }
 }
 
+/// Analysis behavior profile for media probing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisProfile {
+    /// Preserve the richer native analyzer behavior, including bounded deep
+    /// scans for metadata such as HDR10+ where cheaper signals justify it.
+    DefaultRich,
+    /// Favor parity with Sonarr's bundled ffprobe workflow: a stream/format
+    /// analysis pass with larger probe budgets when needed, plus a cheap
+    /// first-frame HDR follow-up for PQ video instead of richer native scans.
+    FfprobeParity,
+}
+
+/// Options that control media analysis behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnalyzeOptions {
+    pub profile: AnalysisProfile,
+}
+
+impl Default for AnalyzeOptions {
+    fn default() -> Self {
+        Self {
+            profile: AnalysisProfile::DefaultRich,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public types (unchanged from ffprobe era)
 // ---------------------------------------------------------------------------
@@ -41,6 +67,7 @@ impl From<std::io::Error> for MediaInfoError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioStreamDetail {
     pub codec: Option<String>,
+    pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
     pub bitrate_kbps: Option<i32>,
@@ -75,6 +102,7 @@ pub struct MediaAnalysis {
     /// Codec profile, e.g. "Main 10", "High", "Main"
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
+    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     /// Bitrate of the primary audio stream in kbps
     pub audio_bitrate_kbps: Option<i32>,
@@ -110,6 +138,14 @@ pub fn is_valid_video(analysis: &MediaAnalysis) -> bool {
 /// Analyzes a media file using pure Rust container parsers. Dispatches to the
 /// appropriate parser based on container sniffing with an extension fallback.
 pub fn analyze_file(file_path: &Path) -> Result<MediaAnalysis, MediaInfoError> {
+    analyze_file_with_options(file_path, AnalyzeOptions::default())
+}
+
+/// Analyzes a media file with the requested analysis behavior profile.
+pub fn analyze_file_with_options(
+    file_path: &Path,
+    options: AnalyzeOptions,
+) -> Result<MediaAnalysis, MediaInfoError> {
     let ext = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -125,8 +161,8 @@ pub fn analyze_file(file_path: &Path) -> Result<MediaAnalysis, MediaInfoError> {
     });
 
     let raw = match format {
-        Some(ContainerFormat::Matroska) => mkv::parse_mkv(file_path)?,
-        Some(ContainerFormat::Mp4) => mp4::parse_mp4(file_path)?,
+        Some(ContainerFormat::Matroska) => mkv::parse_mkv(file_path, options.profile)?,
+        Some(ContainerFormat::Mp4) => mp4::parse_mp4(file_path, options.profile)?,
         Some(ContainerFormat::Avi) => avi::parse_avi(file_path)?,
         Some(ContainerFormat::Ts) => ts::parse_ts(file_path)?,
         None => return Err(MediaInfoError::UnsupportedFormat(ext)),
@@ -257,6 +293,7 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
     // --- Audio ---
     let primary_audio = select_primary_audio_track(&audio_tracks);
     let audio_codec = primary_audio.and_then(|t| t.codec_name.clone());
+    let audio_profile = primary_audio.and_then(|t| t.audio_profile.clone());
     let audio_channels = primary_audio.and_then(|t| t.channels);
     let audio_bitrate_kbps = primary_audio
         .and_then(|t| t.bit_rate_bps)
@@ -273,6 +310,7 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
         .iter()
         .map(|t| AudioStreamDetail {
             codec: t.codec_name.clone(),
+            profile: t.audio_profile.clone(),
             channels: t.channels,
             language: t
                 .language
@@ -333,6 +371,7 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
         video_frame_rate,
         video_profile,
         audio_codec,
+        audio_profile,
         audio_channels,
         audio_bitrate_kbps,
         audio_languages,
@@ -394,6 +433,7 @@ fn build_raw_json(raw: &RawContainer) -> String {
         kind: &'a str,
         codec_id: &'a str,
         codec_name: Option<&'a str>,
+        audio_profile: Option<&'a str>,
         width: Option<i32>,
         height: Option<i32>,
         channels: Option<i32>,
@@ -417,6 +457,7 @@ fn build_raw_json(raw: &RawContainer) -> String {
                 },
                 codec_id: &t.codec_id,
                 codec_name: t.codec_name.as_deref(),
+                audio_profile: t.audio_profile.as_deref(),
                 width: t.width,
                 height: t.height,
                 channels: t.channels,
@@ -445,6 +486,7 @@ mod tests {
                     kind: TrackKind::Video,
                     codec_id: "V_MPEG4/ISO/AVC".into(),
                     codec_name: Some("h264".into()),
+                    audio_profile: None,
                     codec_private: None,
                     width: Some(1920),
                     height: Some(1080),
@@ -463,6 +505,7 @@ mod tests {
                     kind: TrackKind::Audio,
                     codec_id: "A_AAC".into(),
                     codec_name: Some("aac".into()),
+                    audio_profile: Some("LC".into()),
                     codec_private: None,
                     width: None,
                     height: None,
@@ -481,6 +524,7 @@ mod tests {
                     kind: TrackKind::Audio,
                     codec_id: "A_FLAC".into(),
                     codec_name: Some("flac".into()),
+                    audio_profile: None,
                     codec_private: None,
                     width: None,
                     height: None,
@@ -499,6 +543,7 @@ mod tests {
         });
 
         assert_eq!(analysis.audio_codec.as_deref(), Some("flac"));
+        assert_eq!(analysis.audio_profile, None);
         assert_eq!(analysis.audio_channels, Some(6));
         assert_eq!(analysis.audio_bitrate_kbps, Some(640));
     }

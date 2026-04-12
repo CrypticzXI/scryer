@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEvent, DomainEventPayload, LibraryScanCompletedEventData,
+    DomainEvent, DomainEventPayload, LibraryScanCanceledEventData, LibraryScanCompletedEventData,
     LibraryScanDeltaRecordedEventData, LibraryScanFailedEventData, LibraryScanProgressedEventData,
     LibraryScanStartedEventData, LibraryScanTitleDiscoveredEventData, MediaFacet,
 };
@@ -20,6 +20,7 @@ pub enum LibraryScanStatus {
     Discovering,
     Running,
     Completed,
+    Canceled,
     Warning,
     Failed,
 }
@@ -36,13 +37,17 @@ impl LibraryScanStatus {
             Self::Discovering => "discovering",
             Self::Running => "running",
             Self::Completed => "completed",
+            Self::Canceled => "canceled",
             Self::Warning => "warning",
             Self::Failed => "failed",
         }
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Warning | Self::Failed)
+        matches!(
+            self,
+            Self::Completed | Self::Canceled | Self::Warning | Self::Failed
+        )
     }
 }
 
@@ -644,6 +649,22 @@ impl LibraryScanTracker {
         Some(snapshot)
     }
 
+    pub(crate) async fn cancel_session(&self, session_id: &str) -> Option<LibraryScanSession> {
+        let snapshot = {
+            let mut state = self.state.lock().await;
+            let mut session = state.sessions.remove(session_id)?;
+            session.updated_at = Utc::now();
+            session.title_match_total_known = true;
+            session.metadata_total_known = true;
+            session.file_total_known = true;
+            session.status = LibraryScanStatus::Canceled;
+            state.facet_sessions.remove(&session.facet);
+            session
+        };
+        self.notify_snapshot(snapshot.clone()).await;
+        Some(snapshot)
+    }
+
     pub(crate) async fn get_session(&self, session_id: &str) -> Option<LibraryScanSession> {
         let state = self.state.lock().await;
         state.sessions.get(session_id).cloned()
@@ -733,6 +754,13 @@ pub fn reduce_library_scan_projection_event(
                 .remove(&data.session_id)
                 .unwrap_or_else(|| library_scan_session_from_completed(data, event));
             apply_library_scan_completed(&mut session, data, event);
+            Some(session)
+        }
+        DomainEventPayload::LibraryScanCanceled(data) => {
+            let mut session = sessions
+                .remove(&data.session_id)
+                .unwrap_or_else(|| library_scan_session_from_canceled(data, event));
+            apply_library_scan_canceled(&mut session, data, event);
             Some(session)
         }
         DomainEventPayload::LibraryScanFailed(data) => {
@@ -869,6 +897,30 @@ fn library_scan_session_from_failed(
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
     }
+}
+
+fn library_scan_session_from_canceled(
+    data: &LibraryScanCanceledEventData,
+    event: &DomainEvent,
+) -> LibraryScanSession {
+    let mut session = LibraryScanSession {
+        session_id: data.session_id.clone(),
+        facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        mode: LibraryScanMode::Full,
+        status: LibraryScanStatus::Canceled,
+        started_at: event.occurred_at,
+        updated_at: event.occurred_at,
+        found_titles: data.found_titles.max(0) as usize,
+        title_match_total_known: true,
+        metadata_total_known: true,
+        file_total_known: true,
+        title_match_progress: LibraryScanPhaseProgress::default(),
+        metadata_progress: LibraryScanPhaseProgress::default(),
+        file_progress: LibraryScanPhaseProgress::default(),
+        summary: None,
+    };
+    apply_library_scan_canceled(&mut session, data, event);
+    session
 }
 
 fn apply_library_scan_progress(
@@ -1078,6 +1130,53 @@ fn apply_library_scan_completed(
     debug_session_snapshot("completed", session);
 }
 
+fn apply_library_scan_canceled(
+    session: &mut LibraryScanSession,
+    data: &LibraryScanCanceledEventData,
+    event: &DomainEvent,
+) {
+    session.updated_at = event.occurred_at;
+    session.status = LibraryScanStatus::Canceled;
+    session.found_titles = data.found_titles.max(0) as usize;
+    session.title_match_total_known = true;
+    session.title_match_progress.total = data.found_titles.max(0) as usize;
+    session.title_match_progress.completed =
+        title_match_completed_from_event(data.found_titles, data.title_match_completed, true);
+    session.metadata_total_known = true;
+    session.file_total_known = true;
+    if let Some(total) = data.titles_total {
+        session.metadata_progress.total = total.max(0) as usize;
+    }
+    session.metadata_progress.completed = data.titles_completed.max(0) as usize;
+    if let Some(total) = data.files_total {
+        session.file_progress.total = total.max(0) as usize;
+    }
+    session.file_progress.completed = data.files_completed.max(0) as usize;
+    if let Some(summary) = data.summary.as_ref() {
+        session.summary = Some(LibraryScanSummary {
+            scanned: non_negative_usize(summary.scanned),
+            matched: non_negative_usize(summary.matched),
+            imported: non_negative_usize(summary.imported),
+            skipped: non_negative_usize(summary.skipped),
+            unmatched: non_negative_usize(summary.unmatched),
+        });
+    }
+
+    debug!(
+        reason = "canceled",
+        session_id = %session.session_id,
+        found_titles = data.found_titles,
+        title_match_completed = data.title_match_completed,
+        titles_completed = data.titles_completed,
+        titles_total = ?data.titles_total,
+        files_completed = data.files_completed,
+        files_total = ?data.files_total,
+        occurred_at = %event.occurred_at,
+        "library scan projection marked session canceled"
+    );
+    debug_session_snapshot("canceled", session);
+}
+
 fn debug_session_snapshot(reason: &str, session: &LibraryScanSession) {
     debug!(
         reason = reason,
@@ -1144,6 +1243,7 @@ fn parse_library_scan_status(value: &str) -> LibraryScanStatus {
     match value {
         "discovering" => LibraryScanStatus::Discovering,
         "running" => LibraryScanStatus::Running,
+        "canceled" => LibraryScanStatus::Canceled,
         "warning" => LibraryScanStatus::Warning,
         "failed" => LibraryScanStatus::Failed,
         _ => LibraryScanStatus::Completed,

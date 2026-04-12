@@ -97,6 +97,7 @@ const LIBRARY_SCAN_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::LibraryScanTitleDiscovered,
     DomainEventType::LibraryScanProgressed,
     DomainEventType::LibraryScanCompleted,
+    DomainEventType::LibraryScanCanceled,
     DomainEventType::LibraryScanFailed,
 ];
 

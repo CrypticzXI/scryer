@@ -354,6 +354,11 @@ const FILE_FIELDS: RefField[] = [
     descKey: "settings.refFileAudioCodec",
   },
   {
+    field: "audio_profile",
+    type: "string?",
+    descKey: "settings.refFileAudioProfile",
+  },
+  {
     field: "audio_channels",
     type: "number?",
     descKey: "settings.refFileAudioChannels",
@@ -412,6 +417,11 @@ const FILE_FIELDS: RefField[] = [
 
 const AUDIO_STREAM_FIELDS: RefField[] = [
   { field: "codec", type: "string?", descKey: "settings.refAudioStreamCodec" },
+  {
+    field: "profile",
+    type: "string?",
+    descKey: "settings.refAudioStreamProfile",
+  },
   {
     field: "channels",
     type: "number?",

@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
+use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
     MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver, extract_library_queries,
     matching_movie_nfo_path_async, normalize_folder_name, strip_year_suffix,
@@ -11,13 +13,14 @@ use crate::nfo::{looks_like_movie_nfo, parse_nfo};
 use crate::title_matching::TitleMatchProfile;
 use crate::{
     AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, parse_release_metadata,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, await_cancellable,
+    await_cancellable_app_result, parse_release_metadata,
 };
 
 pub(crate) const METADATA_TYPE_MOVIE: &str = "movie";
 pub(crate) const METADATA_TYPE_SERIES: &str = "series";
 
-const LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE: usize = 20;
+const LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE: usize = 50;
 const MOVIE_ENTRY_PREP_CONCURRENCY: usize = 8;
 const MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE: usize = MOVIE_ENTRY_PREP_CONCURRENCY;
 const LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY: usize = 16;
@@ -222,6 +225,7 @@ pub(crate) fn library_scan_unmatched_reason_code(
 async fn execute_batch_metadata_searches(
     metadata_gateway: Arc<dyn MetadataGateway>,
     search_keys: Vec<BatchMetadataSearchKey>,
+    cancel_token: Option<&CancellationToken>,
 ) -> AppResult<MetadataSearchResults> {
     if search_keys.is_empty() {
         return Ok(HashMap::new());
@@ -235,7 +239,14 @@ async fn execute_batch_metadata_searches(
             year: key.year,
         })
         .collect::<Vec<_>>();
-    let batched_results = metadata_gateway.search_tvdb_batch(&search_queries).await?;
+    let Some(batched_results) = await_cancellable_app_result(
+        cancel_token,
+        metadata_gateway.search_tvdb_batch(&search_queries),
+    )
+    .await?
+    else {
+        return Ok(HashMap::new());
+    };
 
     let mut results = HashMap::new();
     for key in search_keys {
@@ -515,6 +526,7 @@ impl StreamingMovieMetadataResolver {
     pub(crate) async fn ingest_candidates(
         &mut self,
         candidates: Vec<PreparedMovieLibraryScanCandidate>,
+        cancel_token: Option<&CancellationToken>,
     ) -> AppResult<(
         Vec<Vec<PreparedMovieLibraryScanCandidate>>,
         StreamingMetadataProgressUpdate,
@@ -529,13 +541,16 @@ impl StreamingMovieMetadataResolver {
             completed_delta: 0,
             total_known: false,
         };
-        let ready_batches = self.resolve_pending_ready_batches(&mut progress).await?;
+        let ready_batches = self
+            .resolve_pending_ready_batches(&mut progress, cancel_token)
+            .await?;
 
         Ok((ready_batches, progress))
     }
 
     pub(crate) async fn finish(
         &mut self,
+        cancel_token: Option<&CancellationToken>,
     ) -> AppResult<(
         Vec<Vec<PreparedMovieLibraryScanCandidate>>,
         StreamingMetadataProgressUpdate,
@@ -545,7 +560,9 @@ impl StreamingMovieMetadataResolver {
             completed_delta: 0,
             total_known: true,
         };
-        let ready_batches = self.resolve_pending_ready_batches(&mut progress).await?;
+        let ready_batches = self
+            .resolve_pending_ready_batches(&mut progress, cancel_token)
+            .await?;
         Ok((ready_batches, progress))
     }
 
@@ -560,6 +577,7 @@ impl StreamingMovieMetadataResolver {
     async fn resolve_pending_ready_batches(
         &mut self,
         progress: &mut StreamingMetadataProgressUpdate,
+        cancel_token: Option<&CancellationToken>,
     ) -> AppResult<Vec<Vec<PreparedMovieLibraryScanCandidate>>> {
         let mut ready_batches = Vec::new();
 
@@ -584,6 +602,10 @@ impl StreamingMovieMetadataResolver {
                 continue;
             }
 
+            if library_scan_cancel_requested(cancel_token) {
+                break;
+            }
+
             let search_chunk = next_metadata_search_chunk(
                 &self.pending_candidates,
                 &self.search_results,
@@ -597,8 +619,12 @@ impl StreamingMovieMetadataResolver {
             }
 
             self.search_results.extend(
-                execute_batch_metadata_searches(self.metadata_gateway.clone(), search_chunk)
-                    .await?,
+                execute_batch_metadata_searches(
+                    self.metadata_gateway.clone(),
+                    search_chunk,
+                    cancel_token,
+                )
+                .await?,
             );
         }
 
@@ -641,6 +667,7 @@ pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateK
     build_stats: BuildStats,
     candidate_keys: CandidateKeys,
     empty_chunk_message: &'static str,
+    cancel_token: Option<&CancellationToken>,
 ) -> AppResult<(Vec<Vec<T>>, MetadataSearchResults)>
 where
     BuildStats: Fn(&[T]) -> (Vec<BatchMetadataSearchKey>, MetadataLookupBatchStats),
@@ -686,6 +713,10 @@ where
             continue;
         }
 
+        if library_scan_cancel_requested(cancel_token) {
+            break;
+        }
+
         let search_chunk = next_metadata_search_chunk(
             &pending_candidates,
             &batch_search_results,
@@ -696,8 +727,10 @@ where
             return Err(AppError::Repository(empty_chunk_message.into()));
         }
 
-        batch_search_results
-            .extend(execute_batch_metadata_searches(metadata_gateway.clone(), search_chunk).await?);
+        batch_search_results.extend(
+            execute_batch_metadata_searches(metadata_gateway.clone(), search_chunk, cancel_token)
+                .await?,
+        );
     }
 
     Ok((ready_batches, batch_search_results))
@@ -872,6 +905,7 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
     mut discovered_entries: MovieTopLevelEntryBatchReceiver,
     library_path: String,
     batch_size: usize,
+    cancel_token: Option<CancellationToken>,
 ) -> AppResult<PreparedMovieLibraryScanEntryBatchReceiver> {
     if batch_size == 0 {
         return Err(AppError::Validation(
@@ -890,6 +924,12 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
         let mut discovery_closed = false;
 
         loop {
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                pending_entries.clear();
+                prepare_set.abort_all();
+                discovery_closed = true;
+            }
+
             while prepare_set.len() < MOVIE_ENTRY_PREP_CONCURRENCY {
                 let Some(entry) = pending_entries.pop_front() else {
                     break;
@@ -903,7 +943,13 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
 
             if prepared_batch.len() >= flush_batch_size {
                 let next_batch = std::mem::take(&mut prepared_batch);
-                if prepared_tx.send(Ok(next_batch)).await.is_err() {
+                let Some(send_result) =
+                    await_cancellable(cancel_token.as_ref(), prepared_tx.send(Ok(next_batch)))
+                        .await
+                else {
+                    return;
+                };
+                if send_result.is_err() {
                     return;
                 }
                 continue;
@@ -914,7 +960,9 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
             }
 
             if prepare_set.is_empty() {
-                match discovered_entries.recv().await {
+                let maybe_batch =
+                    await_cancellable(cancel_token.as_ref(), discovered_entries.recv()).await;
+                match maybe_batch.flatten() {
                     Some(Ok(batch)) => pending_entries.extend(batch),
                     Some(Err(error)) => {
                         let _ = prepared_tx.send(Err(error)).await;
@@ -927,12 +975,19 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
 
             if discovery_closed {
                 match prepare_set.join_next().await {
-                    Some(Ok(Ok(entry))) => prepared_batch.push(entry),
+                    Some(Ok(Ok(entry))) => {
+                        if !library_scan_cancel_requested(cancel_token.as_ref()) {
+                            prepared_batch.push(entry);
+                        }
+                    }
                     Some(Ok(Err(error))) => {
                         let _ = prepared_tx.send(Err(error)).await;
                         return;
                     }
                     Some(Err(error)) => {
+                        if error.is_cancelled() {
+                            continue;
+                        }
                         let _ = prepared_tx
                             .send(Err(AppError::Repository(error.to_string())))
                             .await;
@@ -944,9 +999,24 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
             }
 
             tokio::select! {
+                _ = async {
+                    if let Some(token) = cancel_token.as_ref() {
+                        token.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    pending_entries.clear();
+                    prepare_set.abort_all();
+                    discovery_closed = true;
+                }
                 Some(result) = prepare_set.join_next() => {
                     match result {
-                        Ok(Ok(entry)) => prepared_batch.push(entry),
+                        Ok(Ok(entry)) => {
+                            if !library_scan_cancel_requested(cancel_token.as_ref()) {
+                                prepared_batch.push(entry);
+                            }
+                        }
                         Ok(Err(error)) => {
                             let _ = prepared_tx.send(Err(error)).await;
                             return;
@@ -972,8 +1042,9 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
             }
         }
 
-        if !prepared_batch.is_empty() {
-            let _ = prepared_tx.send(Ok(prepared_batch)).await;
+        if !prepared_batch.is_empty() && !library_scan_cancel_requested(cancel_token.as_ref()) {
+            let _ = await_cancellable(cancel_token.as_ref(), prepared_tx.send(Ok(prepared_batch)))
+                .await;
         }
     });
 
@@ -1259,7 +1330,7 @@ pub(crate) async fn preload_movie_library_scan_candidates(
     let prepared_candidates = prepare_movie_library_scan_candidates(files, library_path).await?;
     let (batch_searches, stats) = build_movie_metadata_batch_stats(&prepared_candidates);
     let batch_search_results =
-        execute_batch_metadata_searches(metadata_gateway, batch_searches).await?;
+        execute_batch_metadata_searches(metadata_gateway, batch_searches, None).await?;
     let mut results = Vec::with_capacity(prepared_candidates.len());
 
     for candidate in prepared_candidates {
@@ -1288,7 +1359,7 @@ pub(crate) async fn preload_series_library_scan_candidates(
     let prepared_candidates = prepare_series_library_scan_candidates(folders).await?;
     let (batch_searches, stats) = build_series_metadata_batch_stats(&prepared_candidates);
     let batch_search_results =
-        execute_batch_metadata_searches(metadata_gateway, batch_searches).await;
+        execute_batch_metadata_searches(metadata_gateway, batch_searches, None).await;
     let batch_search_error = batch_search_results.as_ref().err().map(ToString::to_string);
     let batch_search_results = batch_search_results.unwrap_or_default();
     let mut results = Vec::with_capacity(prepared_candidates.len());
@@ -1555,6 +1626,87 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(root.to_string(), (delay_ms, files));
+        }
+    }
+
+    #[derive(Clone)]
+    struct DelayedBatchMetadataGateway {
+        delay: Duration,
+    }
+
+    impl DelayedBatchMetadataGateway {
+        fn new(delay: Duration) -> Self {
+            Self { delay }
+        }
+    }
+
+    #[async_trait]
+    impl MetadataGateway for DelayedBatchMetadataGateway {
+        async fn search_tvdb(
+            &self,
+            _query: &str,
+            _type_hint: &str,
+            _year: Option<i32>,
+        ) -> AppResult<Vec<MetadataSearchItem>> {
+            panic!("unused in test")
+        }
+
+        async fn search_tvdb_batch(
+            &self,
+            queries: &[MetadataSearchQuery],
+        ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(queries
+                .iter()
+                .cloned()
+                .map(|query| (query, Vec::new()))
+                .collect())
+        }
+
+        async fn search_tvdb_rich(
+            &self,
+            _query: &str,
+            _type_hint: &str,
+            _limit: i32,
+            _language: &str,
+            _year: Option<i32>,
+        ) -> AppResult<Vec<RichMetadataSearchItem>> {
+            panic!("unused in test")
+        }
+
+        async fn search_tvdb_multi(
+            &self,
+            _query: &str,
+            _limit: i32,
+            _language: &str,
+        ) -> AppResult<MultiMetadataSearchResult> {
+            panic!("unused in test")
+        }
+
+        async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+            panic!("unused in test")
+        }
+
+        async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+            panic!("unused in test")
+        }
+
+        async fn get_metadata_bulk(
+            &self,
+            _movie_tvdb_ids: &[i64],
+            _series_tvdb_ids: &[i64],
+            _language: &str,
+        ) -> AppResult<BulkMetadataResult> {
+            panic!("unused in test")
+        }
+
+        async fn anibridge_mappings_for_episode(
+            &self,
+            _tvdb_id: i64,
+            _season: i32,
+            _episode: i32,
+        ) -> AppResult<Vec<AnibridgeSourceMapping>> {
+            panic!("unused in test")
         }
     }
 
@@ -1989,6 +2141,7 @@ mod tests {
             entry_rx,
             "/library".to_string(),
             1,
+            None,
         )
         .expect("prepared entry stream");
 
@@ -2048,6 +2201,7 @@ mod tests {
             entry_rx,
             "/library".to_string(),
             128,
+            None,
         )
         .expect("prepared entry stream");
 
@@ -2081,6 +2235,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_prepared_movie_library_scan_entries_cancel_stops_without_draining_slow_prep() {
+        let scanner = DelayedLibraryScanner::default();
+        scanner.set_response(
+            "/library/Fast Movie",
+            5,
+            vec![build_library_file(
+                "/library/Fast Movie/Fast.Movie.2024.mkv",
+            )],
+        );
+        scanner.set_response(
+            "/library/Slow Movie",
+            500,
+            vec![build_library_file(
+                "/library/Slow Movie/Slow.Movie.2024.mkv",
+            )],
+        );
+
+        let cancel_token = CancellationToken::new();
+        let (entry_tx, entry_rx) = tokio::sync::mpsc::channel(4);
+        let mut prepared_rx = stream_prepared_movie_library_scan_entries(
+            Arc::new(scanner),
+            entry_rx,
+            "/library".to_string(),
+            1,
+            Some(cancel_token.clone()),
+        )
+        .expect("prepared entry stream");
+
+        entry_tx
+            .send(Ok(vec![
+                MovieTopLevelEntry {
+                    path: PathBuf::from("/library/Fast Movie"),
+                    is_dir: true,
+                },
+                MovieTopLevelEntry {
+                    path: PathBuf::from("/library/Slow Movie"),
+                    is_dir: true,
+                },
+            ]))
+            .await
+            .expect("send discovery batch");
+
+        let first_batch = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
+            .await
+            .expect("fast prepared batch should arrive")
+            .expect("prepared entry stream should stay open")
+            .expect("prepared batch");
+        assert_eq!(first_batch.len(), 1);
+
+        cancel_token.cancel();
+
+        let next_item = tokio::time::timeout(Duration::from_millis(100), prepared_rx.recv())
+            .await
+            .expect("cancel should stop prepared entry stream promptly");
+        assert!(
+            next_item.is_none(),
+            "prepared entry stream should close after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_batch_metadata_searches_returns_quickly_after_cancel() {
+        let gateway = Arc::new(DelayedBatchMetadataGateway::new(Duration::from_millis(500)));
+        let cancel_token = CancellationToken::new();
+        let search_keys = vec![
+            BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Dune", None)
+                .expect("metadata search key"),
+        ];
+
+        let cancel_handle = {
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                cancel_token.cancel();
+            })
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(150),
+            execute_batch_metadata_searches(gateway, search_keys, Some(&cancel_token)),
+        )
+        .await
+        .expect("metadata search should stop waiting after cancel")
+        .expect("canceled metadata search should not fail");
+
+        cancel_handle.await.expect("cancel trigger task");
+        assert!(
+            result.is_empty(),
+            "canceled metadata search should drop late results"
+        );
+    }
+
+    #[tokio::test]
     async fn streaming_movie_metadata_resolver_reuses_search_results_and_delays_total_known() {
         let gateway = CountingMetadataGateway::default();
         gateway.set_search_results(
@@ -2096,7 +2343,7 @@ mod tests {
         let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()));
 
         let (first_ready, first_progress) = resolver
-            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])])
+            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])], None)
             .await
             .expect("first incremental metadata batch");
 
@@ -2107,7 +2354,7 @@ mod tests {
         assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
 
         let (second_ready, second_progress) = resolver
-            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])])
+            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])], None)
             .await
             .expect("second incremental metadata batch");
 
@@ -2118,7 +2365,7 @@ mod tests {
         assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
 
         let (final_ready, final_progress) = resolver
-            .finish()
+            .finish(None)
             .await
             .expect("final incremental metadata batch");
 

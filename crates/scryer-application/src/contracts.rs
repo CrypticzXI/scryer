@@ -259,6 +259,7 @@ pub struct ReleaseDecisionsQuery {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioStreamDetail {
     pub codec: Option<String>,
+    pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
     pub bitrate_kbps: Option<i32>,
@@ -286,6 +287,7 @@ pub struct MediaFileAnalysis {
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
+    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     pub audio_languages: Vec<String>,
@@ -321,6 +323,7 @@ pub struct InsertMediaFileInput {
     pub resolution: Option<String>,
     pub video_codec_parsed: Option<String>,
     pub audio_codec_parsed: Option<String>,
+    pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,

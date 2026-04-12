@@ -50,9 +50,16 @@ async fn process_ready_movie_candidate_batches(
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
+    cancel_token: Option<&CancellationToken>,
 ) -> AppResult<()> {
     for ready_candidates in ready_candidate_batches {
+        if library_scan_cancel_requested(cancel_token) {
+            break;
+        }
         for candidate in ready_candidates {
+            if library_scan_cancel_requested(cancel_token) {
+                break;
+            }
             process_resolved_movie_full_scan_candidate(
                 app,
                 actor,
@@ -86,6 +93,8 @@ pub(super) async fn scan_library_movies(
     facet: &MediaFacet,
     library_path: &str,
     session_id: &str,
+    mark_discovery_complete_on_drain: bool,
+    cancel_token: Option<CancellationToken>,
 ) -> AppResult<LibraryScanSummary> {
     let started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
@@ -97,6 +106,8 @@ pub(super) async fn scan_library_movies(
         session_id.to_string(),
         discovered_entries,
         false,
+        mark_discovery_complete_on_drain,
+        cancel_token.clone(),
     );
 
     let mut existing_titles = app
@@ -121,11 +132,19 @@ pub(super) async fn scan_library_movies(
         queued_discovered_entries,
         library_path.to_string(),
         LIBRARY_SCAN_BATCH_SIZE,
+        cancel_token.clone(),
     )?;
     let mut metadata_resolver =
         StreamingMovieMetadataResolver::new(app.services.library.metadata_gateway.clone());
 
-    while let Some(prepared_batch_result) = prepared_entries.recv().await {
+    while let Some(prepared_batch_result) =
+        await_cancellable(cancel_token.as_ref(), prepared_entries.recv())
+            .await
+            .flatten()
+    {
+        if library_scan_cancel_requested(cancel_token.as_ref()) {
+            break;
+        }
         let prepared_batch = prepared_batch_result?;
         if prepared_batch.is_empty() {
             continue;
@@ -134,6 +153,9 @@ pub(super) async fn scan_library_movies(
         let mut unresolved_candidates = Vec::new();
 
         for prepared_entry in prepared_batch {
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                break;
+            }
             match prepared_entry {
                 PreparedMovieLibraryScanEntry::Candidate(candidate) => {
                     summary.scanned += 1;
@@ -171,7 +193,7 @@ pub(super) async fn scan_library_movies(
         }
 
         let (ready_candidate_batches, metadata_progress) = metadata_resolver
-            .ingest_candidates(unresolved_candidates)
+            .ingest_candidates(unresolved_candidates, cancel_token.as_ref())
             .await?;
         apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
         process_ready_movie_candidate_batches(
@@ -191,39 +213,44 @@ pub(super) async fn scan_library_movies(
             &mut existing_titles_by_tmdb_id,
             &mut summary,
             &mut unmatched_items,
+            cancel_token.as_ref(),
         )
         .await?;
     }
 
-    let (ready_candidate_batches, metadata_progress) = metadata_resolver.finish().await?;
-    apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
     let metadata_lookup_stats = metadata_resolver.stats();
-    process_ready_movie_candidate_batches(
-        app,
-        actor,
-        facet,
-        library_path,
-        session_id,
-        &coordinator,
-        ready_candidate_batches,
-        metadata_resolver.search_results(),
-        &mut workset,
-        &mut existing_titles,
-        &mut existing_titles_by_name,
-        &mut existing_titles_by_tvdb_id,
-        &mut existing_titles_by_imdb_id,
-        &mut existing_titles_by_tmdb_id,
-        &mut summary,
-        &mut unmatched_items,
-    )
-    .await?;
+    if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        let (ready_candidate_batches, metadata_progress) =
+            metadata_resolver.finish(cancel_token.as_ref()).await?;
+        apply_streaming_metadata_progress(&coordinator, metadata_progress).await;
+        process_ready_movie_candidate_batches(
+            app,
+            actor,
+            facet,
+            library_path,
+            session_id,
+            &coordinator,
+            ready_candidate_batches,
+            metadata_resolver.search_results(),
+            &mut workset,
+            &mut existing_titles,
+            &mut existing_titles_by_name,
+            &mut existing_titles_by_tvdb_id,
+            &mut existing_titles_by_imdb_id,
+            &mut existing_titles_by_tmdb_id,
+            &mut summary,
+            &mut unmatched_items,
+            cancel_token.as_ref(),
+        )
+        .await?;
 
-    summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset)
-            .await?,
-    );
+        summary.absorb(
+            &app.execute_library_scan_workset(actor, session_id, workset, cancel_token.clone())
+                .await?,
+        );
 
-    finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
+        finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
+    }
 
     info!(
         path = %library_path,
@@ -268,6 +295,8 @@ pub(super) async fn scan_library_series(
     facet: &MediaFacet,
     library_path: &str,
     session_id: &str,
+    mark_discovery_complete_on_drain: bool,
+    cancel_token: Option<CancellationToken>,
 ) -> AppResult<LibraryScanSummary> {
     let started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
@@ -279,6 +308,8 @@ pub(super) async fn scan_library_series(
         session_id.to_string(),
         discovered_folders,
         false,
+        mark_discovery_complete_on_drain,
+        cancel_token.clone(),
     );
 
     let mut existing_titles = app
@@ -296,7 +327,14 @@ pub(super) async fn scan_library_series(
     let mut unmatched_items = Vec::new();
     let mut workset = HashMap::new();
 
-    while let Some(folder_batch_result) = queued_discovered_folders.recv().await {
+    while let Some(folder_batch_result) =
+        await_cancellable(cancel_token.as_ref(), queued_discovered_folders.recv())
+            .await
+            .flatten()
+    {
+        if library_scan_cancel_requested(cancel_token.as_ref()) {
+            break;
+        }
         let folder_batch = folder_batch_result?;
         if folder_batch.is_empty() {
             continue;
@@ -306,6 +344,9 @@ pub(super) async fn scan_library_series(
         let mut unresolved_candidates = Vec::new();
 
         for candidate in prepared_candidates {
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                break;
+            }
             summary.scanned += 1;
             let item_path = candidate.folder_path.to_string_lossy().trim().to_string();
             if !item_path.is_empty() {
@@ -341,11 +382,18 @@ pub(super) async fn scan_library_series(
             build_series_metadata_batch_stats,
             series_candidate_batch_search_keys,
             "series metadata search chunk unexpectedly empty",
+            cancel_token.as_ref(),
         )
         .await?;
 
         for ready_candidates in ready_candidate_batches {
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                break;
+            }
             for candidate in ready_candidates {
+                if library_scan_cancel_requested(cancel_token.as_ref()) {
+                    break;
+                }
                 process_resolved_series_full_scan_candidate(
                     app,
                     actor,
@@ -371,12 +419,14 @@ pub(super) async fn scan_library_series(
         coordinator.publish_progress().await;
     }
 
-    summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset)
-            .await?,
-    );
+    if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        summary.absorb(
+            &app.execute_library_scan_workset(actor, session_id, workset, cancel_token.clone())
+                .await?,
+        );
 
-    finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
+        finalize_full_library_scan(app, &coordinator, facet, library_path, &seen_paths).await?;
+    }
 
     info!(
         path = %library_path,

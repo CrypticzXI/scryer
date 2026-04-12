@@ -17,6 +17,9 @@ pub(crate) struct RawTrack {
     pub codec_id: String,
     /// Normalized codec name (ffprobe-style), e.g. `"h264"`.
     pub codec_name: Option<String>,
+    /// Audio codec profile / extension label when known (e.g. "LC",
+    /// "DTS-HD MA + DTS:X", "Dolby TrueHD + Dolby Atmos").
+    pub audio_profile: Option<String>,
     /// Codec-private / decoder configuration data stored in the container
     /// header (e.g. AVCDecoderConfigurationRecord bytes).
     pub codec_private: Option<Vec<u8>>,

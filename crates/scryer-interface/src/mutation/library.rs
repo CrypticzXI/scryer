@@ -5,8 +5,8 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
-    from_resolve_pending_import_result,
+    from_cancel_library_scan_result, from_library_scan_session, from_library_scan_summary,
+    from_media_rename_apply, from_resolve_pending_import_result,
 };
 use crate::types::*;
 
@@ -66,6 +66,20 @@ impl LibraryMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_summary(summary))
+    }
+
+    async fn cancel_library_scan(
+        &self,
+        ctx: &Context<'_>,
+        input: CancelLibraryScanInput,
+    ) -> GqlResult<CancelLibraryScanPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .cancel_library_scan(&actor, &input.session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_cancel_library_scan_result(result))
     }
 
     async fn resolve_pending_import(

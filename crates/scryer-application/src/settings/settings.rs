@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use scryer_domain::RootFolderEntry;
 use serde::{Serialize, de::DeserializeOwned};
@@ -396,6 +397,15 @@ fn normalize_root_folders(entries: Vec<RootFolderEntry>) -> AppResult<Vec<RootFo
     Ok(normalized)
 }
 
+fn normalize_effective_scan_root(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(Path::new(trimmed).to_string_lossy().trim().to_string())
+}
+
 fn ensure_quality_profiles_exist(
     mut profiles: Vec<crate::QualityProfile>,
 ) -> Vec<crate::QualityProfile> {
@@ -519,6 +529,69 @@ fn extract_languages_from_required_audio_rego(rego: &str) -> Vec<String> {
 }
 
 impl AppUseCase {
+    async fn effective_scan_roots_for_facet(&self, facet: &MediaFacet) -> AppResult<Vec<String>> {
+        let root_folders = self.root_folders_for_facet(facet).await?;
+        let mut roots = Vec::with_capacity(root_folders.len());
+        let mut seen = HashSet::new();
+
+        for entry in root_folders {
+            let Some(root) = normalize_effective_scan_root(&entry.path) else {
+                continue;
+            };
+            if seen.insert(root.clone()) {
+                roots.push(root);
+            }
+        }
+
+        Ok(roots)
+    }
+
+    async fn clear_pending_imports_for_removed_roots(
+        &self,
+        facet: &MediaFacet,
+        previous_roots: &[String],
+        current_roots: &[String],
+    ) -> AppResult<()> {
+        let current = current_roots.iter().cloned().collect::<HashSet<_>>();
+
+        for removed_root in previous_roots
+            .iter()
+            .filter(|root| !current.contains(root.as_str()))
+        {
+            let count = self
+                .services
+                .library
+                .library_scan_unmatched_items
+                .count_library_scan_unmatched_items(Some(facet.clone()), Some(removed_root))
+                .await?;
+            if count <= 0 {
+                continue;
+            }
+
+            let items = self
+                .services
+                .library
+                .library_scan_unmatched_items
+                .list_library_scan_unmatched_items(
+                    Some(facet.clone()),
+                    Some(removed_root),
+                    count,
+                    0,
+                )
+                .await?;
+
+            for item in items {
+                self.services
+                    .library
+                    .library_scan_unmatched_items
+                    .delete_library_scan_unmatched_item(item.facet.clone(), &item.item_path)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
         if let Some(raw_json) = self
             .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
@@ -1667,6 +1740,7 @@ impl AppUseCase {
         input: UpdateMediaSettings,
     ) -> AppResult<MediaSettings> {
         require(actor, &Entitlement::ManageConfig)?;
+        let previous_roots = self.effective_scan_roots_for_facet(&facet).await?;
 
         let mut changed_keys = Vec::new();
 
@@ -1921,6 +1995,10 @@ impl AppUseCase {
             ));
         }
 
+        let current_roots = self.effective_scan_roots_for_facet(&facet).await?;
+        self.clear_pending_imports_for_removed_roots(&facet, &previous_roots, &current_roots)
+            .await?;
+
         self.emit_settings_saved(
             actor,
             "media_settings",
@@ -1957,6 +2035,23 @@ impl AppUseCase {
         input: UpdateLibraryPaths,
     ) -> AppResult<LibraryPathsSettings> {
         require(actor, &Entitlement::ManageConfig)?;
+        let previous_roots = [
+            (
+                MediaFacet::Movie,
+                self.effective_scan_roots_for_facet(&MediaFacet::Movie)
+                    .await?,
+            ),
+            (
+                MediaFacet::Series,
+                self.effective_scan_roots_for_facet(&MediaFacet::Series)
+                    .await?,
+            ),
+            (
+                MediaFacet::Anime,
+                self.effective_scan_roots_for_facet(&MediaFacet::Anime)
+                    .await?,
+            ),
+        ];
 
         let movie_path = input.movie_path.trim().to_string();
         let series_path = input.series_path.trim().to_string();
@@ -2008,6 +2103,12 @@ impl AppUseCase {
             changed_keys.push(ANIME_PATH_KEY.to_string());
         }
 
+        for (facet, previous) in previous_roots {
+            let current = self.effective_scan_roots_for_facet(&facet).await?;
+            self.clear_pending_imports_for_removed_roots(&facet, &previous, &current)
+                .await?;
+        }
+
         self.emit_settings_saved(actor, "library_paths", None, changed_keys)
             .await;
         self.get_library_paths(actor).await
@@ -2019,6 +2120,23 @@ impl AppUseCase {
         selection: ExternalImportLibraryPathsSelection,
     ) -> AppResult<bool> {
         require(actor, &Entitlement::ManageConfig)?;
+        let previous_roots = [
+            (
+                MediaFacet::Movie,
+                self.effective_scan_roots_for_facet(&MediaFacet::Movie)
+                    .await?,
+            ),
+            (
+                MediaFacet::Series,
+                self.effective_scan_roots_for_facet(&MediaFacet::Series)
+                    .await?,
+            ),
+            (
+                MediaFacet::Anime,
+                self.effective_scan_roots_for_facet(&MediaFacet::Anime)
+                    .await?,
+            ),
+        ];
 
         let mut saved_any = false;
         for (key, value) in [
@@ -2045,7 +2163,17 @@ impl AppUseCase {
             saved_any = true;
         }
 
-        Ok(saved_any)
+        if !saved_any {
+            return Ok(false);
+        }
+
+        for (facet, previous) in previous_roots {
+            let current = self.effective_scan_roots_for_facet(&facet).await?;
+            self.clear_pending_imports_for_removed_roots(&facet, &previous, &current)
+                .await?;
+        }
+
+        Ok(true)
     }
 
     pub async fn get_service_settings(&self, actor: &User) -> AppResult<ServiceSettings> {

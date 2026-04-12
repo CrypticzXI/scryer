@@ -152,6 +152,11 @@ const en: LocaleDictionary = {
   "settings.libraryScanSuccess":
     "Library scan complete. {{imported}} imported, {{skipped}} skipped, {{unmatched}} unmatched.",
   "settings.libraryScanFailed": "Library scan failed.",
+  "settings.libraryScanCancel": "Cancel",
+  "settings.libraryScanCancelFailed": "Failed to cancel library scan.",
+  "settings.libraryScanCanceled": "Library scan canceled.",
+  "settings.libraryScanCanceledSummary":
+    "Library scan canceled. {{imported}} imported, {{skipped}} skipped, {{unmatched}} unmatched.",
   "settings.libraryScanToastTitle": "{{facet}} library scan",
   "settings.libraryScanFoundTitles": "Found {{count}} titles",
   "settings.libraryScanDiscovering": "Discovering titles…",
@@ -543,7 +548,6 @@ const en: LocaleDictionary = {
   "pendingImports.empty": "No pending imports for this facet.",
   "pendingImports.path": "Path",
   "pendingImports.folderPath": "Folder",
-  "pendingImports.searchAttempts": "Previous search attempts",
   "pendingImports.searchPlaceholder": "Search metadata titles",
   "pendingImports.searching": "Searching metadata…",
   "pendingImports.searchFailed": "Failed to search metadata.",
@@ -907,6 +911,8 @@ const en: LocaleDictionary = {
   "settings.refFileVideoProfile":
     "Verified codec profile such as Main 10 or High",
   "settings.refFileAudioCodec": "Primary verified audio codec",
+  "settings.refFileAudioProfile":
+    "Primary verified audio profile or extension label, such as LC, Dolby TrueHD + Dolby Atmos, or DTS-HD MA + DTS:X IMAX",
   "settings.refFileAudioChannels": "Primary verified audio channel count",
   "settings.refFileAudioBitrateKbps": "Primary verified audio bitrate in kbps",
   "settings.refFileAudioLanguages":
@@ -929,6 +935,8 @@ const en: LocaleDictionary = {
 
   "settings.refSectionAudioStreams": "— Nested audio stream entries",
   "settings.refAudioStreamCodec": "Per-stream audio codec",
+  "settings.refAudioStreamProfile":
+    "Per-stream verified audio profile or extension label",
   "settings.refAudioStreamChannels": "Per-stream channel count",
   "settings.refAudioStreamLanguage": "Per-stream language code",
   "settings.refAudioStreamBitrateKbps": "Per-stream bitrate in kbps",

@@ -1037,6 +1037,7 @@ pub enum DomainEventType {
     LibraryScanDeltaRecorded,
     LibraryScanProgressed,
     LibraryScanCompleted,
+    LibraryScanCanceled,
     LibraryScanFailed,
     JobRunStarted,
     JobRunCompleted,
@@ -1077,6 +1078,7 @@ impl DomainEventType {
             Self::LibraryScanDeltaRecorded => "library_scan_delta_recorded",
             Self::LibraryScanProgressed => "library_scan_progressed",
             Self::LibraryScanCompleted => "library_scan_completed",
+            Self::LibraryScanCanceled => "library_scan_canceled",
             Self::LibraryScanFailed => "library_scan_failed",
             Self::JobRunStarted => "job_run_started",
             Self::JobRunCompleted => "job_run_completed",
@@ -1117,6 +1119,7 @@ impl DomainEventType {
             "library_scan_delta_recorded" => Some(Self::LibraryScanDeltaRecorded),
             "library_scan_progressed" => Some(Self::LibraryScanProgressed),
             "library_scan_completed" => Some(Self::LibraryScanCompleted),
+            "library_scan_canceled" => Some(Self::LibraryScanCanceled),
             "library_scan_failed" => Some(Self::LibraryScanFailed),
             "job_run_started" => Some(Self::JobRunStarted),
             "job_run_completed" => Some(Self::JobRunCompleted),
@@ -1157,6 +1160,7 @@ impl DomainEventType {
             Self::LibraryScanDeltaRecorded,
             Self::LibraryScanProgressed,
             Self::LibraryScanCompleted,
+            Self::LibraryScanCanceled,
             Self::LibraryScanFailed,
             Self::JobRunStarted,
             Self::JobRunCompleted,
@@ -1517,6 +1521,23 @@ pub struct LibraryScanCompletedEventData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryScanCanceledEventData {
+    pub session_id: String,
+    pub status: String,
+    pub found_titles: i64,
+    #[serde(default)]
+    pub title_match_completed: i64,
+    #[serde(default)]
+    pub title_match_total_known: bool,
+    pub titles_completed: i64,
+    pub titles_total: Option<i64>,
+    pub files_completed: i64,
+    pub files_total: Option<i64>,
+    #[serde(default)]
+    pub summary: Option<LibraryScanSummaryEventData>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryScanFailedEventData {
     pub session_id: String,
     pub error_message: String,
@@ -1592,6 +1613,7 @@ pub enum DomainEventPayload {
     LibraryScanDeltaRecorded(LibraryScanDeltaRecordedEventData),
     LibraryScanProgressed(LibraryScanProgressedEventData),
     LibraryScanCompleted(LibraryScanCompletedEventData),
+    LibraryScanCanceled(LibraryScanCanceledEventData),
     LibraryScanFailed(LibraryScanFailedEventData),
     JobRunStarted(JobRunStartedEventData),
     JobRunCompleted(JobRunCompletedEventData),
@@ -1634,6 +1656,7 @@ impl DomainEventPayload {
             Self::LibraryScanDeltaRecorded(_) => DomainEventType::LibraryScanDeltaRecorded,
             Self::LibraryScanProgressed(_) => DomainEventType::LibraryScanProgressed,
             Self::LibraryScanCompleted(_) => DomainEventType::LibraryScanCompleted,
+            Self::LibraryScanCanceled(_) => DomainEventType::LibraryScanCanceled,
             Self::LibraryScanFailed(_) => DomainEventType::LibraryScanFailed,
             Self::JobRunStarted(_) => DomainEventType::JobRunStarted,
             Self::JobRunCompleted(_) => DomainEventType::JobRunCompleted,

@@ -627,6 +627,15 @@ pub(crate) fn from_resolve_pending_import_result(
     }
 }
 
+pub(crate) fn from_cancel_library_scan_result(
+    result: scryer_application::CancelLibraryScanResult,
+) -> CancelLibraryScanPayload {
+    CancelLibraryScanPayload {
+        session_id: result.session_id,
+        accepted: result.accepted,
+    }
+}
+
 pub(crate) fn from_library_scan_phase_progress(
     progress: scryer_application::LibraryScanPhaseProgress,
 ) -> LibraryScanPhaseProgressPayload {
@@ -893,6 +902,7 @@ pub(crate) fn from_title_media_file(
         video_frame_rate: file.video_frame_rate,
         video_profile: file.video_profile,
         audio_codec: file.audio_codec,
+        audio_profile: file.audio_profile,
         audio_channels: file.audio_channels,
         audio_bitrate_kbps: file.audio_bitrate_kbps,
         audio_languages: file.audio_languages,
@@ -901,6 +911,7 @@ pub(crate) fn from_title_media_file(
             .into_iter()
             .map(|s| crate::types::AudioStreamDetailPayload {
                 codec: s.codec,
+                profile: s.profile,
                 channels: s.channels,
                 language: s.language,
                 bitrate_kbps: s.bitrate_kbps,
@@ -929,6 +940,7 @@ pub(crate) fn from_title_media_file(
         resolution: file.resolution,
         video_codec_parsed: file.video_codec_parsed,
         audio_codec_parsed: file.audio_codec_parsed,
+        audio_channels_parsed: file.audio_channels_parsed,
         acquisition_score: file.acquisition_score,
         scoring_log: file.scoring_log,
         indexer_source: file.indexer_source,

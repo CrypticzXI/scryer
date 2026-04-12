@@ -229,6 +229,7 @@ pub async fn execute_upgrade(
         resolution: parsed.quality.clone(),
         video_codec_parsed: parsed.video_codec.clone(),
         audio_codec_parsed: parsed.audio.clone(),
+        audio_channels_parsed: parsed.audio_channels.clone(),
         original_file_path: Some(source_path.to_string_lossy().to_string()),
         acquisition_score: Some(final_score),
         scoring_log: Some(scoring_log.clone()),

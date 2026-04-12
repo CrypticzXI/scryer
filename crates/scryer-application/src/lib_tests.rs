@@ -1,9 +1,11 @@
 use super::*;
 use async_trait::async_trait;
+use scryer_domain::RootFolderEntry;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
+use tokio::time::{Duration, Instant, sleep};
 
 #[derive(Default)]
 struct MockTitleRepo {
@@ -234,6 +236,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
+            audio_profile: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
             audio_languages: Vec::new(),
@@ -251,6 +254,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             resolution: input.resolution.clone(),
             video_codec_parsed: input.video_codec_parsed.clone(),
             audio_codec_parsed: input.audio_codec_parsed.clone(),
+            audio_channels_parsed: input.audio_channels_parsed.clone(),
             acquisition_score: input.acquisition_score,
             scoring_log: input.scoring_log.clone(),
             indexer_source: input.indexer_source.clone(),
@@ -1193,6 +1197,145 @@ impl MetadataGateway for EmptySearchMetadataGateway {
         &self,
         queries: &[MetadataSearchQuery],
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Ok(queries
+            .iter()
+            .cloned()
+            .map(|query| (query, Vec::new()))
+            .collect())
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Ok(MultiMetadataSearchResult::default())
+    }
+
+    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        Err(AppError::NotFound(
+            "movie metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::NotFound(
+            "series metadata unavailable in test".into(),
+        ))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        _movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        Ok(BulkMetadataResult::default())
+    }
+
+    async fn anibridge_mappings_for_episode(
+        &self,
+        _tvdb_id: i64,
+        _season: i32,
+        _episode: i32,
+    ) -> AppResult<Vec<AnibridgeSourceMapping>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Clone)]
+struct BlockingBatchMetadataGateway {
+    batch_search_calls: Arc<AtomicUsize>,
+    batch_search_started: Arc<Notify>,
+    blocked_calls: Arc<Vec<usize>>,
+    released_through: Arc<AtomicUsize>,
+    release_notify: Arc<Notify>,
+}
+
+impl BlockingBatchMetadataGateway {
+    fn blocking_calls(blocked_calls: &[usize]) -> Self {
+        Self {
+            batch_search_calls: Arc::new(AtomicUsize::new(0)),
+            batch_search_started: Arc::new(Notify::new()),
+            blocked_calls: Arc::new(blocked_calls.to_vec()),
+            released_through: Arc::new(AtomicUsize::new(0)),
+            release_notify: Arc::new(Notify::new()),
+        }
+    }
+
+    async fn wait_for_batch_search(&self) {
+        self.wait_for_batch_search_calls(1).await;
+    }
+
+    async fn wait_for_batch_search_calls(&self, expected_calls: usize) {
+        if self.batch_search_calls.load(Ordering::SeqCst) >= expected_calls {
+            return;
+        }
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if self.batch_search_calls.load(Ordering::SeqCst) >= expected_calls {
+                    break;
+                }
+                self.batch_search_started.notified().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for metadata search to start");
+    }
+
+    fn release_through(&self, call_number: usize) {
+        self.released_through.store(call_number, Ordering::SeqCst);
+        self.release_notify.notify_waiters();
+    }
+
+    fn release(&self) {
+        self.release_through(usize::MAX);
+    }
+}
+
+impl Default for BlockingBatchMetadataGateway {
+    fn default() -> Self {
+        Self::blocking_calls(&[1])
+    }
+}
+
+#[async_trait]
+impl MetadataGateway for BlockingBatchMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        let call_number = self.batch_search_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        self.batch_search_started.notify_waiters();
+
+        if self.blocked_calls.contains(&call_number) {
+            while self.released_through.load(Ordering::SeqCst) < call_number {
+                self.release_notify.notified().await;
+            }
+        }
+
         Ok(queries
             .iter()
             .cloned()
@@ -2387,6 +2530,61 @@ fn build_test_unmatched_item(
     }
 }
 
+fn build_root_folder_entry(path: &Path, is_default: bool) -> RootFolderEntry {
+    RootFolderEntry {
+        path: path.to_string_lossy().to_string(),
+        is_default,
+    }
+}
+
+async fn wait_for_projected_library_scan_session_matching<F>(
+    app: &AppUseCase,
+    session_id: &str,
+    predicate: F,
+) -> LibraryScanSession
+where
+    F: Fn(&LibraryScanSession) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        if let Some(session) =
+            crate::library_scan_coordinator::load_projected_library_scan_session(app, session_id)
+                .await
+                .expect("projected library scan session")
+            && predicate(&session)
+        {
+            return session;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for projected session {session_id} to satisfy predicate",
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn empty_update_media_settings_with_roots(
+    root_folders: Vec<RootFolderEntry>,
+) -> UpdateMediaSettings {
+    UpdateMediaSettings {
+        library_path: None,
+        root_folders: Some(root_folders),
+        required_audio_languages: None,
+        rename_template: None,
+        rename_collision_policy: None,
+        rename_missing_metadata_policy: None,
+        filler_policy: None,
+        recap_policy: None,
+        monitor_specials: None,
+        inter_season_movies: None,
+        monitor_filler_movies: None,
+        nfo_write_on_import: None,
+        plexmatch_write_on_import: None,
+    }
+}
+
 #[tokio::test]
 async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -2529,6 +2727,638 @@ async fn series_full_scan_persists_unmatched_folders() {
 }
 
 #[tokio::test]
+async fn movie_full_scan_scans_all_configured_roots_in_one_session() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("movies-a");
+    let root_two = tempdir.path().join("movies-b");
+    std::fs::create_dir_all(&root_one).expect("create movie root one");
+    std::fs::create_dir_all(&root_two).expect("create movie root two");
+    std::fs::write(root_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
+    std::fs::write(root_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("store movie roots");
+
+    let session_id = "movie-multi-root-full-scan";
+    let summary = app
+        .scan_library_with_tracking(
+            &user,
+            MediaFacet::Movie,
+            Some(session_id.to_string()),
+            LibraryScanMode::Full,
+        )
+        .await
+        .expect("movie full scan");
+
+    assert_eq!(summary.scanned, 2);
+    assert_eq!(summary.unmatched, 2);
+
+    let projected =
+        crate::library_scan_coordinator::load_projected_library_scan_session(&app, session_id)
+            .await
+            .expect("projected session")
+            .expect("session snapshot");
+    assert_eq!(projected.found_titles, 2);
+    assert_eq!(projected.status, LibraryScanStatus::Completed);
+
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .any(|item| item.scan_root == root_one.to_string_lossy())
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item.scan_root == root_two.to_string_lossy())
+    );
+}
+
+#[tokio::test]
+async fn series_full_scan_scans_all_configured_roots_in_one_session() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("series-a");
+    let root_two = tempdir.path().join("series-b");
+    std::fs::create_dir_all(root_one.join("Unknown Show One (2020)"))
+        .expect("create first show folder");
+    std::fs::create_dir_all(root_two.join("Unknown Show Two (2021)"))
+        .expect("create second show folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("store series roots");
+
+    let summary = app
+        .scan_library(&user, MediaFacet::Series)
+        .await
+        .expect("series full scan");
+
+    assert_eq!(summary.scanned, 2);
+    assert_eq!(summary.unmatched, 2);
+
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .any(|item| item.scan_root == root_one.to_string_lossy())
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item.scan_root == root_two.to_string_lossy())
+    );
+}
+
+#[tokio::test]
+async fn movie_full_scan_marks_title_match_total_known_before_completion() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    std::fs::create_dir_all(&movie_root).expect("create movie root");
+    let movie_path = movie_root.join("Unknown.One.2020.mkv");
+    std::fs::write(&movie_path, b"movie").expect("seed movie");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            movie_root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )])
+        .await;
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    let session_id = "movie-title-match-known-before-complete";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Movie,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search().await;
+
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        session.found_titles == 1 && session.title_match_total_known
+    })
+    .await;
+    assert_eq!(projected.title_match_progress.total, 1);
+    assert_eq!(projected.title_match_progress.completed, 0);
+    assert!(projected.summary.is_none());
+
+    metadata_gateway.release();
+
+    let summary = handle
+        .await
+        .expect("join movie full scan task")
+        .expect("movie full scan should complete");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.unmatched, 1);
+}
+
+#[tokio::test]
+async fn series_full_scan_marks_title_match_total_known_before_completion() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    std::fs::create_dir_all(series_root.join("Unknown Show (2020)")).expect("create series folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    let session_id = "series-title-match-known-before-complete";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search().await;
+
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        session.found_titles == 1 && session.title_match_total_known
+    })
+    .await;
+    assert_eq!(projected.title_match_progress.total, 1);
+    assert_eq!(projected.title_match_progress.completed, 0);
+    assert!(projected.summary.is_none());
+
+    metadata_gateway.release();
+
+    let summary = handle
+        .await
+        .expect("join series full scan task")
+        .expect("series full scan should complete");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.unmatched, 1);
+}
+
+#[tokio::test]
+async fn multi_root_full_scan_waits_for_final_root_to_mark_title_match_total_known() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("series-a");
+    let root_two = tempdir.path().join("series-b");
+    std::fs::create_dir_all(root_one.join("Unknown Show One (2020)"))
+        .expect("create first series folder");
+    std::fs::create_dir_all(root_two.join("Unknown Show Two (2021)"))
+        .expect("create second series folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::blocking_calls(&[1, 2]));
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("store series roots");
+
+    let session_id = "series-multi-root-title-match-known";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search_calls(1).await;
+
+    let first_root_projected =
+        wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+            session.found_titles == 1
+        })
+        .await;
+    assert!(!first_root_projected.title_match_total_known);
+
+    metadata_gateway.release_through(1);
+    metadata_gateway.wait_for_batch_search_calls(2).await;
+
+    let final_root_projected =
+        wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+            session.found_titles == 2 && session.title_match_total_known
+        })
+        .await;
+    assert_eq!(final_root_projected.title_match_progress.total, 2);
+    assert!(final_root_projected.summary.is_none());
+
+    metadata_gateway.release();
+
+    let summary = handle
+        .await
+        .expect("join multi-root full scan task")
+        .expect("multi-root full scan should complete");
+    assert_eq!(summary.scanned, 2);
+    assert_eq!(summary.unmatched, 2);
+}
+
+#[tokio::test]
+async fn additive_scan_keeps_title_match_total_unknown_until_completion() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    std::fs::create_dir_all(series_root.join("Unknown Show (2020)")).expect("create series folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    let session_id = "series-additive-title-match-stays-unknown";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .background_library_refresh_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                session_id,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search().await;
+
+    let projected = wait_for_projected_library_scan_session_matching(&app, session_id, |session| {
+        session.found_titles == 1
+    })
+    .await;
+    assert!(!projected.title_match_total_known);
+
+    metadata_gateway.release();
+
+    let summary = handle
+        .await
+        .expect("join additive scan task")
+        .expect("additive scan should complete");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.unmatched, 1);
+}
+
+#[tokio::test]
+async fn movie_full_scan_skips_invalid_roots_and_finishes_warning() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let valid_root = tempdir.path().join("movies-valid");
+    let invalid_root = tempdir.path().join("movies-missing");
+    std::fs::create_dir_all(&valid_root).expect("create valid movie root");
+    std::fs::write(valid_root.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&valid_root, true),
+            build_root_folder_entry(&invalid_root, false),
+        ]),
+    )
+    .await
+    .expect("store movie roots");
+
+    let session_id = "movie-invalid-root-warning";
+    let summary = app
+        .scan_library_with_tracking(
+            &user,
+            MediaFacet::Movie,
+            Some(session_id.to_string()),
+            LibraryScanMode::Full,
+        )
+        .await
+        .expect("movie full scan with invalid root");
+
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.unmatched, 1);
+    assert_eq!(summary.skipped, 1);
+
+    let projected =
+        crate::library_scan_coordinator::load_projected_library_scan_session(&app, session_id)
+            .await
+            .expect("projected session")
+            .expect("session snapshot");
+    assert_eq!(projected.found_titles, 1);
+    assert_eq!(projected.status, LibraryScanStatus::Warning);
+}
+
+#[tokio::test]
+async fn background_refresh_movies_scans_all_configured_roots() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("movies-a");
+    let root_two = tempdir.path().join("movies-b");
+    std::fs::create_dir_all(&root_one).expect("create movie root one");
+    std::fs::create_dir_all(&root_two).expect("create movie root two");
+    std::fs::write(root_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
+    std::fs::write(root_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("store movie roots");
+
+    let session_id = "movie-multi-root-refresh";
+    let summary = app
+        .background_library_refresh_with_tracking(&user, MediaFacet::Movie, session_id)
+        .await
+        .expect("movie background refresh");
+
+    assert_eq!(summary.scanned, 2);
+    assert_eq!(summary.unmatched, 2);
+
+    let projected =
+        crate::library_scan_coordinator::load_projected_library_scan_session(&app, session_id)
+            .await
+            .expect("projected session")
+            .expect("session snapshot");
+    assert_eq!(projected.found_titles, 2);
+}
+
+#[tokio::test]
+async fn cancel_full_library_scan_marks_session_canceled_and_allows_restart() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    std::fs::create_dir_all(series_root.join("Unknown Show (2020)")).expect("create series folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    let session_id = "cancel-full-library-scan";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .scan_library_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                Some(session_id.to_string()),
+                LibraryScanMode::Full,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search().await;
+
+    let cancel_result = app
+        .cancel_library_scan(&user, session_id)
+        .await
+        .expect("cancel full library scan");
+    assert!(cancel_result.accepted);
+    assert_eq!(cancel_result.session_id, session_id);
+
+    metadata_gateway.release();
+
+    handle
+        .await
+        .expect("join canceled scan task")
+        .expect("canceled scan task should not error");
+
+    let projected =
+        crate::library_scan_coordinator::load_projected_library_scan_session(&app, session_id)
+            .await
+            .expect("projected canceled session")
+            .expect("canceled session snapshot");
+    assert_eq!(projected.status, LibraryScanStatus::Canceled);
+    assert_eq!(projected.found_titles, 1);
+    assert!(
+        app.runtime
+            .library_scan_cancellation_tokens
+            .lock()
+            .await
+            .get(session_id)
+            .is_none(),
+        "cancellation token should be cleared after terminal cancel",
+    );
+
+    let retry_summary = app
+        .scan_library_with_tracking(
+            &user,
+            MediaFacet::Series,
+            Some("cancel-full-library-scan-retry".to_string()),
+            LibraryScanMode::Full,
+        )
+        .await
+        .expect("retry full scan after cancel");
+    assert_eq!(retry_summary.unmatched, 1);
+}
+
+#[tokio::test]
+async fn cancel_library_scan_rejects_additive_sessions() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    std::fs::create_dir_all(series_root.join("Unknown Show (2020)")).expect("create series folder");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            series_root.to_string_lossy().as_ref(),
+        )
+        .await;
+
+    let metadata_gateway = Arc::new(BlockingBatchMetadataGateway::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    let session_id = "cancel-additive-library-scan";
+    let app_for_scan = app.clone();
+    let user_for_scan = user.clone();
+    let handle = tokio::spawn(async move {
+        app_for_scan
+            .background_library_refresh_with_tracking(
+                &user_for_scan,
+                MediaFacet::Series,
+                session_id,
+            )
+            .await
+    });
+
+    metadata_gateway.wait_for_batch_search().await;
+
+    let error = app
+        .cancel_library_scan(&user, session_id)
+        .await
+        .expect_err("additive scan should not be cancelable");
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("only full library scans")),
+        "unexpected cancel error: {error:?}"
+    );
+
+    metadata_gateway.release();
+
+    handle
+        .await
+        .expect("join additive scan task")
+        .expect("background refresh should complete");
+}
+
+#[tokio::test]
+async fn ensure_library_scan_cancellation_token_reuses_existing_token() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, _user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    let first = app
+        .ensure_library_scan_cancellation_token("reused-library-scan-token", LibraryScanMode::Full)
+        .await
+        .expect("first full-scan cancel token");
+    let second = app
+        .ensure_library_scan_cancellation_token("reused-library-scan-token", LibraryScanMode::Full)
+        .await
+        .expect("second full-scan cancel token");
+
+    first.cancel();
+
+    assert!(
+        second.is_cancelled(),
+        "subsequent ensure should reuse the existing cancellation token",
+    );
+    assert_eq!(
+        app.runtime
+            .library_scan_cancellation_tokens
+            .lock()
+            .await
+            .len(),
+        1,
+        "reusing a cancellation token should not create duplicate map entries",
+    );
+}
+
+#[tokio::test]
 async fn pending_import_counts_and_items_are_facet_scoped() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let library_scanner = Arc::new(MutableLibraryScanner::default());
@@ -2589,6 +3419,204 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         series_items.items[0].folder_path.as_deref(),
         Some("/series/Unknown Show (2020)")
     );
+}
+
+#[tokio::test]
+async fn update_media_settings_removing_root_clears_pending_imports_for_removed_root() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("movies-a");
+    let root_two = tempdir.path().join("movies-b");
+    std::fs::create_dir_all(&root_one).expect("create root one");
+    std::fs::create_dir_all(&root_two).expect("create root two");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("seed movie roots");
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-root-one",
+            MediaFacet::Movie,
+            root_one.to_string_lossy().as_ref(),
+            root_one
+                .join("Unknown.One.2020.mkv")
+                .to_string_lossy()
+                .as_ref(),
+            "Unknown One",
+            "Unknown One",
+            Some(2020),
+        ))
+        .await
+        .expect("seed first pending import");
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-root-two",
+            MediaFacet::Movie,
+            root_two.to_string_lossy().as_ref(),
+            root_two
+                .join("Unknown.Two.2021.mkv")
+                .to_string_lossy()
+                .as_ref(),
+            "Unknown Two",
+            "Unknown Two",
+            Some(2021),
+        ))
+        .await
+        .expect("seed second pending import");
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&root_one, true)]),
+    )
+    .await
+    .expect("remove second movie root");
+
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].scan_root, root_one.to_string_lossy());
+}
+
+#[tokio::test]
+async fn update_library_paths_removing_root_clears_pending_imports_for_removed_root() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "movies.path", "/movies-old")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "series.path", "/series")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "anime.path", "/anime")
+        .await;
+
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-old-root",
+            MediaFacet::Movie,
+            "/movies-old",
+            "/movies-old/Unknown.Movie.2020.mkv",
+            "Unknown Movie",
+            "Unknown Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed removed-root pending import");
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "series-root",
+            MediaFacet::Series,
+            "/series",
+            "/series/Unknown Show (2020)",
+            "Unknown Show",
+            "Unknown Show",
+            Some(2020),
+        ))
+        .await
+        .expect("seed kept pending import");
+
+    app.update_library_paths(
+        &user,
+        UpdateLibraryPaths {
+            movie_path: "/movies-new".to_string(),
+            series_path: "/series".to_string(),
+            anime_path: Some("/anime".to_string()),
+        },
+    )
+    .await
+    .expect("update library paths");
+
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].facet, MediaFacet::Series);
+    assert_eq!(items[0].scan_root, "/series");
+}
+
+#[tokio::test]
+async fn save_external_import_library_paths_removing_root_clears_pending_imports_for_removed_root()
+{
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "movies.path", "/movies-old")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "series.path", "/series")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "anime.path", "/anime")
+        .await;
+
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-old-root-external",
+            MediaFacet::Movie,
+            "/movies-old",
+            "/movies-old/Unknown.Movie.2020.mkv",
+            "Unknown Movie",
+            "Unknown Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed removed-root pending import");
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "anime-root-external",
+            MediaFacet::Anime,
+            "/anime",
+            "/anime/Unknown Anime",
+            "Unknown Anime",
+            "Unknown Anime",
+            Some(2021),
+        ))
+        .await
+        .expect("seed kept pending import");
+
+    let saved = app
+        .save_external_import_library_paths(
+            &user,
+            ExternalImportLibraryPathsSelection {
+                movie_path: Some("/movies-new".to_string()),
+                series_path: None,
+                anime_path: None,
+            },
+        )
+        .await
+        .expect("save external import paths");
+
+    assert!(saved);
+    let items = unmatched_items.items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].facet, MediaFacet::Anime);
+    assert_eq!(items[0].scan_root, "/anime");
 }
 
 #[tokio::test]

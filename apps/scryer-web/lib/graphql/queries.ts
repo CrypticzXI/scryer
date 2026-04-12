@@ -828,7 +828,7 @@ const DOMAIN_EVENT_ENVELOPE_FIELDS = `
 
 export const libraryScanDomainEventsQuery = `query LibraryScanDomainEvents($afterSequence: Int, $limit: Int) {
   domainEvents(
-    eventTypes: [library_scan_started, library_scan_title_discovered, library_scan_progressed, library_scan_completed, library_scan_failed]
+    eventTypes: [library_scan_started, library_scan_title_discovered, library_scan_progressed, library_scan_completed, library_scan_canceled, library_scan_failed]
     afterSequence: $afterSequence
     limit: $limit
   ) {

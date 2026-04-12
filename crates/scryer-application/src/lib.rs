@@ -174,9 +174,10 @@ pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 4;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
 pub(crate) use helpers::{
     INDEXER_PROVIDER_NZBGEEK, INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES,
-    normalize_release_attempt_hint, normalize_release_attempt_title, normalize_release_password,
-    normalize_show_text_opt, normalize_tags, parsed_episode_lookup_season, require, sanitize_ids,
-    sha256_hex, statvfs_path, to_hex,
+    await_cancellable, await_cancellable_app_result, normalize_release_attempt_hint,
+    normalize_release_attempt_title, normalize_release_password, normalize_show_text_opt,
+    normalize_tags, parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, statvfs_path,
+    to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread};
 pub use jobs::definitions::{
@@ -266,16 +267,16 @@ pub use settings::keys::{
 };
 pub(crate) use types::JwtClaims;
 pub use types::{
-    BackupInfo, DiskSpaceInfo, DownloadGrabResult, DownloadHistoryPage, DownloadSourceKind,
-    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
-    IndexerQueryStats, IndexerSearchResponse, IndexerSearchResult, JwtAuthConfig,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, PendingImportConnection,
-    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingRelease,
-    PendingReleaseStatus, PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, ResolvePendingImportResult, SystemHealth,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
-    TitleMediaSizeSummary, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
+    BackupInfo, CancelLibraryScanResult, DiskSpaceInfo, DownloadGrabResult, DownloadHistoryPage,
+    DownloadSourceKind, FixTitleMatchResult, HealthCheckResult, HealthCheckStatus,
+    HousekeepingReport, IndexerQueryStats, IndexerSearchResponse, IndexerSearchResult,
+    JwtAuthConfig, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PendingReleaseStatus, PrimaryCollectionSummary, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
     WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
     WantedSearchTransition, WantedStatus,
 };

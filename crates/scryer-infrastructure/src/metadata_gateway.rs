@@ -330,7 +330,7 @@ const METADATA_GATEWAY_RATE_LIMIT_BASE_DELAY: Duration = Duration::from_secs(2);
 const METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(30);
 const METADATA_GATEWAY_TRANSIENT_BASE_DELAY: Duration = Duration::from_secs(1);
 const METADATA_GATEWAY_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(5);
-const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 20;
+const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 50;
 const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
 
 pub struct MetadataGatewayClient {

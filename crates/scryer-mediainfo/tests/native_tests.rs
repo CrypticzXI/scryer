@@ -1,4 +1,6 @@
-use scryer_mediainfo::{analyze_file, is_valid_video};
+use scryer_mediainfo::{
+    AnalysisProfile, AnalyzeOptions, analyze_file, analyze_file_with_options, is_valid_video,
+};
 use std::path::PathBuf;
 
 fn media(name: &str) -> PathBuf {
@@ -21,6 +23,7 @@ fn mkv_h264_aac() {
     assert_eq!(a.video_bit_depth, Some(8));
     assert_eq!(a.video_hdr_format, None);
     assert_eq!(a.audio_codec.as_deref(), Some("aac"));
+    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
     assert_eq!(a.audio_channels, Some(2));
     assert!(!a.has_multiaudio);
     assert_eq!(a.num_chapters, Some(0));
@@ -79,6 +82,7 @@ fn mkv_dual_audio_subtitles() {
     assert_eq!(a.audio_streams[0].channels, Some(6));
     assert_eq!(a.audio_streams[0].language.as_deref(), Some("jpn"));
     assert_eq!(a.audio_streams[1].codec.as_deref(), Some("aac"));
+    assert_eq!(a.audio_streams[1].profile.as_deref(), Some("LC"));
     assert_eq!(a.audio_streams[1].channels, Some(2));
     assert_eq!(a.audio_streams[1].language.as_deref(), Some("eng"));
     assert!(is_valid_video(&a));
@@ -95,6 +99,7 @@ fn mp4_h264_aac() {
     assert_eq!(a.video_width, Some(128));
     assert_eq!(a.video_height, Some(72));
     assert_eq!(a.audio_codec.as_deref(), Some("aac"));
+    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
     assert_eq!(a.audio_channels, Some(2));
     assert_eq!(a.num_chapters, None);
     assert_eq!(a.container_format.as_deref(), Some("mp4"));
@@ -109,6 +114,7 @@ fn mp4_av1_aac() {
     assert_eq!(a.video_width, Some(128));
     assert_eq!(a.video_height, Some(72));
     assert_eq!(a.audio_codec.as_deref(), Some("aac"));
+    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
     assert_eq!(a.audio_channels, Some(2));
     assert_eq!(a.container_format.as_deref(), Some("mp4"));
     assert!(is_valid_video(&a));
@@ -140,6 +146,7 @@ fn ts_h264_aac() {
     let a = analyze_file(&media("h264_aac.ts")).unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("h264"));
     assert_eq!(a.audio_codec.as_deref(), Some("aac"));
+    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
     assert_eq!(a.container_format.as_deref(), Some("mpegts"));
     // TS duration is estimated from PTS delta; for a 2-second file it should
     // be at least 1 second after truncation.
@@ -222,10 +229,38 @@ fn mkv_hevc_hdr10plus() {
 }
 
 #[test]
+fn mkv_hevc_hdr10plus_ffprobe_parity_profile() {
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mkv"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::FfprobeParity,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.video_codec.as_deref(), Some("hevc"));
+    assert_eq!(a.video_hdr_format, None);
+    assert!(is_valid_video(&a));
+}
+
+#[test]
 fn mp4_hevc_hdr10plus() {
     let a = analyze_file(&media("hevc_hdr10plus.mp4")).unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("hevc"));
     assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10+"));
+    assert!(is_valid_video(&a));
+}
+
+#[test]
+fn mp4_hevc_hdr10plus_ffprobe_parity_profile() {
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mp4"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::FfprobeParity,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.video_codec.as_deref(), Some("hevc"));
+    assert_eq!(a.video_hdr_format, None);
     assert!(is_valid_video(&a));
 }
 

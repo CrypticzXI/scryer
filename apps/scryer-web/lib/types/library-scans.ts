@@ -4,6 +4,7 @@ export const libraryScanStatusValues = [
   "discovering",
   "running",
   "completed",
+  "canceled",
   "warning",
   "failed",
 ] as const;

@@ -1,7 +1,12 @@
+import * as React from "react";
 import { CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
+import { useClient } from "urql";
 
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
+import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/sonner";
 import type { Translate } from "@/components/root/types";
+import { cancelLibraryScanMutation } from "@/lib/graphql/mutations";
 import type { LibraryScanPhaseProgress, LibraryScanProgress } from "@/lib/types";
 
 function facetLabel(facet: LibraryScanProgress["facet"], t: Translate): string {
@@ -18,7 +23,12 @@ function facetLabel(facet: LibraryScanProgress["facet"], t: Translate): string {
 }
 
 function isTerminal(status: LibraryScanProgress["status"]): boolean {
-  return status === "completed" || status === "warning" || status === "failed";
+  return (
+    status === "completed" ||
+    status === "canceled" ||
+    status === "warning" ||
+    status === "failed"
+  );
 }
 
 function percentForPhase(
@@ -59,6 +69,9 @@ function statusIcon(status: LibraryScanProgress["status"]) {
   if (status === "failed") {
     return <CircleAlert className="h-4 w-4 text-red-400" />;
   }
+  if (status === "canceled") {
+    return <CircleAlert className="h-4 w-4 text-amber-400" />;
+  }
   if (status === "completed" || status === "warning") {
     return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
   }
@@ -74,6 +87,8 @@ export function LibraryScanToast({
   t: Translate;
   titleOverride?: string;
 }) {
+  const client = useClient();
+  const [cancelPending, setCancelPending] = React.useState(false);
   const terminal = isTerminal(session.status);
   const titleMatchPercent = percentForPhase(
     session.titleMatchProgress,
@@ -88,18 +103,60 @@ export function LibraryScanToast({
   const titleMatchIndeterminate = !terminal && !session.titleMatchTotalKnown;
   const mediaAnalysisIndeterminate =
     !terminal && !session.mediaAnalysisTotalKnown;
+  const showCancel = session.mode === "full" && !terminal;
+
+  const handleCancel = React.useCallback(async () => {
+    if (cancelPending) {
+      return;
+    }
+
+    setCancelPending(true);
+    try {
+      const result = await client
+        .mutation(cancelLibraryScanMutation, {
+          input: {
+            sessionId: session.sessionId,
+          },
+        })
+        .toPromise();
+      if (result.error) {
+        throw result.error;
+      }
+    } catch (error) {
+      setCancelPending(false);
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("settings.libraryScanCancelFailed"),
+      );
+    }
+  }, [cancelPending, client, session.sessionId, t]);
 
   return (
     <div className="w-[min(26rem,calc(100vw-3rem))] p-4">
       <div className="min-w-0 space-y-3">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-foreground">
-              {titleOverride ?? t("settings.libraryScanToastTitle", {
-                facet: facetLabel(session.facet, t),
-              })}
-            </p>
-            {statusIcon(session.status)}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <p className="text-sm font-semibold text-foreground">
+                {titleOverride ?? t("settings.libraryScanToastTitle", {
+                  facet: facetLabel(session.facet, t),
+                })}
+              </p>
+              {statusIcon(session.status)}
+            </div>
+            {showCancel ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-7 shrink-0 px-2 text-xs"
+                onClick={handleCancel}
+                disabled={cancelPending}
+              >
+                {t("settings.libraryScanCancel")}
+              </Button>
+            ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
             {session.foundTitles > 0 || terminal
@@ -152,6 +209,14 @@ export function LibraryScanToast({
           <p className="text-xs text-muted-foreground">
             {session.status === "failed"
               ? t("settings.libraryScanFailed")
+              : session.status === "canceled"
+                ? session.summary
+                  ? t("settings.libraryScanCanceledSummary", {
+                      imported: session.summary.imported,
+                      skipped: session.summary.skipped,
+                      unmatched: session.summary.unmatched,
+                    })
+                  : t("settings.libraryScanCanceled")
               : session.summary
                 ? t("settings.libraryScanSummary", {
                     imported: session.summary.imported,

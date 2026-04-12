@@ -1,4 +1,4 @@
-use scryer_mediainfo::analyze_file;
+use scryer_mediainfo::{AnalysisProfile, AnalyzeOptions, analyze_file_with_options};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,16 +21,66 @@ fn ffprobe_bin() -> Option<PathBuf> {
     None
 }
 
-fn ffprobe_json(ffprobe: &Path, file: &Path) -> Value {
-    let output = Command::new(ffprobe)
-        .args([
-            "-v",
-            "error",
+fn sonarr_ffprobe_json(ffprobe: &Path, file: &Path) -> Value {
+    let mut analysis = run_ffprobe_json(
+        ffprobe,
+        file,
+        &[
             "-show_streams",
             "-show_format",
-            "-of",
+            "-print_format",
             "json",
-        ])
+            "-probesize",
+            "50000000",
+        ],
+    );
+
+    if primary_audio_channel_layout(&analysis).is_none() {
+        analysis = run_ffprobe_json(
+            ffprobe,
+            file,
+            &[
+                "-show_streams",
+                "-show_format",
+                "-print_format",
+                "json",
+                "-probesize",
+                "150000000",
+                "-analyzeduration",
+                "150000000",
+            ],
+        );
+    }
+
+    if let Some((video_stream_ordinal, primary_video)) = primary_video_stream(&analysis)
+        && primary_video.get("color_transfer").and_then(Value::as_str) == Some("smpte2084")
+    {
+        let select_stream = format!("v:{video_stream_ordinal}");
+        let args = vec![
+            "-show_frames".to_owned(),
+            "-print_format".to_owned(),
+            "json".to_owned(),
+            "-read_intervals".to_owned(),
+            "%+#1".to_owned(),
+            "-select_streams".to_owned(),
+            select_stream,
+        ];
+        let _ = run_ffprobe_json_owned(ffprobe, file, &args);
+    }
+
+    analysis
+}
+
+fn run_ffprobe_json(ffprobe: &Path, file: &Path, args: &[&str]) -> Value {
+    let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    run_ffprobe_json_owned(ffprobe, file, &args)
+}
+
+fn run_ffprobe_json_owned(ffprobe: &Path, file: &Path, args: &[String]) -> Value {
+    let output = Command::new(ffprobe)
+        .arg("-v")
+        .arg("error")
+        .args(args)
         .arg(file)
         .output()
         .expect("ffprobe should run");
@@ -41,6 +91,32 @@ fn ffprobe_json(ffprobe: &Path, file: &Path) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("ffprobe JSON should parse")
+}
+
+fn primary_audio_channel_layout(json: &Value) -> Option<&str> {
+    json.get("streams")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
+        .and_then(|stream| stream.get("channel_layout"))
+        .and_then(Value::as_str)
+        .filter(|layout| !layout.is_empty())
+}
+
+fn primary_video_stream(json: &Value) -> Option<(usize, &Value)> {
+    json.get("streams")?
+        .as_array()?
+        .iter()
+        .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
+        .filter(|stream| {
+            !matches!(
+                stream.get("codec_name").and_then(Value::as_str),
+                Some("mjpeg" | "png")
+            )
+        })
+        .enumerate()
+        .next()
 }
 
 fn ffprobe_primary_stream<'a>(json: &'a Value, codec_type: &str) -> Option<&'a Value> {
@@ -168,8 +244,14 @@ fn compare_fixture_corpus_against_ffprobe() {
             continue;
         }
 
-        let analysis = analyze_file(&path).expect("native analysis should succeed");
-        let ffprobe = ffprobe_json(&ffprobe, &path);
+        let analysis = analyze_file_with_options(
+            &path,
+            AnalyzeOptions {
+                profile: AnalysisProfile::FfprobeParity,
+            },
+        )
+        .expect("native analysis should succeed");
+        let ffprobe = sonarr_ffprobe_json(&ffprobe, &path);
 
         let video = ffprobe_primary_stream(&ffprobe, "video");
         let audio = ffprobe_primary_stream(&ffprobe, "audio");

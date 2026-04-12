@@ -2,7 +2,7 @@ import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
-import { Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
 import {
   HoverCard,
   HoverCardContent,
@@ -70,6 +70,81 @@ function formatEpisodeProgress(
 
   const owned = typeof ownedEpisodes === "number" && ownedEpisodes >= 0 ? ownedEpisodes : 0;
   return `${owned}/${totalEpisodes}`;
+}
+
+type SortKey = "name" | "monitored" | "quality" | "episodes" | "status" | "size";
+type SortDirection = "asc" | "desc";
+
+function normalizeTitleForUiSort(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const withoutArticle = trimmed.replace(/^(a|an|the)\s+/i, "");
+  return withoutArticle.trim() || trimmed;
+}
+
+function compareText(left: string, right: string) {
+  return left.localeCompare(right, undefined, {
+    sensitivity: "base",
+    numeric: true,
+  });
+}
+
+function compareTitleText(left: string, right: string) {
+  const normalizedLeft = normalizeTitleForUiSort(left);
+  const normalizedRight = normalizeTitleForUiSort(right);
+  const normalizedDelta = compareText(normalizedLeft, normalizedRight);
+  if (normalizedDelta !== 0) {
+    return normalizedDelta;
+  }
+  return compareText(left, right);
+}
+
+function compareMaybeText(left: string | null | undefined, right: string | null | undefined) {
+  const normalizedLeft = left?.trim() ?? "";
+  const normalizedRight = right?.trim() ?? "";
+  if (!normalizedLeft && !normalizedRight) {
+    return 0;
+  }
+  if (!normalizedLeft) {
+    return 1;
+  }
+  if (!normalizedRight) {
+    return -1;
+  }
+  return compareText(normalizedLeft, normalizedRight);
+}
+
+function compareBooleans(left: boolean, right: boolean) {
+  return Number(left) - Number(right);
+}
+
+function compareNumbers(left: number | null | undefined, right: number | null | undefined) {
+  const normalizedLeft = left ?? Number.NEGATIVE_INFINITY;
+  const normalizedRight = right ?? Number.NEGATIVE_INFINITY;
+  return normalizedLeft - normalizedRight;
+}
+
+function compareEpisodeProgressValues(left: TitleRecord, right: TitleRecord) {
+  const leftOwned = left.episodesOwned ?? 0;
+  const rightOwned = right.episodesOwned ?? 0;
+  const leftTotal = left.episodesTotal ?? 0;
+  const rightTotal = right.episodesTotal ?? 0;
+  const leftRatio = leftTotal > 0 ? leftOwned / leftTotal : Number.NEGATIVE_INFINITY;
+  const rightRatio = rightTotal > 0 ? rightOwned / rightTotal : Number.NEGATIVE_INFINITY;
+
+  const ratioDelta = leftRatio - rightRatio;
+  if (ratioDelta !== 0) {
+    return ratioDelta;
+  }
+
+  const ownedDelta = leftOwned - rightOwned;
+  if (ownedDelta !== 0) {
+    return ownedDelta;
+  }
+
+  return leftTotal - rightTotal;
 }
 
 type TitleTableProps = {
@@ -195,14 +270,123 @@ export function TitleTable({
     Record<string, boolean>
   >({});
   const [autoQueueLoadingByTitle, setAutoQueueLoadingByTitle] = React.useState<Record<string, boolean>>({});
+  const [sortKey, setSortKey] = React.useState<SortKey>("name");
+  const [sortDirection, setSortDirection] = React.useState<SortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
+  const sortedTitles = React.useMemo(() => {
+    const factor = sortDirection === "asc" ? 1 : -1;
+    const getStatusSortLabel = (item: TitleRecord) => {
+      const normalized = item.contentStatus?.toLowerCase() ?? "";
+      switch (normalized) {
+        case "ended":
+          return t("title.ended");
+        case "upcoming":
+          return t("title.upcoming");
+        case "continuing":
+          return t("title.continuing");
+        default:
+          return "";
+      }
+    };
+
+    return [...titles].sort((left, right) => {
+      const delta = (() => {
+        switch (sortKey) {
+          case "name":
+            return compareTitleText(left.name, right.name);
+          case "monitored":
+            return compareBooleans(left.monitored, right.monitored);
+          case "quality":
+            return compareMaybeText(
+              resolveDisplayedQualityLabel(left, qualityProfiles, resolvedProfileName, t("label.unknown")),
+              resolveDisplayedQualityLabel(right, qualityProfiles, resolvedProfileName, t("label.unknown")),
+            );
+          case "episodes":
+            return compareEpisodeProgressValues(left, right);
+          case "status":
+            return compareMaybeText(getStatusSortLabel(left), getStatusSortLabel(right));
+          case "size":
+            return compareNumbers(left.sizeBytes, right.sizeBytes);
+          default:
+            return 0;
+        }
+      })();
+
+      if (delta !== 0) {
+        return delta * factor;
+      }
+
+      return compareTitleText(left.name, right.name);
+    });
+  }, [qualityProfiles, resolvedProfileName, sortDirection, sortKey, t, titles]);
+
   const titleVirtualizer = useVirtualizer({
-    count: titles.length,
+    count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     estimateSize: () => 96,
     overscan: 5,
   });
+
+  const defaultSortDirectionFor = React.useCallback((key: SortKey): SortDirection => {
+    switch (key) {
+      case "monitored":
+      case "episodes":
+      case "size":
+        return "desc";
+      default:
+        return "asc";
+    }
+  }, []);
+
+  const handleSort = React.useCallback((nextKey: SortKey) => {
+    if (sortKey === nextKey) {
+      setSortDirection((currentDirection) => (currentDirection === "asc" ? "desc" : "asc"));
+      return;
+    }
+
+    setSortKey(nextKey);
+    setSortDirection(defaultSortDirectionFor(nextKey));
+  }, [defaultSortDirectionFor, sortKey]);
+
+  const renderSortIcon = React.useCallback((key: SortKey) => {
+    if (sortKey !== key) {
+      return null;
+    }
+    return sortDirection === "asc"
+      ? <ArrowUp className="h-3.5 w-3.5" />
+      : <ArrowDown className="h-3.5 w-3.5" />;
+  }, [sortDirection, sortKey]);
+
+  const renderSortableHeader = React.useCallback((
+    key: SortKey,
+    label: string,
+    className?: string,
+    buttonClassName?: string,
+  ) => (
+    <TableHead
+      className={className}
+      aria-sort={
+        sortKey === key
+          ? sortDirection === "asc"
+            ? "ascending"
+            : "descending"
+          : "none"
+      }
+    >
+      <button
+        type="button"
+        className={cn(
+          "inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80",
+          buttonClassName,
+        )}
+        onClick={() => handleSort(key)}
+      >
+        <span>{label}</span>
+        {renderSortIcon(key)}
+      </button>
+    </TableHead>
+  ), [handleSort, renderSortIcon, sortDirection, sortKey]);
 
   const handleQueueExisting = React.useCallback(
     (title: TitleRecord) => {
@@ -459,12 +643,17 @@ export function TitleTable({
     <TableHeader>
       <TableRow className="sticky top-0 z-10 bg-background">
         <TableHead className="w-14" />
-        <TableHead>{t("label.name")}</TableHead>
-        <TableHead className="text-center whitespace-nowrap">{t("title.table.monitored")}</TableHead>
-        <TableHead className="w-48 whitespace-nowrap">{t("title.table.qualityTier")}</TableHead>
-        {!isMovieView ? <TableHead className="whitespace-nowrap">{t("title.table.episodes")}</TableHead> : null}
-        {!isMovieView ? <TableHead className="whitespace-nowrap">{t("title.table.status")}</TableHead> : null}
-        {isMovieView ? <TableHead className="whitespace-nowrap">{t("title.table.size")}</TableHead> : null}
+        {renderSortableHeader("name", t("label.name"))}
+        {renderSortableHeader(
+          "monitored",
+          t("title.table.monitored"),
+          "text-center whitespace-nowrap",
+          "justify-center text-center",
+        )}
+        {renderSortableHeader("quality", t("title.table.qualityTier"), "w-48 whitespace-nowrap")}
+        {!isMovieView ? renderSortableHeader("episodes", t("title.table.episodes"), "whitespace-nowrap") : null}
+        {!isMovieView ? renderSortableHeader("status", t("title.table.status"), "whitespace-nowrap") : null}
+        {isMovieView ? renderSortableHeader("size", t("title.table.size"), "whitespace-nowrap") : null}
         <TableHead className="text-center whitespace-nowrap">{t("label.actions")}</TableHead>
       </TableRow>
     </TableHeader>
@@ -490,7 +679,7 @@ export function TitleTable({
               </tbody>
             ) : null}
             {virtualItems.map((virtualRow) => {
-              const item = titles[virtualRow.index];
+              const item = sortedTitles[virtualRow.index];
               return (
                 <tbody
                   key={virtualRow.key}

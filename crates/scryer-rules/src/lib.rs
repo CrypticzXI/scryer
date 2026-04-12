@@ -74,6 +74,8 @@ pub struct FileDoc {
     pub video_profile: Option<String>,
     /// Primary audio stream codec name.
     pub audio_codec: Option<String>,
+    /// Primary audio stream profile / extension label.
+    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     /// BCP-47/ISO 639-2 codes from all audio streams.
@@ -92,6 +94,7 @@ pub struct FileDoc {
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioStreamDoc {
     pub codec: Option<String>,
+    pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
     pub bitrate_kbps: Option<i32>,
@@ -1057,11 +1060,13 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
             video_frame_rate: Some("23.976".to_string()),
             video_profile: Some("Main 10".to_string()),
             audio_codec: Some("eac3".to_string()),
+            audio_profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
             audio_channels: Some(6),
             audio_bitrate_kbps: Some(640),
             audio_languages: vec!["eng".to_string()],
             audio_streams: vec![AudioStreamDoc {
                 codec: Some("eac3".to_string()),
+                profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
                 channels: Some(6),
                 language: Some("eng".to_string()),
                 bitrate_kbps: Some(640),

@@ -4,9 +4,10 @@ use crate::{
     library_scan_progress::reduce_library_scan_projection_event,
 };
 use scryer_domain::{
-    DomainEventFilter, DomainEventPayload, DomainEventType, LibraryScanCompletedEventData,
-    LibraryScanDeltaRecordedEventData, LibraryScanFailedEventData, LibraryScanProgressedEventData,
-    LibraryScanStartedEventData, LibraryScanSummaryEventData, MediaFacet, NewDomainEvent,
+    DomainEventFilter, DomainEventPayload, DomainEventType, LibraryScanCanceledEventData,
+    LibraryScanCompletedEventData, LibraryScanDeltaRecordedEventData, LibraryScanFailedEventData,
+    LibraryScanProgressedEventData, LibraryScanStartedEventData, LibraryScanSummaryEventData,
+    MediaFacet, NewDomainEvent,
 };
 use tracing::{debug, trace, warn};
 
@@ -16,6 +17,7 @@ const LIBRARY_SCAN_TRACKER_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::LibraryScanDeltaRecorded,
     DomainEventType::LibraryScanProgressed,
     DomainEventType::LibraryScanCompleted,
+    DomainEventType::LibraryScanCanceled,
     DomainEventType::LibraryScanFailed,
 ];
 
@@ -123,12 +125,6 @@ impl LibraryScanCoordinator {
         if track_file_total {
             delta.file_total_delta = discovered_count as i64;
         }
-        self.record_delta(delta).await;
-    }
-
-    pub(crate) async fn set_found_titles(&self, found_titles: usize) {
-        let mut delta = empty_scan_delta(self.session_id.clone());
-        delta.found_titles_total = Some(found_titles as i64);
         self.record_delta(delta).await;
     }
 
@@ -244,6 +240,9 @@ impl LibraryScanCoordinator {
             return;
         };
 
+        self.app
+            .clear_library_scan_cancellation_token(self.session_id())
+            .await;
         publish_coalesced_library_scan_state(&self.app, &session).await;
     }
 
@@ -253,6 +252,9 @@ impl LibraryScanCoordinator {
             .runtime
             .library_scan_tracker
             .fail_session(self.session_id())
+            .await;
+        self.app
+            .clear_library_scan_cancellation_token(self.session_id())
             .await;
         let facet = match failed_session.as_ref().map(|session| session.facet.clone()) {
             Some(facet) => facet,
@@ -273,6 +275,33 @@ impl LibraryScanCoordinator {
                     session_id: self.session_id.clone(),
                     error_message: "library scan failed".to_string(),
                 }),
+            ))
+            .await;
+    }
+
+    pub(crate) async fn cancel(&self) {
+        let canceled_session = self
+            .app
+            .runtime
+            .library_scan_tracker
+            .cancel_session(self.session_id())
+            .await;
+        self.app
+            .clear_library_scan_cancellation_token(self.session_id())
+            .await;
+        let Some(session) = canceled_session else {
+            trace!(
+                session_id = %self.session_id,
+                "library scan coordinator cancel skipped for inactive session"
+            );
+            return;
+        };
+
+        let _ = self
+            .app
+            .append_domain_event(self.scan_event(
+                session.facet.clone(),
+                DomainEventPayload::LibraryScanCanceled(library_scan_canceled_event_data(&session)),
             ))
             .await;
     }
@@ -563,6 +592,24 @@ fn library_scan_completed_event_data(
     }
 }
 
+fn library_scan_canceled_event_data(session: &LibraryScanSession) -> LibraryScanCanceledEventData {
+    LibraryScanCanceledEventData {
+        session_id: session.session_id.clone(),
+        status: session.status.as_str().to_string(),
+        found_titles: session.found_titles as i64,
+        title_match_completed: session.title_match_progress.completed as i64,
+        title_match_total_known: session.title_match_total_known,
+        titles_completed: session.metadata_progress.completed as i64,
+        titles_total: Some(session.metadata_progress.total as i64),
+        files_completed: session.file_progress.completed as i64,
+        files_total: Some(session.file_progress.total as i64),
+        summary: session
+            .summary
+            .as_ref()
+            .map(library_scan_summary_event_data),
+    }
+}
+
 fn library_scan_event_session_id(payload: &DomainEventPayload) -> Option<&str> {
     match payload {
         DomainEventPayload::LibraryScanStarted(data) => Some(&data.session_id),
@@ -570,6 +617,7 @@ fn library_scan_event_session_id(payload: &DomainEventPayload) -> Option<&str> {
         DomainEventPayload::LibraryScanDeltaRecorded(data) => Some(&data.session_id),
         DomainEventPayload::LibraryScanProgressed(data) => Some(&data.session_id),
         DomainEventPayload::LibraryScanCompleted(data) => Some(&data.session_id),
+        DomainEventPayload::LibraryScanCanceled(data) => Some(&data.session_id),
         DomainEventPayload::LibraryScanFailed(data) => Some(&data.session_id),
         _ => None,
     }

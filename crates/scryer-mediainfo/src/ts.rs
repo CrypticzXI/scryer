@@ -1,12 +1,19 @@
 use crate::MediaInfoError;
+use crate::codec::{
+    detect_audio_profile_from_payload, detect_dts_channels_from_probe_bytes, merge_audio_profile,
+};
 use crate::probe::ProbeBudget;
 use crate::types::{RawContainer, RawTrack, TrackKind};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// Size of a single MPEG-TS packet.
+/// Size of a transport payload packet without any outer framing.
 const TS_PACKET_SIZE: usize = 188;
+/// Blu-ray / DVHS transport packets carry a 4-byte prefix ahead of the TS sync byte.
+const TS_DVHS_PACKET_SIZE: usize = 192;
+/// Reed-Solomon protected transport packets carry 16 bytes of trailing FEC data.
+const TS_FEC_PACKET_SIZE: usize = 204;
 /// TS sync byte.
 const SYNC_BYTE: u8 = 0x47;
 /// PID of the Program Association Table.
@@ -73,6 +80,11 @@ const DTS_SAMPLE_RATES: [u32; 16] = [
     0, 8_000, 16_000, 32_000, 0, 0, 11_025, 22_050, 44_100, 0, 0, 12_000, 24_000, 48_000, 96_000,
     192_000,
 ];
+const DTS_SYNCWORD_CORE_BE: u32 = 0x7FFE_8001;
+const DTS_SYNCWORD_CORE_LE: u32 = 0xFE7F_0180;
+const DTS_SYNCWORD_CORE_14B_BE: u32 = 0x1FFF_E800;
+const DTS_SYNCWORD_CORE_14B_LE: u32 = 0xFF1F_00E8;
+const DTS_HEADER_PROBE_BYTES: usize = 32;
 const DTS_BIT_RATES: [u32; 32] = [
     32_000, 56_000, 64_000, 96_000, 112_000, 128_000, 192_000, 224_000, 256_000, 320_000, 384_000,
     448_000, 512_000, 576_000, 640_000, 768_000, 896_000, 1_024_000, 1_152_000, 1_280_000,
@@ -86,6 +98,12 @@ const AAC_SAMPLE_RATES: [u32; 16] = [
     7_350, 0, 0, 0,
 ];
 
+#[derive(Clone, Copy)]
+struct TsPacketLayout {
+    raw_packet_size: usize,
+    sync_offset: usize,
+}
+
 /// Parse an MPEG Transport Stream file and extract stream metadata.
 pub(crate) fn parse_ts(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
@@ -95,12 +113,13 @@ pub(crate) fn parse_ts(path: &Path) -> Result<RawContainer, MediaInfoError> {
         .map_err(|e| MediaInfoError::Io(e.to_string()))?
         .len();
 
-    let pmt_pid = find_pmt_pid(&mut file)?;
-    let es_entries = parse_pmt(&mut file, pmt_pid)?;
+    let layout = detect_ts_packet_layout(&mut file)?;
+    let pmt_pid = find_pmt_pid(&mut file, layout)?;
+    let es_entries = parse_pmt(&mut file, pmt_pid, layout)?;
     let mut tracks: Vec<RawTrack> = es_entries.iter().map(build_track).collect();
 
-    let duration_seconds = estimate_duration(&mut file, file_size, &es_entries);
-    enrich_tracks_from_probe(&mut file, &es_entries, &mut tracks)?;
+    let duration_seconds = estimate_duration(&mut file, file_size, &es_entries, layout);
+    enrich_tracks_from_probe(&mut file, &es_entries, &mut tracks, layout)?;
 
     if file_size > 0
         && let Some(duration_seconds) = duration_seconds
@@ -133,104 +152,128 @@ struct EsEntry {
 // PAT parsing
 // ---------------------------------------------------------------------------
 
-fn find_pmt_pid<T: Read + Seek>(stream: &mut T) -> Result<u16, MediaInfoError> {
-    stream
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+fn find_pmt_pid<T: Read + Seek>(
+    stream: &mut T,
+    layout: TsPacketLayout,
+) -> Result<u16, MediaInfoError> {
+    let section = read_psi_section(stream, PAT_PID, 0x00, 100_000, layout)?;
+    if section.len() < 12 {
+        return Err(MediaInfoError::Parse("PAT section too short".into()));
+    }
 
-    let mut buf = [0u8; TS_PACKET_SIZE];
-    let mut packets_scanned = 0u32;
+    let section_length = ((section[1] as u16 & 0x0F) << 8 | section[2] as u16) as usize;
+    if section_length < 9 {
+        return Err(MediaInfoError::Parse("PAT section length too short".into()));
+    }
 
-    loop {
-        if packets_scanned > 100_000 {
-            return Err(MediaInfoError::Parse(
-                "PAT not found within first 100k packets".into(),
-            ));
-        }
+    let program_end = 3 + section_length.saturating_sub(4);
+    if program_end > section.len() || program_end < 8 {
+        return Err(MediaInfoError::Parse("PAT program table truncated".into()));
+    }
 
-        let n = read_full(stream, &mut buf);
-        if n < TS_PACKET_SIZE {
-            return Err(MediaInfoError::Parse(
-                "PAT not found before end of file".into(),
-            ));
-        }
-        packets_scanned += 1;
-
-        if buf[0] != SYNC_BYTE && !resync(stream, &mut buf)? {
-            return Err(MediaInfoError::Parse("could not sync to TS packets".into()));
-        }
-
-        if ts_pid(&buf) != PAT_PID || buf[1] & 0x40 == 0 {
-            continue;
-        }
-
-        let payload = ts_payload(&buf);
-        if payload.is_empty() {
-            continue;
-        }
-
-        let pointer = payload[0] as usize;
-        let section_start = 1 + pointer;
-        if section_start >= payload.len() {
-            continue;
-        }
-        let section = &payload[section_start..];
-        if section.is_empty() || section[0] != 0x00 || section.len() < 8 {
-            continue;
-        }
-
-        let section_length = ((section[1] as u16 & 0x0F) << 8 | section[2] as u16) as usize;
-        let available = section.len().saturating_sub(3);
-        let data_len = section_length.min(available);
-        if data_len < 9 {
-            continue;
-        }
-
-        let program_data = &section[8..3 + data_len.saturating_sub(4)];
-        for chunk in program_data.chunks_exact(4) {
-            let program_number = (chunk[0] as u16) << 8 | chunk[1] as u16;
-            let entry_pid = (chunk[2] as u16 & 0x1F) << 8 | chunk[3] as u16;
-            if program_number != 0 {
-                return Ok(entry_pid);
-            }
+    let program_data = &section[8..program_end];
+    for chunk in program_data.chunks_exact(4) {
+        let program_number = (chunk[0] as u16) << 8 | chunk[1] as u16;
+        let entry_pid = (chunk[2] as u16 & 0x1F) << 8 | chunk[3] as u16;
+        if program_number != 0 {
+            return Ok(entry_pid);
         }
     }
+
+    Err(MediaInfoError::Parse(
+        "PAT did not contain a program map PID".into(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // PMT parsing
 // ---------------------------------------------------------------------------
 
-fn parse_pmt<T: Read + Seek>(stream: &mut T, pmt_pid: u16) -> Result<Vec<EsEntry>, MediaInfoError> {
+fn parse_pmt<T: Read + Seek>(
+    stream: &mut T,
+    pmt_pid: u16,
+    layout: TsPacketLayout,
+) -> Result<Vec<EsEntry>, MediaInfoError> {
+    let section = read_psi_section(stream, pmt_pid, 0x02, 200_000, layout)?;
+    if section.len() < 16 {
+        return Err(MediaInfoError::Parse("PMT section too short".into()));
+    }
+
+    let section_length = ((section[1] as u16 & 0x0F) << 8 | section[2] as u16) as usize;
+    if section_length < 13 {
+        return Err(MediaInfoError::Parse("PMT section length too short".into()));
+    }
+
+    let program_info_length = ((section[10] as u16 & 0x0F) << 8 | section[11] as u16) as usize;
+    let es_start = 12 + program_info_length;
+    let es_end = 3 + section_length.saturating_sub(4);
+    if es_start > section.len() || es_end > section.len() || es_start > es_end {
+        return Err(MediaInfoError::Parse(
+            "PMT elementary stream table truncated".into(),
+        ));
+    }
+
+    let es_data = &section[es_start..es_end];
+    let mut entries = Vec::new();
+    let mut pos = 0;
+
+    while pos + 5 <= es_data.len() {
+        let stream_type = es_data[pos];
+        let es_pid = ((es_data[pos + 1] as u16 & 0x1F) << 8) | es_data[pos + 2] as u16;
+        let es_info_length =
+            ((es_data[pos + 3] as u16 & 0x0F) << 8 | es_data[pos + 4] as u16) as usize;
+        let desc_end = pos + 5 + es_info_length;
+        if desc_end > es_data.len() {
+            break;
+        }
+        let descriptors = es_data[pos + 5..desc_end].to_vec();
+
+        entries.push(EsEntry {
+            stream_type,
+            pid: es_pid,
+            dovi_config: extract_dovi_config(&descriptors),
+            descriptors,
+        });
+
+        pos = desc_end;
+    }
+
+    Ok(entries)
+}
+
+fn read_psi_section<T: Read + Seek>(
+    stream: &mut T,
+    pid: u16,
+    table_id: u8,
+    max_packets: u32,
+    layout: TsPacketLayout,
+) -> Result<Vec<u8>, MediaInfoError> {
     stream
         .seek(SeekFrom::Start(0))
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
+    let mut raw_packet = vec![0u8; layout.raw_packet_size];
     let mut buf = [0u8; TS_PACKET_SIZE];
     let mut packets_scanned = 0u32;
+    let mut section = Vec::new();
+    let mut expected_len = None;
+    let mut assembling = false;
 
     loop {
-        if packets_scanned > 200_000 {
-            return Err(MediaInfoError::Parse(
-                "PMT not found within first 200k packets".into(),
-            ));
+        if packets_scanned > max_packets {
+            return Err(MediaInfoError::Parse(format!(
+                "section for pid {pid:#06x} not found within first {max_packets} packets"
+            )));
         }
 
-        let n = read_full(stream, &mut buf);
-        if n < TS_PACKET_SIZE {
-            return Err(MediaInfoError::Parse(
-                "PMT not found before end of file".into(),
-            ));
+        if !read_ts_packet(stream, layout, &mut raw_packet, &mut buf)? {
+            return Err(MediaInfoError::Parse(format!(
+                "section for pid {pid:#06x} not found before end of file"
+            )));
         }
         packets_scanned += 1;
 
-        if buf[0] != SYNC_BYTE && !resync(stream, &mut buf)? {
-            return Err(MediaInfoError::Parse(
-                "could not sync to TS packets for PMT".into(),
-            ));
-        }
-
-        if ts_pid(&buf) != pmt_pid || buf[1] & 0x40 == 0 {
+        if ts_pid(&buf) != pid {
             continue;
         }
 
@@ -239,49 +282,56 @@ fn parse_pmt<T: Read + Seek>(stream: &mut T, pmt_pid: u16) -> Result<Vec<EsEntry
             continue;
         }
 
-        let pointer = payload[0] as usize;
-        let section_start = 1 + pointer;
-        if section_start >= payload.len() {
+        let payload_unit_start = buf[1] & 0x40 != 0;
+        let mut data = payload;
+
+        if payload_unit_start {
+            let pointer = data[0] as usize;
+            let section_start = 1 + pointer;
+            if section_start > data.len() {
+                assembling = false;
+                section.clear();
+                expected_len = None;
+                continue;
+            }
+            data = &data[section_start..];
+            section.clear();
+            expected_len = None;
+            assembling = true;
+        } else if !assembling {
             continue;
         }
-        let section = &payload[section_start..];
-        if section.is_empty() || section[0] != 0x02 || section.len() < 12 {
+
+        if data.is_empty() {
             continue;
         }
 
-        let section_length = ((section[1] as u16 & 0x0F) << 8 | section[2] as u16) as usize;
-        let available = section.len().saturating_sub(3);
-        let data_len = section_length.min(available);
-        let program_info_length = ((section[10] as u16 & 0x0F) << 8 | section[11] as u16) as usize;
-        let es_start = 12 + program_info_length;
-        let es_end = (3 + data_len).saturating_sub(4);
-        if es_start > section.len() || es_end > section.len() || es_start > es_end {
-            continue;
+        if section.is_empty() {
+            if data[0] != table_id {
+                assembling = false;
+                continue;
+            }
         }
 
-        let es_data = &section[es_start..es_end];
-        let mut entries = Vec::new();
-        let mut pos = 0;
+        section.extend_from_slice(data);
 
-        while pos + 5 <= es_data.len() {
-            let stream_type = es_data[pos];
-            let es_pid = ((es_data[pos + 1] as u16 & 0x1F) << 8) | es_data[pos + 2] as u16;
-            let es_info_length =
-                ((es_data[pos + 3] as u16 & 0x0F) << 8 | es_data[pos + 4] as u16) as usize;
-            let desc_end = (pos + 5 + es_info_length).min(es_data.len());
-            let descriptors = es_data[pos + 5..desc_end].to_vec();
-
-            entries.push(EsEntry {
-                stream_type,
-                pid: es_pid,
-                dovi_config: extract_dovi_config(&descriptors),
-                descriptors,
-            });
-
-            pos = desc_end;
+        if expected_len.is_none() && section.len() >= 3 {
+            let section_length = ((section[1] as usize & 0x0F) << 8) | section[2] as usize;
+            let total_len = section_length + 3;
+            if !(3..=4096).contains(&total_len) {
+                assembling = false;
+                section.clear();
+                continue;
+            }
+            expected_len = Some(total_len);
         }
 
-        return Ok(entries);
+        if let Some(total_len) = expected_len
+            && section.len() >= total_len
+        {
+            section.truncate(total_len);
+            return Ok(section);
+        }
     }
 }
 
@@ -296,6 +346,7 @@ fn build_track(es: &EsEntry) -> RawTrack {
         kind,
         codec_id: format!("0x{:02X}", es.stream_type),
         codec_name: Some(codec_name.to_owned()),
+        audio_profile: stream_type_audio_profile(es.stream_type).map(str::to_owned),
         codec_private: None,
         width: None,
         height: None,
@@ -309,6 +360,14 @@ fn build_track(es: &EsEntry) -> RawTrack {
         name: None,
         forced: false,
         default_track: false,
+    }
+}
+
+fn stream_type_audio_profile(stream_type: u8) -> Option<&'static str> {
+    match stream_type {
+        0x85 => Some("DTS-HD HRA"),
+        0x86 => Some("DTS-HD MA"),
+        _ => None,
     }
 }
 
@@ -328,7 +387,7 @@ fn classify_stream_type(stream_type: u8, descriptors: &[u8]) -> (TrackKind, &'st
         0x0F => (TrackKind::Audio, "aac"),
         0x11 => (TrackKind::Audio, "aac_latm"),
         0x81 => (TrackKind::Audio, "ac3"),
-        0x82 | 0x85 | 0xA2 => (TrackKind::Audio, "dts"),
+        0x82 | 0x85 | 0x86 | 0xA2 => (TrackKind::Audio, "dts"),
         0x83 => (TrackKind::Audio, "truehd"),
         0x84 | 0x87 | 0xA1 | 0xC2 => (TrackKind::Audio, "eac3"),
         0x90 => (TrackKind::Subtitle, "hdmv_pgs_subtitle"),
@@ -465,6 +524,7 @@ fn enrich_tracks_from_probe<T: Read + Seek>(
     stream: &mut T,
     es_entries: &[EsEntry],
     tracks: &mut [RawTrack],
+    layout: TsPacketLayout,
 ) -> Result<(), MediaInfoError> {
     let mut buffers: HashMap<u16, Vec<u8>> = HashMap::new();
     let mut budgets: HashMap<u16, ProbeBudget> = HashMap::new();
@@ -487,21 +547,17 @@ fn enrich_tracks_from_probe<T: Read + Seek>(
         .seek(SeekFrom::Start(0))
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
+    let mut raw_packet = vec![0u8; layout.raw_packet_size];
     let mut pkt = [0_u8; TS_PACKET_SIZE];
     let mut packets_scanned = 0usize;
 
     while packets_scanned < STREAM_PROBE_PACKET_LIMIT
         && budgets.values().any(|budget| !budget.exhausted())
     {
-        let n = read_full(stream, &mut pkt);
-        if n < TS_PACKET_SIZE {
+        if !read_ts_packet(stream, layout, &mut raw_packet, &mut pkt)? {
             break;
         }
         packets_scanned += 1;
-
-        if pkt[0] != SYNC_BYTE && !resync(stream, &mut pkt)? {
-            break;
-        }
 
         let pid = ts_pid(&pkt);
         let Some(buffer) = buffers.get_mut(&pid) else {
@@ -555,6 +611,7 @@ fn enrich_tracks_from_probe<T: Read + Seek>(
             Some("mp2") => probe_mpeg_audio_track(buffer, track),
             Some("ac3") => probe_ac3_track(buffer, track),
             Some("eac3") => probe_eac3_track(buffer, track),
+            Some("truehd") => probe_truehd_track(buffer, track),
             Some("dts") => probe_dts_track(buffer, track),
             _ => {}
         }
@@ -618,6 +675,10 @@ fn probe_aac_track(data: &[u8], track: &mut RawTrack) {
     };
     track.channels = Some(header.channels as i32);
     track.bit_rate_bps = header.bit_rate_bps.map(|bitrate| bitrate as i64);
+    merge_audio_profile(
+        &mut track.audio_profile,
+        detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
+    );
 }
 
 fn probe_latm_track(data: &[u8], track: &mut RawTrack) {
@@ -625,6 +686,10 @@ fn probe_latm_track(data: &[u8], track: &mut RawTrack) {
         return;
     };
     track.channels = Some(header.channels as i32);
+    merge_audio_profile(
+        &mut track.audio_profile,
+        detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
+    );
 }
 
 fn probe_mpeg_video_track(data: &[u8], track: &mut RawTrack) {
@@ -661,6 +726,17 @@ fn probe_eac3_track(data: &[u8], track: &mut RawTrack) {
     };
     track.channels = Some(header.channels as i32);
     track.bit_rate_bps = header.bit_rate_bps.map(i64::from);
+    merge_audio_profile(
+        &mut track.audio_profile,
+        detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
+    );
+}
+
+fn probe_truehd_track(data: &[u8], track: &mut RawTrack) {
+    merge_audio_profile(
+        &mut track.audio_profile,
+        detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
+    );
 }
 
 fn probe_dts_track(data: &[u8], track: &mut RawTrack) {
@@ -668,8 +744,22 @@ fn probe_dts_track(data: &[u8], track: &mut RawTrack) {
         return;
     };
     track.channels = Some(header.channels as i32);
+    if let Some(channels) = detect_dts_channels_from_probe_bytes(data) {
+        track.channels = Some(
+            track
+                .channels
+                .map_or(channels, |existing| existing.max(channels)),
+        );
+    }
     if header.bit_rate_bps > 3 {
         track.bit_rate_bps = Some(i64::from(header.bit_rate_bps));
+    }
+    merge_audio_profile(
+        &mut track.audio_profile,
+        detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
+    );
+    if track.audio_profile.as_deref() == Some("DTS-ES") && track.channels == Some(6) {
+        track.channels = Some(7);
     }
 }
 
@@ -722,14 +812,14 @@ struct MpegAudioHeader {
     bit_rate_bps: Option<u32>,
 }
 
-struct Ac3Header {
-    channels: u8,
-    bit_rate_bps: Option<u32>,
+pub(crate) struct Ac3Header {
+    pub channels: u8,
+    pub bit_rate_bps: Option<u32>,
 }
 
-struct DtsHeader {
-    channels: u8,
-    bit_rate_bps: u32,
+pub(crate) struct DtsHeader {
+    pub channels: u8,
+    pub bit_rate_bps: u32,
 }
 
 fn find_adts_header(data: &[u8]) -> Option<AdtsHeader> {
@@ -926,7 +1016,7 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
     None
 }
 
-fn find_ac3_header(data: &[u8]) -> Option<Ac3Header> {
+pub(crate) fn find_ac3_header(data: &[u8]) -> Option<Ac3Header> {
     if data.len() < 7 {
         return None;
     }
@@ -971,7 +1061,7 @@ fn find_ac3_header(data: &[u8]) -> Option<Ac3Header> {
     None
 }
 
-fn find_eac3_header(data: &[u8]) -> Option<Ac3Header> {
+pub(crate) fn find_eac3_header(data: &[u8]) -> Option<Ac3Header> {
     if data.len() < 6 {
         return None;
     }
@@ -1023,13 +1113,26 @@ fn find_eac3_header(data: &[u8]) -> Option<Ac3Header> {
     None
 }
 
-fn find_dts_header(data: &[u8]) -> Option<DtsHeader> {
+pub(crate) fn find_dts_header(data: &[u8]) -> Option<DtsHeader> {
     if data.len() < 11 {
         return None;
     }
     for start in 0..=data.len() - 11 {
-        let mut bits = BitReader::new(&data[start..]);
-        if bits.read_bits(32)? != 0x7FFE_8001 {
+        let marker = u32::from_be_bytes(data[start..start + 4].try_into().ok()?);
+        if !matches!(
+            marker,
+            DTS_SYNCWORD_CORE_BE
+                | DTS_SYNCWORD_CORE_LE
+                | DTS_SYNCWORD_CORE_14B_BE
+                | DTS_SYNCWORD_CORE_14B_LE
+        ) {
+            continue;
+        }
+
+        let probe_end = (start + DTS_HEADER_PROBE_BYTES).min(data.len());
+        let normalized = normalize_dts_core_prefix(&data[start..probe_end])?;
+        let mut bits = BitReader::new(&normalized);
+        if bits.read_bits(32)? != DTS_SYNCWORD_CORE_BE {
             continue;
         }
         bits.read_bit()?; // normal frame flag
@@ -1039,7 +1142,7 @@ fn find_dts_header(data: &[u8]) -> Option<DtsHeader> {
         }
         bits.skip_bits(1)?; // crc present
         let npcmblocks = bits.read_bits(7)? as u8 + 1;
-        if (npcmblocks & 0x1F) != 0 {
+        if (npcmblocks & 0x07) != 0 {
             continue;
         }
         let frame_size = bits.read_bits(14)? + 1;
@@ -1074,6 +1177,54 @@ fn find_dts_header(data: &[u8]) -> Option<DtsHeader> {
     }
 
     None
+}
+
+fn normalize_dts_core_prefix(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 4 {
+        return None;
+    }
+
+    let marker = u32::from_be_bytes(data[..4].try_into().ok()?);
+    match marker {
+        DTS_SYNCWORD_CORE_BE => Some(data.to_vec()),
+        DTS_SYNCWORD_CORE_LE => {
+            let mut normalized = Vec::with_capacity(data.len());
+            for chunk in data.chunks(2) {
+                if chunk.len() == 2 {
+                    normalized.push(chunk[1]);
+                    normalized.push(chunk[0]);
+                } else {
+                    normalized.push(chunk[0]);
+                }
+            }
+            Some(normalized)
+        }
+        DTS_SYNCWORD_CORE_14B_BE | DTS_SYNCWORD_CORE_14B_LE => {
+            let mut normalized = Vec::with_capacity((data.len() * 14) / 16 + 2);
+            let mut bit_buffer = 0u32;
+            let mut bits_in_buffer = 0usize;
+
+            for chunk in data.chunks_exact(2) {
+                let word = if marker == DTS_SYNCWORD_CORE_14B_BE {
+                    u16::from_be_bytes([chunk[0], chunk[1]])
+                } else {
+                    u16::from_le_bytes([chunk[0], chunk[1]])
+                } & 0x3FFF;
+
+                bit_buffer = (bit_buffer << 14) | u32::from(word);
+                bits_in_buffer += 14;
+
+                while bits_in_buffer >= 8 {
+                    bits_in_buffer -= 8;
+                    normalized.push(((bit_buffer >> bits_in_buffer) & 0xFF) as u8);
+                    bit_buffer &= (1u32 << bits_in_buffer).saturating_sub(1);
+                }
+            }
+
+            Some(normalized)
+        }
+        _ => None,
+    }
 }
 
 fn find_start_code_payload(data: &[u8], code: u8) -> Option<&[u8]> {
@@ -1177,16 +1328,24 @@ fn estimate_duration<T: Read + Seek>(
     stream: &mut T,
     file_size: u64,
     es_entries: &[EsEntry],
+    layout: TsPacketLayout,
 ) -> Option<f64> {
-    estimate_duration_with_limit(stream, file_size, es_entries, FAST_DURATION_PROBE_PACKETS)
-        .or_else(|| {
-            estimate_duration_with_limit(
-                stream,
-                file_size,
-                es_entries,
-                FALLBACK_DURATION_PROBE_PACKETS,
-            )
-        })
+    estimate_duration_with_limit(
+        stream,
+        file_size,
+        es_entries,
+        FAST_DURATION_PROBE_PACKETS,
+        layout,
+    )
+    .or_else(|| {
+        estimate_duration_with_limit(
+            stream,
+            file_size,
+            es_entries,
+            FALLBACK_DURATION_PROBE_PACKETS,
+            layout,
+        )
+    })
 }
 
 fn estimate_duration_with_limit<T: Read + Seek>(
@@ -1194,8 +1353,9 @@ fn estimate_duration_with_limit<T: Read + Seek>(
     file_size: u64,
     es_entries: &[EsEntry],
     packet_limit: usize,
+    layout: TsPacketLayout,
 ) -> Option<f64> {
-    if es_entries.is_empty() || file_size < TS_PACKET_SIZE as u64 {
+    if es_entries.is_empty() || file_size < layout.raw_packet_size as u64 {
         return None;
     }
 
@@ -1208,9 +1368,9 @@ fn estimate_duration_with_limit<T: Read + Seek>(
         return None;
     }
 
-    let first_pts = find_pts_near(stream, 0, true, &pes_pids, packet_limit);
-    let tail_start = file_size.saturating_sub(TS_PACKET_SIZE as u64 * packet_limit as u64);
-    let last_pts = find_pts_near(stream, tail_start, false, &pes_pids, packet_limit);
+    let first_pts = find_pts_near(stream, 0, true, &pes_pids, packet_limit, layout);
+    let tail_start = file_size.saturating_sub(layout.raw_packet_size as u64 * packet_limit as u64);
+    let last_pts = find_pts_near(stream, tail_start, false, &pes_pids, packet_limit, layout);
 
     match (first_pts, last_pts) {
         (Some(first), Some(last)) if last > first => Some((last - first) as f64 / PTS_HZ),
@@ -1235,26 +1395,26 @@ fn find_pts_near<T: Read + Seek>(
     first_match: bool,
     pes_pids: &[u16],
     max_packets: usize,
+    layout: TsPacketLayout,
 ) -> Option<u64> {
-    stream.seek(SeekFrom::Start(start_pos)).ok()?;
-    let read_size = max_packets * TS_PACKET_SIZE;
+    let aligned_start = start_pos - (start_pos % layout.raw_packet_size as u64);
+    stream.seek(SeekFrom::Start(aligned_start)).ok()?;
+    let read_size = max_packets * layout.raw_packet_size;
     let mut data = vec![0u8; read_size];
     let n = read_full(stream, &mut data);
     data.truncate(n);
 
     let mut result = None;
-    let mut offset = 0;
-    while offset < data.len() && data[offset] != SYNC_BYTE {
-        offset += 1;
-    }
+    let mut offset = first_packet_offset(&data, layout);
 
-    while offset + TS_PACKET_SIZE <= data.len() {
-        if data[offset] != SYNC_BYTE {
+    while offset + layout.raw_packet_size <= data.len() {
+        if data[offset + layout.sync_offset] != SYNC_BYTE {
             offset += 1;
             continue;
         }
 
-        let pkt = &data[offset..offset + TS_PACKET_SIZE];
+        let packet_start = offset + layout.sync_offset;
+        let pkt = &data[packet_start..packet_start + TS_PACKET_SIZE];
         let pid = ts_pid(pkt);
         if pes_pids.contains(&pid) && (pkt[1] & 0x40) != 0 {
             let payload = ts_payload(pkt);
@@ -1266,7 +1426,7 @@ fn find_pts_near<T: Read + Seek>(
             }
         }
 
-        offset += TS_PACKET_SIZE;
+        offset += layout.raw_packet_size;
     }
 
     result
@@ -1326,37 +1486,122 @@ fn ts_payload(pkt: &[u8]) -> &[u8] {
     }
 }
 
+fn read_ts_packet<T: Read + Seek>(
+    stream: &mut T,
+    layout: TsPacketLayout,
+    raw_packet: &mut [u8],
+    packet: &mut [u8; TS_PACKET_SIZE],
+) -> Result<bool, MediaInfoError> {
+    let n = read_full(stream, raw_packet);
+    if n < layout.raw_packet_size {
+        return Ok(false);
+    }
+    if raw_packet[layout.sync_offset] != SYNC_BYTE && !resync(stream, layout, raw_packet)? {
+        return Ok(false);
+    }
+    packet.copy_from_slice(&raw_packet[layout.sync_offset..layout.sync_offset + TS_PACKET_SIZE]);
+    Ok(true)
+}
+
 fn resync<T: Read + Seek>(
     stream: &mut T,
-    first_packet: &mut [u8; TS_PACKET_SIZE],
+    layout: TsPacketLayout,
+    raw_packet: &mut [u8],
 ) -> Result<bool, MediaInfoError> {
     let current = stream
         .stream_position()
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-    let rewind = current.saturating_sub((TS_PACKET_SIZE - 1) as u64);
-    stream
-        .seek(SeekFrom::Start(rewind))
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    let rewind = current.saturating_sub((layout.raw_packet_size - 1) as u64);
 
-    let mut byte = [0u8; 1];
-    for _ in 0..TS_PACKET_SIZE {
-        if read_full(stream, &mut byte) < 1 {
+    for offset in 0..layout.raw_packet_size {
+        let candidate_start = rewind + offset as u64;
+        stream
+            .seek(SeekFrom::Start(candidate_start))
+            .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+        if read_full(stream, raw_packet) < layout.raw_packet_size {
             return Ok(false);
         }
-        if byte[0] == SYNC_BYTE {
-            stream
-                .seek(SeekFrom::Current(-1))
-                .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-            if read_full(stream, first_packet) == TS_PACKET_SIZE && first_packet[0] == SYNC_BYTE {
-                return Ok(true);
-            }
-            stream
-                .seek(SeekFrom::Current(-(TS_PACKET_SIZE as i64) + 1))
-                .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+        if raw_packet[layout.sync_offset] == SYNC_BYTE {
+            return Ok(true);
         }
     }
 
     Ok(false)
+}
+
+fn detect_ts_packet_layout<T: Read + Seek>(
+    stream: &mut T,
+) -> Result<TsPacketLayout, MediaInfoError> {
+    let current = stream
+        .stream_position()
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    stream
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+
+    let probe_len = TS_FEC_PACKET_SIZE * 100;
+    let mut probe = vec![0u8; probe_len];
+    let n = read_full(stream, &mut probe);
+    probe.truncate(n);
+
+    stream
+        .seek(SeekFrom::Start(current))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+
+    let candidates = [
+        TsPacketLayout {
+            raw_packet_size: TS_PACKET_SIZE,
+            sync_offset: 0,
+        },
+        TsPacketLayout {
+            raw_packet_size: TS_DVHS_PACKET_SIZE,
+            sync_offset: 4,
+        },
+        TsPacketLayout {
+            raw_packet_size: TS_FEC_PACKET_SIZE,
+            sync_offset: 0,
+        },
+    ];
+
+    candidates
+        .into_iter()
+        .max_by_key(|layout| packet_layout_score(&probe, *layout))
+        .ok_or_else(|| MediaInfoError::Parse("unable to determine TS packet layout".into()))
+}
+
+fn packet_layout_score(data: &[u8], layout: TsPacketLayout) -> usize {
+    if data.len() < layout.raw_packet_size
+        || layout.sync_offset + TS_PACKET_SIZE > layout.raw_packet_size
+    {
+        return 0;
+    }
+
+    let mut score = 0;
+    let mut offset = 0usize;
+    while offset + layout.raw_packet_size <= data.len() {
+        if data[offset + layout.sync_offset] == SYNC_BYTE {
+            score += 1;
+        }
+        offset += layout.raw_packet_size;
+    }
+    score
+}
+
+fn first_packet_offset(data: &[u8], layout: TsPacketLayout) -> usize {
+    let max_offset = layout.raw_packet_size.min(data.len());
+    for offset in 0..max_offset {
+        if offset + layout.sync_offset >= data.len() {
+            break;
+        }
+        if data[offset + layout.sync_offset] != SYNC_BYTE {
+            continue;
+        }
+        let next = offset + layout.raw_packet_size + layout.sync_offset;
+        if next >= data.len() || data[next] == SYNC_BYTE {
+            return offset;
+        }
+    }
+    0
 }
 
 fn read_full<T: Read>(reader: &mut T, buf: &mut [u8]) -> usize {
@@ -1388,6 +1633,28 @@ mod tests {
         ];
         let dovi = extract_dovi_config(&descriptors).unwrap();
         assert_eq!(dovi, vec![1, 0, 0b0000_1111, 0b0001_1101, 0b1011_0000]);
+    }
+
+    #[test]
+    fn detects_bluray_dvhs_packet_layout() {
+        let mut data = vec![0u8; TS_DVHS_PACKET_SIZE * 3];
+        for packet_idx in 0..3 {
+            data[packet_idx * TS_DVHS_PACKET_SIZE + 4] = SYNC_BYTE;
+        }
+
+        let layout = detect_ts_packet_layout(&mut std::io::Cursor::new(data)).unwrap();
+        assert_eq!(layout.raw_packet_size, TS_DVHS_PACKET_SIZE);
+        assert_eq!(layout.sync_offset, 4);
+    }
+
+    #[test]
+    fn parses_real_dts_hd_ma_core_header_prefix() {
+        let data = [
+            0x7f, 0xfe, 0x80, 0x01, 0xfc, 0x3c, 0x7d, 0xb2, 0x77, 0x00, 0x0d, 0x3b, 0x80, 0x09,
+            0xef, 0x7b,
+        ];
+        let header = find_dts_header(&data).unwrap();
+        assert_eq!(header.channels, 6);
     }
 
     #[test]

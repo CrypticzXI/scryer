@@ -16,6 +16,7 @@ use crate::domain_events::{
     created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
 };
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
+use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, Entitlement, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata, require,
@@ -955,27 +956,33 @@ fn build_movie_rename_plan_items(
     planned_targets: &mut HashSet<String>,
 ) -> Vec<RenamePlanItem> {
     collections.sort_by(|left, right| left.id.cmp(&right.id));
-    let media_file_ids_by_path =
-        media_files
-            .into_iter()
-            .fold(HashMap::<String, String>::new(), |mut acc, media_file| {
-                acc.entry(media_file.file_path).or_insert(media_file.id);
-                acc
-            });
+    let media_files_by_path = media_files.into_iter().fold(
+        HashMap::<String, TitleMediaFile>::new(),
+        |mut acc, media_file| {
+            acc.entry(media_file.file_path.clone())
+                .or_insert(media_file);
+            acc
+        },
+    );
 
     collections
         .into_iter()
         .map(|collection| {
+            let matched_media_file = collection
+                .ordered_path
+                .as_deref()
+                .and_then(|path| media_files_by_path.get(path));
             let mut item = build_movie_rename_plan_item(
                 title,
                 &collection,
+                matched_media_file,
                 template,
                 collision_policy,
                 missing_metadata_policy,
                 planned_targets,
             );
-            if let Some(media_file_id) = media_file_ids_by_path.get(item.current_path.as_str()) {
-                item.media_file_id = Some(media_file_id.clone());
+            if item.media_file_id.is_none() {
+                item.media_file_id = matched_media_file.map(|media_file| media_file.id.clone());
             }
             item
         })
@@ -1065,6 +1072,11 @@ struct RenameCommonTokens {
     audio_channels: String,
     group: String,
     extension: String,
+}
+
+struct ResolvedRenameCommonMetadata {
+    common: RenameCommonTokens,
+    edition: String,
 }
 
 impl RenamePlanSource {
@@ -1180,6 +1192,85 @@ fn insert_common_rename_tokens(tokens: &mut BTreeMap<String, String>, common: Re
     tokens.insert("audio_channels".to_string(), common.audio_channels);
     tokens.insert("group".to_string(), common.group);
     tokens.insert("ext".to_string(), common.extension);
+}
+
+fn resolved_analysis_labels_for_media_file(
+    media_file: &TitleMediaFile,
+) -> crate::media::release_labels::ResolvedAnalysisReleaseLabels {
+    resolve_release_labels_from_analysis(
+        media_file.video_height,
+        media_file.video_codec.as_deref(),
+        media_file.audio_codec.as_deref(),
+        media_file.audio_profile.as_deref(),
+        media_file.audio_channels,
+        &media_file.audio_streams,
+    )
+}
+
+fn resolve_rename_common_metadata(
+    media_file: Option<&TitleMediaFile>,
+    parsed_current: &ParsedReleaseMetadata,
+    title_token: &str,
+    year_token: Option<&str>,
+    extension: &str,
+) -> ResolvedRenameCommonMetadata {
+    let analyzed = media_file
+        .map(resolved_analysis_labels_for_media_file)
+        .unwrap_or_default();
+
+    let quality = analyzed
+        .quality
+        .or_else(|| media_file.and_then(|file| non_empty_owned(file.quality_label.clone())))
+        .or_else(|| parsed_current.quality.clone())
+        .unwrap_or_default();
+    let source = media_file
+        .and_then(|file| non_empty_owned(file.source_type.clone()))
+        .or_else(|| parsed_current.source.clone())
+        .unwrap_or_default();
+    let video_codec = analyzed
+        .video_codec
+        .or_else(|| media_file.and_then(|file| non_empty_owned(file.video_codec_parsed.clone())))
+        .or_else(|| parsed_current.video_codec.clone())
+        .unwrap_or_default();
+    let audio_codec = analyzed
+        .audio_codec
+        .or_else(|| media_file.and_then(|file| non_empty_owned(file.audio_codec_parsed.clone())))
+        .or_else(|| parsed_current.audio.clone())
+        .unwrap_or_default();
+    let audio_channels = analyzed
+        .audio_channels
+        .or_else(|| media_file.and_then(|file| non_empty_owned(file.audio_channels_parsed.clone())))
+        .or_else(|| parsed_current.audio_channels.clone())
+        .unwrap_or_default();
+    let group = media_file
+        .and_then(|file| non_empty_owned(file.release_group.clone()))
+        .or_else(|| parsed_current.release_group.clone())
+        .unwrap_or_default();
+    let edition = media_file
+        .and_then(|file| non_empty_owned(file.edition.clone()))
+        .or_else(|| {
+            parsed_current
+                .parse_hints
+                .iter()
+                .find(|hint| hint.to_ascii_lowercase().contains("edition"))
+                .cloned()
+        })
+        .unwrap_or_default();
+
+    ResolvedRenameCommonMetadata {
+        common: RenameCommonTokens {
+            title: title_token.to_string(),
+            year: year_token.unwrap_or_default().to_string(),
+            quality,
+            source,
+            video_codec,
+            audio_codec,
+            audio_channels,
+            group,
+            extension: extension.to_string(),
+        },
+        edition,
+    }
 }
 
 fn resolve_rendered_rename_filename(
@@ -1400,49 +1491,16 @@ fn build_series_media_file_rename_plan_item(
     );
     let (title_token, year_token) = split_title_and_year_hint(&title.name);
     let extension = source_file.extension.clone();
-
-    let quality = source
-        .file
-        .quality_label
-        .clone()
-        .or(parsed.quality.clone())
-        .unwrap_or_default();
+    let common = resolve_rename_common_metadata(
+        Some(&source.file),
+        &parsed,
+        &title_token,
+        year_token.as_deref(),
+        &extension,
+    );
 
     let mut tokens = BTreeMap::new();
-    insert_common_rename_tokens(
-        &mut tokens,
-        RenameCommonTokens {
-            title: title_token.clone(),
-            year: year_token.unwrap_or_default(),
-            quality,
-            source: source
-                .file
-                .source_type
-                .clone()
-                .or(parsed.source.clone())
-                .unwrap_or_default(),
-            video_codec: source
-                .file
-                .video_codec_parsed
-                .clone()
-                .or(parsed.video_codec.clone())
-                .unwrap_or_default(),
-            audio_codec: source
-                .file
-                .audio_codec_parsed
-                .clone()
-                .or(parsed.audio.clone())
-                .unwrap_or_default(),
-            audio_channels: parsed.audio_channels.clone().unwrap_or_default(),
-            group: source
-                .file
-                .release_group
-                .clone()
-                .or(parsed.release_group.clone())
-                .unwrap_or_default(),
-            extension: extension.clone(),
-        },
-    );
+    insert_common_rename_tokens(&mut tokens, common.common);
     tokens.insert("season".to_string(), rename_metadata.season.clone());
     tokens.insert(
         "season_order".to_string(),
@@ -1816,6 +1874,7 @@ pub(crate) fn build_rename_plan_from_items(
 pub(crate) fn build_movie_rename_plan_item(
     title: &Title,
     collection: &Collection,
+    media_file: Option<&TitleMediaFile>,
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
@@ -1823,7 +1882,7 @@ pub(crate) fn build_movie_rename_plan_item(
 ) -> RenamePlanItem {
     let item_ids = RenamePlanItemIds {
         collection_id: Some(collection.id.clone()),
-        media_file_id: None,
+        media_file_id: media_file.map(|media_file| media_file.id.clone()),
     };
     let source_file =
         match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {
@@ -1837,37 +1896,26 @@ pub(crate) fn build_movie_rename_plan_item(
         .unwrap_or_default();
     let parsed = parse_release_metadata(current_stem);
     let (title_token, year_token) = split_title_and_year_hint(&title.name);
-    let quality = collection
-        .label
-        .clone()
-        .or(parsed.quality.clone())
-        .unwrap_or_default();
     let extension = source_file.extension.clone();
+    let mut common = resolve_rename_common_metadata(
+        media_file,
+        &parsed,
+        &title_token,
+        year_token.as_deref(),
+        &extension,
+    );
+    if common.common.quality.is_empty() {
+        common.common.quality = collection
+            .label
+            .clone()
+            .or(parsed.quality.clone())
+            .unwrap_or_default();
+    }
 
     let mut tokens = BTreeMap::new();
-    insert_common_rename_tokens(
-        &mut tokens,
-        RenameCommonTokens {
-            title: title_token.clone(),
-            year: year_token.unwrap_or_default(),
-            quality,
-            source: parsed.source.clone().unwrap_or_default(),
-            video_codec: parsed.video_codec.clone().unwrap_or_default(),
-            audio_codec: parsed.audio.clone().unwrap_or_default(),
-            audio_channels: parsed.audio_channels.clone().unwrap_or_default(),
-            group: parsed.release_group.clone().unwrap_or_default(),
-            extension: extension.clone(),
-        },
-    );
-    tokens.insert(
-        "edition".to_string(),
-        parsed
-            .parse_hints
-            .iter()
-            .find(|hint| hint.to_ascii_lowercase().contains("edition"))
-            .cloned()
-            .unwrap_or_default(),
-    );
+    let edition = common.edition.clone();
+    insert_common_rename_tokens(&mut tokens, common.common);
+    tokens.insert("edition".to_string(), edition);
     let rendered = match resolve_rendered_rename_filename(
         &source_file,
         item_ids.clone(),

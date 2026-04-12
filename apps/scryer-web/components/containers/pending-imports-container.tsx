@@ -362,17 +362,6 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                     <span className="break-all text-muted-foreground">{item.folderPath}</span>
                   </div>
                 ) : null}
-                {item.searchAttempts.length > 0 ? (
-                  <div className="space-y-1">
-                    <div className="font-medium text-foreground">{t("pendingImports.searchAttempts")}</div>
-                    <div className="space-y-1 text-muted-foreground">
-                      {item.searchAttempts.map((attempt) => (
-                        <div key={`${item.id}-${attempt.query}-${attempt.resultCount}`}>{attempt.summary}</div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
                 {isActive ? (
                   <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
                     <Input

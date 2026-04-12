@@ -25,14 +25,14 @@ pub(crate) async fn insert_media_file_query(
          (id, title_id, file_path, size_bytes, quality_id, scan_status, created_at,
           source_signature_scheme, source_signature_value,
           scene_name, release_group, source_type, resolution,
-          video_codec_parsed, audio_codec_parsed,
+          video_codec_parsed, audio_codec_parsed, audio_channels_parsed,
           acquisition_score, scoring_log,
           indexer_source, grabbed_release_title, grabbed_at,
           edition, original_file_path, release_hash)
          VALUES (?, ?, ?, ?, ?, 'imported', ?,
                  ?, ?,
                  ?, ?, ?, ?,
-                 ?, ?,
+                 ?, ?, ?,
                  ?, ?,
                  ?, ?, ?,
                  ?, ?, ?)
@@ -49,6 +49,7 @@ pub(crate) async fn insert_media_file_query(
             resolution = excluded.resolution,
             video_codec_parsed = excluded.video_codec_parsed,
             audio_codec_parsed = excluded.audio_codec_parsed,
+            audio_channels_parsed = excluded.audio_channels_parsed,
             acquisition_score = excluded.acquisition_score,
             scoring_log = excluded.scoring_log,
             indexer_source = excluded.indexer_source,
@@ -72,6 +73,7 @@ pub(crate) async fn insert_media_file_query(
     .bind(&input.resolution)
     .bind(&input.video_codec_parsed)
     .bind(&input.audio_codec_parsed)
+    .bind(&input.audio_channels_parsed)
     .bind(input.acquisition_score)
     .bind(&input.scoring_log)
     .bind(&input.indexer_source)
@@ -117,14 +119,14 @@ pub(crate) async fn list_media_files_for_title_query(
                 mf.video_codec, mf.video_width, mf.video_height,
                 mf.video_bitrate_kbps, mf.video_bit_depth,
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
-                mf.audio_codec, mf.audio_channels, mf.audio_bitrate_kbps,
+                mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
                 mf.audio_languages_json, mf.audio_streams_json,
                 mf.subtitle_languages_json,
                 mf.subtitle_codecs_json, mf.subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
-                mf.video_codec_parsed, mf.audio_codec_parsed,
+                mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
                 mf.acquisition_score, mf.scoring_log,
                 mf.indexer_source, mf.grabbed_release_title, mf.grabbed_at,
                 mf.edition, mf.original_file_path, mf.release_hash
@@ -279,6 +281,7 @@ fn row_to_title_media_file(row: &SqliteRow) -> AppResult<TitleMediaFile> {
     let video_frame_rate: Option<String> = row.try_get("video_frame_rate").unwrap_or(None);
     let video_profile: Option<String> = row.try_get("video_profile").unwrap_or(None);
     let audio_codec: Option<String> = row.try_get("audio_codec").unwrap_or(None);
+    let audio_profile: Option<String> = row.try_get("audio_profile").unwrap_or(None);
     let audio_channels: Option<i32> = row.try_get("audio_channels").unwrap_or(None);
     let audio_bitrate_kbps: Option<i32> = row.try_get("audio_bitrate_kbps").unwrap_or(None);
     let duration_seconds: Option<i32> = row.try_get("duration_seconds").unwrap_or(None);
@@ -338,6 +341,8 @@ fn row_to_title_media_file(row: &SqliteRow) -> AppResult<TitleMediaFile> {
     let resolution: Option<String> = row.try_get("resolution").unwrap_or(None);
     let video_codec_parsed: Option<String> = row.try_get("video_codec_parsed").unwrap_or(None);
     let audio_codec_parsed: Option<String> = row.try_get("audio_codec_parsed").unwrap_or(None);
+    let audio_channels_parsed: Option<String> =
+        row.try_get("audio_channels_parsed").unwrap_or(None);
     let acquisition_score: Option<i32> = row.try_get("acquisition_score").unwrap_or(None);
     let scoring_log: Option<String> = row.try_get("scoring_log").unwrap_or(None);
     let indexer_source: Option<String> = row.try_get("indexer_source").unwrap_or(None);
@@ -368,6 +373,7 @@ fn row_to_title_media_file(row: &SqliteRow) -> AppResult<TitleMediaFile> {
         video_frame_rate,
         video_profile,
         audio_codec,
+        audio_profile,
         audio_channels,
         audio_bitrate_kbps,
         audio_languages,
@@ -385,6 +391,7 @@ fn row_to_title_media_file(row: &SqliteRow) -> AppResult<TitleMediaFile> {
         resolution,
         video_codec_parsed,
         audio_codec_parsed,
+        audio_channels_parsed,
         acquisition_score,
         scoring_log,
         indexer_source,
@@ -423,6 +430,7 @@ pub(crate) async fn update_media_file_analysis_query(
             video_frame_rate = ?,
             video_profile = ?,
             audio_codec = ?,
+            audio_profile = ?,
             audio_channels = ?,
             audio_bitrate_kbps = ?,
             duration_seconds = ?,
@@ -447,6 +455,7 @@ pub(crate) async fn update_media_file_analysis_query(
     .bind(&analysis.video_frame_rate)
     .bind(&analysis.video_profile)
     .bind(&analysis.audio_codec)
+    .bind(&analysis.audio_profile)
     .bind(analysis.audio_channels)
     .bind(analysis.audio_bitrate_kbps)
     .bind(analysis.duration_seconds)
@@ -533,14 +542,14 @@ pub(crate) async fn get_media_file_by_id_query(
                 mf.video_codec, mf.video_width, mf.video_height,
                 mf.video_bitrate_kbps, mf.video_bit_depth,
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
-                mf.audio_codec, mf.audio_channels, mf.audio_bitrate_kbps,
+                mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
                 mf.audio_languages_json, mf.audio_streams_json,
                 mf.subtitle_languages_json,
                 mf.subtitle_codecs_json, mf.subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
-                mf.video_codec_parsed, mf.audio_codec_parsed,
+                mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
                 mf.acquisition_score, mf.scoring_log,
                 mf.indexer_source, mf.grabbed_release_title, mf.grabbed_at,
                 mf.edition, mf.original_file_path, mf.release_hash
@@ -569,14 +578,14 @@ pub(crate) async fn get_media_file_by_path_query(
                 mf.video_codec, mf.video_width, mf.video_height,
                 mf.video_bitrate_kbps, mf.video_bit_depth,
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
-                mf.audio_codec, mf.audio_channels, mf.audio_bitrate_kbps,
+                mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
                 mf.audio_languages_json, mf.audio_streams_json,
                 mf.subtitle_languages_json,
                 mf.subtitle_codecs_json, mf.subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
-                mf.video_codec_parsed, mf.audio_codec_parsed,
+                mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
                 mf.acquisition_score, mf.scoring_log,
                 mf.indexer_source, mf.grabbed_release_title, mf.grabbed_at,
                 mf.edition, mf.original_file_path, mf.release_hash
@@ -610,7 +619,9 @@ mod tests {
     use super::*;
     use crate::{SqliteCatalogStore, SqliteLibraryStateStore, SqliteServices};
     use chrono::Utc;
-    use scryer_application::{MediaFileRepository, ShowRepository, TitleRepository};
+    use scryer_application::{
+        AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
+    };
     use scryer_domain::{Collection, CollectionType, Episode, MediaFacet, Title};
 
     fn make_test_series_title(id: &str) -> Title {
@@ -807,6 +818,91 @@ mod tests {
         assert_eq!(episode_progress[0].title_id, title.id);
         assert_eq!(episode_progress[0].total_episodes, 2);
         assert_eq!(episode_progress[0].owned_episodes, 1);
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn media_file_roundtrip_persists_audio_profile_and_parsed_channel_backup() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_media_file_audio_profile_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let catalog = catalog_store(&services);
+        let library_state = library_state_store(&services);
+
+        let title = make_test_series_title("title-audio-profile");
+        catalog
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        let file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E01.mkv".to_string(),
+                size_bytes: 1_000,
+                audio_channels_parsed: Some("7.1".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("media file should insert");
+
+        library_state
+            .update_media_file_analysis(
+                &file_id,
+                MediaFileAnalysis {
+                    video_codec: Some("hevc".to_string()),
+                    video_width: Some(3840),
+                    video_height: Some(2160),
+                    video_bitrate_kbps: None,
+                    video_bit_depth: Some(10),
+                    video_hdr_format: Some("HDR10".to_string()),
+                    video_frame_rate: Some("23.976".to_string()),
+                    video_profile: Some("Main 10".to_string()),
+                    audio_codec: Some("dts".to_string()),
+                    audio_profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
+                    audio_channels: Some(8),
+                    audio_bitrate_kbps: Some(4_000),
+                    audio_languages: vec!["eng".to_string()],
+                    audio_streams: vec![AudioStreamDetail {
+                        codec: Some("dts".to_string()),
+                        profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
+                        channels: Some(8),
+                        language: Some("eng".to_string()),
+                        bitrate_kbps: Some(4_000),
+                    }],
+                    subtitle_languages: vec![],
+                    subtitle_codecs: vec![],
+                    subtitle_streams: vec![],
+                    has_multiaudio: false,
+                    duration_seconds: Some(1800),
+                    num_chapters: Some(4),
+                    container_format: Some("matroska".to_string()),
+                    raw_json: "{}".to_string(),
+                },
+            )
+            .await
+            .expect("analysis should update");
+
+        let files = library_state
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files should succeed");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].audio_profile.as_deref(),
+            Some("DTS-HD MA + DTS:X IMAX")
+        );
+        assert_eq!(files[0].audio_channels_parsed.as_deref(), Some("7.1"));
+        assert_eq!(
+            files[0].audio_streams[0].profile.as_deref(),
+            Some("DTS-HD MA + DTS:X IMAX")
+        );
 
         let _ = std::fs::remove_file(db);
     }

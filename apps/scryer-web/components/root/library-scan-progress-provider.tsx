@@ -8,9 +8,17 @@ import { useLibraryScanEventStream } from "@/lib/hooks/use-library-scan-event-st
 import type { LibraryScanStatus } from "@/lib/types";
 
 const TERMINAL_TOAST_DURATION_MS = 6_000;
+const LIBRARY_SCAN_TOASTER_ID = "library-scans";
+const MAX_VISIBLE_LIBRARY_SCAN_TOASTS = 3;
+const MAX_VISIBLE_GENERAL_TOASTS = 3;
 
 function isTerminal(status: LibraryScanStatus): boolean {
-  return status === "completed" || status === "warning" || status === "failed";
+  return (
+    status === "completed" ||
+    status === "canceled" ||
+    status === "warning" ||
+    status === "failed"
+  );
 }
 
 function LiveLibraryScanToast({
@@ -78,6 +86,7 @@ export function LibraryScanProgressProvider({
       if (!shownToastIdsRef.current.has(session.sessionId)) {
         toast.custom(() => <LiveLibraryScanToast sessionId={session.sessionId} />, {
           id: session.sessionId,
+          toasterId: LIBRARY_SCAN_TOASTER_ID,
           className: "rounded-lg overflow-hidden p-0",
           duration: Infinity,
         });
@@ -109,7 +118,18 @@ export function LibraryScanProgressProvider({
   return (
     <LibraryScanProgressContext.Provider value={value}>
       {children}
-      <Toaster position="top-right" duration={10000} />
+      <Toaster
+        id={LIBRARY_SCAN_TOASTER_ID}
+        position="top-right"
+        duration={10000}
+        expand
+        visibleToasts={MAX_VISIBLE_LIBRARY_SCAN_TOASTS}
+      />
+      <Toaster
+        position="bottom-right"
+        duration={10000}
+        visibleToasts={MAX_VISIBLE_GENERAL_TOASTS}
+      />
     </LibraryScanProgressContext.Provider>
   );
 }

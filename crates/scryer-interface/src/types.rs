@@ -266,6 +266,7 @@ pub enum DomainEventTypeValue {
     LibraryScanDeltaRecorded,
     LibraryScanProgressed,
     LibraryScanCompleted,
+    LibraryScanCanceled,
     LibraryScanFailed,
     JobRunStarted,
     JobRunCompleted,
@@ -306,6 +307,7 @@ impl DomainEventTypeValue {
             DomainEventType::LibraryScanDeltaRecorded => Self::LibraryScanDeltaRecorded,
             DomainEventType::LibraryScanProgressed => Self::LibraryScanProgressed,
             DomainEventType::LibraryScanCompleted => Self::LibraryScanCompleted,
+            DomainEventType::LibraryScanCanceled => Self::LibraryScanCanceled,
             DomainEventType::LibraryScanFailed => Self::LibraryScanFailed,
             DomainEventType::JobRunStarted => Self::JobRunStarted,
             DomainEventType::JobRunCompleted => Self::JobRunCompleted,
@@ -346,6 +348,7 @@ impl DomainEventTypeValue {
             Self::LibraryScanDeltaRecorded => DomainEventType::LibraryScanDeltaRecorded,
             Self::LibraryScanProgressed => DomainEventType::LibraryScanProgressed,
             Self::LibraryScanCompleted => DomainEventType::LibraryScanCompleted,
+            Self::LibraryScanCanceled => DomainEventType::LibraryScanCanceled,
             Self::LibraryScanFailed => DomainEventType::LibraryScanFailed,
             Self::JobRunStarted => DomainEventType::JobRunStarted,
             Self::JobRunCompleted => DomainEventType::JobRunCompleted,
@@ -875,6 +878,7 @@ pub struct EpisodePayload {
 #[derive(SimpleObject, Clone)]
 pub struct AudioStreamDetailPayload {
     pub codec: Option<String>,
+    pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
     pub bitrate_kbps: Option<i32>,
@@ -910,6 +914,7 @@ pub struct TitleMediaFilePayload {
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
+    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     pub audio_languages: Vec<String>,
@@ -928,6 +933,7 @@ pub struct TitleMediaFilePayload {
     pub resolution: Option<String>,
     pub video_codec_parsed: Option<String>,
     pub audio_codec_parsed: Option<String>,
+    pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,
@@ -1218,6 +1224,7 @@ pub enum LibraryScanStatusValue {
     Discovering,
     Running,
     Completed,
+    Canceled,
     Warning,
     Failed,
 }
@@ -1228,6 +1235,7 @@ impl LibraryScanStatusValue {
             AppLibraryScanStatus::Discovering => Self::Discovering,
             AppLibraryScanStatus::Running => Self::Running,
             AppLibraryScanStatus::Completed => Self::Completed,
+            AppLibraryScanStatus::Canceled => Self::Canceled,
             AppLibraryScanStatus::Warning => Self::Warning,
             AppLibraryScanStatus::Failed => Self::Failed,
         }
@@ -1595,11 +1603,22 @@ pub struct ResolvePendingImportInput {
     pub tvdb_id: String,
 }
 
+#[derive(InputObject)]
+pub struct CancelLibraryScanInput {
+    pub session_id: String,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct ResolvePendingImportPayload {
     pub title: TitlePayload,
     pub created: bool,
     pub library_scan: LibraryScanSummaryPayload,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CancelLibraryScanPayload {
+    pub session_id: String,
+    pub accepted: bool,
 }
 
 #[derive(SimpleObject, Clone)]

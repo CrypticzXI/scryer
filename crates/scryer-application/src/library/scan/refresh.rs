@@ -213,7 +213,9 @@ pub(super) async fn background_refresh_series(
     let root = require_directory_library_path(library_path)?;
 
     let folders = list_child_directories(root).await?;
-    coordinator.set_found_titles(folders.len()).await;
+    coordinator
+        .register_discovery_batch(folders.len(), false)
+        .await;
     coordinator.publish_progress().await;
 
     let mut summary = LibraryScanSummary::default();
@@ -283,6 +285,7 @@ pub(super) async fn background_refresh_series(
             build_series_metadata_batch_stats,
             series_candidate_batch_search_keys,
             "background series metadata search chunk unexpectedly empty",
+            None,
         )
         .await?;
 
@@ -310,7 +313,7 @@ pub(super) async fn background_refresh_series(
     }
 
     summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset)
+        &app.execute_library_scan_workset(actor, session_id, workset, None)
             .await?,
     );
     coordinator.publish_progress().await;
@@ -344,7 +347,9 @@ pub(super) async fn background_refresh_movies(
     let root = require_directory_library_path(library_path)?;
 
     let entries = list_movie_top_level_entries(root).await?;
-    coordinator.set_found_titles(entries.len()).await;
+    coordinator
+        .register_discovery_batch(entries.len(), false)
+        .await;
     coordinator.publish_progress().await;
 
     let mut summary = LibraryScanSummary::default();
@@ -450,6 +455,7 @@ pub(super) async fn background_refresh_movies(
             build_movie_metadata_batch_stats,
             movie_candidate_batch_search_keys,
             "background movie metadata search chunk unexpectedly empty",
+            None,
         )
         .await?;
 
@@ -479,7 +485,7 @@ pub(super) async fn background_refresh_movies(
     }
 
     summary.absorb(
-        &app.execute_library_scan_workset(actor, session_id, workset)
+        &app.execute_library_scan_workset(actor, session_id, workset, None)
             .await?,
     );
     coordinator.publish_progress().await;

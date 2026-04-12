@@ -7,8 +7,12 @@ use mp4parse::{
     TrackType, VideoCodecSpecific,
 };
 
+use crate::AnalysisProfile;
 use crate::MediaInfoError;
-use crate::codec::normalize_codec_name;
+use crate::codec::{
+    audio_profile_probe_spec, detect_audio_profile_from_probe_bytes, detect_header_audio_profile,
+    merge_audio_profile, normalize_codec_name,
+};
 use crate::probe::{ProbeStats, TrackedReader};
 use crate::types::{RawContainer, RawTrack, TrackKind};
 
@@ -57,7 +61,10 @@ struct Mp4BoxHeader {
 }
 
 /// Parse an MP4/MOV/M4V file into a [`RawContainer`].
-pub(crate) fn parse_mp4(path: &Path) -> Result<RawContainer, MediaInfoError> {
+pub(crate) fn parse_mp4(
+    path: &Path,
+    profile: AnalysisProfile,
+) -> Result<RawContainer, MediaInfoError> {
     let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut prepared = prepare_mp4_metadata(path)?;
     sanitize_prepared_mp4_metadata(&mut prepared.metadata);
@@ -87,7 +94,10 @@ pub(crate) fn parse_mp4(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let (mut tracks, seen_track_ids) = build_mp4_tracks(&ctx, &metadata_by_track, duration_seconds);
     append_metadata_only_tracks(&metadata_by_track, &seen_track_ids, &mut tracks);
     apply_fallback_video_bitrate(file_len, duration_seconds, &mut tracks);
-    scan_mp4_hdr10plus(path, &ctx, &mut tracks);
+    scan_mp4_audio_profiles(path, &ctx, &mut tracks);
+    if profile == AnalysisProfile::DefaultRich {
+        scan_mp4_hdr10plus(path, &ctx, &mut tracks);
+    }
 
     let format_name = path
         .extension()
@@ -294,6 +304,7 @@ fn build_mp4_tracks(
                 .and_then(|m| m.sample_entry_fourcc.clone())
                 .unwrap_or_else(|| "unknown".into()),
             codec_name: None,
+            audio_profile: None,
             codec_private: meta.and_then(|m| m.codec_private.clone()),
             width: None,
             height: None,
@@ -372,6 +383,11 @@ fn build_mp4_tracks(
         if raw.codec_name.is_none() {
             raw.codec_name = normalize_codec_name(&raw.codec_id);
         }
+        raw.audio_profile = detect_header_audio_profile(
+            &raw.codec_id,
+            raw.codec_name.as_deref(),
+            raw.codec_private.as_deref(),
+        );
 
         if let Some(track_id) = track.track_id {
             seen_track_ids.insert(track_id);
@@ -408,6 +424,7 @@ fn append_metadata_only_tracks(
                 kind: TrackKind::Subtitle,
                 codec_name: normalize_codec_name(&codec_id),
                 codec_id,
+                audio_profile: None,
                 codec_private: None,
                 width: None,
                 height: None,
@@ -965,6 +982,13 @@ fn parse_kind_strings(data: &[u8]) -> Option<(String, String)> {
 }
 
 fn decode_mdhd_language(code: u16) -> Option<String> {
+    if code < 0x400 {
+        return match code {
+            0 => Some("eng".to_string()),
+            _ => None,
+        };
+    }
+
     let chars = [
         (((code >> 10) & 0x1F) as u8).saturating_add(0x60),
         (((code >> 5) & 0x1F) as u8).saturating_add(0x60),
@@ -1340,6 +1364,112 @@ fn scan_mp4_hdr10plus(path: &Path, ctx: &MediaContext, tracks: &mut [ParsedMp4Tr
     }
 }
 
+fn scan_mp4_audio_profiles(path: &Path, ctx: &MediaContext, tracks: &mut [ParsedMp4Track]) {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+
+    for parsed_track in tracks
+        .iter_mut()
+        .filter(|track| track.raw.kind == TrackKind::Audio)
+    {
+        if !matches!(
+            parsed_track.raw.codec_name.as_deref(),
+            Some("eac3" | "truehd" | "dts")
+        ) {
+            continue;
+        }
+        let probe_spec = audio_profile_probe_spec(parsed_track.raw.codec_name.as_deref());
+        if probe_spec.prefix_bytes == 0 {
+            continue;
+        }
+
+        let Some(mp4_track) = parsed_track
+            .track_id
+            .and_then(|track_id| {
+                ctx.tracks
+                    .iter()
+                    .find(|track| track.track_id == Some(track_id))
+            })
+            .or_else(|| {
+                ctx.tracks
+                    .iter()
+                    .find(|track| matches!(track.track_type, TrackType::Audio))
+            })
+        else {
+            continue;
+        };
+
+        let Some((offset, size)) = first_track_sample_range(mp4_track) else {
+            continue;
+        };
+        let Some((prefix, suffix)) =
+            read_audio_profile_probe_bytes(&mut file, offset, size as u64, probe_spec)
+        else {
+            continue;
+        };
+
+        merge_audio_profile(
+            &mut parsed_track.raw.audio_profile,
+            detect_audio_profile_from_probe_bytes(
+                parsed_track.raw.codec_name.as_deref(),
+                &prefix,
+                suffix.as_deref(),
+            ),
+        );
+    }
+}
+
+fn first_track_sample_range(track: &mp4parse::Track) -> Option<(u64, usize)> {
+    let first_offset = track
+        .stco
+        .as_ref()
+        .and_then(|stco| stco.offsets.first().copied())?;
+    let first_size = track.stsz.as_ref().and_then(|stsz| {
+        if stsz.sample_size > 0 {
+            Some(stsz.sample_size as u64)
+        } else {
+            stsz.sample_sizes.first().map(|&size| size as u64)
+        }
+    })?;
+
+    (first_size > 0).then_some((first_offset, first_size as usize))
+}
+
+fn read_audio_profile_probe_bytes(
+    file: &mut std::fs::File,
+    sample_offset: u64,
+    sample_size: u64,
+    spec: crate::codec::AudioProfileProbeSpec,
+) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+    let prefix_size = sample_size.min(spec.prefix_bytes as u64) as usize;
+    if prefix_size == 0 {
+        return None;
+    }
+
+    file.seek(SeekFrom::Start(sample_offset)).ok()?;
+    let mut prefix = vec![0_u8; prefix_size];
+    file.read_exact(&mut prefix).ok()?;
+
+    let suffix = if spec.suffix_bytes > 0 {
+        let suffix_size = sample_size.min(spec.suffix_bytes as u64) as usize;
+        let suffix_offset = sample_offset + sample_size.saturating_sub(suffix_size as u64);
+        if suffix_offset >= sample_offset + prefix_size as u64 {
+            file.seek(SeekFrom::Start(suffix_offset)).ok()?;
+            let mut suffix = vec![0_u8; suffix_size];
+            file.read_exact(&mut suffix).ok()?;
+            Some(suffix)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some((prefix, suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1572,5 +1702,10 @@ mod tests {
             mp4_audio_channels("ac-3", Some(&[0x00, 0x3C, 0x00]), None),
             Some(6)
         );
+    }
+
+    #[test]
+    fn decodes_legacy_mdhd_english_language_code() {
+        assert_eq!(decode_mdhd_language(0), Some("eng".to_string()));
     }
 }

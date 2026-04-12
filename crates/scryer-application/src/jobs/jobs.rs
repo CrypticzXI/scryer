@@ -116,6 +116,7 @@ impl AppUseCase {
                         DomainEventType::LibraryScanStarted,
                         DomainEventType::LibraryScanProgressed,
                         DomainEventType::LibraryScanCompleted,
+                        DomainEventType::LibraryScanCanceled,
                         DomainEventType::LibraryScanFailed,
                     ]),
                     limit: 500,
@@ -591,6 +592,7 @@ impl AppUseCase {
             .map(|session| &session.status)
         {
             Some(LibraryScanStatus::Warning) => JobRunStatus::Warning,
+            Some(LibraryScanStatus::Canceled) => JobRunStatus::Warning,
             Some(LibraryScanStatus::Failed) => JobRunStatus::Failed,
             _ => JobRunStatus::Completed,
         };

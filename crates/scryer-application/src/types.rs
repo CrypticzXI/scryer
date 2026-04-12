@@ -151,6 +151,7 @@ pub struct TitleMediaFile {
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
+    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     pub audio_languages: Vec<String>,
@@ -169,6 +170,7 @@ pub struct TitleMediaFile {
     pub resolution: Option<String>,
     pub video_codec_parsed: Option<String>,
     pub audio_codec_parsed: Option<String>,
+    pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,
@@ -232,6 +234,12 @@ pub struct ResolvePendingImportResult {
     pub title: scryer_domain::Title,
     pub created: bool,
     pub library_scan: LibraryScanSummary,
+}
+
+#[derive(Clone, Debug)]
+pub struct CancelLibraryScanResult {
+    pub session_id: String,
+    pub accepted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

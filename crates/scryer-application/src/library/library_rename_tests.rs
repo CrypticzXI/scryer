@@ -1,4 +1,6 @@
 use super::*;
+use chrono::Utc;
+use scryer_domain::{Collection, CollectionType, MediaFacet, Title};
 use std::collections::BTreeMap;
 
 fn tokens(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -257,6 +259,201 @@ fn apply_status_as_str() {
     assert_eq!(RenameApplyStatus::Applied.as_str(), "applied");
     assert_eq!(RenameApplyStatus::Skipped.as_str(), "skipped");
     assert_eq!(RenameApplyStatus::Failed.as_str(), "failed");
+}
+
+fn test_movie_title(name: &str) -> Title {
+    Title {
+        id: "title-1".to_string(),
+        name: name.to_string(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        banner_url: None,
+        banner_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        folder_path: None,
+    }
+}
+
+fn test_movie_collection(path: &str) -> Collection {
+    Collection {
+        id: "collection-1".to_string(),
+        title_id: "title-1".to_string(),
+        collection_type: CollectionType::Movie,
+        collection_index: "1".to_string(),
+        label: Some("720p".to_string()),
+        ordered_path: Some(path.to_string()),
+        narrative_order: None,
+        first_episode_number: None,
+        last_episode_number: None,
+        interstitial_movie: None,
+        specials_movies: vec![],
+        interstitial_season_episode: None,
+        monitored: true,
+        created_at: Utc::now(),
+    }
+}
+
+fn test_media_file(path: &str) -> TitleMediaFile {
+    TitleMediaFile {
+        id: "media-1".to_string(),
+        title_id: "title-1".to_string(),
+        episode_id: None,
+        file_path: path.to_string(),
+        size_bytes: 1_000,
+        source_signature_scheme: None,
+        source_signature_value: None,
+        quality_label: Some("720p".to_string()),
+        scan_status: "scanned".to_string(),
+        created_at: "2026-04-11T00:00:00Z".to_string(),
+        video_codec: Some("hevc".to_string()),
+        video_width: Some(3840),
+        video_height: Some(2160),
+        video_bitrate_kbps: Some(15_000),
+        video_bit_depth: Some(10),
+        video_hdr_format: Some("HDR10".to_string()),
+        video_frame_rate: Some("23.976".to_string()),
+        video_profile: Some("Main 10".to_string()),
+        audio_codec: Some("dts".to_string()),
+        audio_profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
+        audio_channels: Some(8),
+        audio_bitrate_kbps: Some(4_000),
+        audio_languages: vec!["eng".to_string()],
+        audio_streams: vec![crate::AudioStreamDetail {
+            codec: Some("dts".to_string()),
+            profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
+            channels: Some(8),
+            language: Some("eng".to_string()),
+            bitrate_kbps: Some(4_000),
+        }],
+        subtitle_languages: vec![],
+        subtitle_codecs: vec![],
+        subtitle_streams: vec![],
+        has_multiaudio: false,
+        duration_seconds: Some(7200),
+        num_chapters: Some(12),
+        container_format: Some("matroska".to_string()),
+        scene_name: None,
+        release_group: Some("FraMeSToR".to_string()),
+        source_type: Some("BluRay".to_string()),
+        resolution: Some("2160p".to_string()),
+        video_codec_parsed: Some("H.264".to_string()),
+        audio_codec_parsed: Some("AAC".to_string()),
+        audio_channels_parsed: Some("2.0".to_string()),
+        acquisition_score: None,
+        scoring_log: None,
+        indexer_source: None,
+        grabbed_release_title: None,
+        grabbed_at: None,
+        edition: Some("IMAX Enhanced".to_string()),
+        original_file_path: None,
+        release_hash: None,
+    }
+}
+
+#[test]
+fn resolve_rename_common_metadata_prefers_analysis_over_parsed_metadata() {
+    let media_file = test_media_file("/library/Movie.2024.720p.WEB-DL.AAC2.0.H.264-Parsed.mkv");
+    let parsed = parse_release_metadata("Movie.2024.720p.WEB-DL.AAC2.0.H.264-Parsed");
+
+    let resolved =
+        resolve_rename_common_metadata(Some(&media_file), &parsed, "Movie", Some("2024"), "mkv");
+
+    assert_eq!(resolved.common.quality, "2160p");
+    assert_eq!(resolved.common.source, "BluRay");
+    assert_eq!(resolved.common.video_codec, "H.265");
+    assert_eq!(resolved.common.audio_codec, "DTS:X");
+    assert_eq!(resolved.common.audio_channels, "7.1");
+    assert_eq!(resolved.common.group, "FraMeSToR");
+    assert_eq!(resolved.edition, "IMAX Enhanced");
+}
+
+#[test]
+fn resolve_rename_common_metadata_uses_persisted_parsed_backup_when_analysis_missing() {
+    let mut media_file = test_media_file("/library/Movie.2024.mkv");
+    media_file.video_codec = None;
+    media_file.video_height = None;
+    media_file.audio_codec = None;
+    media_file.audio_profile = None;
+    media_file.audio_channels = None;
+    media_file.audio_streams.clear();
+    media_file.source_type = Some("WEB-DL".to_string());
+    media_file.release_group = Some("NTb".to_string());
+    media_file.video_codec_parsed = Some("H.265".to_string());
+    media_file.audio_codec_parsed = Some("TrueHD Atmos".to_string());
+    media_file.audio_channels_parsed = Some("7.1".to_string());
+    media_file.quality_label = Some("1080p".to_string());
+    let parsed = parse_release_metadata("Movie");
+
+    let resolved =
+        resolve_rename_common_metadata(Some(&media_file), &parsed, "Movie", Some("2024"), "mkv");
+
+    assert_eq!(resolved.common.quality, "1080p");
+    assert_eq!(resolved.common.source, "WEB-DL");
+    assert_eq!(resolved.common.video_codec, "H.265");
+    assert_eq!(resolved.common.audio_codec, "TrueHD Atmos");
+    assert_eq!(resolved.common.audio_channels, "7.1");
+    assert_eq!(resolved.common.group, "NTb");
+}
+
+#[test]
+fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let current_path = dir
+        .path()
+        .join("Movie.2024.720p.WEB-DL.AAC2.0.H.264-Parsed.mkv");
+    std::fs::write(&current_path, b"movie").expect("seed movie file");
+    let current_path = current_path.to_string_lossy().to_string();
+
+    let title = test_movie_title("Movie (2024)");
+    let collection = test_movie_collection(&current_path);
+    let media_file = test_media_file(&current_path);
+    let mut planned_targets = std::collections::HashSet::new();
+
+    let items = build_movie_rename_plan_items(
+        &title,
+        vec![collection],
+        vec![media_file.clone()],
+        "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
+        &RenameCollisionPolicy::Skip,
+        &RenameMissingMetadataPolicy::FallbackTitle,
+        &mut planned_targets,
+    );
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].media_file_id.as_deref(),
+        Some(media_file.id.as_str())
+    );
+    assert_eq!(
+        items[0].normalized_filename.as_deref(),
+        Some("Movie (2024) [2160p H.265 DTS X 7.1].mkv")
+    );
 }
 
 #[test]

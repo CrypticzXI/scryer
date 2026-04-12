@@ -82,6 +82,7 @@ async fn persist_or_reuse_scanned_media_file(
         resolution: parsed.quality.clone(),
         video_codec_parsed: parsed.video_codec.clone(),
         audio_codec_parsed: parsed.audio.clone(),
+        audio_channels_parsed: parsed.audio_channels.clone(),
         ..Default::default()
     };
 
@@ -333,6 +334,7 @@ pub(super) async fn finalize_movie_scan_file(
     title: &Title,
     file: &LibraryFile,
     summary: &mut LibraryScanSummary,
+    cancel_token: Option<&CancellationToken>,
 ) {
     let file_stem = Path::new(&file.path)
         .file_stem()
@@ -419,6 +421,10 @@ pub(super) async fn finalize_movie_scan_file(
         return;
     };
 
+    if library_scan_cancel_requested(cancel_token) {
+        return;
+    }
+
     if persisted_file.should_analyze {
         let analysis_outcome = match app
             .services
@@ -438,6 +444,9 @@ pub(super) async fn finalize_movie_scan_file(
                 MediaAnalysisOutcome::Invalid(error.to_string())
             }
         };
+        if library_scan_cancel_requested(cancel_token) {
+            return;
+        }
         persist_scanned_media_analysis_outcome(
             app,
             title,
@@ -445,6 +454,10 @@ pub(super) async fn finalize_movie_scan_file(
             analysis_outcome,
         )
         .await;
+    }
+
+    if library_scan_cancel_requested(cancel_token) {
+        return;
     }
 
     let collections = match app
@@ -469,8 +482,16 @@ pub(super) async fn finalize_movie_scan_file(
         }
     };
 
+    if library_scan_cancel_requested(cancel_token) {
+        return;
+    }
+
     if ensure_movie_collection_for_file(app, title, file, &parsed, &collections).await {
         persisted_file.title_updated = true;
+    }
+
+    if library_scan_cancel_requested(cancel_token) {
+        return;
     }
 
     crate::import_workflow::mark_wanted_completed(app, &title.id, None, None).await;
