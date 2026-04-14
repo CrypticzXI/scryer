@@ -176,9 +176,10 @@ pub(crate) use helpers::{
     INDEXER_PROVIDER_NZBGEEK, INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES,
     await_cancellable, await_cancellable_app_result, normalize_release_attempt_hint,
     normalize_release_attempt_title, normalize_release_password, normalize_show_text_opt,
-    normalize_tags, parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, statvfs_path,
-    to_hex,
+    normalize_tags, parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, to_hex,
 };
+#[cfg(unix)]
+pub(crate) use helpers::statvfs_path;
 pub use helpers::{accepted_inputs_for_client, nice_thread};
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
