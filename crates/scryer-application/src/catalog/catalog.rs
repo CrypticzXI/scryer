@@ -2599,7 +2599,7 @@ impl AppUseCase {
         let replacement_tags =
             strip_derived_match_tags(&existing_title.tags, REMATCH_DERIVED_TAG_PREFIXES);
 
-        let reset_title = self
+        let mut reset_title = self
             .services
             .catalog
             .titles
@@ -2609,6 +2609,59 @@ impl AppUseCase {
                 replacement_tags,
             )
             .await?;
+
+        if has_episodes
+            && reset_title
+                .folder_path
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            let mut legacy_folder_path = existing_title
+                .folder_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            if legacy_folder_path.is_none() {
+                let old_title_name = existing_title.name.trim();
+                if !old_title_name.is_empty()
+                    && let Ok((media_root, _)) =
+                        crate::import_workflow::resolve_import_paths(self, &existing_title).await
+                {
+                    legacy_folder_path = Some(
+                        std::path::PathBuf::from(media_root)
+                            .join(old_title_name)
+                            .to_string_lossy()
+                            .to_string(),
+                    );
+                }
+            }
+
+            if let Some(legacy_folder_path) = legacy_folder_path
+                && tokio::fs::metadata(&legacy_folder_path)
+                    .await
+                    .ok()
+                    .is_some_and(|metadata| metadata.is_dir())
+            {
+                match self
+                    .services
+                    .catalog
+                    .titles
+                    .set_folder_path(&existing_title.id, &legacy_folder_path)
+                    .await
+                {
+                    Ok(()) => {
+                        reset_title.folder_path = Some(legacy_folder_path);
+                    }
+                    Err(error) => warn!(
+                        error = %error,
+                        title_id = %existing_title.id,
+                        "failed to persist legacy folder path before title rematch hydration"
+                    ),
+                }
+            }
+        }
 
         let mut hydration_outcome = self
             .hydrate_titles_bulk(vec![HydrationTarget {

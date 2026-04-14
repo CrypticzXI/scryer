@@ -859,6 +859,19 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         "RUSTSEC-2026-0006",
         "RUSTSEC-2026-0020",
         "RUSTSEC-2026-0021",
+        // Extism currently pins wasmtime 41.x upstream, so these remain release
+        // blockers until the runtime stack moves onto a patched wasmtime line.
+        "RUSTSEC-2026-0085",
+        "RUSTSEC-2026-0086",
+        "RUSTSEC-2026-0087",
+        "RUSTSEC-2026-0088",
+        "RUSTSEC-2026-0089",
+        "RUSTSEC-2026-0091",
+        "RUSTSEC-2026-0092",
+        "RUSTSEC-2026-0093",
+        "RUSTSEC-2026-0094",
+        "RUSTSEC-2026-0095",
+        "RUSTSEC-2026-0096",
     ];
     warn(format!(
         "Ignoring advisories pending upstream fixes: {}",

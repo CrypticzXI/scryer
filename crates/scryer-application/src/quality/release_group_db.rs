@@ -588,6 +588,7 @@ static GROUPS: &[GroupEntry] = &[
     group!("PRODJi", Banned, Any),
     group!("PSA", Banned, Any),
     group!("PTNK", Banned, Any),
+    group!("R&H", Banned, Any),
     group!("RARBG", Banned, Any),
     group!("RDN", Banned, Any),
     group!("Rifftrax", Banned, Any),

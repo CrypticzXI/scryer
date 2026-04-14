@@ -39,7 +39,7 @@ pub(crate) fn normalize_imdb_id(raw_imdb_id: &str) -> Option<String> {
 fn episodic_facet_matches_hint(facet: MediaFacet, facet_hint: Option<&str>) -> bool {
     match facet_hint.map(|value| value.trim().to_ascii_lowercase()) {
         Some(hint) if hint == "anime" => facet == MediaFacet::Anime,
-        Some(hint) if hint == "series" || hint == "series" => facet == MediaFacet::Series,
+        Some(hint) if matches!(hint.as_str(), "series" | "tv") => facet == MediaFacet::Series,
         _ => matches!(facet, MediaFacet::Series | MediaFacet::Anime),
     }
 }

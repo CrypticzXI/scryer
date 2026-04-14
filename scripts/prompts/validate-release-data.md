@@ -1,7 +1,7 @@
 # Release Group Database Validation
 
 You are validating and updating the scryer release group database before a release.
-The database is at `crates/scryer-application/src/release_group_db.rs`.
+The database is at `crates/scryer-application/src/quality/release_group_db.rs`.
 
 ## Data Source
 
@@ -32,7 +32,7 @@ Group names appear in both radarr and sonarr — deduplicate across both.
    - Groups that TRaSH removed (remove them)
    - Groups that changed tiers (update them)
    - New banned/LQ groups (add them)
-3. **Update the database file** — edit `crates/scryer-application/src/release_group_db.rs`:
+3. **Update the database file** — edit `crates/scryer-application/src/quality/release_group_db.rs`:
    - Add new groups using the `group!()` macro
    - Remove groups no longer in TRaSH guides
    - Update tier assignments that changed

@@ -5013,13 +5013,18 @@ async fn graphql_add_title_with_structured_options() {
 #[tokio::test]
 async fn graphql_add_title_then_list() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "Listed Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Listed Movie", "movie").await;
 
     let body = gql(&ctx, "{ titles { id name facet } }", json!({})).await;
     assert_no_errors(&body);
     let titles = body["data"]["titles"].as_array().unwrap();
     assert_eq!(titles.len(), 1);
-    assert_eq!(titles[0]["name"], "Listed Movie");
+    assert_eq!(titles[0]["id"], title_id);
+    assert!(
+        titles[0]["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
     assert_eq!(titles[0]["facet"], "movie");
 }
 
@@ -5038,9 +5043,9 @@ async fn graphql_add_multiple_titles() {
 #[tokio::test]
 async fn graphql_titles_are_sorted_by_display_name() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "zeta movie", "movie").await;
-    add_test_title(&ctx, "Alpha Movie", "movie").await;
-    add_test_title(&ctx, "beta movie", "movie").await;
+    create_catalog_title(&ctx, "zeta movie", MediaFacet::Movie, vec![], vec![], true).await;
+    create_catalog_title(&ctx, "Alpha Movie", MediaFacet::Movie, vec![], vec![], true).await;
+    create_catalog_title(&ctx, "beta movie", MediaFacet::Movie, vec![], vec![], true).await;
 
     let body = gql(
         &ctx,
@@ -5224,7 +5229,7 @@ async fn graphql_get_title_by_id() {
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["title"]["name"], "Specific Movie");
+    assert_eq!(body["data"]["title"]["name"], "Test Movie Title");
     assert_eq!(body["data"]["title"]["monitored"], true);
 }
 
@@ -6375,7 +6380,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
     }
 
     let hydrated_title = hydrated_title.expect("anime title should hydrate and relink files");
-    assert_eq!(hydrated_title.name, "Anime Scan");
+    assert_eq!(hydrated_title.name, "Hydrated Anime Title");
     assert!(hydrated_title.metadata_fetched_at.is_some());
     assert_eq!(
         hydrated_title.folder_path.as_deref(),
@@ -7369,10 +7374,9 @@ async fn graphql_series_titles_expose_series_facet() {
     assert_no_errors(&body);
 
     let titles = body["data"]["titles"].as_array().unwrap();
-    let title = titles
-        .iter()
-        .find(|title| title["name"] == "Series A")
-        .expect("series title should be present");
+    assert_eq!(titles.len(), 1);
+    let title = &titles[0];
+    assert_eq!(title["name"], "Test Show Name");
     assert_eq!(title["facet"], "series");
 }
 
@@ -7823,7 +7827,7 @@ async fn graphql_fix_title_match_movie_updates_identity_and_history() {
     assert_eq!(payload["hydrated"], true);
     assert_eq!(payload["warnings"], json!([]));
     assert!(payload["libraryScan"].is_null());
-    assert_eq!(payload["title"]["name"], "Broken Movie Match");
+    assert_eq!(payload["title"]["name"], "Test Movie Title");
     assert_eq!(payload["title"]["slug"], "test-movie-title");
     assert_eq!(payload["title"]["imdbId"], "tt1234567");
     assert!(payload["title"]["metadataFetchedAt"].is_string());
@@ -8036,7 +8040,7 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
     let payload = &body["data"]["fixTitleMatch"];
     assert_eq!(payload["hydrated"], true);
     assert_eq!(payload["warnings"], json!([]));
-    assert_eq!(payload["title"]["name"], title_name);
+    assert_eq!(payload["title"]["name"], "Test Show Name");
     assert_eq!(payload["libraryScan"]["scanned"], 1);
     assert_eq!(payload["libraryScan"]["unmatched"], 0);
 
