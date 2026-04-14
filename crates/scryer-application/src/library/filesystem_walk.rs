@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::{AppError, AppResult};
+use scryer_domain::VIDEO_EXTENSIONS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WalkEntryKind {
@@ -15,6 +16,13 @@ enum WalkFilterPolicy {
     None,
     LibraryScanJunkOnly,
     MovieTitleScan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalkFilePolicy {
+    All,
+    SupportedVideoOnly,
+    SupportedVideoAndNfo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +44,7 @@ pub struct WalkedDirectory {
 pub struct FilesystemWalker {
     read_behavior: WalkReadBehavior,
     filter_policy: WalkFilterPolicy,
+    file_policy: WalkFilePolicy,
     max_depth: Option<usize>,
 }
 
@@ -50,6 +59,7 @@ impl FilesystemWalker {
         Self {
             read_behavior: WalkReadBehavior::Fail,
             filter_policy: WalkFilterPolicy::None,
+            file_policy: WalkFilePolicy::All,
             max_depth: None,
         }
     }
@@ -66,6 +76,16 @@ impl FilesystemWalker {
 
     pub fn skip_movie_scan_junk_and_extras(mut self) -> Self {
         self.filter_policy = WalkFilterPolicy::MovieTitleScan;
+        self
+    }
+
+    pub fn supported_video_files_only(mut self) -> Self {
+        self.file_policy = WalkFilePolicy::SupportedVideoOnly;
+        self
+    }
+
+    pub fn supported_video_and_nfo_files(mut self) -> Self {
+        self.file_policy = WalkFilePolicy::SupportedVideoAndNfo;
         self
     }
 
@@ -216,6 +236,9 @@ impl FilesystemWalker {
                     subdirs.push(path);
                 }
                 WalkEntryKind::File => {
+                    if !self.should_include_file(&path) {
+                        continue;
+                    }
                     if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
                         filenames_lower.insert(name.to_ascii_lowercase());
                     }
@@ -261,6 +284,29 @@ impl FilesystemWalker {
             .symlinked_subdirs
             .retain(|path| listing.subdirs.contains(path));
     }
+
+    fn should_include_file(&self, path: &Path) -> bool {
+        match self.file_policy {
+            WalkFilePolicy::All => true,
+            WalkFilePolicy::SupportedVideoOnly => is_supported_video_file(path),
+            WalkFilePolicy::SupportedVideoAndNfo => {
+                is_supported_video_file(path) || path_has_extension(path, "nfo")
+            }
+        }
+    }
+}
+
+fn is_supported_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.as_str()))
+}
+
+fn path_has_extension(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(expected))
 }
 
 fn classify_entry_kind(path: &Path, file_type: &fs::FileType) -> Option<WalkEntryKind> {
@@ -385,5 +431,40 @@ mod tests {
             .expect("walk with early stop");
 
         assert_eq!(visited, vec![dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn walker_can_filter_to_supported_video_files_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("episode.mkv"), b"video").expect("video");
+        fs::write(dir.path().join("episode-thumb.jpg"), b"thumb").expect("thumb");
+        fs::write(dir.path().join("episode.nfo"), b"<episodedetails />").expect("nfo");
+
+        let walked = FilesystemWalker::new()
+            .supported_video_files_only()
+            .walk(dir.path())
+            .expect("walk");
+
+        assert_eq!(walked.len(), 1);
+        assert_eq!(walked[0].files, vec![dir.path().join("episode.mkv")]);
+    }
+
+    #[test]
+    fn walker_can_filter_to_supported_video_and_nfo_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("movie.mkv"), b"video").expect("video");
+        fs::write(dir.path().join("movie.nfo"), b"<movie />").expect("nfo");
+        fs::write(dir.path().join("poster.jpg"), b"poster").expect("poster");
+
+        let walked = FilesystemWalker::new()
+            .supported_video_and_nfo_files()
+            .walk(dir.path())
+            .expect("walk");
+
+        assert_eq!(walked.len(), 1);
+        assert_eq!(
+            walked[0].files,
+            vec![dir.path().join("movie.mkv"), dir.path().join("movie.nfo")]
+        );
     }
 }

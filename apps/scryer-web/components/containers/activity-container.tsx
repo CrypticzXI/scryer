@@ -1,5 +1,5 @@
 
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { useMutation } from "urql";
 
 import { AssignTrackedDownloadTitleDialog } from "@/components/dialogs/assign-tracked-download-title-dialog";
@@ -18,6 +18,7 @@ import {
 import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
 import type { DownloadQueueItem } from "@/lib/types";
+import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
 
 const HISTORY_STATES = new Set(["completed", "failed", "import_pending", "importpending"]);
 type QueueMode = "scryer" | "all" | "history";
@@ -42,6 +43,14 @@ export const ActivityContainer = memo(function ActivityContainer() {
     includeHistoryOnly: false,
   });
   const {
+    queueItems: allActivityQueueItems,
+    refreshQueue: refreshAllActivityQueue,
+  } = useDownloadQueue({
+    enabled: queueMode !== "history",
+    includeAllActivity: true,
+    includeHistoryOnly: false,
+  });
+  const {
     historyItems,
     historyLoading,
     historyLoadingMore,
@@ -54,15 +63,35 @@ export const ActivityContainer = memo(function ActivityContainer() {
     enabled: queueMode === "history",
   });
 
-  const visibleItems = queueMode === "history" ? historyItems : queueItems;
+  const manualImportRequiredItems = useMemo(
+    () =>
+      queueMode === "history"
+        ? []
+        : allActivityQueueItems.filter((item) => isManualImportRequiredQueueItem(item)),
+    [allActivityQueueItems, queueMode],
+  );
+
+  const visibleItems = useMemo(() => {
+    if (queueMode === "history") {
+      return historyItems;
+    }
+
+    if (queueMode !== "all" || manualImportRequiredItems.length === 0) {
+      return queueItems;
+    }
+
+    const blockedIds = new Set(manualImportRequiredItems.map((item) => item.id));
+    return queueItems.filter((item) => !blockedIds.has(item.id));
+  }, [historyItems, manualImportRequiredItems, queueItems, queueMode]);
   const visibleLoading = queueMode === "history" ? historyLoading : queueLoading;
   const visibleError = queueMode === "history" ? historyError : queueError;
   const visibleLastRefreshedAt =
     queueMode === "history" ? historyLastRefreshedAt : lastRefreshedAt;
 
   const refreshActivityViews = useCallback(async () => {
-    await Promise.all([refreshQueue(), refreshHistory()]);
-  }, [refreshHistory, refreshQueue]);
+    await Promise.all([refreshQueue(), refreshAllActivityQueue(), refreshHistory()]);
+    window.dispatchEvent(new CustomEvent("scryer:activityQueueRefresh"));
+  }, [refreshAllActivityQueue, refreshHistory, refreshQueue]);
 
   const requestManualImport = useCallback(
     async (item: DownloadQueueItem) => {
@@ -71,7 +100,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
         return;
       }
 
-      if (item.facet === "tv" || item.facet === "anime") {
+      if (item.facet === "series" || item.facet === "anime") {
         setManualImportItem(item);
         return;
       }
@@ -189,6 +218,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
     <>
       <ActivityView
         state={{
+          manualImportRequiredItems,
           queueItems: visibleItems,
           queueLoading: visibleLoading,
           queueError: visibleError,

@@ -1,4 +1,4 @@
-
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useClient } from "urql";
@@ -43,7 +43,7 @@ type SystemHealth = {
   monitoredTitles: number;
   totalUsers: number;
   titlesMovie: number;
-  titlesTv: number;
+  titlesSeries: number;
   titlesAnime: number;
   titlesOther: number;
   recentEvents: number;
@@ -104,6 +104,14 @@ type ParsedLine = {
   kvPairs: { key: string; value: string; start: number; end: number }[];
 };
 
+type LogLineEntry = {
+  id: number;
+  raw: string;
+  lower: string;
+  level: string;
+  parsed: ParsedLine | null;
+};
+
 function parseLine(raw: string): ParsedLine | null {
   const m = TRACING_LINE_RE.exec(raw);
   if (!m) return null;
@@ -124,10 +132,21 @@ function parseLine(raw: string): ParsedLine | null {
   return { timestamp: m[1], level: m[2], target: m[3], message: body, kvPairs };
 }
 
-function HighlightedLine({ line }: { line: string }) {
-  const parsed = parseLine(line);
+function buildLogLineEntry(id: number, raw: string): LogLineEntry {
+  const parsed = parseLine(raw);
+  return {
+    id,
+    raw,
+    lower: raw.toLowerCase(),
+    level: parsed ? parsed.level.toLowerCase() : detectLogLevel(raw),
+    parsed,
+  };
+}
+
+function HighlightedLine({ entry }: { entry: LogLineEntry }) {
+  const parsed = entry.parsed;
   if (!parsed) {
-    return <span className="text-foreground/80">{line}</span>;
+    return <span className="text-foreground/80">{entry.raw}</span>;
   }
 
   const lvl = parsed.level.toLowerCase();
@@ -175,6 +194,7 @@ function HighlightedLine({ line }: { line: string }) {
 }
 
 const MAX_BUFFER = 2000;
+const LOG_STREAM_BATCH_MS = 50;
 
 function LogViewer() {
   const client = useClient();
@@ -182,19 +202,59 @@ function LogViewer() {
   const [search, setSearch] = useState("");
   const [level, setLevel] = useState("all");
   const [paused, setPaused] = useState(false);
-  const [lines, setLines] = useState<string[]>([]);
+  const [lines, setLines] = useState<LogLineEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const pausedRef = useRef(paused);
+  const nextLineIdRef = useRef(0);
+  const pendingLinesRef = useRef<string[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => { pausedRef.current = paused; });
+  const flushPendingLines = useCallback(() => {
+    flushTimerRef.current = null;
+    if (pendingLinesRef.current.length === 0) {
+      return;
+    }
+
+    const pending = pendingLinesRef.current.splice(0, pendingLinesRef.current.length);
+    setLines((prev) => {
+      const appended = pending.map((line) => {
+        const id = nextLineIdRef.current;
+        nextLineIdRef.current += 1;
+        return buildLogLineEntry(id, line);
+      });
+      const next = [...prev, ...appended];
+      return next.length > MAX_BUFFER
+        ? next.slice(next.length - MAX_BUFFER)
+        : next;
+    });
+  }, []);
+
+  const enqueueLine = useCallback((line: string) => {
+    pendingLinesRef.current.push(line);
+    if (flushTimerRef.current) {
+      return;
+    }
+
+    flushTimerRef.current = setTimeout(flushPendingLines, LOG_STREAM_BATCH_MS);
+  }, [flushPendingLines]);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
 
   // Initial load via query
   useEffect(() => {
     client.query(serviceLogsQuery, { limit: MAX_BUFFER }).toPromise().then(({ data }) => {
       const initial: string[] = Array.isArray(data?.serviceLogs?.lines) ? data.serviceLogs.lines : [];
-      setLines(initial);
+      setLines(() =>
+        initial.map((line) => {
+          const id = nextLineIdRef.current;
+          nextLineIdRef.current += 1;
+          return buildLogLineEntry(id, line);
+        }),
+      );
     });
   }, [client]);
 
@@ -207,12 +267,7 @@ function LogViewer() {
     onNext(result) {
       const line = result.data?.serviceLogLines;
       if (line && !pausedRef.current) {
-        setLines((prev) => {
-          const next = [...prev, line];
-          return next.length > MAX_BUFFER
-            ? next.slice(next.length - MAX_BUFFER)
-            : next;
-        });
+        enqueueLine(line);
       }
     },
     onError(err) {
@@ -223,6 +278,16 @@ function LogViewer() {
       setConnected(false);
     },
   });
+
+  useEffect(
+    () => () => {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+      }
+      pendingLinesRef.current = [];
+    },
+    [],
+  );
 
   // Auto-scroll when new lines arrive
   useEffect(() => {
@@ -241,11 +306,20 @@ function LogViewer() {
   const filteredLines = useMemo(() => {
     const query = search.trim().toLowerCase();
     return lines.filter((line) => {
-      if (query && !line.toLowerCase().includes(query)) return false;
-      if (level !== "all" && detectLogLevel(line) !== level) return false;
+      if (query && !line.lower.includes(query)) return false;
+      if (level !== "all" && line.level !== level) return false;
       return true;
     });
   }, [level, lines, search]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: filteredLines.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 24,
+    overscan: 20,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
 
   return (
     <div className="space-y-3">
@@ -314,17 +388,33 @@ function LogViewer() {
         {filteredLines.length === 0 ? (
           <p className="p-4 text-muted-foreground">No logs available yet.</p>
         ) : (
-          <div className="p-2">
-            {filteredLines.map((line, i) => (
-              <div key={i} className="flex hover:bg-accent/50">
-                <span className="mr-3 select-none text-right text-muted-foreground/50" style={{ minWidth: "3ch" }}>
-                  {i + 1}
-                </span>
-                <span className="break-all">
-                  <HighlightedLine line={line} />
-                </span>
-              </div>
-            ))}
+          <div
+            className="relative p-2"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {virtualItems.map((virtualRow) => {
+              const line = filteredLines[virtualRow.index];
+              if (!line) {
+                return null;
+              }
+
+              return (
+                <div
+                  key={line.id}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  className="absolute left-0 top-0 flex w-full hover:bg-accent/50"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <span className="mr-3 select-none text-right text-muted-foreground/50" style={{ minWidth: "3ch" }}>
+                    {virtualRow.index + 1}
+                  </span>
+                  <span className="break-all">
+                    <HighlightedLine entry={line} />
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -391,7 +481,7 @@ export function SystemView({
                 <span className="text-muted-foreground">{t("system.usersLabel")}:</span> {systemHealth.totalUsers}
               </p>
               <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.facetLabel")}:</span> movie={systemHealth.titlesMovie}, tv={systemHealth.titlesTv}, anime=
+                <span className="text-muted-foreground">{t("system.facetLabel")}:</span> movie={systemHealth.titlesMovie}, series={systemHealth.titlesSeries}, anime=
                 {systemHealth.titlesAnime}, other={systemHealth.titlesOther}
               </p>
             </div>

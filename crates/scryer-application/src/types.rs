@@ -9,6 +9,7 @@ use crate::release_parser::ParsedReleaseMetadata;
 
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
+    pub name: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
@@ -34,6 +35,55 @@ pub struct TitleMetadataUpdate {
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).
     pub extra_tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorMovieEntry {
+    pub root_path: String,
+    pub tmdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    pub monitored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorSeasonEntry {
+    pub season_number: i32,
+    pub monitored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorEpisodeEntry {
+    pub tvdb_id: Option<String>,
+    pub season_number: i32,
+    pub episode_number: i32,
+    pub monitored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorSeriesEntry {
+    pub root_path: String,
+    pub tvdb_id: Option<String>,
+    pub monitored: bool,
+    pub seasons: Vec<ExternalImportMonitorSeasonEntry>,
+    pub episodes: Vec<ExternalImportMonitorEpisodeEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExternalImportMonitorSnapshotPayload {
+    Movie {
+        entries: Vec<ExternalImportMonitorMovieEntry>,
+    },
+    Series {
+        entries: Vec<ExternalImportMonitorSeriesEntry>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorSnapshot {
+    pub facet: scryer_domain::MediaFacet,
+    pub payload: ExternalImportMonitorSnapshotPayload,
+    pub created_at: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -673,11 +723,12 @@ pub struct TitleMediaSizeSummary {
     pub total_size_bytes: i64,
 }
 
-/// Aggregated owned-vs-total episode counts per title, excluding specials.
+/// Aggregated episode progress counts per title, excluding specials.
 #[derive(Clone, Debug)]
 pub struct TitleEpisodeProgressSummary {
     pub title_id: String,
     pub owned_episodes: i64,
+    pub monitored_episodes: i64,
     pub total_episodes: i64,
 }
 
@@ -698,7 +749,7 @@ pub struct SystemHealth {
     pub monitored_titles: usize,
     pub total_users: usize,
     pub titles_movie: usize,
-    pub titles_tv: usize,
+    pub titles_series: usize,
     pub titles_anime: usize,
     pub titles_other: usize,
     pub recent_events: usize,

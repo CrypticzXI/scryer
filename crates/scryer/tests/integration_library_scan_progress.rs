@@ -169,6 +169,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
                 titles_total: Some(4),
                 files_completed: 5,
                 files_total: Some(9),
+                warning_message: None,
             }),
         })
         .await
@@ -187,7 +188,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .expect("activeLibraryScans should be an array");
     assert_eq!(scans.len(), 1);
     assert_eq!(scans[0]["sessionId"], "session-1");
-    assert_eq!(scans[0]["facet"], "tv");
+    assert_eq!(scans[0]["facet"], "series");
     assert_eq!(scans[0]["status"], "running");
     assert_eq!(scans[0]["foundTitles"], 12);
     assert_eq!(scans[0]["titleMatchTotalKnown"], false);
@@ -336,7 +337,7 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
                     status
                 }
             }"#,
-            "variables": { "facet": "tv" }
+            "variables": { "facet": "series" }
         }))
         .send()
         .await

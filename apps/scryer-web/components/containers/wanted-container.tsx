@@ -3,7 +3,6 @@ import { useClient, useMutation } from "urql";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import {
-  calendarEpisodesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
   searchQuery,
@@ -34,16 +33,10 @@ import type {
   WantedStatus,
 } from "@/lib/types";
 import type { ParsedQualityProfileEntry } from "@/lib/types/quality-profiles";
-import { FACETS_BY_ID } from "@/lib/facets/registry";
-import type { ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 
-export type WantedTab = "wanted" | "cutoff" | "calendar" | "pending";
-
-type WantedContainerProps = {
-  onOpenOverview?: (targetView: ViewId, titleId: string, episodeId?: string) => void;
-};
+export type WantedTab = "wanted" | "cutoff" | "pending";
 
 function computeCutoffUnmetItems(
   titles: TitleRecord[],
@@ -70,7 +63,7 @@ function computeCutoffUnmetItems(
   for (const title of titles) {
     if (!title.monitored || !title.qualityTier) continue;
 
-    const scopeId = title.facet === "movie" ? "movie" : title.facet === "tv" ? "series" : "anime";
+    const scopeId = title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime";
     const profile = resolveProfile(scopeId);
     if (!profile || !profile.criteria.allow_upgrades) continue;
 
@@ -98,7 +91,7 @@ function computeCutoffUnmetItems(
   return result;
 }
 
-const VALID_TABS = new Set<WantedTab>(["wanted", "cutoff", "calendar", "pending"]);
+const VALID_TABS = new Set<WantedTab>(["wanted", "cutoff", "pending"]);
 
 function readTabFromUrl(): WantedTab {
   if (typeof window === "undefined") return "wanted";
@@ -107,7 +100,7 @@ function readTabFromUrl(): WantedTab {
   return t && VALID_TABS.has(t) ? t : "wanted";
 }
 
-export const WantedContainer = memo(function WantedContainer({ onOpenOverview }: WantedContainerProps) {
+export const WantedContainer = memo(function WantedContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -157,50 +150,6 @@ export const WantedContainer = memo(function WantedContainer({ onOpenOverview }:
   const bulkCancelRef = useRef(false);
   // Keep a ref to the full title list so search can access externalIds
   const titlesRef = useRef<TitleRecord[]>([]);
-
-  // --- Calendar state ---
-  type CalendarEpisodeItem = {
-    id: string;
-    titleId: string;
-    titleName: string;
-    titleFacet: string;
-    seasonNumber: string | null;
-    episodeNumber: string | null;
-    episodeTitle: string | null;
-    airDate: string | null;
-    monitored: boolean;
-  };
-  const [calendarEpisodes, setCalendarEpisodes] = useState<CalendarEpisodeItem[]>([]);
-  const [calendarLoading, setCalendarLoading] = useState(false);
-  const [calendarRange, setCalendarRange] = useState<{ start: string; end: string } | null>(null);
-
-  const refreshCalendar = useCallback(
-    async (start: string, end: string) => {
-      setCalendarLoading(true);
-      try {
-        const { data } = await client
-          .query(calendarEpisodesQuery, { startDate: start, endDate: end })
-          .toPromise();
-        setCalendarEpisodes(data?.calendarEpisodes ?? []);
-      } finally {
-        setCalendarLoading(false);
-      }
-    },
-    [client],
-  );
-
-  const handleCalendarDateRangeChange = useCallback(
-    (start: string, end: string) => {
-      setCalendarRange({ start, end });
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (tab === "calendar" && calendarRange) {
-      void refreshCalendar(calendarRange.start, calendarRange.end);
-    }
-  }, [tab, calendarRange, refreshCalendar]);
 
   // --- Pending releases state ---
   const [pendingItems, setPendingItems] = useState<PendingReleaseItem[]>([]);
@@ -412,7 +361,7 @@ export const WantedContainer = memo(function WantedContainer({ onOpenOverview }:
           query: title.name,
           imdbId,
           tvdbId,
-          category: title.facet === "movie" ? "movie" : title.facet === "tv" ? "tv" : "anime",
+          category: title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime",
           limit: title.facet === "movie" ? 50 : 15,
         })
         .toPromise();
@@ -497,15 +446,6 @@ export const WantedContainer = memo(function WantedContainer({ onOpenOverview }:
     bulkCancelRef.current = true;
   }, []);
 
-  const handleCalendarEpisodeClick = useCallback(
-    (episode: CalendarEpisodeItem) => {
-      const facet = FACETS_BY_ID.get(episode.titleFacet as import("@/lib/types/titles").Facet);
-      if (!facet || !onOpenOverview) return;
-      onOpenOverview(facet.viewId as ViewId, episode.titleId, episode.id);
-    },
-    [onOpenOverview],
-  );
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <WantedView
@@ -543,12 +483,6 @@ export const WantedContainer = memo(function WantedContainer({ onOpenOverview }:
           triggerSearch: cutoffTriggerSearch,
           triggerBulkSearch: cutoffBulkSearch,
           cancelBulkSearch,
-        }}
-        calendarState={{
-          episodes: calendarEpisodes,
-          loading: calendarLoading,
-          onDateRangeChange: handleCalendarDateRangeChange,
-          onEpisodeClick: handleCalendarEpisodeClick,
         }}
         pendingState={{
           items: pendingItems,

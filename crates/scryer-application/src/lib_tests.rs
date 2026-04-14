@@ -109,6 +109,7 @@ impl TitleRepository for MockTitleRepo {
             .iter_mut()
             .find(|entry| entry.id == id)
             .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+        title.name = metadata.name.unwrap_or(title.name.clone());
         title.year = metadata.year;
         title.overview = metadata.overview;
         title.poster_url = metadata.poster_url;
@@ -991,6 +992,7 @@ impl MetadataGateway for MockMetadataGateway {
     async fn search_tvdb_batch(
         &self,
         _queries: &[MetadataSearchQuery],
+        _language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         Err(AppError::Repository("not implemented in tests".into()))
     }
@@ -1196,6 +1198,7 @@ impl MetadataGateway for EmptySearchMetadataGateway {
     async fn search_tvdb_batch(
         &self,
         queries: &[MetadataSearchQuery],
+        _language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         Ok(queries
             .iter()
@@ -1326,6 +1329,7 @@ impl MetadataGateway for BlockingBatchMetadataGateway {
     async fn search_tvdb_batch(
         &self,
         queries: &[MetadataSearchQuery],
+        _language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         let call_number = self.batch_search_calls.fetch_add(1, Ordering::SeqCst) + 1;
         self.batch_search_started.notify_waiters();
@@ -2587,9 +2591,17 @@ fn empty_update_media_settings_with_roots(
 
 #[tokio::test]
 async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let first_path = tempdir.path().join("Unknown.One.2020.1080p.WEB-DL.mkv");
+    std::fs::write(&first_path, b"movie").expect("write first movie file");
+
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
-        .set_value(SETTINGS_SCOPE_MEDIA, "movies.path", "/library")
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
         .await;
     let library_scanner = Arc::new(MutableLibraryScanner::default());
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
@@ -2599,11 +2611,6 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
         unmatched_items.clone(),
     );
 
-    library_scanner
-        .set_library_files(vec![build_test_library_file(
-            "/library/Unknown.One.2020.1080p.WEB-DL.mkv",
-        )])
-        .await;
     let first_summary = app
         .scan_library(&user, MediaFacet::Movie)
         .await
@@ -2614,17 +2621,9 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let first_items = unmatched_items.items().await;
     assert_eq!(first_items.len(), 1);
     assert_eq!(first_items[0].facet, MediaFacet::Movie);
-    assert_eq!(
-        first_items[0].item_path,
-        "/library/Unknown.One.2020.1080p.WEB-DL.mkv"
-    );
+    assert_eq!(first_items[0].item_path, first_path.to_string_lossy());
     let first_session_id = first_items[0].scan_session_id.clone();
 
-    library_scanner
-        .set_library_files(vec![build_test_library_file(
-            "/library/Unknown.One.2020.1080p.WEB-DL.mkv",
-        )])
-        .await;
     let second_summary = app
         .scan_library(&user, MediaFacet::Movie)
         .await
@@ -2635,11 +2634,9 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     assert_eq!(second_items.len(), 1);
     assert_ne!(second_items[0].scan_session_id, first_session_id);
 
-    library_scanner
-        .set_library_files(vec![build_test_library_file(
-            "/library/Unknown.Two.2021.2160p.BluRay.mkv",
-        )])
-        .await;
+    std::fs::remove_file(&first_path).expect("remove first movie file");
+    let second_path = tempdir.path().join("Unknown.Two.2021.2160p.BluRay.mkv");
+    std::fs::write(&second_path, b"movie").expect("write second movie file");
     let third_summary = app
         .scan_library(&user, MediaFacet::Movie)
         .await
@@ -2649,10 +2646,7 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
 
     let third_items = unmatched_items.items().await;
     assert_eq!(third_items.len(), 1);
-    assert_eq!(
-        third_items[0].item_path,
-        "/library/Unknown.Two.2021.2160p.BluRay.mkv"
-    );
+    assert_eq!(third_items[0].item_path, second_path.to_string_lossy());
 }
 
 #[tokio::test]
@@ -2675,30 +2669,7 @@ async fn series_full_scan_persists_unmatched_folders() {
         settings,
         library_scanner,
         unmatched_items.clone(),
-        Arc::new(MockMetadataGateway {
-            movies: HashMap::from([(
-                123_456,
-                MovieMetadata {
-                    tvdb_id: 123_456,
-                    name: "Existing Movie".into(),
-                    slug: "existing-movie".into(),
-                    year: Some(2020),
-                    content_status: "Released".into(),
-                    overview: "Existing overview".into(),
-                    poster_url: "https://example.com/poster.jpg".into(),
-                    banner_url: None,
-                    background_url: None,
-                    language: "eng".into(),
-                    runtime_minutes: 98,
-                    sort_title: "Existing Movie".into(),
-                    imdb_id: "tt0654321".into(),
-                    anidb_id: None,
-                    genres: vec!["Drama".into()],
-                    studio: "Existing Studio".into(),
-                    tmdb_release_date: Some("2020-01-01".into()),
-                },
-            )]),
-        }),
+        Arc::new(EmptySearchMetadataGateway),
     );
 
     let summary = app
@@ -3555,6 +3526,43 @@ async fn update_library_paths_removing_root_clears_pending_imports_for_removed_r
 }
 
 #[tokio::test]
+async fn update_library_paths_allows_partial_wizard_paths() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "movies.path", "/movies-old")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "series.path", "/series-old")
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "anime.path", "/anime-old")
+        .await;
+
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings.clone(),
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items,
+    );
+
+    let updated = app
+        .update_library_paths(
+            &user,
+            UpdateLibraryPaths {
+                movie_path: "".to_string(),
+                series_path: "/series-new".to_string(),
+                anime_path: None,
+            },
+        )
+        .await
+        .expect("update partial library paths");
+
+    assert_eq!(updated.movie_path, "/movies-old");
+    assert_eq!(updated.series_path, "/series-new");
+    assert_eq!(updated.anime_path, "/anime-old");
+}
+
+#[tokio::test]
 async fn save_external_import_library_paths_removing_root_clears_pending_imports_for_removed_root()
 {
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -3604,9 +3612,9 @@ async fn save_external_import_library_paths_removing_root_clears_pending_imports
         .save_external_import_library_paths(
             &user,
             ExternalImportLibraryPathsSelection {
-                movie_path: Some("/movies-new".to_string()),
-                series_path: None,
-                anime_path: None,
+                movie_paths: vec!["/movies-new".to_string()],
+                series_paths: vec![],
+                anime_paths: vec![],
             },
         )
         .await
@@ -3617,6 +3625,143 @@ async fn save_external_import_library_paths_removing_root_clears_pending_imports
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].facet, MediaFacet::Anime);
     assert_eq!(items[0].scan_root, "/anime");
+}
+
+#[tokio::test]
+async fn save_external_import_library_paths_persists_multiple_root_folders_per_facet() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    let saved = app
+        .save_external_import_library_paths(
+            &user,
+            ExternalImportLibraryPathsSelection {
+                movie_paths: vec![
+                    "/movies-primary".to_string(),
+                    "/movies-secondary".to_string(),
+                ],
+                series_paths: vec!["/series-main".to_string(), "/series-archive".to_string()],
+                anime_paths: vec!["/anime".to_string()],
+            },
+        )
+        .await
+        .expect("save external import paths");
+
+    assert!(saved);
+
+    let movie_settings = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect("movie settings");
+    assert_eq!(movie_settings.library_path, "/movies-primary");
+    assert_eq!(
+        movie_settings.root_folders,
+        vec![
+            RootFolderEntry {
+                path: "/movies-primary".to_string(),
+                is_default: true,
+            },
+            RootFolderEntry {
+                path: "/movies-secondary".to_string(),
+                is_default: false,
+            },
+        ]
+    );
+
+    let series_settings = app
+        .get_media_settings(&user, MediaFacet::Series)
+        .await
+        .expect("series settings");
+    assert_eq!(series_settings.library_path, "/series-main");
+    assert_eq!(
+        series_settings.root_folders,
+        vec![
+            RootFolderEntry {
+                path: "/series-main".to_string(),
+                is_default: true,
+            },
+            RootFolderEntry {
+                path: "/series-archive".to_string(),
+                is_default: false,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn save_external_import_library_paths_accepts_custom_selected_paths() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    let saved = app
+        .save_external_import_library_paths(
+            &user,
+            ExternalImportLibraryPathsSelection {
+                movie_paths: vec![
+                    "/custom/movies".to_string(),
+                    "/custom/movies-archive".to_string(),
+                ],
+                series_paths: vec!["/custom/series".to_string()],
+                anime_paths: vec!["/custom/anime".to_string()],
+            },
+        )
+        .await
+        .expect("save custom external import paths");
+
+    assert!(saved);
+
+    let movie_settings = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect("movie settings");
+    assert_eq!(movie_settings.library_path, "/custom/movies");
+    assert_eq!(
+        movie_settings.root_folders,
+        vec![
+            RootFolderEntry {
+                path: "/custom/movies".to_string(),
+                is_default: true,
+            },
+            RootFolderEntry {
+                path: "/custom/movies-archive".to_string(),
+                is_default: false,
+            },
+        ]
+    );
+
+    let series_settings = app
+        .get_media_settings(&user, MediaFacet::Series)
+        .await
+        .expect("series settings");
+    assert_eq!(series_settings.library_path, "/custom/series");
+    assert_eq!(
+        series_settings.root_folders,
+        vec![RootFolderEntry {
+            path: "/custom/series".to_string(),
+            is_default: true,
+        }]
+    );
+
+    let anime_settings = app
+        .get_media_settings(&user, MediaFacet::Anime)
+        .await
+        .expect("anime settings");
+    assert_eq!(anime_settings.library_path, "/custom/anime");
+    assert_eq!(
+        anime_settings.root_folders,
+        vec![RootFolderEntry {
+            path: "/custom/anime".to_string(),
+            is_default: true,
+        }]
+    );
 }
 
 #[tokio::test]
@@ -3751,6 +3896,95 @@ async fn resolve_pending_import_failure_keeps_pending_item() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, METADATA_LANGUAGE_KEY, "jpn")
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items,
+        Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                123_456,
+                MovieMetadata {
+                    tvdb_id: 123_456,
+                    name: "デューン".into(),
+                    slug: "dune".into(),
+                    year: Some(2021),
+                    content_status: "Released".into(),
+                    overview: "日本語概要".into(),
+                    poster_url: "https://example.com/poster.jpg".into(),
+                    banner_url: None,
+                    background_url: None,
+                    language: "jpn".into(),
+                    runtime_minutes: 155,
+                    sort_title: "デューン".into(),
+                    imdb_id: "tt1160419".into(),
+                    anidb_id: None,
+                    genres: vec!["Science Fiction".into()],
+                    studio: "Legendary".into(),
+                    tmdb_release_date: Some("2021-10-22".into()),
+                },
+            )]),
+        }),
+    );
+
+    let created = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Dune".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "123456".to_string(),
+                }],
+                min_availability: None,
+                poster_url: None,
+                year: None,
+                overview: None,
+                sort_title: None,
+                slug: None,
+                runtime_minutes: None,
+                language: None,
+                content_status: None,
+            },
+        )
+        .await
+        .expect("seed untranslated title");
+
+    let mut outcome = app
+        .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+            title: created.clone(),
+            requested_tvdb_id: None,
+            sync_wanted_after_completion: false,
+        }])
+        .await
+        .expect("hydrate title");
+
+    let hydrated = outcome
+        .hydrated_titles
+        .remove(&created.id)
+        .expect("hydrated title should be returned");
+    assert_eq!(hydrated.name, "デューン");
+    assert_eq!(hydrated.metadata_language.as_deref(), Some("jpn"));
+    assert_eq!(hydrated.overview.as_deref(), Some("日本語概要"));
+
+    let persisted = app
+        .list_titles(&user, Some(MediaFacet::Movie), None)
+        .await
+        .expect("list titles");
+    assert_eq!(persisted[0].name, "デューン");
+    assert_eq!(persisted[0].metadata_language.as_deref(), Some("jpn"));
 }
 
 #[tokio::test]
@@ -3896,7 +4130,7 @@ async fn search_titles_supports_facet_filter() {
         },
     )
     .await
-    .expect("create tv");
+    .expect("create series");
 
     let tvs = app
         .list_titles(&user, Some(MediaFacet::Series), None)

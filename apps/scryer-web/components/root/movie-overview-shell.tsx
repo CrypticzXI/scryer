@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { Film } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -24,7 +24,19 @@ const MovieOverviewContainer = lazy(() =>
 );
 
 // Minimal nav items — same sidebar as the main shell so navigation feels consistent.
-const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "activity", "settings", "system"];
+const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "activity", "calendar", "wanted", "history", "settings", "system"];
+
+const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
+  movies: Film,
+  series: Monitor,
+  anime: Clapperboard,
+  activity: ActivitySquare,
+  calendar: CalendarDays,
+  wanted: ListChecks,
+  history: History,
+  settings: Settings,
+  system: MonitorCog,
+};
 
 export function MovieOverviewShell() {
   const [searchParams] = useSearchParams();
@@ -41,7 +53,7 @@ export function MovieOverviewShell() {
       TOP_NAV_IDS.map((id) => ({
         id,
         label: t(`nav.${id}`),
-        icon: Film,
+        icon: TOP_NAV_ICONS[id],
       })),
     [t],
   );
@@ -105,6 +117,7 @@ export function MovieOverviewShell() {
                   systemSection="overview"
                   entitlements={[]}
                   pendingImportCounts={null}
+                  manualImportRequiredCount={0}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

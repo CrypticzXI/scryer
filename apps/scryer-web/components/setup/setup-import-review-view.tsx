@@ -1,19 +1,34 @@
-import { ArrowLeft, Check, Loader2, Ban } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowLeft, Ban, Check, FolderOpen, Loader2, Trash2 } from "lucide-react";
+
+import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
+
+type ImportFacet = "movie" | "series" | "anime";
+type BrowseTarget = ImportFacet | null;
 
 interface SetupImportReviewViewProps {
   t: (key: string) => string;
   preview: ExternalImportPreview;
-  selectedMoviesPath: string | null;
-  selectedSeriesPath: string | null;
-  selectedAnimePath: string | null;
+  selectedMoviesPaths: string[];
+  selectedSeriesPaths: string[];
+  selectedAnimePaths: string[];
+  customMoviesPaths: string[];
+  customSeriesPaths: string[];
+  customAnimePaths: string[];
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
   dcApiKeyOverrides: Map<string, string>;
-  onSelectMoviesPath: (path: string | null) => void;
-  onSelectSeriesPath: (path: string | null) => void;
-  onSelectAnimePath: (path: string | null) => void;
+  onToggleMoviesPath: (path: string) => void;
+  onToggleSeriesPath: (path: string) => void;
+  onToggleAnimePath: (path: string) => void;
+  onAddCustomMoviesPath: (path: string) => void;
+  onAddCustomSeriesPath: (path: string) => void;
+  onAddCustomAnimePath: (path: string) => void;
+  onRemoveCustomMoviesPath: (path: string) => void;
+  onRemoveCustomSeriesPath: (path: string) => void;
+  onRemoveCustomAnimePath: (path: string) => void;
   onToggleDc: (dedupKey: string) => void;
   onToggleIdx: (dedupKey: string) => void;
   onSetDcApiKey: (dedupKey: string, apiKey: string) => void;
@@ -26,15 +41,24 @@ interface SetupImportReviewViewProps {
 export function SetupImportReviewView({
   t,
   preview,
-  selectedMoviesPath,
-  selectedSeriesPath,
-  selectedAnimePath,
+  selectedMoviesPaths,
+  selectedSeriesPaths,
+  selectedAnimePaths,
+  customMoviesPaths,
+  customSeriesPaths,
+  customAnimePaths,
   selectedDcKeys,
   selectedIdxKeys,
   dcApiKeyOverrides,
-  onSelectMoviesPath,
-  onSelectSeriesPath,
-  onSelectAnimePath,
+  onToggleMoviesPath,
+  onToggleSeriesPath,
+  onToggleAnimePath,
+  onAddCustomMoviesPath,
+  onAddCustomSeriesPath,
+  onAddCustomAnimePath,
+  onRemoveCustomMoviesPath,
+  onRemoveCustomSeriesPath,
+  onRemoveCustomAnimePath,
   onToggleDc,
   onToggleIdx,
   onSetDcApiKey,
@@ -43,15 +67,57 @@ export function SetupImportReviewView({
   importing,
   error,
 }: SetupImportReviewViewProps) {
-  const sonarrFolders = preview.rootFolders.filter((f) => f.source === "sonarr");
-  const radarrFolders = preview.rootFolders.filter((f) => f.source === "radarr");
+  const [browseTarget, setBrowseTarget] = useState<BrowseTarget>(null);
 
+  const radarrFolders = useMemo(
+    () => preview.rootFolders.filter((f) => f.source === "radarr"),
+    [preview.rootFolders],
+  );
+  const sonarrFolders = useMemo(
+    () => preview.rootFolders.filter((f) => f.source === "sonarr"),
+    [preview.rootFolders],
+  );
   const hasAnySelection =
-    selectedMoviesPath !== null ||
-    selectedSeriesPath !== null ||
-    selectedAnimePath !== null ||
+    selectedMoviesPaths.length > 0 ||
+    selectedSeriesPaths.length > 0 ||
+    selectedAnimePaths.length > 0 ||
+    customMoviesPaths.length > 0 ||
+    customSeriesPaths.length > 0 ||
+    customAnimePaths.length > 0 ||
     selectedDcKeys.size > 0 ||
     selectedIdxKeys.size > 0;
+
+  const browserInitialPath =
+    browseTarget === "movie"
+      ? customMoviesPaths.at(-1) ?? selectedMoviesPaths[0] ?? radarrFolders[0]?.path ?? "/"
+      : browseTarget === "series"
+        ? customSeriesPaths.at(-1) ?? selectedSeriesPaths[0] ?? sonarrFolders[0]?.path ?? "/"
+        : browseTarget === "anime"
+          ? customAnimePaths.at(-1) ?? selectedAnimePaths[0] ?? sonarrFolders[0]?.path ?? "/"
+          : "/";
+
+  const browserTitle =
+    browseTarget === "movie"
+      ? t("setup.facetMovies")
+      : browseTarget === "series"
+        ? t("setup.facetSeries")
+        : browseTarget === "anime"
+          ? t("setup.facetAnime")
+          : t("setup.browse");
+
+  const handleBrowseSelect = (path: string) => {
+    if (browseTarget === "movie") {
+      onAddCustomMoviesPath(path);
+      return;
+    }
+    if (browseTarget === "series") {
+      onAddCustomSeriesPath(path);
+      return;
+    }
+    if (browseTarget === "anime") {
+      onAddCustomAnimePath(path);
+    }
+  };
 
   return (
     <div className="w-full space-y-6">
@@ -60,7 +126,6 @@ export function SetupImportReviewView({
         <p className="text-sm text-muted-foreground">{t("setup.reviewDescription")}</p>
       </div>
 
-      {/* Connection badges */}
       <div className="flex items-center justify-center gap-3">
         {preview.sonarrConnected ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
@@ -76,89 +141,47 @@ export function SetupImportReviewView({
         ) : null}
       </div>
 
-      {/* Media Paths */}
-      {(sonarrFolders.length > 0 || radarrFolders.length > 0) ? (
+      {(preview.radarrConnected || preview.sonarrConnected) ? (
         <Section title={t("setup.mediaPathsSection")}>
-          {radarrFolders.length > 0 ? (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground">
-                {t("setup.moviesPathFrom")}
-              </p>
-              {radarrFolders.map((folder) => (
-                <label
-                  key={folder.path}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                >
-                  <input
-                    type="radio"
-                    name="movies-path"
-                    checked={selectedMoviesPath === folder.path}
-                    onChange={() => onSelectMoviesPath(folder.path)}
-                    className="accent-primary"
-                  />
-                  <code className="text-xs">{folder.path}</code>
-                </label>
-              ))}
-            </div>
+          {preview.radarrConnected ? (
+            <ImportPathFacetSection
+              label={t("setup.facetMovies")}
+              importedFolders={radarrFolders}
+              selectedImportedPaths={selectedMoviesPaths}
+              customPaths={customMoviesPaths}
+              onToggleImported={onToggleMoviesPath}
+              onRemoveCustom={onRemoveCustomMoviesPath}
+              onAddCustom={() => setBrowseTarget("movie")}
+              t={t}
+            />
           ) : null}
-          {sonarrFolders.length > 0 ? (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground">
-                {t("setup.seriesPathFrom")}
-              </p>
-              {sonarrFolders.map((folder) => (
-                <label
-                  key={folder.path}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                >
-                  <input
-                    type="radio"
-                    name="series-path"
-                    checked={selectedSeriesPath === folder.path}
-                    onChange={() => onSelectSeriesPath(folder.path)}
-                    className="accent-primary"
-                  />
-                  <code className="text-xs">{folder.path}</code>
-                </label>
-              ))}
-            </div>
+          {preview.sonarrConnected ? (
+            <ImportPathFacetSection
+              label={t("setup.facetSeries")}
+              importedFolders={sonarrFolders}
+              selectedImportedPaths={selectedSeriesPaths}
+              customPaths={customSeriesPaths}
+              onToggleImported={onToggleSeriesPath}
+              onRemoveCustom={onRemoveCustomSeriesPath}
+              onAddCustom={() => setBrowseTarget("series")}
+              t={t}
+            />
           ) : null}
-          {sonarrFolders.length > 1 ? (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground">
-                {t("setup.animePathFrom")}
-              </p>
-              <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted">
-                <input
-                  type="radio"
-                  name="anime-path"
-                  checked={selectedAnimePath === null}
-                  onChange={() => onSelectAnimePath(null)}
-                  className="accent-primary"
-                />
-                <span className="text-xs text-muted-foreground">{t("setup.none")}</span>
-              </label>
-              {sonarrFolders.map((folder) => (
-                <label
-                  key={folder.path}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                >
-                  <input
-                    type="radio"
-                    name="anime-path"
-                    checked={selectedAnimePath === folder.path}
-                    onChange={() => onSelectAnimePath(folder.path)}
-                    className="accent-primary"
-                  />
-                  <code className="text-xs">{folder.path}</code>
-                </label>
-              ))}
-            </div>
+          {preview.sonarrConnected ? (
+            <ImportPathFacetSection
+              label={t("setup.facetAnime")}
+              importedFolders={sonarrFolders}
+              selectedImportedPaths={selectedAnimePaths}
+              customPaths={customAnimePaths}
+              onToggleImported={onToggleAnimePath}
+              onRemoveCustom={onRemoveCustomAnimePath}
+              onAddCustom={() => setBrowseTarget("anime")}
+              t={t}
+            />
           ) : null}
         </Section>
       ) : null}
 
-      {/* Download Clients */}
       {preview.downloadClients.length > 0 ? (
         <Section title={t("setup.downloadClientsSection")}>
           {preview.downloadClients.map((dc) => {
@@ -199,7 +222,7 @@ export function SetupImportReviewView({
                   ) : null}
                 </label>
                 {needsApiKey && isSelected ? (
-                  <div className="ml-8 mb-1 space-y-1">
+                  <div className="mb-1 ml-8 space-y-1">
                     <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
                     <input
                       type="text"
@@ -226,7 +249,6 @@ export function SetupImportReviewView({
         </Section>
       ) : null}
 
-      {/* Indexers */}
       {preview.indexers.length > 0 ? (
         <Section title={t("setup.indexersSection")}>
           {preview.indexers.map((idx) => (
@@ -260,10 +282,9 @@ export function SetupImportReviewView({
         </Section>
       ) : null}
 
-      {/* Nothing found */}
       {preview.downloadClients.length === 0 &&
-        preview.indexers.length === 0 &&
-        preview.rootFolders.length === 0 ? (
+      preview.indexers.length === 0 &&
+      preview.rootFolders.length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">
           <Ban className="mb-1 inline-block h-4 w-4" /> {t("setup.noItemsFound")}
         </p>
@@ -287,6 +308,18 @@ export function SetupImportReviewView({
           {importing ? t("setup.importing") : t("setup.importSelected")}
         </Button>
       </div>
+
+      <FolderBrowserDialog
+        open={browseTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setBrowseTarget(null);
+          }
+        }}
+        onSelect={handleBrowseSelect}
+        initialPath={browserInitialPath}
+        title={`${t("settings.rootFolderAdd")} · ${browserTitle}`}
+      />
     </div>
   );
 }
@@ -298,6 +331,79 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+function ImportPathFacetSection({
+  label,
+  importedFolders,
+  selectedImportedPaths,
+  customPaths,
+  onToggleImported,
+  onRemoveCustom,
+  onAddCustom,
+  t,
+}: {
+  label: string;
+  importedFolders: ExternalImportPreview["rootFolders"];
+  selectedImportedPaths: string[];
+  customPaths: string[];
+  onToggleImported: (path: string) => void;
+  onRemoveCustom: (path: string) => void;
+  onAddCustom: () => void;
+  t: (key: string) => string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-lg font-semibold text-foreground">{label}</p>
+        <Button type="button" variant="outline" size="sm" onClick={onAddCustom}>
+          <FolderOpen className="mr-1.5 h-4 w-4" />
+          {t("settings.rootFolderAdd")}
+        </Button>
+      </div>
+
+      <div className="space-y-1">
+        {importedFolders.map((folder) => (
+          <label
+            key={folder.path}
+            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+          >
+            <input
+              type="checkbox"
+              checked={selectedImportedPaths.includes(folder.path)}
+              onChange={() => onToggleImported(folder.path)}
+              className="accent-primary"
+            />
+            <code className="min-w-0 flex-1 truncate text-xs">{folder.path}</code>
+            <SourceBadges sources={[folder.source]} t={t} />
+          </label>
+        ))}
+
+        {customPaths.map((path) => (
+          <div
+            key={path}
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+          >
+            <Check className="h-4 w-4 shrink-0 text-primary" />
+            <code className="min-w-0 flex-1 truncate text-xs">{path}</code>
+            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              Scryer
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+              onClick={() => onRemoveCustom(path)}
+              aria-label={t("label.remove")}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

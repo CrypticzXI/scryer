@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=22
-ARG RUST_VERSION=1.94
+ARG RUST_VERSION=1.94.1
 
 FROM node:${NODE_VERSION}-bookworm-slim AS web
 
@@ -24,6 +24,7 @@ FROM rust:${RUST_VERSION}-bookworm AS builder
 
 ARG SCRYER_SMG_GRAPHQL_URL=https://smg.scryer.media/graphql
 ARG SCRYER_SMG_REGISTRATION_SECRET=
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -43,7 +44,12 @@ ENV SCRYER_EMBED_UI_DIR=/tmp/scryer-web-dist
 ENV SCRYER_SMG_GRAPHQL_URL=${SCRYER_SMG_GRAPHQL_URL}
 ENV SCRYER_SMG_REGISTRATION_SECRET=${SCRYER_SMG_REGISTRATION_SECRET}
 
-RUN cargo build -p scryer --release --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git/checkouts,sharing=locked \
+    --mount=type=cache,target=/workspace/target,sharing=locked \
+    cargo build -p scryer --release --locked \
+ && install -Dm755 /workspace/target/release/scryer /tmp/scryer
 
 FROM debian:bookworm-slim AS runtime
 
@@ -56,7 +62,7 @@ RUN apt-get update \
 
 RUN useradd --create-home --home-dir /home/scryer --uid 1000 scryer
 
-COPY --from=builder /workspace/target/release/scryer /usr/local/bin/scryer
+COPY --from=builder /tmp/scryer /usr/local/bin/scryer
 COPY docker/scryer-e2e-entrypoint.sh /usr/local/bin/scryer-e2e-entrypoint
 
 RUN mkdir -p /data /weaver-downloads /nzbget-downloads /sabnzbd-downloads /scryer-data \

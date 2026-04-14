@@ -10,7 +10,7 @@ use crate::Id;
 pub enum ActivityKind {
     SettingSaved,
     MovieFetched,
-    MovieAdded,
+    TitleAdded,
     TitleUpdated,
     MetadataHydrationStarted,
     MetadataHydrationCompleted,
@@ -70,7 +70,7 @@ impl ActivityKind {
         match self {
             Self::SettingSaved => "setting_saved",
             Self::MovieFetched => "movie_fetched",
-            Self::MovieAdded => "movie_added",
+            Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
             Self::MetadataHydrationStarted => "metadata_hydration_started",
             Self::MetadataHydrationCompleted => "metadata_hydration_completed",

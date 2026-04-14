@@ -49,7 +49,7 @@ pub(crate) fn run(ctx: &TaskContext, args: SeedDevArgs) -> Result<()> {
     seed_download_clients(ctx, &graphql_url, &seed.download_clients, &mut aliases)?;
     seed_settings(ctx, &graphql_url, &seed.settings, &aliases)?;
     seed_titles_for_facet(ctx, &graphql_url, &seed.titles.movies, "movie", "movie")?;
-    seed_titles_for_facet(ctx, &graphql_url, &seed.titles.series, "tv", "series")?;
+    seed_titles_for_facet(ctx, &graphql_url, &seed.titles.series, "series", "series")?;
     seed_titles_for_facet(ctx, &graphql_url, &seed.titles.anime, "anime", "anime")?;
 
     println!("seed: completed successfully ({total} entities seeded)");
@@ -134,15 +134,13 @@ fn wait_for_scryer(ctx: &TaskContext, scryer_url: &str) -> Result<()> {
     for attempt in 0..max_attempts {
         let mut command = ctx.command("curl");
         command.args(["-sf", &health_url]);
-        if let Ok(output) = command.output() {
-            if output.status.success() {
-                if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
-                    if value.get("status").and_then(Value::as_str) == Some("ok") {
-                        println!("seed: scryer is ready");
-                        return Ok(());
-                    }
-                }
-            }
+        if let Ok(output) = command.output()
+            && output.status.success()
+            && let Ok(value) = serde_json::from_slice::<Value>(&output.stdout)
+            && value.get("status").and_then(Value::as_str) == Some("ok")
+        {
+            println!("seed: scryer is ready");
+            return Ok(());
         }
 
         if attempt + 1 < max_attempts {
@@ -185,17 +183,17 @@ fn graphql_request(
     }
 
     let response: Value = serde_json::from_slice(&output.stdout).context("invalid GraphQL JSON")?;
-    if let Some(errors) = response.get("errors").and_then(Value::as_array) {
-        if !errors.is_empty() {
-            let mut message = format!("GraphQL request returned {} errors", errors.len());
-            for error in errors {
-                if let Some(text) = error.get("message").and_then(Value::as_str) {
-                    message.push_str("\n  - ");
-                    message.push_str(text);
-                }
+    if let Some(errors) = response.get("errors").and_then(Value::as_array)
+        && !errors.is_empty()
+    {
+        let mut message = format!("GraphQL request returned {} errors", errors.len());
+        for error in errors {
+            if let Some(text) = error.get("message").and_then(Value::as_str) {
+                message.push_str("\n  - ");
+                message.push_str(text);
             }
-            bail!("{message}");
         }
+        bail!("{message}");
     }
 
     Ok(response)

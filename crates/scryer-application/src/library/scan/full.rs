@@ -100,7 +100,7 @@ pub(super) async fn scan_library_movies(
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
     let root = require_directory_library_path(library_path)?;
     let discovered_entries =
-        stream_movie_top_level_entries_batched(root, LIBRARY_SCAN_BATCH_SIZE).await?;
+        stream_movie_top_level_entries_batched(root, LIBRARY_SCAN_MOVIE_BATCH_SIZE).await?;
     let queued_discovered_entries = spawn_library_discovery_queue(
         app.clone(),
         session_id.to_string(),
@@ -127,15 +127,18 @@ pub(super) async fn scan_library_movies(
     let mut seen_paths = HashSet::new();
     let mut unmatched_items = Vec::new();
     let mut workset = HashMap::new();
+    let metadata_language = app.metadata_language().await;
     let mut prepared_entries = stream_prepared_movie_library_scan_entries(
         app.services.library.library_scanner.clone(),
         queued_discovered_entries,
         library_path.to_string(),
-        LIBRARY_SCAN_BATCH_SIZE,
+        LIBRARY_SCAN_MOVIE_BATCH_SIZE,
         cancel_token.clone(),
     )?;
-    let mut metadata_resolver =
-        StreamingMovieMetadataResolver::new(app.services.library.metadata_gateway.clone());
+    let mut metadata_resolver = StreamingMovieMetadataResolver::new(
+        app.services.library.metadata_gateway.clone(),
+        metadata_language.clone(),
+    );
 
     while let Some(prepared_batch_result) =
         await_cancellable(cancel_token.as_ref(), prepared_entries.recv())
@@ -169,7 +172,7 @@ pub(super) async fn scan_library_movies(
                         actor,
                         facet,
                         &coordinator,
-                        candidate,
+                        *candidate,
                         &mut workset,
                         &mut existing_titles,
                         &mut existing_titles_by_name,
@@ -262,7 +265,7 @@ pub(super) async fn scan_library_movies(
         metadata_lookups = metadata_lookup_stats.logical_lookups,
         metadata_lookup_requests_executed = metadata_lookup_stats.executed_requests,
         metadata_lookup_requests_coalesced = metadata_lookup_stats.coalesced_requests,
-        batch_size = LIBRARY_SCAN_BATCH_SIZE,
+        batch_size = LIBRARY_SCAN_MOVIE_BATCH_SIZE,
         worker_concurrency = LIBRARY_METADATA_LOOKUP_CONCURRENCY,
         elapsed_ms = elapsed_ms_u64(started_at),
         "movie library scan completed"
@@ -302,7 +305,7 @@ pub(super) async fn scan_library_series(
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
     let root = require_directory_library_path(library_path)?;
     let discovered_folders =
-        stream_child_directories_batched(root, LIBRARY_SCAN_BATCH_SIZE).await?;
+        stream_child_directories_batched(root, LIBRARY_SCAN_SERIES_BATCH_SIZE).await?;
     let mut queued_discovered_folders = spawn_library_discovery_queue(
         app.clone(),
         session_id.to_string(),
@@ -326,6 +329,7 @@ pub(super) async fn scan_library_series(
     let mut seen_paths = HashSet::new();
     let mut unmatched_items = Vec::new();
     let mut workset = HashMap::new();
+    let metadata_language = app.metadata_language().await;
 
     while let Some(folder_batch_result) =
         await_cancellable(cancel_token.as_ref(), queued_discovered_folders.recv())
@@ -376,6 +380,7 @@ pub(super) async fn scan_library_series(
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
             app.services.library.metadata_gateway.clone(),
+            &metadata_language,
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,
@@ -438,7 +443,7 @@ pub(super) async fn scan_library_series(
         metadata_lookups = metadata_lookup_stats.logical_lookups,
         metadata_lookup_requests_executed = metadata_lookup_stats.executed_requests,
         metadata_lookup_requests_coalesced = metadata_lookup_stats.coalesced_requests,
-        batch_size = LIBRARY_SCAN_BATCH_SIZE,
+        batch_size = LIBRARY_SCAN_SERIES_BATCH_SIZE,
         worker_concurrency = LIBRARY_METADATA_LOOKUP_CONCURRENCY,
         elapsed_ms = elapsed_ms_u64(started_at),
         "series library scan completed"

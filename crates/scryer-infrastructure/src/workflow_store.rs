@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository, DownloadSubmission,
-    DownloadSubmissionRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource, SuccessfulGrabCommit,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshot,
+    ExternalImportMonitorSnapshotRepository, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
+    SuccessfulGrabCommit, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 use scryer_domain::{DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, NewDomainEvent};
 
@@ -371,6 +372,35 @@ impl ImportRepository for SqliteWorkflowStore {
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
         crate::queries::workflow::list_imports_query(&self.pool, limit as i64).await
+    }
+}
+
+#[async_trait]
+impl ExternalImportMonitorSnapshotRepository for SqliteWorkflowStore {
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        snapshot: &ExternalImportMonitorSnapshot,
+    ) -> AppResult<()> {
+        crate::queries::workflow::upsert_external_import_monitor_snapshot_query(
+            &self.pool, snapshot,
+        )
+        .await
+    }
+
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
+        crate::queries::workflow::get_external_import_monitor_snapshot_query(&self.pool, facet)
+            .await
+    }
+
+    async fn delete_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<()> {
+        crate::queries::workflow::delete_external_import_monitor_snapshot_query(&self.pool, facet)
+            .await
     }
 }
 

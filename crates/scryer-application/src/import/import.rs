@@ -396,7 +396,7 @@ fn facet_for_completed_download(completed: &CompletedDownload) -> Option<MediaFa
         .as_deref()
     {
         Some("movie") => Some(MediaFacet::Movie),
-        Some("tv") | Some("series") => Some(MediaFacet::Series),
+        Some("series") => Some(MediaFacet::Series),
         Some("anime") => Some(MediaFacet::Anime),
         _ => None,
     }
@@ -463,7 +463,7 @@ pub async fn import_completed_download(
             .and_then(|f| app.facet_registry.all().find(|h| h.facet_id() == f))
             .is_some_and(|h| h.has_episodes());
         if is_episode {
-            ImportType::TvDownload
+            ImportType::SeriesDownload
         } else {
             ImportType::MovieDownload
         }

@@ -359,7 +359,7 @@ async fn multi_indexer_url_trace_anime_episode() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn multi_indexer_url_trace_tv_episode() {
+async fn multi_indexer_url_trace_series_episode() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
 
     let _results = app

@@ -221,6 +221,7 @@ pub(super) async fn background_refresh_series(
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
     let mut workset = HashMap::new();
+    let metadata_language = app.metadata_language().await;
 
     let mut existing_titles = app
         .services
@@ -252,7 +253,7 @@ pub(super) async fn background_refresh_series(
         coordinator.mark_title_match_completed(1).await;
     }
 
-    for folder_batch in unknown_folders.chunks(LIBRARY_SCAN_BATCH_SIZE) {
+    for folder_batch in unknown_folders.chunks(LIBRARY_SCAN_SERIES_BATCH_SIZE) {
         let prepared_candidates = prepare_series_library_scan_candidates(folder_batch).await?;
         let mut unresolved_candidates = Vec::new();
 
@@ -279,6 +280,7 @@ pub(super) async fn background_refresh_series(
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
             app.services.library.metadata_gateway.clone(),
+            &metadata_language,
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,
@@ -383,6 +385,7 @@ pub(super) async fn background_refresh_movies(
         build_movie_probe_path_indexes(root, &existing_titles, &collections_by_title);
 
     let mut unknown_entries = Vec::new();
+    let metadata_language = app.metadata_language().await;
     for entry in entries {
         summary.scanned += 1;
         let entry_key = entry.path.to_string_lossy().to_string();
@@ -407,7 +410,7 @@ pub(super) async fn background_refresh_movies(
         coordinator.mark_title_match_completed(1).await;
     }
 
-    for entry_chunk in unknown_entries.chunks(LIBRARY_SCAN_BATCH_SIZE) {
+    for entry_chunk in unknown_entries.chunks(LIBRARY_SCAN_MOVIE_BATCH_SIZE) {
         let prepared_entries = prepare_movie_library_scan_entries(
             app.services.library.library_scanner.clone(),
             entry_chunk,
@@ -422,7 +425,7 @@ pub(super) async fn background_refresh_movies(
                     let candidate = process_movie_refresh_candidate(
                         app,
                         actor,
-                        candidate,
+                        *candidate,
                         &mut workset,
                         &mut existing_titles,
                         &mut existing_titles_by_name,
@@ -449,6 +452,7 @@ pub(super) async fn background_refresh_movies(
 
         let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
             app.services.library.metadata_gateway.clone(),
+            &metadata_language,
             &coordinator,
             unresolved_candidates,
             &mut metadata_lookup_stats,

@@ -7,8 +7,12 @@ use scryer_domain::{
     JobRunCompletedEventData, JobRunFailedEventData, JobRunStartedEventData,
 };
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 3600;
+const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
 
 fn background_library_refresh_enabled() -> bool {
     std::env::var("SCRYER_BACKGROUND_LIBRARY_REFRESH")
@@ -31,6 +35,14 @@ struct HealthChecksSummary {
     total: usize,
     errors: usize,
     warnings: usize,
+    checks: Vec<HealthCheckSummaryItem>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct HealthCheckSummaryItem {
+    source: String,
+    status: String,
+    message: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -546,6 +558,14 @@ impl AppUseCase {
                         total: results.len(),
                         errors,
                         warnings,
+                        checks: results
+                            .iter()
+                            .map(|result| HealthCheckSummaryItem {
+                                source: result.source.clone(),
+                                status: result.status.as_str().to_string(),
+                                message: result.message.clone(),
+                            })
+                            .collect(),
                     })
                     .ok(),
                 ))
@@ -668,6 +688,11 @@ pub async fn start_background_library_refresh_loop(
         return;
     }
 
+    let startup_seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+
     for job_key in [
         JobKey::BackgroundLibraryRefreshMovies,
         JobKey::BackgroundLibraryRefreshSeries,
@@ -675,8 +700,11 @@ pub async fn start_background_library_refresh_loop(
     ] {
         let app = app.clone();
         let token = token.child_token();
+        let initial_delay_seconds =
+            background_library_refresh_initial_delay_seconds(startup_seed, job_key)
+                .expect("background refresh job");
         tokio::spawn(async move {
-            run_background_library_refresh_worker(app, token, job_key).await;
+            run_background_library_refresh_worker(app, token, job_key, initial_delay_seconds).await;
         });
     }
 
@@ -687,9 +715,13 @@ async fn run_background_library_refresh_worker(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
     job_key: JobKey,
+    initial_delay_seconds: i64,
 ) {
-    let initial_delay = job_key.initial_delay_seconds().unwrap_or(60).max(1) as u64;
-    let interval_seconds = job_key.interval_seconds().unwrap_or(3600).max(1) as u64;
+    let initial_delay = initial_delay_seconds.max(1) as u64;
+    let interval_seconds = job_key
+        .interval_seconds()
+        .unwrap_or(BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS)
+        .max(1) as u64;
     let initial_next_run_at = Utc::now() + chrono::Duration::seconds(initial_delay as i64);
     app.set_job_next_run_at(job_key, initial_next_run_at).await;
 
@@ -732,6 +764,22 @@ async fn run_background_library_refresh_worker(
     }
 }
 
+fn background_library_refresh_initial_delay_seconds(
+    startup_seed: u64,
+    job_key: JobKey,
+) -> Option<i64> {
+    let order = match job_key {
+        JobKey::BackgroundLibraryRefreshMovies => 0,
+        JobKey::BackgroundLibraryRefreshSeries => 1,
+        JobKey::BackgroundLibraryRefreshAnime => 2,
+        _ => return None,
+    };
+
+    let randomized_base =
+        (startup_seed % BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS as u64) as i64;
+    Some(randomized_base + order * BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS)
+}
+
 fn job_key_library_facet(job_key: JobKey) -> Option<MediaFacet> {
     match job_key {
         JobKey::LibraryScanMovies | JobKey::BackgroundLibraryRefreshMovies => {
@@ -750,4 +798,33 @@ fn summary_text_from_library_scan(summary: &LibraryScanSummary) -> String {
         "Scanned {}, imported {}, skipped {}, unmatched {}",
         summary.scanned, summary.imported, summary.skipped, summary.unmatched
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_library_refresh_initial_delays_are_staggered_by_facet() {
+        let startup_seed = 1_234_u64;
+        let movie = background_library_refresh_initial_delay_seconds(
+            startup_seed,
+            JobKey::BackgroundLibraryRefreshMovies,
+        )
+        .expect("movie delay");
+        let series = background_library_refresh_initial_delay_seconds(
+            startup_seed,
+            JobKey::BackgroundLibraryRefreshSeries,
+        )
+        .expect("series delay");
+        let anime = background_library_refresh_initial_delay_seconds(
+            startup_seed,
+            JobKey::BackgroundLibraryRefreshAnime,
+        )
+        .expect("anime delay");
+
+        assert_eq!(movie, 1_234);
+        assert_eq!(series - movie, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
+        assert_eq!(anime - series, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
+    }
 }

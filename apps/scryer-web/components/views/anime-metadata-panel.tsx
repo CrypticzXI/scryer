@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Star, Tv, Radio } from "lucide-react";
+import { Clapperboard, Radio, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   MAL_SCORE_PREFIX,
@@ -24,15 +24,22 @@ function formatAnimeStatus(raw: string): string {
 }
 
 function formatAnimeMediaType(raw: string): string {
-  const map: Record<string, string> = {
-    tv: "TV",
-    ova: "OVA",
-    movie: "Movie",
-    special: "Special",
-    ona: "ONA",
-    music: "Music",
-  };
-  return map[raw.toLowerCase()] ?? raw;
+  switch (raw.trim().toUpperCase()) {
+    case "TV":
+      return "Series";
+    case "OVA":
+      return "OVA";
+    case "MOVIE":
+      return "Movie";
+    case "SPECIAL":
+      return "Special";
+    case "ONA":
+      return "ONA";
+    case "MUSIC":
+      return "Music";
+    default:
+      return raw;
+  }
 }
 
 export function AnimeMetadataPanel({ tags, episodesByCollection }: AnimeMetadataPanelProps) {
@@ -60,7 +67,7 @@ export function AnimeMetadataPanel({ tags, episodesByCollection }: AnimeMetadata
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <Tv className="h-4 w-4" />
+          <Clapperboard className="h-4 w-4" />
           {t("anime.metadataPanel")}
         </CardTitle>
       </CardHeader>

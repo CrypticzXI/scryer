@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,8 +11,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { JobDefinition, JobKey, JobRun } from "@/lib/types";
+import type { Facet, JobDefinition, JobKey, JobRun, LibraryScanStatus } from "@/lib/types";
+import { isTerminalJobRunStatus } from "@/lib/utils/job-runs";
 
 type SystemJobsViewState = {
   jobs: JobDefinition[];
@@ -25,6 +28,28 @@ type SystemJobsViewState = {
   onTriggerJob: (jobKey: JobKey) => void;
 };
 
+type HealthCheckIssue = {
+  source: string;
+  status: string;
+  message: string;
+};
+
+type SortKey = "name" | "nextRun" | "lastRun" | "status";
+type SortDirection = "asc" | "desc";
+
+type JobTableRow = {
+  job: JobDefinition;
+  activeRun: JobRun | null;
+  activeLibraryScan: ReturnType<ReturnType<typeof useLibraryScanProgress>["getActiveSession"]> | null;
+  lastRun: JobRun | null;
+  status: JobRun["status"] | "idle";
+  isDisabled: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function formatDate(
   value: string | null | undefined,
   t: ReturnType<typeof useTranslate>,
@@ -34,6 +59,27 @@ function formatDate(
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function renderTableDateTime(
+  value: string | null | undefined,
+  t: ReturnType<typeof useTranslate>,
+) {
+  if (!value) {
+    return t("jobs.never");
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return (
+    <div className="space-y-0.5 leading-tight">
+      <div>{date.toLocaleDateString()}</div>
+      <div>{date.toLocaleTimeString()}</div>
+    </div>
+  );
 }
 
 function runStatusTone(status: JobRun["status"] | "idle"): string {
@@ -75,6 +121,66 @@ function runStatusLabel(
   }
 }
 
+function parseHealthCheckIssues(run: JobRun): HealthCheckIssue[] {
+  if (run.jobKey !== "health_checks" || !run.summaryJson) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(run.summaryJson) as unknown;
+    if (!isRecord(parsed) || !Array.isArray(parsed.checks)) {
+      return [];
+    }
+
+    return parsed.checks.flatMap((check) => {
+      if (
+        !isRecord(check) ||
+        typeof check.source !== "string" ||
+        typeof check.status !== "string" ||
+        typeof check.message !== "string" ||
+        check.status === "ok"
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          source: check.source,
+          status: check.status,
+          message: check.message,
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function formatHealthCheckSource(source: string): string {
+  const withSpaces = source.replace(/([a-z0-9])([A-Z])/g, "$1 $2").trim();
+  return withSpaces.length > 0 ? withSpaces : source;
+}
+
+function healthCheckStatusTone(status: string): string {
+  switch (status) {
+    case "error":
+      return "text-red-400";
+    case "warning":
+      return "text-amber-400";
+    case "ok":
+      return "text-emerald-400";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+function formatHealthCheckStatus(status: string): string {
+  if (!status) {
+    return "Unknown";
+  }
+  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
+}
+
 function triggerSourceLabel(
   triggerSource: JobRun["triggerSource"],
   t: ReturnType<typeof useTranslate>,
@@ -91,8 +197,127 @@ function triggerSourceLabel(
   }
 }
 
+function libraryFacetForJob(jobKey: JobKey): Facet | null {
+  switch (jobKey) {
+    case "library_scan_movies":
+    case "background_library_refresh_movies":
+      return "movie";
+    case "library_scan_series":
+    case "background_library_refresh_series":
+      return "series";
+    case "library_scan_anime":
+    case "background_library_refresh_anime":
+      return "anime";
+    default:
+      return null;
+  }
+}
+
+function isRunButtonDisabled(
+  hasActiveExecution: boolean,
+  isTriggering: boolean,
+): boolean {
+  if (isTriggering) {
+    return true;
+  }
+
+  if (hasActiveExecution) {
+    return true;
+  }
+
+  return false;
+}
+
+function compareText(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
+}
+
+function compareMaybeDates(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): number {
+  if (!left && !right) {
+    return 0;
+  }
+  if (!left) {
+    return 1;
+  }
+  if (!right) {
+    return -1;
+  }
+
+  const leftTime = new Date(left).getTime();
+  const rightTime = new Date(right).getTime();
+
+  if (Number.isNaN(leftTime) && Number.isNaN(rightTime)) {
+    return compareText(left, right);
+  }
+  if (Number.isNaN(leftTime)) {
+    return 1;
+  }
+  if (Number.isNaN(rightTime)) {
+    return -1;
+  }
+
+  return leftTime - rightTime;
+}
+
+function statusSortWeight(status: JobRun["status"] | "idle"): number {
+  switch (status) {
+    case "running":
+    case "discovering":
+    case "queued":
+      return 0;
+    case "failed":
+      return 1;
+    case "warning":
+      return 2;
+    case "completed":
+      return 3;
+    case "idle":
+    default:
+      return 4;
+  }
+}
+
+function jobStatusFromLibraryScanStatus(
+  status: LibraryScanStatus,
+): JobRun["status"] {
+  switch (status) {
+    case "discovering":
+      return "discovering";
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "canceled":
+    case "warning":
+      return "warning";
+    case "failed":
+      return "failed";
+  }
+}
+
+function isStaleActiveRun(
+  activeRun: JobRun | null | undefined,
+  lastRun: JobRun | null | undefined,
+): boolean {
+  if (!activeRun || !lastRun || !isTerminalJobRunStatus(lastRun.status)) {
+    return false;
+  }
+
+  if (lastRun.id === activeRun.id) {
+    return true;
+  }
+
+  return lastRun.startedAt.localeCompare(activeRun.startedAt) >= 0;
+}
+
 export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
   const t = useTranslate();
+  const { getActiveSession } = useLibraryScanProgress();
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const {
     jobs,
     activeRuns,
@@ -125,58 +350,163 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
     return map;
   }, [recentRuns]);
 
-  const primaryJobs = jobs.filter((job) => job.section === "primary");
-  const maintenanceJobs = jobs.filter((job) => job.section === "maintenance");
+  const defaultSortDirectionFor = useCallback((key: SortKey): SortDirection => {
+    switch (key) {
+      case "lastRun":
+        return "desc";
+      default:
+        return "asc";
+    }
+  }, []);
 
-  const renderRows = (items: JobDefinition[]) =>
-    items.map((job) => {
-      const activeRun = activeRunsByJob[job.key];
-      const lastRun = activeRun ?? lastRunsByJob.get(job.key) ?? null;
-      const status = lastRun?.status ?? "idle";
+  const handleSort = useCallback((nextKey: SortKey) => {
+    if (sortKey === nextKey) {
+      setSortDirection((currentDirection) => (currentDirection === "asc" ? "desc" : "asc"));
+      return;
+    }
 
-      return (
-        <TableRow
-          key={job.key}
-          className="cursor-pointer hover:bg-muted/30"
-          onClick={() => onSelectJob(job.key)}
-        >
-          <TableCell>
-            <div className="space-y-1">
-              <p className="font-medium text-foreground">{job.displayName}</p>
-              <p className="text-xs text-muted-foreground">{job.description}</p>
-            </div>
-          </TableCell>
-          <TableCell className="capitalize text-muted-foreground">
-            {t(`jobs.category.${job.category}`)}
-          </TableCell>
-          <TableCell className="text-muted-foreground">{job.schedule.description}</TableCell>
-          <TableCell className="text-muted-foreground">
-            {formatDate(job.schedule.nextRunAt, t)}
-          </TableCell>
-          <TableCell className="text-muted-foreground">
-            {formatDate(lastRun?.completedAt ?? lastRun?.startedAt ?? null, t)}
-          </TableCell>
-          <TableCell>
-            <span className={runStatusTone(status)}>{runStatusLabel(status, t)}</span>
-          </TableCell>
-          <TableCell>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={Boolean(activeRun) || Boolean(triggeringKeys[job.key])}
-              onClick={(event) => {
-                event.stopPropagation();
-                onTriggerJob(job.key);
-              }}
-            >
-              {Boolean(activeRun) || Boolean(triggeringKeys[job.key])
-                ? t("jobs.action.running")
-                : t("jobs.action.run")}
-            </Button>
-          </TableCell>
-        </TableRow>
-      );
+    setSortKey(nextKey);
+    setSortDirection(defaultSortDirectionFor(nextKey));
+  }, [defaultSortDirectionFor, sortKey]);
+
+  const renderSortIcon = useCallback((key: SortKey) => {
+    if (sortKey !== key) {
+      return null;
+    }
+
+    return sortDirection === "asc"
+      ? <ArrowUp className="h-3.5 w-3.5" />
+      : <ArrowDown className="h-3.5 w-3.5" />;
+  }, [sortDirection, sortKey]);
+
+  const renderSortableHeader = useCallback((
+    key: SortKey,
+    label: string,
+    className?: string,
+  ) => (
+    <TableHead
+      className={className}
+      aria-sort={
+        sortKey === key
+          ? sortDirection === "asc"
+            ? "ascending"
+            : "descending"
+          : "none"
+      }
+    >
+      <button
+        type="button"
+        className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80"
+        onClick={() => handleSort(key)}
+      >
+        <span>{label}</span>
+        {renderSortIcon(key)}
+      </button>
+    </TableHead>
+  ), [handleSort, renderSortIcon, sortDirection, sortKey]);
+
+  const jobRows = useMemo<JobTableRow[]>(() =>
+    jobs.map((job) => {
+      const rawActiveRun = activeRunsByJob[job.key];
+      const activeLibraryScan =
+        job.usesLibraryScanProgress && libraryFacetForJob(job.key)
+          ? getActiveSession(libraryFacetForJob(job.key)!)
+          : null;
+      const recentRun = lastRunsByJob.get(job.key) ?? null;
+      const activeRun = isStaleActiveRun(rawActiveRun, recentRun) ? null : (rawActiveRun ?? null);
+      const lastRun = activeRun ?? recentRun;
+      const status =
+        activeRun?.status ??
+        (activeLibraryScan ? jobStatusFromLibraryScanStatus(activeLibraryScan.status) : null) ??
+        lastRun?.status ??
+        "idle";
+      const isTriggering = Boolean(triggeringKeys[job.key]);
+      const hasActiveExecution = Boolean(activeRun) || Boolean(activeLibraryScan);
+      const isDisabled = isRunButtonDisabled(hasActiveExecution, isTriggering);
+
+      return {
+        job,
+        activeRun: activeRun ?? null,
+        activeLibraryScan,
+        lastRun,
+        status,
+        isDisabled,
+      };
+    }), [activeRunsByJob, getActiveSession, jobs, lastRunsByJob, triggeringKeys]);
+
+  const sortedJobRows = useMemo(() => {
+    const factor = sortDirection === "asc" ? 1 : -1;
+
+    return [...jobRows].sort((left, right) => {
+      const delta = (() => {
+        switch (sortKey) {
+          case "name":
+            return compareText(left.job.displayName, right.job.displayName);
+          case "nextRun":
+            return compareMaybeDates(left.job.schedule.nextRunAt, right.job.schedule.nextRunAt);
+          case "lastRun":
+            return compareMaybeDates(
+              left.lastRun?.completedAt ?? left.lastRun?.startedAt ?? null,
+              right.lastRun?.completedAt ?? right.lastRun?.startedAt ?? null,
+            );
+          case "status":
+            return (
+              statusSortWeight(left.status) - statusSortWeight(right.status) ||
+              compareText(runStatusLabel(left.status, t), runStatusLabel(right.status, t))
+            );
+          default:
+            return 0;
+        }
+      })();
+
+      if (delta !== 0) {
+        return delta * factor;
+      }
+
+      return compareText(left.job.displayName, right.job.displayName);
     });
+  }, [jobRows, sortDirection, sortKey, t]);
+
+  const renderRows = (rows: JobTableRow[]) =>
+    rows.map(({ job, lastRun, status, isDisabled }) => (
+      <TableRow
+        key={job.key}
+        className="cursor-pointer hover:bg-muted/30"
+        onClick={() => onSelectJob(job.key)}
+      >
+        <TableCell>
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">{job.displayName}</p>
+            <p className="text-xs text-muted-foreground">{job.description}</p>
+          </div>
+        </TableCell>
+        <TableCell className="w-[14rem] max-w-[14rem] text-muted-foreground">
+          {job.schedule.description}
+        </TableCell>
+        <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
+          {renderTableDateTime(job.schedule.nextRunAt, t)}
+        </TableCell>
+        <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
+          {renderTableDateTime(lastRun?.completedAt ?? lastRun?.startedAt ?? null, t)}
+        </TableCell>
+        <TableCell>
+          <span className={runStatusTone(status)}>{runStatusLabel(status, t)}</span>
+        </TableCell>
+        <TableCell>
+          <Button
+            size="sm"
+            variant="default"
+            disabled={isDisabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTriggerJob(job.key);
+            }}
+          >
+            {t("jobs.action.run")}
+          </Button>
+        </TableCell>
+      </TableRow>
+    ));
 
   return (
     <>
@@ -185,65 +515,20 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           <CardHeader>
             <CardTitle>{t("jobs.title")}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {activeRuns.length > 0 ? (
-              <div className="space-y-2">
-                <p className="text-sm font-medium text-foreground">{t("jobs.activeRuns")}</p>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {activeRuns.map((run) => (
-                    <div key={run.id} className="rounded-lg border border-border bg-muted/20 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-medium text-foreground">{run.displayName}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {run.summaryText ?? t("jobs.runSummaryRunning")}
-                          </p>
-                        </div>
-                        <span className={runStatusTone(run.status)}>
-                          {runStatusLabel(run.status, t)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-foreground">{t("jobs.primary")}</p>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("jobs.column.name")}</TableHead>
-                    <TableHead>{t("jobs.column.category")}</TableHead>
-                    <TableHead>{t("jobs.column.schedule")}</TableHead>
-                    <TableHead>{t("jobs.column.nextRun")}</TableHead>
-                    <TableHead>{t("jobs.column.lastRun")}</TableHead>
-                    <TableHead>{t("jobs.column.status")}</TableHead>
-                    <TableHead>{t("jobs.column.trigger")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>{renderRows(primaryJobs)}</TableBody>
-              </Table>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-foreground">{t("jobs.maintenance")}</p>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("jobs.column.name")}</TableHead>
-                    <TableHead>{t("jobs.column.category")}</TableHead>
-                    <TableHead>{t("jobs.column.schedule")}</TableHead>
-                    <TableHead>{t("jobs.column.nextRun")}</TableHead>
-                    <TableHead>{t("jobs.column.lastRun")}</TableHead>
-                    <TableHead>{t("jobs.column.status")}</TableHead>
-                    <TableHead>{t("jobs.column.trigger")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>{renderRows(maintenanceJobs)}</TableBody>
-              </Table>
-            </div>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  {renderSortableHeader("name", t("jobs.column.name"))}
+                  <TableHead className="w-[14rem]">{t("jobs.column.schedule")}</TableHead>
+                  {renderSortableHeader("nextRun", t("jobs.column.nextRun"), "w-[10.5rem]")}
+                  {renderSortableHeader("lastRun", t("jobs.column.lastRun"), "w-[10.5rem]")}
+                  {renderSortableHeader("status", t("jobs.column.status"))}
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>{renderRows(sortedJobRows)}</TableBody>
+            </Table>
           </CardContent>
         </Card>
       </div>
@@ -271,14 +556,33 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                 </div>
 
                 <div className="flex gap-2">
+                  {(() => {
+                    const activeRun = activeRunsByJob[selectedJob.key] ?? null;
+                    const recentRun = lastRunsByJob.get(selectedJob.key) ?? null;
+                    const activeLibraryScan =
+                      selectedJob.usesLibraryScanProgress &&
+                      libraryFacetForJob(selectedJob.key)
+                        ? getActiveSession(libraryFacetForJob(selectedJob.key)!)
+                        : null;
+                    const effectiveActiveRun = isStaleActiveRun(activeRun, recentRun)
+                      ? null
+                      : activeRun;
+                    const isTriggering = Boolean(triggeringKeys[selectedJob.key]);
+                    const isDisabled = isRunButtonDisabled(
+                      Boolean(effectiveActiveRun) || Boolean(activeLibraryScan),
+                      isTriggering,
+                    );
+
+                    return (
                   <Button
+                    variant="default"
                     onClick={() => onTriggerJob(selectedJob.key)}
-                    disabled={Boolean(activeRunsByJob[selectedJob.key]) || Boolean(triggeringKeys[selectedJob.key])}
+                    disabled={isDisabled}
                   >
-                    {Boolean(activeRunsByJob[selectedJob.key]) || Boolean(triggeringKeys[selectedJob.key])
-                      ? t("jobs.action.running")
-                      : t("jobs.action.runNow")}
+                    {t("jobs.action.runNow")}
                   </Button>
+                    );
+                  })()}
                 </div>
 
                 <div className="space-y-2">
@@ -289,32 +593,66 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                     <p className="text-sm text-muted-foreground">{t("jobs.noRunsYet")}</p>
                   ) : (
                     <div className="space-y-2">
-                      {selectedJobHistory.map((run) => (
-                        <div key={run.id} className="rounded-lg border border-border p-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="space-y-1">
-                              <p className={runStatusTone(run.status)}>
-                                {runStatusLabel(run.status, t)}
-                              </p>
+                      {selectedJobHistory.map((run) => {
+                        const healthCheckIssues = parseHealthCheckIssues(run);
+
+                        return (
+                          <div key={run.id} className="rounded-lg border border-border p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <p className={runStatusTone(run.status)}>
+                                  {runStatusLabel(run.status, t)}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {t("jobs.startedAt", { value: formatDate(run.startedAt, t) })}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {t("jobs.completedAt", { value: formatDate(run.completedAt, t) })}
+                                </p>
+                                {run.summaryText ? (
+                                  <p className="text-sm text-foreground">{run.summaryText}</p>
+                                ) : null}
+                                {run.errorText ? (
+                                  <p className="text-sm text-red-400">{run.errorText}</p>
+                                ) : null}
+                              </div>
                               <p className="text-xs text-muted-foreground">
-                                {t("jobs.startedAt", { value: formatDate(run.startedAt, t) })}
+                                {triggerSourceLabel(run.triggerSource, t)}
                               </p>
-                              <p className="text-xs text-muted-foreground">
-                                {t("jobs.completedAt", { value: formatDate(run.completedAt, t) })}
-                              </p>
-                              {run.summaryText ? (
-                                <p className="text-sm text-foreground">{run.summaryText}</p>
-                              ) : null}
-                              {run.errorText ? (
-                                <p className="text-sm text-red-400">{run.errorText}</p>
-                              ) : null}
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                              {triggerSourceLabel(run.triggerSource, t)}
-                            </p>
+
+                            {healthCheckIssues.length > 0 ? (
+                              <div className="mt-3 rounded-lg border border-border bg-muted/20 p-3">
+                                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  {t("jobs.healthCheckIssues")}
+                                </p>
+                                <div className="mt-2 space-y-2">
+                                  {healthCheckIssues.map((issue, index) => (
+                                    <div
+                                      key={`${run.id}-${issue.source}-${index}`}
+                                      className="rounded-md border border-border/80 bg-background/40 p-2"
+                                    >
+                                      <div className="flex items-start justify-between gap-3">
+                                        <p className="text-sm font-medium text-foreground">
+                                          {formatHealthCheckSource(issue.source)}
+                                        </p>
+                                        <span
+                                          className={`text-xs ${healthCheckStatusTone(issue.status)}`}
+                                        >
+                                          {formatHealthCheckStatus(issue.status)}
+                                        </span>
+                                      </div>
+                                      <p className="mt-1 text-sm text-muted-foreground">
+                                        {issue.message}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

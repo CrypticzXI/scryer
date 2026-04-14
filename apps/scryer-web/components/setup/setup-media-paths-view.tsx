@@ -37,7 +37,7 @@ export function SetupMediaPathsView({
   error,
 }: SetupMediaPathsViewProps) {
   const [browseTarget, setBrowseTarget] = useState<BrowseTarget>(null);
-  const canProceed = moviesPath.trim().length > 0 && seriesPath.trim().length > 0;
+  const canProceed = true;
 
   const browseInitialPath =
     browseTarget === "movies"
@@ -62,7 +62,12 @@ export function SetupMediaPathsView({
       </div>
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
-          <Label htmlFor="movies-path">{t("setup.moviesPath")}</Label>
+          <Label htmlFor="movies-path">
+            {t("setup.moviesPath")}
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+              {t("setup.optional")}
+            </span>
+          </Label>
           <div className="flex gap-2">
             <Input
               id="movies-path"
@@ -82,7 +87,12 @@ export function SetupMediaPathsView({
           </div>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="series-path">{t("setup.seriesPath")}</Label>
+          <Label htmlFor="series-path">
+            {t("setup.seriesPath")}
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+              {t("setup.optional")}
+            </span>
+          </Label>
           <div className="flex gap-2">
             <Input
               id="series-path"

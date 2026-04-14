@@ -134,6 +134,11 @@ fn match_release_to_title<'a>(
     None
 }
 
+pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
+    let lookup = build_title_lookup(std::slice::from_ref(title));
+    match_release_to_title(parsed, &lookup).is_some_and(|matched| matched.title_id == title.id)
+}
+
 impl AppUseCase {
     /// Run a single RSS sync cycle: fetch latest releases from all enabled indexers,
     /// match against monitored titles, score, and grab approved releases.
@@ -1298,6 +1303,23 @@ mod tests {
         let result = match_release_to_title(&parsed, &lookup);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
+    }
+
+    #[test]
+    fn parsed_release_matches_series_title_when_library_title_includes_year() {
+        let title = make_title("t1", "Bluey (2018)", Some(2018));
+        let parsed = crate::parse_release_metadata("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+
+        assert!(parsed_release_matches_title(&parsed, &title));
+    }
+
+    #[test]
+    fn parsed_release_does_not_match_unrelated_series_title() {
+        let title = make_title("t1", "Bluey (2018)", Some(2018));
+        let parsed =
+            crate::parse_release_metadata("Blue.Exorcist.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+
+        assert!(!parsed_release_matches_title(&parsed, &title));
     }
 
     // ── extract_title_from_release ──────────────────────────────────

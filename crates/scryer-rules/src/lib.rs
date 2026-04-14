@@ -30,7 +30,7 @@ pub struct UserPolicy {
     /// Human-readable name shown in the scoring breakdown.
     pub name: String,
     pub rego_source: String,
-    /// Facets this rule applies to (e.g. "movie", "tv", "anime").
+    /// Facets this rule applies to (e.g. "movie", "series", "anime").
     /// Empty means the rule applies to all facets.
     pub applied_facets: Vec<String>,
 }
@@ -376,7 +376,7 @@ pub struct UserRulesEvaluator {
 impl UserRulesEvaluator {
     /// Evaluate all user rules against one release candidate.
     ///
-    /// `facet` is the current media facet (e.g. "movie", "tv", "anime").
+    /// `facet` is the current media facet (e.g. "movie", "series", "anime").
     /// Rules whose `applied_facets` is non-empty and does not contain `facet`
     /// are skipped.
     ///
@@ -752,7 +752,7 @@ mod tests {
         let mut evaluator = engine.evaluator();
         let input = test_input();
 
-        for facet in &["movie", "tv", "anime"] {
+        for facet in &["movie", "series", "anime"] {
             let result = evaluator.evaluate(&input, facet).unwrap();
             assert_eq!(result.entries.len(), 1, "should apply to {facet}");
         }

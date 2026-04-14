@@ -71,6 +71,7 @@ export type JobRun = {
   triggerSource: JobTriggerSource;
   startedAt: string;
   completedAt: string | null;
+  summaryJson: string | null;
   summaryText: string | null;
   errorText: string | null;
   progressJson: string | null;

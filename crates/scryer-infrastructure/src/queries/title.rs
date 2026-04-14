@@ -1671,6 +1671,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
 
     let result = sqlx::query(
         "UPDATE titles SET
+            name = COALESCE(NULLIF(?, ''), name),
             year = COALESCE(?, year),
             overview = COALESCE(NULLIF(?, ''), overview),
             poster_url = COALESCE(NULLIF(?, ''), poster_url),
@@ -1694,6 +1695,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
             digital_release_date = COALESCE(NULLIF(?, ''), digital_release_date)
          WHERE id = ?",
     )
+    .bind(&metadata.name)
     .bind(metadata.year)
     .bind(&metadata.overview)
     .bind(&metadata.poster_url)

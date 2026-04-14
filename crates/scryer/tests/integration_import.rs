@@ -249,7 +249,7 @@ async fn seed_episode_wanted_item(
         episode_id: Some(episode.id.clone()),
         collection_id: None,
         season_number: Some("1".to_string()),
-        media_type: "tv".to_string(),
+        media_type: "series".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
         last_search_at: None,
@@ -679,7 +679,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "dl-series-rule-blocked",
         source_dir.path().to_str().unwrap(),
         &title.id,
-        "tv",
+        "series",
     );
 
     let result = import_completed_download(&app, &user, &completed)

@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useTranslate } from "@/lib/context/translate-context";
-import { defaultMonitorTypeForFacet, sectionLabelForFacet } from "@/lib/facets/helpers";
+import { defaultMonitorTypeForFacet } from "@/lib/facets/helpers";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
@@ -166,9 +166,7 @@ export function AddToCatalogDialog({
             <div className="min-w-0">
               <DialogTitle className="text-base">{result.name}</DialogTitle>
               <DialogDescription>
-                {sectionLabelForFacet(t, facet)}
-                {result.year ? ` \u2022 ${result.year}` : ""}
-                {result.slug ? ` \u2022 ${result.slug}` : ""}
+                {result.year ? result.year : t("label.yearUnknown")}
               </DialogDescription>
             </div>
           </div>
@@ -239,7 +237,7 @@ export function AddToCatalogDialog({
             </label>
           ) : null}
 
-          {/* Season Folder — tv + anime */}
+          {/* Season Folder — series + anime */}
           {facet !== "movie" ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
@@ -276,7 +274,7 @@ export function AddToCatalogDialog({
               </span>
             </label>
           ) : (
-            /* Monitor Type — tv + anime */
+            /* Monitor Type — series + anime */
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigMonitorType")}

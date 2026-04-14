@@ -69,8 +69,8 @@ const SEARCH_TVDB_QUERY: &str = r#"
 "#;
 
 const SEARCH_TVDB_BATCH_QUERY: &str = r#"
-    query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!) {
-        searchTvdbBatch(requests: $requests) {
+    query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!, $language: String!) {
+        searchTvdbBatch(requests: $requests, language: $language) {
             query
             type
             year
@@ -468,16 +468,15 @@ impl MetadataGatewayClient {
             }
             Err(e) => {
                 let next_attempts = attempts + 1;
-                // Exponential backoff: 30s, 60s, 120s, 240s, capped at 5 minutes
-                let backoff_secs = (30u64 << attempts.min(3)).min(300);
+                let retry_after = enrollment_retry_delay(&e, attempts);
                 warn!(
                     error = %e,
                     attempt = next_attempts,
-                    retry_in_secs = backoff_secs,
+                    retry_in_secs = retry_after.as_secs(),
                     "SMG mTLS enrollment failed"
                 );
                 *guard = MtlsState::Failed {
-                    retry_after: Instant::now() + Duration::from_secs(backoff_secs),
+                    retry_after: Instant::now() + retry_after,
                     attempts: next_attempts,
                 };
                 Err(AppError::Repository(format!(
@@ -490,7 +489,7 @@ impl MetadataGatewayClient {
     async fn try_build_mtls_client(
         &self,
         registration_secret: &str,
-    ) -> Result<(Client, InstanceAuth), String> {
+    ) -> Result<(Client, InstanceAuth), smg_enrollment::EnrollmentError> {
         let state = smg_enrollment::ensure_enrolled(
             &self.db,
             &self.registration_url,
@@ -505,19 +504,24 @@ impl MetadataGatewayClient {
                     *guard = Some(v.clone());
                 }
             }
-            format!("{e}")
+            e
         })?;
 
-        let identity = smg_enrollment::build_mtls_identity(&state)?;
-        let ca_cert = smg_enrollment::build_ca_certificate(&state)?;
-        let cert_der_b64 = smg_enrollment::cert_pem_to_base64_der(&state.client_cert_pem)?;
+        let identity = smg_enrollment::build_mtls_identity(&state)
+            .map_err(smg_enrollment::EnrollmentError::Other)?;
+        let ca_cert = smg_enrollment::build_ca_certificate(&state)
+            .map_err(smg_enrollment::EnrollmentError::Other)?;
+        let cert_der_b64 = smg_enrollment::cert_pem_to_base64_der(&state.client_cert_pem)
+            .map_err(smg_enrollment::EnrollmentError::Other)?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(100))
             .identity(identity)
             .add_root_certificate(ca_cert)
             .build()
-            .map_err(|e| format!("failed to build mTLS client: {e}"))?;
+            .map_err(|e| {
+                smg_enrollment::EnrollmentError::Other(format!("failed to build mTLS client: {e}"))
+            })?;
 
         Ok((
             client,
@@ -1309,10 +1313,12 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
 mod tests {
     use super::{
         MetadataSearchQuery, SEARCH_TVDB_BATCH_QUERY, build_bulk_mixed_query,
-        build_search_tvdb_batch_query, metadata_gateway_rate_limit_delay, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_retry_after_header,
+        build_search_tvdb_batch_query, enrollment_retry_delay, metadata_gateway_rate_limit_delay,
+        normalize_artwork_url, normalize_optional_artwork_url, parse_retry_after_header,
     };
     use std::time::Duration;
+
+    use crate::smg_enrollment::{EnrollmentError, RateLimited};
 
     #[test]
     fn bulk_series_query_requests_tagged_aliases() {
@@ -1430,6 +1436,32 @@ mod tests {
             metadata_gateway_rate_limit_delay(None, 4),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn enrollment_retry_delay_prefers_rate_limit_header_delay() {
+        let delay = enrollment_retry_delay(
+            &EnrollmentError::RateLimited(RateLimited {
+                retry_after: Some(Duration::from_secs(75)),
+                message: "cloudflare rate limit".to_string(),
+            }),
+            0,
+        );
+
+        assert_eq!(delay, Duration::from_secs(75));
+    }
+
+    #[test]
+    fn enrollment_retry_delay_falls_back_when_header_is_missing() {
+        let delay = enrollment_retry_delay(
+            &EnrollmentError::RateLimited(RateLimited {
+                retry_after: None,
+                message: "cloudflare rate limit".to_string(),
+            }),
+            1,
+        );
+
+        assert_eq!(delay, Duration::from_secs(60));
     }
 }
 
@@ -1609,6 +1641,17 @@ fn metadata_gateway_rate_limit_delay(
                 METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY,
             )
         })
+}
+
+fn enrollment_retry_delay(error: &smg_enrollment::EnrollmentError, attempt: u32) -> Duration {
+    if let smg_enrollment::EnrollmentError::RateLimited(rate_limited) = error
+        && let Some(retry_after) = rate_limited.retry_after
+        && !retry_after.is_zero()
+    {
+        return retry_after;
+    }
+
+    bounded_exponential_backoff(attempt, Duration::from_secs(30), Duration::from_secs(300))
 }
 
 fn metadata_gateway_transient_delay(attempt: u32) -> Duration {
@@ -1792,6 +1835,7 @@ impl MetadataGateway for MetadataGatewayClient {
     async fn search_tvdb_batch(
         &self,
         queries: &[MetadataSearchQuery],
+        language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         let deduped_queries = build_search_tvdb_batch_query(queries);
 
@@ -1820,6 +1864,7 @@ impl MetadataGateway for MetadataGatewayClient {
                 "query": SEARCH_TVDB_BATCH_QUERY,
                 "variables": {
                     "requests": request_inputs,
+                    "language": language,
                 },
             });
             let data: SearchTvdbBatchResponse = self.execute_graphql(payload).await?;

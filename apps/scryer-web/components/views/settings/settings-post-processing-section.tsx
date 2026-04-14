@@ -60,7 +60,7 @@ type SettingsPostProcessingSectionProps = {
 
 const FACET_OPTIONS = [
   { value: "movie", label: "Movie" },
-  { value: "tv", label: "Series" },
+  { value: "series", label: "Series" },
   { value: "anime", label: "Anime" },
 ];
 
@@ -672,7 +672,7 @@ function EnvVarsReference() {
           <pre className="rounded border border-border bg-muted/50 p-3 text-xs leading-relaxed">
 {`{
   "event": "post_import",
-  "facet": "tv",
+  "facet": "series",
   "file_path": "/data/series/...",
   "title": {
     "id": "...",

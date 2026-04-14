@@ -1,8 +1,6 @@
 import * as React from "react";
-import { CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
 import { useClient } from "urql";
 
-import { LibraryScanToast } from "@/components/root/library-scan-toast";
 import { toast } from "@/components/ui/sonner";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
@@ -15,57 +13,24 @@ import {
   normalizeJobRun,
   preferJobRunSnapshot,
 } from "@/lib/utils/job-runs";
-import type { JobRun } from "@/lib/types";
+import type { JobKey, JobRun } from "@/lib/types";
 
 const TERMINAL_TOAST_DURATION_MS = 6_000;
 
-function shouldShowBackgroundLibraryToast(run: JobRun): boolean {
-  const scan = run.libraryScanProgress;
-  if (!scan || scan.mode !== "additive") {
-    return false;
-  }
-  if (run.status === "failed" || run.status === "warning") {
-    return true;
-  }
-  if (
-    scan.titleMatchProgress.total > 0 ||
-    scan.hydrationProgress.total > 0 ||
-    scan.mediaAnalysisProgress.total > 0
-  ) {
-    return true;
-  }
-  return Boolean(
-    scan.summary &&
-      (scan.summary.imported > 0 || scan.summary.matched > 0 || scan.summary.unmatched > 0),
-  );
-}
+type JobRunToastContextValue = {
+  registerInteractiveJobRun: (run: JobRun) => void;
+};
 
-function JobRunToast({ run }: { run: JobRun }) {
-  const t = useTranslate();
-  const terminal = isTerminalJobRunStatus(run.status);
-  const icon =
-    run.status === "failed" ? (
-      <CircleAlert className="h-4 w-4 text-red-400" />
-    ) : terminal ? (
-      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-    ) : (
-      <Loader2 className="h-4 w-4 animate-spin text-sky-400" />
-    );
+const JobRunToastContext = React.createContext<JobRunToastContextValue | null>(null);
 
+function usesDedicatedLibraryScanToast(jobKey: JobKey): boolean {
   return (
-    <div className="w-[min(24rem,calc(100vw-3rem))] p-4">
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-semibold text-foreground">{run.displayName}</p>
-          {icon}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {run.errorText ??
-            run.summaryText ??
-            (terminal ? t("jobs.runSummaryCompleted") : t("jobs.runSummaryRunning"))}
-        </p>
-      </div>
-    </div>
+    jobKey === "library_scan_movies" ||
+    jobKey === "library_scan_series" ||
+    jobKey === "library_scan_anime" ||
+    jobKey === "background_library_refresh_movies" ||
+    jobKey === "background_library_refresh_series" ||
+    jobKey === "background_library_refresh_anime"
   );
 }
 
@@ -74,6 +39,7 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
   const t = useTranslate();
   const [runsById, setRunsById] = React.useState<Record<string, JobRun>>({});
   const dismissTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const interactiveRunIdsRef = React.useRef(new Set<string>());
 
   const upsertRun = React.useCallback((run: JobRun) => {
     setRunsById((current) => ({
@@ -81,6 +47,11 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
       [run.id]: preferJobRunSnapshot(current[run.id], run),
     }));
   }, []);
+
+  const registerInteractiveJobRun = React.useCallback((run: JobRun) => {
+    interactiveRunIdsRef.current.add(run.id);
+    upsertRun(run);
+  }, [upsertRun]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -127,13 +98,17 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
   });
 
   React.useEffect(() => {
+    const idsToPrune: string[] = [];
+
     for (const run of Object.values(runsById)) {
-      const isBackgroundLibraryRun =
-        run.libraryScanProgress?.mode === "additive" && shouldShowBackgroundLibraryToast(run);
-      const isGenericToast = !run.libraryScanProgress;
-      const shouldRender = isBackgroundLibraryRun || isGenericToast;
+      const isInteractiveRun = interactiveRunIdsRef.current.has(run.id);
+      const shouldRender =
+        isInteractiveRun && !usesDedicatedLibraryScanToast(run.jobKey);
 
       if (!shouldRender) {
+        if (isTerminalJobRunStatus(run.status)) {
+          idsToPrune.push(run.id);
+        }
         continue;
       }
 
@@ -141,12 +116,12 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
         const existingTimer = dismissTimersRef.current[run.id];
         if (!existingTimer) {
           dismissTimersRef.current[run.id] = setTimeout(() => {
-            toast.dismiss(run.id);
             setRunsById((current) => {
               const next = { ...current };
               delete next[run.id];
               return next;
             });
+            interactiveRunIdsRef.current.delete(run.id);
             delete dismissTimersRef.current[run.id];
           }, TERMINAL_TOAST_DURATION_MS);
         }
@@ -155,33 +130,55 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
         delete dismissTimersRef.current[run.id];
       }
 
-      const scan = run.libraryScanProgress;
-      if (isBackgroundLibraryRun && scan) {
-        toast.custom(
-          () => (
-            <LibraryScanToast
-              session={scan}
-              t={t}
-              titleOverride={run.displayName}
-            />
-          ),
-          {
-            id: run.id,
-            className: "rounded-lg overflow-hidden p-0",
-            duration: isTerminalJobRunStatus(run.status)
-              ? TERMINAL_TOAST_DURATION_MS
-              : Infinity,
-          },
-        );
+      const description =
+        run.errorText ??
+        run.summaryText ??
+        (isTerminalJobRunStatus(run.status)
+          ? t("jobs.runSummaryCompleted")
+          : t("jobs.runSummaryRunning"));
+
+      if (run.status === "failed") {
+        toast.error(run.displayName, {
+          id: run.id,
+          description,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        });
         continue;
       }
 
-      toast.custom(() => <JobRunToast run={run} />, {
+      if (run.status === "warning") {
+        toast.warning(run.displayName, {
+          id: run.id,
+          description,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        });
+        continue;
+      }
+
+      if (run.status === "completed") {
+        toast.success(run.displayName, {
+          id: run.id,
+          description,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        });
+        continue;
+      }
+
+      toast.loading(run.displayName, {
         id: run.id,
-        className: "rounded-lg overflow-hidden p-0",
-        duration: isTerminalJobRunStatus(run.status)
-          ? TERMINAL_TOAST_DURATION_MS
-          : Infinity,
+        description,
+        duration: Infinity,
+      });
+    }
+
+    if (idsToPrune.length > 0) {
+      setRunsById((current) => {
+        const next = { ...current };
+        for (const id of idsToPrune) {
+          delete next[id];
+          interactiveRunIdsRef.current.delete(id);
+        }
+        return next;
       });
     }
   }, [runsById, t]);
@@ -195,5 +192,23 @@ export function JobRunProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  return <>{children}</>;
+  const contextValue = React.useMemo<JobRunToastContextValue>(() => ({
+    registerInteractiveJobRun,
+  }), [registerInteractiveJobRun]);
+
+  return (
+    <JobRunToastContext.Provider value={contextValue}>
+      {children}
+    </JobRunToastContext.Provider>
+  );
+}
+
+export function useJobRunToasts(): JobRunToastContextValue {
+  const context = React.useContext(JobRunToastContext);
+
+  if (!context) {
+    throw new Error("useJobRunToasts must be used within a JobRunProvider");
+  }
+
+  return context;
 }

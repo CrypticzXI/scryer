@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useClient } from "urql";
 
 import { SystemJobsView } from "@/components/views/system-jobs-view";
+import { useJobRunToasts } from "@/components/root/job-run-provider";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
@@ -92,6 +93,7 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const { registerInteractiveJobRun } = useJobRunToasts();
   const [jobs, setJobs] = useState<JobDefinition[]>([]);
   const [activeRunsById, setActiveRunsById] = useState<Record<string, JobRun>>({});
   const [recentRuns, setRecentRuns] = useState<JobRun[]>([]);
@@ -232,8 +234,16 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
         }
         const normalized = normalizeJobRun(data?.triggerJob);
         if (normalized) {
+          registerInteractiveJobRun(normalized);
           setActiveRunsById((current) => ({ ...current, [normalized.id]: normalized }));
           setRecentRuns((current) => [normalized, ...current.filter((run) => run.id !== normalized.id)].slice(0, 50));
+          setJobHistoryByKey((current) => ({
+            ...current,
+            [normalized.jobKey]: [
+              normalized,
+              ...(current[normalized.jobKey] ?? []).filter((run) => run.id !== normalized.id),
+            ].slice(0, 10),
+          }));
         }
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("jobs.failedToTrigger"));
@@ -241,7 +251,7 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
         setTriggeringKeys((current) => ({ ...current, [jobKey]: false }));
       }
     },
-    [client, setGlobalStatus, t],
+    [client, registerInteractiveJobRun, setGlobalStatus, t],
   );
 
   const activeRuns = useMemo(

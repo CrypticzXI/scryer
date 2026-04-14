@@ -16,7 +16,7 @@ impl AppUseCase {
         let recent_activity = self.recent_activity(actor, 12, 0).await?;
 
         let mut titles_movie = 0usize;
-        let mut titles_tv = 0usize;
+        let mut titles_series = 0usize;
         let mut titles_anime = 0usize;
         let titles_other = 0usize;
         let mut monitored_titles = 0usize;
@@ -29,7 +29,7 @@ impl AppUseCase {
 
             match title.facet {
                 MediaFacet::Movie => titles_movie += 1,
-                MediaFacet::Series => titles_tv += 1,
+                MediaFacet::Series => titles_series += 1,
                 MediaFacet::Anime => titles_anime += 1,
             }
         }
@@ -78,7 +78,7 @@ impl AppUseCase {
             monitored_titles,
             total_users: users.len(),
             titles_movie,
-            titles_tv,
+            titles_series,
             titles_anime,
             titles_other,
             recent_events: recent_activity.len(),

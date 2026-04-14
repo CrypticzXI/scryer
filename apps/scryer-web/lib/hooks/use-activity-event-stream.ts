@@ -60,7 +60,11 @@ export function useActivityEventStream({
         }
 
         const filterFacet = facetRef.current;
-        if (filterFacet && activity.facet !== filterFacet) {
+        if (
+          filterFacet &&
+          activity.facet?.trim().toLowerCase() !==
+            filterFacet.trim().toLowerCase()
+        ) {
           continue;
         }
 

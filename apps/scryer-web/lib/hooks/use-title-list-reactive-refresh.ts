@@ -13,10 +13,15 @@ type UseTitleListReactiveRefreshOptions = {
   ) => void;
 };
 
-const TITLE_UPDATED_KIND = "title_updated";
+const TITLE_ACTIVITY_KINDS = [
+  "title_added",
+  "title_updated",
+  "metadata_hydration_completed",
+  "metadata_hydration_failed",
+] as const;
 
 // Canonical reactive bridge for catalog tables. Title-list consumers should
-// react to semantic title update events instead of workflow-specific signals.
+// react to semantic title lifecycle events instead of workflow-specific signals.
 export function useTitleListReactiveRefresh({
   facet,
   pause = false,
@@ -29,7 +34,7 @@ export function useTitleListReactiveRefresh({
     onTitleRefreshedRef.current = onTitleRefreshed;
   });
 
-  const kinds = useMemo(() => new Set([TITLE_UPDATED_KIND]), []);
+  const kinds = useMemo(() => new Set<string>(TITLE_ACTIVITY_KINDS), []);
 
   useActivityEventStream({
     kinds,

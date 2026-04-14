@@ -42,7 +42,8 @@ use crate::library_scan_unmatched::{
 use tracing::{info, warn};
 
 const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
-const LIBRARY_SCAN_BATCH_SIZE: usize = 128;
+const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;
+const LIBRARY_SCAN_SERIES_BATCH_SIZE: usize = 8;
 const LIBRARY_SCAN_TITLE_WALK_CONCURRENCY: usize = 4;
 const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
 #[path = "scan/candidates.rs"]
@@ -437,6 +438,7 @@ impl AppUseCase {
     ) -> AppResult<StartedLibraryScanOutcome> {
         let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
         let cancel_token = self.library_scan_cancellation_token(session_id).await;
+        let should_apply_import_monitor_snapshot = mode == LibraryScanMode::Full;
         let summary = self
             .execute_started_library_scan_session(
                 actor,
@@ -452,6 +454,25 @@ impl AppUseCase {
                 .await;
             Ok(StartedLibraryScanOutcome::Canceled(summary))
         } else {
+            if should_apply_import_monitor_snapshot
+                && let Err(error) = self
+                    .apply_pending_external_import_monitor_snapshot_for_facet(&facet)
+                    .await
+            {
+                let warning_message =
+                    "Imported Sonarr/Radarr monitored state could not be applied after this scan. Scryer will retry on the next full scan.".to_string();
+                let _ = self
+                    .runtime
+                    .library_scan_tracker
+                    .set_warning_message(session_id, Some(warning_message))
+                    .await;
+                warn!(
+                    facet = facet.as_str(),
+                    session_id,
+                    error = %error,
+                    "failed to apply pending external import monitoring snapshot after full scan"
+                );
+            }
             self.finalize_started_library_scan_session(session_id, &summary)
                 .await;
             Ok(StartedLibraryScanOutcome::Completed(summary))

@@ -21,7 +21,7 @@ fn default_activity_channels() -> Vec<ActivityChannel> {
 pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<ActivityEvent> {
     let (kind, severity, message) = match &event.payload {
         DomainEventPayload::TitleAdded(data) => (
-            ActivityKind::MovieAdded,
+            ActivityKind::TitleAdded,
             ActivitySeverity::Success,
             format!("Added '{}' to Scryer.", data.title.title_name),
         ),
@@ -566,6 +566,7 @@ fn apply_job_run_event(
                     .unwrap_or(JobTriggerSource::SystemInternal),
                 started_at: event.occurred_at,
                 completed_at: None,
+                summary_json: None,
                 summary_text: None,
                 error_text: None,
                 progress_json: None,
@@ -840,6 +841,7 @@ mod tests {
                 titles_total: Some(5),
                 files_completed: 4,
                 files_total: Some(9),
+                warning_message: None,
             }),
         );
         let completed = event(
@@ -856,6 +858,7 @@ mod tests {
                 files_completed: 9,
                 files_total: Some(9),
                 summary: None,
+                warning_message: None,
             }),
         );
 
@@ -904,6 +907,7 @@ mod tests {
                     skipped: 1,
                     unmatched: 0,
                 }),
+                warning_message: None,
             }),
         );
 

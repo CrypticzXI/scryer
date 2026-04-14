@@ -116,9 +116,9 @@ pub struct UpdateLibraryPaths {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExternalImportLibraryPathsSelection {
-    pub movie_path: Option<String>,
-    pub series_path: Option<String>,
-    pub anime_path: Option<String>,
+    pub movie_paths: Vec<String>,
+    pub series_paths: Vec<String>,
+    pub anime_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,6 +395,30 @@ fn normalize_root_folders(entries: Vec<RootFolderEntry>) -> AppResult<Vec<RootFo
     }
 
     Ok(normalized)
+}
+
+fn normalize_external_import_root_folders(
+    paths: Vec<String>,
+) -> AppResult<Option<Vec<RootFolderEntry>>> {
+    let normalized_paths = paths
+        .into_iter()
+        .filter_map(|path| normalize_optional_string(Some(path)))
+        .collect::<Vec<_>>();
+
+    if normalized_paths.is_empty() {
+        return Ok(None);
+    }
+
+    let entries = normalized_paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| RootFolderEntry {
+            path,
+            is_default: index == 0,
+        })
+        .collect::<Vec<_>>();
+
+    normalize_root_folders(entries).map(Some)
 }
 
 fn normalize_effective_scan_root(path: &str) -> Option<String> {
@@ -1082,8 +1106,6 @@ impl AppUseCase {
         {
             changed_keys.push(QUALITY_PROFILE_CATALOG_KEY.to_string());
         }
-
-        self.rebuild_user_rules_engine().await?;
 
         if !changed_keys.is_empty() {
             let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
@@ -2053,40 +2075,39 @@ impl AppUseCase {
             ),
         ];
 
-        let movie_path = input.movie_path.trim().to_string();
-        let series_path = input.series_path.trim().to_string();
-        if movie_path.is_empty() || series_path.is_empty() {
-            return Err(AppError::Validation(
-                "movie_path and series_path are required".to_string(),
-            ));
+        let mut changed_keys = Vec::new();
+        if let Some(movie_path) = normalize_optional_string(Some(input.movie_path)) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    MOVIES_PATH_KEY,
+                    None,
+                    encode_setting_json(&movie_path)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(MOVIES_PATH_KEY.to_string());
         }
 
-        self.services
-            .config
-            .settings
-            .upsert_setting_json(
-                SETTINGS_SCOPE_MEDIA,
-                MOVIES_PATH_KEY,
-                None,
-                encode_setting_json(&movie_path)?,
-                SETTINGS_SOURCE_TYPED_GRAPHQL,
-                Some(actor.id.clone()),
-            )
-            .await?;
-        self.services
-            .config
-            .settings
-            .upsert_setting_json(
-                SETTINGS_SCOPE_MEDIA,
-                SERIES_PATH_KEY,
-                None,
-                encode_setting_json(&series_path)?,
-                SETTINGS_SOURCE_TYPED_GRAPHQL,
-                Some(actor.id.clone()),
-            )
-            .await?;
+        if let Some(series_path) = normalize_optional_string(Some(input.series_path)) {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_MEDIA,
+                    SERIES_PATH_KEY,
+                    None,
+                    encode_setting_json(&series_path)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(SERIES_PATH_KEY.to_string());
+        }
 
-        let mut changed_keys = vec![MOVIES_PATH_KEY.to_string(), SERIES_PATH_KEY.to_string()];
         if let Some(anime_path) = normalize_optional_string(input.anime_path) {
             self.services
                 .config
@@ -2101,6 +2122,10 @@ impl AppUseCase {
                 )
                 .await?;
             changed_keys.push(ANIME_PATH_KEY.to_string());
+        }
+
+        if changed_keys.is_empty() {
+            return self.get_library_paths(actor).await;
         }
 
         for (facet, previous) in previous_roots {
@@ -2120,57 +2145,42 @@ impl AppUseCase {
         selection: ExternalImportLibraryPathsSelection,
     ) -> AppResult<bool> {
         require(actor, &Entitlement::ManageConfig)?;
-        let previous_roots = [
-            (
-                MediaFacet::Movie,
-                self.effective_scan_roots_for_facet(&MediaFacet::Movie)
-                    .await?,
-            ),
-            (
-                MediaFacet::Series,
-                self.effective_scan_roots_for_facet(&MediaFacet::Series)
-                    .await?,
-            ),
-            (
-                MediaFacet::Anime,
-                self.effective_scan_roots_for_facet(&MediaFacet::Anime)
-                    .await?,
-            ),
-        ];
 
         let mut saved_any = false;
-        for (key, value) in [
-            (MOVIES_PATH_KEY, selection.movie_path),
-            (SERIES_PATH_KEY, selection.series_path),
-            (ANIME_PATH_KEY, selection.anime_path),
+        for (facet, paths) in [
+            (MediaFacet::Movie, selection.movie_paths),
+            (MediaFacet::Series, selection.series_paths),
+            (MediaFacet::Anime, selection.anime_paths),
         ] {
-            let Some(path) = normalize_optional_string(value) else {
+            let Some(root_folders) = normalize_external_import_root_folders(paths)? else {
                 continue;
             };
 
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    key,
-                    None,
-                    encode_setting_json(&path)?,
-                    "external-import",
-                    Some(actor.id.clone()),
-                )
-                .await?;
+            self.update_media_settings(
+                actor,
+                facet,
+                UpdateMediaSettings {
+                    library_path: None,
+                    root_folders: Some(root_folders),
+                    required_audio_languages: None,
+                    rename_template: None,
+                    rename_collision_policy: None,
+                    rename_missing_metadata_policy: None,
+                    filler_policy: None,
+                    recap_policy: None,
+                    monitor_specials: None,
+                    inter_season_movies: None,
+                    monitor_filler_movies: None,
+                    nfo_write_on_import: None,
+                    plexmatch_write_on_import: None,
+                },
+            )
+            .await?;
             saved_any = true;
         }
 
         if !saved_any {
             return Ok(false);
-        }
-
-        for (facet, previous) in previous_roots {
-            let current = self.effective_scan_roots_for_facet(&facet).await?;
-            self.clear_pending_imports_for_removed_roots(&facet, &previous, &current)
-                .await?;
         }
 
         Ok(true)

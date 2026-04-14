@@ -3,8 +3,8 @@ use chrono::Utc;
 use scryer_domain::MediaFacet;
 
 use crate::{
-    ActivityKind, AnimeMapping, AnimeMovie, AppResult, EpisodeMetadata, MetadataGateway,
-    MovieMetadata, SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
+    AnimeMapping, AnimeMovie, AppResult, EpisodeMetadata, MetadataGateway, MovieMetadata,
+    SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
 };
 
 /// Result of hydrating a title's metadata from a metadata gateway.
@@ -75,6 +75,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
     }
 
     let update = TitleMetadataUpdate {
+        name: non_empty(movie.name),
         year: movie.year.filter(|&y| y > 0),
         overview: non_empty(movie.overview),
         poster_url: non_empty(movie.poster_url),
@@ -114,6 +115,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
 /// Build a [`HydrationResult`] from an already-fetched [`SeriesMetadata`].
 pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> HydrationResult {
     let update = TitleMetadataUpdate {
+        name: non_empty(series.name),
         year: series.year.filter(|&y| y > 0),
         overview: non_empty(series.overview),
         poster_url: non_empty(series.poster_url),
@@ -150,7 +152,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
 }
 
 /// Configuration and strategies for a specific media facet.
-/// Each facet (movie, tv, anime) implements this trait to define
+/// Each facet (movie, series, anime) implements this trait to define
 /// its metadata hydration, rename strategy, import routing, and
 /// acquisition behavior.
 #[async_trait]
@@ -159,7 +161,7 @@ pub trait FacetHandler: Send + Sync {
     fn facet(&self) -> MediaFacet;
 
     /// String ID used in settings keys, database columns, audit logs.
-    /// e.g. "movie", "tv", "anime"
+    /// e.g. "movie", "series", "anime"
     fn facet_id(&self) -> &str;
 
     /// Download client category string.
@@ -176,9 +178,6 @@ pub trait FacetHandler: Send + Sync {
 
     /// Whether this facet has episode-level structure.
     fn has_episodes(&self) -> bool;
-
-    /// Optional activity kind emitted when a title of this facet is added.
-    fn title_added_activity_kind(&self) -> Option<ActivityKind>;
 
     /// Indexer search category (e.g. "movie", "series", "anime").
     fn search_category(&self) -> &str;

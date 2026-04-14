@@ -21,7 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type Facet = "movie" | "tv" | "anime";
+type Facet = "movie" | "series" | "anime";
 type TvdbSearchItem = MetadataTvdbSearchItem;
 
 type AddTitleFormProps = {
@@ -150,7 +150,7 @@ export function AddTitleForm({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="movie">{t("search.facetMovie")}</SelectItem>
-                  <SelectItem value="tv">{t("search.facetTv")}</SelectItem>
+                  <SelectItem value="series">{t("search.facetSeries")}</SelectItem>
                   <SelectItem value="anime">{t("search.facetAnime")}</SelectItem>
                 </SelectContent>
               </Select>
@@ -321,7 +321,7 @@ export function AddTitleForm({
               {monitoredTitles.map((item) => {
                 const overviewTargetView = item.facet === "movie"
                   ? "movies"
-                  : item.facet === "tv"
+                  : item.facet === "series"
                     ? "series"
                     : item.facet === "anime"
                       ? "anime"
@@ -373,7 +373,7 @@ export function AddTitleForm({
                 {monitoredTitles.map((item) => {
                   const overviewTargetView = item.facet === "movie"
                     ? "movies"
-                    : item.facet === "tv"
+                    : item.facet === "series"
                       ? "series"
                       : item.facet === "anime"
                         ? "anime"

@@ -68,7 +68,7 @@ pub struct PluginDescriptor {
 pub struct PluginScoringPolicy {
     pub name: String,
     pub rego_source: String,
-    /// Facets this policy applies to (e.g. "movie", "tv").
+    /// Facets this policy applies to (e.g. "movie", "series").
     /// Empty means it applies to all facets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_facets: Vec<String>,
@@ -329,7 +329,7 @@ pub struct PluginSearchRequest {
     /// Explicit normalized media facet from the caller (movie, series, anime).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet: Option<String>,
-    /// Semantic category hint from the caller (e.g. "movie", "tv", "anime").
+    /// Semantic category hint from the caller (e.g. "movie", "series", "anime").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

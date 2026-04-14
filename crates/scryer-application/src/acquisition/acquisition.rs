@@ -21,6 +21,15 @@ use crate::{JobKey, JobTriggerSource};
 const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
 const STANDBY_RETENTION_HOURS: i64 = 24;
 
+fn candidate_matches_title(candidate: &IndexerSearchResult, title: &Title) -> bool {
+    if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
+        return crate::app_usecase_rss::parsed_release_matches_title(parsed, title);
+    }
+
+    let parsed = crate::parse_release_metadata(&candidate.title);
+    crate::app_usecase_rss::parsed_release_matches_title(&parsed, title)
+}
+
 impl AppUseCase {
     /// Sync the wanted_items table with current monitored state.
     /// Creates entries for monitored media without files, removes stale entries.
@@ -1287,7 +1296,7 @@ async fn process_single_wanted_item(
     let (search_season, search_episode) = (sq.season, sq.episode);
 
     // Derive the download client category separately — search_category ("series")
-    // is for Newznab query type, download_category ("tv") is for NZBGet routing.
+    // is for Newznab query type, download_category ("series") is for NZBGet routing.
     //
     // ── Season pack priority ──────────────────────────────────────────────────
     // For episode wanted items, try a season pack search first. Season packs are
@@ -1351,9 +1360,14 @@ async fn process_single_wanted_item(
                 .await
                 .unwrap_or_default();
 
-            let title_normalized = crate::app_usecase_rss::normalize_for_matching(&title.name);
             if let Some(best_pack) = pack_results.iter().find(|r| {
-                let parsed = crate::parse_release_metadata(&r.title);
+                let parsed_owned;
+                let parsed = if let Some(parsed) = r.parsed_release_metadata.as_ref() {
+                    parsed
+                } else {
+                    parsed_owned = crate::parse_release_metadata(&r.title);
+                    &parsed_owned
+                };
                 let is_pack = parsed.episode.as_ref().is_some_and(|episode| {
                     episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
                         && episode.season == Some(season_num)
@@ -1365,8 +1379,7 @@ async fn process_single_wanted_item(
                     .map(|d| d.allowed)
                     .unwrap_or(false)
                     && is_pack
-                    && crate::app_usecase_rss::normalize_for_matching(&r.title)
-                        .contains(&title_normalized)
+                    && candidate_matches_title(r, &title)
             }) {
                 // ── Season pack upgrade guard ───────────────────────────────
                 // Check whether grabbing this pack benefits at least 1 episode.
@@ -1744,13 +1757,13 @@ async fn process_single_wanted_item(
     // fails, try the next candidate instead of re-searching from scratch next
     // cycle.  Mirrors Sonarr's ProcessDownloadDecisions loop.
     let mut had_allowed_candidate = false;
+    let mut had_quality_allowed_candidate = false;
     let mut skipped_for_failed = false;
+    let mut skipped_for_title_mismatch = false;
     let mut grab_attempts: usize = 0;
     // Track source kinds where ALL download clients failed.  Avoids hammering
     // dead clients with more candidates of the same protocol.
     let mut failed_source_kinds: Vec<DownloadSourceKind> = Vec::new();
-
-    let title_norm = crate::app_usecase_rss::normalize_for_matching(&title.name);
 
     for (candidate_index, candidate) in results.iter().enumerate() {
         let is_allowed = candidate
@@ -1762,9 +1775,12 @@ async fn process_single_wanted_item(
             continue;
         }
 
+        had_quality_allowed_candidate = true;
+
         // Reject releases whose title doesn't contain the target title name.
         // Prevents false matches from RSS feeds returning unrelated releases.
-        if !crate::app_usecase_rss::normalize_for_matching(&candidate.title).contains(&title_norm) {
+        if !candidate_matches_title(candidate, &title) {
+            skipped_for_title_mismatch = true;
             continue;
         }
 
@@ -2129,7 +2145,6 @@ async fn process_single_wanted_item(
                     &thresholds,
                     &existing_files,
                     &delay_profiles,
-                    &title_norm,
                 )
                 .await;
 
@@ -2239,6 +2254,13 @@ async fn process_single_wanted_item(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
             "background acquisition: all allowed candidates were already active or had negative scores"
+        );
+    } else if had_quality_allowed_candidate && skipped_for_title_mismatch {
+        info!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            result_count = results.len(),
+            "background acquisition: quality-allowed candidates were rejected by title matching"
         );
     } else {
         info!(
@@ -2406,7 +2428,6 @@ async fn persist_standby_candidates(
     thresholds: &AcquisitionThresholds,
     existing_files: &[TitleMediaFile],
     delay_profiles: &[crate::DelayProfile],
-    title_norm: &str,
 ) {
     let _ = app
         .services
@@ -2432,7 +2453,7 @@ async fn persist_standby_candidates(
             continue;
         }
 
-        if !crate::app_usecase_rss::normalize_for_matching(&candidate.title).contains(title_norm) {
+        if !candidate_matches_title(candidate, title) {
             continue;
         }
 

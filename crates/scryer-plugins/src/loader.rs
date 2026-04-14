@@ -459,27 +459,10 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         external_wasm_bytes: &[&[u8]],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
-        let mut provider = WasmIndexerPluginProvider::empty();
-
-        // Load user-installed (non-builtin) plugins first — they get priority
-        for bytes in external_wasm_bytes {
-            provider = provider.with_external_bytes(bytes);
-        }
-
-        // Layer builtins (skipped if external overrides same provider_type)
-        provider = provider
-            .with_builtin(crate::builtins::NZBGEEK_WASM)
-            .with_builtin(crate::builtins::DOGNZB_WASM)
-            .with_builtin(crate::builtins::NEWZNAB_WASM)
-            .with_builtin(crate::builtins::ANIMETOSHO_WASM)
-            .with_builtin(crate::builtins::TORZNAB_WASM);
-
-        // Remove builtins the user has disabled
-        for pt in disabled_builtins {
-            provider = provider.without_provider_type(pt);
-        }
-
-        self.reload(provider);
+        self.reload(build_indexer_plugin_provider(
+            external_wasm_bytes,
+            disabled_builtins,
+        ));
         Ok(())
     }
 }
@@ -736,17 +719,10 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
         external_wasm_bytes: &[&[u8]],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
-        let mut provider = WasmDownloadClientPluginProvider::empty();
-
-        for bytes in external_wasm_bytes {
-            provider = provider.with_external_bytes(bytes);
-        }
-
-        for pt in disabled_builtins {
-            provider = provider.without_provider_type(pt);
-        }
-
-        self.reload(provider);
+        self.reload(build_download_client_plugin_provider(
+            external_wasm_bytes,
+            disabled_builtins,
+        ));
         Ok(())
     }
 }
@@ -794,6 +770,47 @@ fn is_indexer_plugin_type(plugin_type: &str) -> bool {
 fn validate_indexer_descriptor(descriptor: &PluginDescriptor) -> bool {
     validate_descriptor_for_type(descriptor, None)
         && is_indexer_plugin_type(&descriptor.plugin_type)
+}
+
+pub fn build_indexer_plugin_provider(
+    external_wasm_bytes: &[&[u8]],
+    disabled_builtins: &[String],
+) -> WasmIndexerPluginProvider {
+    let mut provider = WasmIndexerPluginProvider::empty();
+
+    for bytes in external_wasm_bytes {
+        provider = provider.with_external_bytes(bytes);
+    }
+
+    provider = provider
+        .with_builtin(crate::builtins::NZBGEEK_WASM)
+        .with_builtin(crate::builtins::DOGNZB_WASM)
+        .with_builtin(crate::builtins::NEWZNAB_WASM)
+        .with_builtin(crate::builtins::ANIMETOSHO_WASM)
+        .with_builtin(crate::builtins::TORZNAB_WASM);
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_download_client_plugin_provider(
+    external_wasm_bytes: &[&[u8]],
+    disabled_builtins: &[String],
+) -> WasmDownloadClientPluginProvider {
+    let mut provider = WasmDownloadClientPluginProvider::empty();
+
+    for bytes in external_wasm_bytes {
+        provider = provider.with_external_bytes(bytes);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
 }
 
 /// Scan `plugins_dir` for subdirectories containing `plugin.wasm`, load each,
@@ -1273,19 +1290,29 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         external_wasm_bytes: &[&[u8]],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
-        let mut provider = WasmNotificationPluginProvider::empty();
-
-        for bytes in external_wasm_bytes {
-            provider = provider.with_external_bytes(bytes);
-        }
-
-        for pt in disabled_builtins {
-            provider = provider.without_provider_type(pt);
-        }
-
-        self.reload(provider);
+        self.reload(build_notification_plugin_provider(
+            external_wasm_bytes,
+            disabled_builtins,
+        ));
         Ok(())
     }
+}
+
+pub fn build_notification_plugin_provider(
+    external_wasm_bytes: &[&[u8]],
+    disabled_builtins: &[String],
+) -> WasmNotificationPluginProvider {
+    let mut provider = WasmNotificationPluginProvider::empty();
+
+    for bytes in external_wasm_bytes {
+        provider = provider.with_external_bytes(bytes);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
 }
 
 #[cfg(test)]
@@ -1329,7 +1356,7 @@ mod tests {
     #[test]
     fn parse_config_json_entries_stringifies_scalar_values() {
         let entries = parse_config_json_entries(
-            r#"{"username":"alice","password":"secret","use_ssl":false,"port":8080,"meta":{"tag":"tv"}}"#,
+            r#"{"username":"alice","password":"secret","use_ssl":false,"port":8080,"meta":{"tag":"series"}}"#,
         )
         .unwrap();
 
@@ -1337,7 +1364,10 @@ mod tests {
         assert_eq!(entries.get("password"), Some(&"secret".to_string()));
         assert_eq!(entries.get("use_ssl"), Some(&"false".to_string()));
         assert_eq!(entries.get("port"), Some(&"8080".to_string()));
-        assert_eq!(entries.get("meta"), Some(&r#"{"tag":"tv"}"#.to_string()));
+        assert_eq!(
+            entries.get("meta"),
+            Some(&r#"{"tag":"series"}"#.to_string())
+        );
     }
 
     #[test]

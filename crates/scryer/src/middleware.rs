@@ -373,56 +373,59 @@ pub(crate) async fn graphql_handler(
 
 fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
     if let async_graphql::BatchRequest::Single(request) = batch
-        && is_scan_library_request(request)
+        && let Some(status) = graphql_async_mutation_status(request)
     {
-        return StatusCode::CREATED;
+        return status;
     }
 
     StatusCode::OK
 }
 
-fn is_scan_library_request(request: &mut async_graphql::Request) -> bool {
+fn graphql_async_mutation_status(request: &mut async_graphql::Request) -> Option<StatusCode> {
     let operation_name = request.operation_name.clone();
     let Ok(document) = request.parsed_query() else {
-        return false;
+        return None;
     };
 
     let operation = match (&document.operations, operation_name.as_deref()) {
         (DocumentOperations::Single(operation), _) => operation,
         (DocumentOperations::Multiple(operations), Some(operation_name)) => {
-            let Some(operation) = operations.get(operation_name) else {
-                return false;
-            };
-            operation
+            operations.get(operation_name)?
         }
         (DocumentOperations::Multiple(operations), None) => {
             if operations.len() != 1 {
-                return false;
+                return None;
             }
 
-            let Some(operation) = operations.values().next() else {
-                return false;
-            };
-            operation
+            operations.values().next()?
         }
     };
 
     if operation.node.ty != OperationType::Mutation {
-        return false;
+        return None;
     }
 
-    operation
+    let field_names = operation
         .node
         .selection_set
         .node
         .items
         .iter()
-        .any(|selection| {
-            matches!(
-                &selection.node,
-                Selection::Field(field) if field.node.name.node.as_str() == "scanLibrary"
-            )
+        .filter_map(|selection| match &selection.node {
+            Selection::Field(field) => Some(field.node.name.node.as_str()),
+            _ => None,
         })
+        .collect::<Vec<_>>();
+
+    if field_names.contains(&"rehydrateAllMetadata") {
+        return Some(StatusCode::ACCEPTED);
+    }
+
+    if field_names.contains(&"scanLibrary") {
+        return Some(StatusCode::CREATED);
+    }
+
+    None
 }
 
 async fn resolve_actor(state: &AuthState, headers: &HeaderMap) -> Option<scryer_domain::User> {
@@ -525,6 +528,15 @@ mod tests {
         ));
 
         assert_eq!(graphql_response_status(&mut batch), StatusCode::CREATED);
+    }
+
+    #[test]
+    fn rehydrate_all_metadata_mutation_returns_accepted_status() {
+        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
+            "mutation RehydrateAllMetadata { rehydrateAllMetadata(language: \"jpn\") }",
+        ));
+
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::ACCEPTED);
     }
 
     #[test]

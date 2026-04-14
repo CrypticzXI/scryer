@@ -1,7 +1,9 @@
 import { ExternalLink } from "lucide-react";
 import type { InterstitialMovieMetadata } from "@/components/containers/series-overview-container";
+import { useTranslate } from "@/lib/context/translate-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
+import { localizedTitleStatus } from "../overview-localization";
 import { getImdbUrl, getTvdbMovieUrl, formatRuntimeFromMinutes } from "./helpers";
 
 type InterstitialMoviePanelProps = {
@@ -11,11 +13,13 @@ type InterstitialMoviePanelProps = {
 };
 
 export function InterstitialMoviePanel({ movie, hasFile, monitored }: InterstitialMoviePanelProps) {
+  const t = useTranslate();
   const imdbUrl = getImdbUrl(movie.imdbId);
   const tvdbUrl = getTvdbMovieUrl(movie);
   const runtime = formatRuntimeFromMinutes(movie.runtimeMinutes);
   const posterUrl = selectPosterVariantUrl(movie.posterUrl, "w250");
-  const badges = buildMovieBadges(movie, hasFile, monitored);
+  const badges = buildMovieBadges(movie, hasFile, monitored, t);
+  const localizedStatus = localizedTitleStatus(t, movie.contentStatus);
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
@@ -28,7 +32,7 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
           />
         ) : (
           <div className="flex h-40 w-28 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[210px] sm:w-[140px]">
-            No Poster
+            {t("title.noPoster")}
           </div>
         )}
       </div>
@@ -53,14 +57,14 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
           {runtime ? (
             <span>{runtime}</span>
           ) : null}
-          {movie.contentStatus ? (
-            <span className="capitalize">{movie.contentStatus}</span>
+          {localizedStatus ? (
+            <span>{localizedStatus}</span>
           ) : null}
         </div>
         {movie.overview ? (
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{movie.overview}</p>
         ) : (
-          <p className="mt-3 text-sm italic text-muted-foreground/60">No description available.</p>
+          <p className="mt-3 text-sm italic text-muted-foreground/60">{t("title.descriptionUnavailable")}</p>
         )}
         {movie.signalSummary ? (
           <p className="mt-2 text-xs text-muted-foreground/80">{movie.signalSummary}</p>
@@ -72,7 +76,7 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
               target="_blank"
               rel="noreferrer"
               className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-xs text-card-foreground hover:bg-muted"
-              aria-label="Open on IMDb"
+              aria-label={t("external.openOn", { site: "IMDb" })}
             >
               <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
               IMDb
@@ -84,7 +88,7 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
               target="_blank"
               rel="noreferrer"
               className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-xs text-card-foreground hover:bg-muted"
-              aria-label="Open on TVDB"
+              aria-label={t("external.openOn", { site: "TVDB" })}
             >
               <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
               TVDB
@@ -96,28 +100,33 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
   );
 }
 
-function buildMovieBadges(movie: InterstitialMovieMetadata, hasFile?: boolean, monitored?: boolean): Array<{ label: string; tone: "emerald" | "amber" | "slate" | "sky" | "red" }> {
+function buildMovieBadges(
+  movie: InterstitialMovieMetadata,
+  hasFile: boolean | undefined,
+  monitored: boolean | undefined,
+  t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string,
+): Array<{ label: string; tone: "emerald" | "amber" | "slate" | "sky" | "red" }> {
   const badges: Array<{ label: string; tone: "emerald" | "amber" | "slate" | "sky" | "red" }> = [];
 
   // File status badge
   if (hasFile === true) {
-    badges.push({ label: "Downloaded", tone: "emerald" });
+    badges.push({ label: t("history.downloadCompleted"), tone: "emerald" });
   } else if (monitored === true && hasFile === false) {
-    badges.push({ label: "Missing", tone: "red" });
+    badges.push({ label: t("episode.missing"), tone: "red" });
   } else if (monitored === false) {
-    badges.push({ label: "Unmonitored", tone: "slate" });
+    badges.push({ label: t("search.monitorType.unmonitored"), tone: "slate" });
   }
 
   if (movie.movieForm === "recap") {
-    badges.push({ label: "Recap", tone: "slate" });
+    badges.push({ label: t("episode.recap"), tone: "slate" });
   } else if (movie.movieForm === "special") {
-    badges.push({ label: "Special", tone: "slate" });
+    badges.push({ label: t("episode.special"), tone: "slate" });
   } else if (movie.continuityStatus === "filler") {
-    badges.push({ label: "Filler", tone: "slate" });
+    badges.push({ label: t("episode.filler"), tone: "slate" });
   } else if (movie.continuityStatus === "canon") {
-    badges.push({ label: "Canon", tone: "emerald" });
+    badges.push({ label: t("title.canon"), tone: "emerald" });
   } else if (movie.continuityStatus === "mixed") {
-    badges.push({ label: "Mixed", tone: "amber" });
+    badges.push({ label: t("title.mixed"), tone: "amber" });
   }
 
   return badges;

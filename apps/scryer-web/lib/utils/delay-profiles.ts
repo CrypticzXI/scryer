@@ -116,7 +116,6 @@ function normalizeFacet(value: unknown): DelayProfileFacet | null {
     case "movie":
       return "movie";
     case "series":
-    case "tv":
       return "series";
     case "anime":
       return "anime";

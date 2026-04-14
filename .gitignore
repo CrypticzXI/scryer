@@ -18,3 +18,7 @@ tmp
 *.db
 *.db-*
 dev-seed.json
+
+# Local agent skills
+.agents
+skills-lock.json

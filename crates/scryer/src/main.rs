@@ -18,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
     AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
-    MovieFacetHandler, SeriesFacetHandler, TitleImageKind, TitleImageRepository,
-    start_background_acquisition_poller, start_background_banner_loop,
+    MovieFacetHandler, PluginInstallationRepository, SeriesFacetHandler, TitleImageKind,
+    TitleImageRepository, start_background_acquisition_poller, start_background_banner_loop,
     start_background_fanart_loop, start_background_library_refresh_loop,
     start_background_poster_loop, start_background_subtitle_poller, start_download_queue_poller,
     start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
@@ -407,6 +407,7 @@ async fn bootstrap_application(
         settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
         settings_store.clone();
+    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
     let staged_nzb_store = Arc::new(
         FileSystemStagedNzbStore::new_with_startup_purge(
             FileSystemStagedNzbStore::path_for_main_db(&db_path),
@@ -416,9 +417,20 @@ async fn bootstrap_application(
         .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
     );
     let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
+    let (runtime_plugin_bytes, disabled_builtin_plugins) =
+        load_runtime_plugin_state(customization_store.as_ref())
+            .await
+            .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
+    let runtime_plugin_refs: Vec<&[u8]> = runtime_plugin_bytes
+        .iter()
+        .map(|bytes| bytes.as_slice())
+        .collect();
     let download_client_plugin_provider: Arc<dyn DownloadClientPluginProvider> =
         Arc::new(scryer_plugins::DynamicDownloadClientPluginProvider::new(
-            scryer_plugins::WasmDownloadClientPluginProvider::empty(),
+            scryer_plugins::build_download_client_plugin_provider(
+                &runtime_plugin_refs,
+                &disabled_builtin_plugins,
+            ),
         ));
     let fallback_download_client = Arc::new(NzbgetDownloadClient::with_staged_nzb_store(
         runtime_settings.nzbget_url,
@@ -440,47 +452,11 @@ async fn bootstrap_application(
         scryer_infrastructure::InMemoryIndexerStatsTracker::new(Some(db.pool().clone())),
     );
 
-    // Load WASM indexer plugins: external plugins dir first, then built-in plugins.
-    // Built-in plugins (nzbgeek, newznab) are always available; external plugins
-    // with the same provider_type override the built-in.
-    let plugins_dir = std::env::var("SCRYER_PLUGINS_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::Path::new(&db_path)
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("plugins")
-        });
-    let external_provider = if plugins_dir.is_dir() {
-        match scryer_plugins::load_indexer_plugins(&plugins_dir) {
-            Ok(provider) => {
-                let types = provider.available_provider_types();
-                if !types.is_empty() {
-                    tracing::info!(
-                        plugins_dir = %plugins_dir.display(),
-                        provider_types = ?types,
-                        "loaded external WASM indexer plugins"
-                    );
-                }
-                provider
-            }
-            Err(e) => {
-                tracing::warn!(
-                    plugins_dir = %plugins_dir.display(),
-                    error = %e,
-                    "failed to load external WASM indexer plugins"
-                );
-                scryer_plugins::WasmIndexerPluginProvider::empty()
-            }
-        }
-    } else {
-        scryer_plugins::WasmIndexerPluginProvider::empty()
-    };
-    let initial_provider = external_provider
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM)
-        .with_builtin(scryer_plugins::builtins::DOGNZB_WASM)
-        .with_builtin(scryer_plugins::builtins::NEWZNAB_WASM);
-    let dynamic_provider = scryer_plugins::DynamicPluginProvider::new(initial_provider);
+    let dynamic_provider =
+        scryer_plugins::DynamicPluginProvider::new(scryer_plugins::build_indexer_plugin_provider(
+            &runtime_plugin_refs,
+            &disabled_builtin_plugins,
+        ));
     let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(dynamic_provider);
 
     let indexer_client = MultiIndexerSearchClient::new(
@@ -539,7 +515,6 @@ async fn bootstrap_application(
 
     let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(64);
     let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
-    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
 
     // Warm up SMG enrollment so the mTLS client is ready before the first real
     // metadata query, and check for version incompatibility.
@@ -569,9 +544,11 @@ async fn bootstrap_application(
         }
     });
 
-    // Load notification WASM plugins (same pattern as indexer plugins)
     let notif_provider = scryer_plugins::DynamicNotificationPluginProvider::new(
-        scryer_plugins::WasmNotificationPluginProvider::empty(),
+        scryer_plugins::build_notification_plugin_provider(
+            &runtime_plugin_refs,
+            &disabled_builtin_plugins,
+        ),
     );
     let notification_store = Arc::new(SqliteNotificationStore::new(&db));
     let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
@@ -593,6 +570,7 @@ async fn bootstrap_application(
     .with_acquisition_state(workflow_store.clone())
     .with_domain_events(workflow_store.clone())
     .with_download_submissions(workflow_store.clone())
+    .with_external_import_monitor_snapshots(workflow_store.clone())
     .with_import_artifacts(workflow_store.clone())
     .with_imports(workflow_store.clone())
     .with_job_runs(workflow_store.clone())
@@ -625,11 +603,6 @@ async fn bootstrap_application(
 
     app_use_case.connect_library_scan_tracker().await;
 
-    // Seed built-in plugin rows and rebuild provider from DB state.
-    // This ensures user enable/disable toggles are respected after restart.
-    if let Err(e) = app_use_case.seed_builtin_plugins().await {
-        tracing::warn!(error = %e, "failed to seed built-in plugin installations");
-    }
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {
         tracing::warn!(error = %e, "failed to migrate legacy persona preferences on startup");
     }
@@ -639,8 +612,8 @@ async fn bootstrap_application(
     {
         tracing::warn!(error = %e, "failed to migrate canonical audio/persona settings on startup");
     }
-    if let Err(e) = app_use_case.rebuild_plugin_provider().await {
-        tracing::warn!(error = %e, "failed to rebuild plugin provider from DB state");
+    if let Err(e) = app_use_case.rebuild_user_rules_engine().await {
+        tracing::warn!(error = %e, "failed to rebuild user rules engine on startup");
     }
     if let Err(e) = app_use_case.reconcile_indexer_configs().await {
         tracing::warn!(error = %e, "failed to reconcile indexer configs on startup");
@@ -1144,6 +1117,70 @@ async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<Strin
 
     let client = WeaverDownloadClient::from_config(&primary).ok()?;
     Some((client.ws_url(), client.api_key().map(str::to_string)))
+}
+
+async fn load_runtime_plugin_state(
+    customization_store: &SqliteCustomizationStore,
+) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
+    seed_builtin_plugin_installations(customization_store).await?;
+
+    let enabled_plugins = customization_store
+        .get_enabled_plugin_wasm_bytes()
+        .await
+        .map_err(|error| error.to_string())?;
+    let runtime_plugin_bytes = enabled_plugins
+        .into_iter()
+        .filter(|(installation, _)| !installation.is_builtin)
+        .filter_map(|(_, wasm_bytes)| wasm_bytes)
+        .collect::<Vec<_>>();
+
+    let disabled_builtin_plugins = customization_store
+        .list_plugin_installations()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|installation| installation.is_builtin && !installation.is_enabled)
+        .map(|installation| installation.provider_type)
+        .collect::<Vec<_>>();
+
+    Ok((runtime_plugin_bytes, disabled_builtin_plugins))
+}
+
+async fn seed_builtin_plugin_installations(
+    customization_store: &SqliteCustomizationStore,
+) -> Result<(), String> {
+    customization_store
+        .seed_builtin(
+            "nzbgeek",
+            "NZBGeek Indexer",
+            "NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)",
+            "0.1.0",
+            "nzbgeek",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    customization_store
+        .seed_builtin(
+            "dognzb",
+            "DogNZB Indexer",
+            "DogNZB-specific Newznab indexer with rating, genre, and comment metadata",
+            "0.1.0",
+            "dognzb",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    customization_store
+        .seed_builtin(
+            "newznab",
+            "Newznab Indexer",
+            "Generic Newznab protocol indexer for compatible services",
+            "0.1.0",
+            "newznab",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
 }
 
 #[cfg(test)]

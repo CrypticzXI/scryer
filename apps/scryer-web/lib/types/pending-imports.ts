@@ -13,7 +13,7 @@ export type PendingImportSearchAttempt = {
 
 export type PendingImportItem = {
   id: string;
-  facet: "movie" | "tv" | "anime";
+  facet: "movie" | "series" | "anime";
   displayName: string;
   path: string;
   folderPath?: string | null;
@@ -67,12 +67,12 @@ export function pendingImportCountForView(
 
 export function pendingImportFacetValueForView(
   view: string,
-): "movie" | "tv" | "anime" {
+): "movie" | "series" | "anime" {
   switch (view) {
     case "movies":
       return "movie";
     case "series":
-      return "tv";
+      return "series";
     case "anime":
       return "anime";
     default:

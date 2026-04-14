@@ -107,6 +107,7 @@ pub struct LibraryScanSession {
     pub metadata_progress: LibraryScanPhaseProgress,
     pub file_progress: LibraryScanPhaseProgress,
     pub summary: Option<LibraryScanSummary>,
+    pub warning_message: Option<String>,
 }
 
 impl LibraryScanSession {
@@ -127,6 +128,7 @@ impl LibraryScanSession {
             metadata_progress: LibraryScanPhaseProgress::default(),
             file_progress: LibraryScanPhaseProgress::default(),
             summary: None,
+            warning_message: None,
         }
     }
 
@@ -148,6 +150,7 @@ impl LibraryScanSession {
         if self.title_match_progress.failed > 0
             || self.metadata_progress.failed > 0
             || self.file_progress.failed > 0
+            || self.warning_message.is_some()
         {
             LibraryScanStatus::Warning
         } else {
@@ -582,6 +585,17 @@ impl LibraryScanTracker {
         .await
     }
 
+    pub(crate) async fn set_warning_message(
+        &self,
+        session_id: &str,
+        warning_message: Option<String>,
+    ) -> Option<LibraryScanSession> {
+        self.update_session(session_id, move |session| {
+            session.warning_message = warning_message.clone();
+        })
+        .await
+    }
+
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) async fn apply_summary_delta(
@@ -621,6 +635,7 @@ impl LibraryScanTracker {
             session.status = if session.title_match_progress.failed > 0
                 || session.metadata_progress.failed > 0
                 || session.file_progress.failed > 0
+                || session.warning_message.is_some()
             {
                 LibraryScanStatus::Warning
             } else {
@@ -670,8 +685,6 @@ impl LibraryScanTracker {
         state.sessions.get(session_id).cloned()
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
     async fn update_session(
         &self,
         session_id: &str,
@@ -804,6 +817,7 @@ fn library_scan_session_from_started(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     }
 }
 
@@ -826,6 +840,7 @@ fn library_scan_session_from_title_discovered(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     }
 }
 
@@ -848,6 +863,7 @@ fn library_scan_session_from_progressed(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     };
     apply_library_scan_progress(&mut session, data, event);
     session
@@ -872,6 +888,7 @@ fn library_scan_session_from_completed(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     };
     apply_library_scan_completed(&mut session, data, event);
     session
@@ -896,6 +913,7 @@ fn library_scan_session_from_failed(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     }
 }
 
@@ -918,6 +936,7 @@ fn library_scan_session_from_canceled(
         metadata_progress: LibraryScanPhaseProgress::default(),
         file_progress: LibraryScanPhaseProgress::default(),
         summary: None,
+        warning_message: None,
     };
     apply_library_scan_canceled(&mut session, data, event);
     session
@@ -945,6 +964,7 @@ fn apply_library_scan_progress(
         session.file_total_known = true;
     }
     session.file_progress.completed = data.files_completed.max(0) as usize;
+    session.warning_message = data.warning_message.clone();
 
     trace!(
         reason = "progressed",
@@ -957,6 +977,7 @@ fn apply_library_scan_progress(
         titles_total = ?data.titles_total,
         files_completed = data.files_completed,
         files_total = ?data.files_total,
+        warning_message = ?data.warning_message,
         occurred_at = %event.occurred_at,
         "library scan projection applied progressed event"
     );
@@ -1112,6 +1133,7 @@ fn apply_library_scan_completed(
         skipped: summary.skipped.max(0) as usize,
         unmatched: summary.unmatched.max(0) as usize,
     });
+    session.warning_message = data.warning_message.clone();
 
     trace!(
         reason = "completed",
@@ -1124,6 +1146,7 @@ fn apply_library_scan_completed(
         files_completed = data.files_completed,
         files_total = ?data.files_total,
         summary_present = data.summary.is_some(),
+        warning_message = ?data.warning_message,
         occurred_at = %event.occurred_at,
         "library scan projection applied completed event"
     );
@@ -1476,6 +1499,52 @@ mod tests {
                 skipped: 1,
                 unmatched: 1,
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_if_finished_marks_warning_when_warning_message_is_present() {
+        let tracker = LibraryScanTracker::new();
+        let session = tracker
+            .start_session(MediaFacet::Series)
+            .await
+            .expect("start session");
+
+        tracker
+            .update_session(&session.session_id, |session| {
+                session.title_match_total_known = true;
+                session.title_match_progress.total = 2;
+                session.title_match_progress.completed = 2;
+                session.metadata_total_known = true;
+                session.metadata_progress.total = 2;
+                session.metadata_progress.completed = 2;
+                session.file_total_known = true;
+                session.file_progress.total = 2;
+                session.file_progress.completed = 2;
+                session.summary = Some(LibraryScanSummary {
+                    scanned: 2,
+                    matched: 2,
+                    imported: 1,
+                    skipped: 0,
+                    unmatched: 0,
+                });
+                session.warning_message = Some(
+                    "Imported Sonarr/Radarr monitored state could not be applied after this scan."
+                        .to_string(),
+                );
+            })
+            .await
+            .expect("update session");
+
+        let snapshot = tracker
+            .complete_if_finished(&session.session_id)
+            .await
+            .expect("session should complete");
+
+        assert_eq!(snapshot.status, LibraryScanStatus::Warning);
+        assert_eq!(
+            snapshot.warning_message.as_deref(),
+            Some("Imported Sonarr/Radarr monitored state could not be applied after this scan.")
         );
     }
 

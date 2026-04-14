@@ -72,7 +72,22 @@ function getProviderLogoSrc(value: string) {
   return INDEXER_PROVIDER_LOGOS[value.trim().toLowerCase()];
 }
 
+function formatIndexerProviderTypeLabel(
+  providerType: string,
+  t: ReturnType<typeof useTranslate>,
+) {
+  switch (providerType.trim().toLowerCase()) {
+    case "usenet_indexer":
+      return `Usenet ${t("settings.pluginCategoryIndexer")}`;
+    case "torrent_indexer":
+      return `Torrent ${t("settings.pluginCategoryIndexer")}`;
+    default:
+      return providerType;
+  }
+}
+
 function IndexerProviderTypeCell({ providerType }: { providerType: string }) {
+  const t = useTranslate();
   const logoSrc = getProviderLogoSrc(providerType);
   return (
     <div className="inline-flex items-center gap-2">
@@ -84,7 +99,7 @@ function IndexerProviderTypeCell({ providerType }: { providerType: string }) {
           className="h-4 w-4 object-contain"
         />
       ) : null}
-      <span>{providerType}</span>
+      <span>{formatIndexerProviderTypeLabel(providerType, t)}</span>
     </div>
   );
 }
@@ -320,7 +335,7 @@ export function SettingsIndexersSection({
       providerTypes.length > 0
         ? providerTypes.map((pt) => ({
             value: pt.providerType,
-            label: pt.name,
+            label: formatIndexerProviderTypeLabel(pt.name, t),
           }))
         : FALLBACK_PROVIDER_OPTIONS;
 
@@ -331,10 +346,13 @@ export function SettingsIndexersSection({
       return baseOptions;
     }
     return [
-      { value: normalizedProviderType, label: indexerDraft.providerType },
+      {
+        value: normalizedProviderType,
+        label: formatIndexerProviderTypeLabel(indexerDraft.providerType, t),
+      },
       ...baseOptions,
     ];
-  }, [indexerDraft.providerType, normalizedProviderType, providerTypes]);
+  }, [indexerDraft.providerType, normalizedProviderType, providerTypes, t]);
 
   // Get config fields for the selected provider type
   const selectedProvider = React.useMemo(() => {

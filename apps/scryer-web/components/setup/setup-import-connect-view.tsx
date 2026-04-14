@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Loader2, Tv, Film } from "lucide-react";
+import { ArrowLeft, ExternalLink, Film, Loader2, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -69,7 +69,7 @@ export function SetupImportConnectView({
         {/* Sonarr */}
         <div className="space-y-3 rounded-lg border border-border p-4">
           <div className="flex items-center gap-2 font-medium">
-            <Tv className="h-4 w-4 text-blue-500" />
+            <Monitor className="h-4 w-4 text-blue-500" />
             <span>Sonarr</span>
             <span className="text-xs text-muted-foreground">(series)</span>
           </div>

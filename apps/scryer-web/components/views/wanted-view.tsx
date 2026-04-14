@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense } from "react";
+import { Fragment } from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
@@ -42,10 +42,6 @@ import type {
 } from "@/lib/types";
 import type { WantedTab } from "@/components/containers/wanted-container";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-
-const CalendarView = lazy(() =>
-  import("@/components/views/calendar-view").then((m) => ({ default: m.CalendarView })),
-);
 
 type CutoffUnmetViewState = {
   items: CutoffUnmetItem[];
@@ -171,25 +167,6 @@ function formatBytes(bytes: number | null) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-type CalendarEpisodeItem = {
-  id: string;
-  titleId: string;
-  titleName: string;
-  titleFacet: string;
-  seasonNumber: string | null;
-  episodeNumber: string | null;
-  episodeTitle: string | null;
-  airDate: string | null;
-  monitored: boolean;
-};
-
-type CalendarViewState = {
-  episodes: CalendarEpisodeItem[];
-  loading: boolean;
-  onDateRangeChange: (start: string, end: string) => void;
-  onEpisodeClick?: (episode: CalendarEpisodeItem) => void;
-};
-
 type PendingViewState = {
   items: PendingReleaseItem[];
   loading: boolean;
@@ -203,14 +180,13 @@ type WantedViewProps = {
   onTabChange: (tab: WantedTab) => void;
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
-  calendarState: CalendarViewState;
   pendingState: PendingViewState;
 };
 
 const TOGGLE_ITEM_CLASS =
   "h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none";
 
-export function WantedView({ tab, onTabChange, wantedState, cutoffState, calendarState, pendingState }: WantedViewProps) {
+export function WantedView({ tab, onTabChange, wantedState, cutoffState, pendingState }: WantedViewProps) {
   const t = useTranslate();
 
   return (
@@ -234,30 +210,10 @@ export function WantedView({ tab, onTabChange, wantedState, cutoffState, calenda
           <ToggleGroupItem value="pending" size="lg" className={TOGGLE_ITEM_CLASS}>
             {t("wanted.tabPending")}
           </ToggleGroupItem>
-          <ToggleGroupItem value="calendar" size="lg" className={TOGGLE_ITEM_CLASS}>
-            {t("wanted.tabCalendar")}
-          </ToggleGroupItem>
         </ToggleGroup>
       </div>
 
-      {tab === "calendar" ? (
-        <Suspense
-          fallback={
-            <Card>
-              <CardContent className="p-8 text-center text-muted-foreground">
-                {t("label.loading")}
-              </CardContent>
-            </Card>
-          }
-        >
-          <CalendarView
-            episodes={calendarState.episodes}
-            loading={calendarState.loading}
-            onDateRangeChange={calendarState.onDateRangeChange}
-            onEpisodeClick={calendarState.onEpisodeClick}
-          />
-        </Suspense>
-      ) : tab === "cutoff" ? (
+      {tab === "cutoff" ? (
         <CutoffUnmetView state={cutoffState} />
       ) : tab === "pending" ? (
         <PendingReleasesCard state={pendingState} />

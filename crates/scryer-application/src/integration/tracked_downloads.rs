@@ -90,6 +90,7 @@ impl TrackedDownloadService {
 
         if self.cache.contains_key(&id) {
             let existing = self.cache.get_mut(&id).unwrap();
+            let should_reresolve = should_reresolve_title(existing, &client_item);
             // Update the client snapshot but preserve scryer state if not Downloading.
             if existing.state == TrackedDownloadState::Downloading {
                 existing.status = TrackedDownloadStatus::Ok;
@@ -97,6 +98,9 @@ impl TrackedDownloadService {
             }
             existing.client_item = client_item;
             existing.is_trackable = true;
+            if should_reresolve {
+                Self::resolve_title(app, existing).await;
+            }
             return;
         }
 
@@ -241,9 +245,39 @@ impl TrackedDownloadService {
             }
         }
 
-        // 3 + 4: parse_release_metadata and ID-based lookup are more complex
-        //         and depend on the facet handlers. Leave as Unmatched for now;
-        //         the completed handler will block auto-import.
+        // 3. Parse-based monitored title resolution for foreign downloads.
+        let release_title = td
+            .source_title
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(td.client_item.title_name.as_str());
+        let parsed = crate::parse_release_metadata(release_title);
+        if let Ok(titles) = app.services.catalog.titles.list(None, None).await {
+            let matched = if parsed.episode.is_some() {
+                crate::import_title_resolution::find_monitored_episode_title_from_release(
+                    &titles,
+                    &parsed,
+                    td.facet.as_deref(),
+                )
+            } else {
+                crate::import_title_resolution::find_monitored_movie_title_from_release(
+                    &titles, &parsed,
+                )
+            };
+
+            if let Some(title) = matched {
+                td.title_id = Some(title.id.clone());
+                td.facet = Some(title.facet.as_str().to_string());
+                if td.source_title.is_none() {
+                    td.source_title = Some(release_title.to_string());
+                }
+                td.match_type = TitleMatchType::TitleParse;
+                return;
+            }
+        }
+
+        // 4. No trustworthy title match found — completed handler will block
+        // auto-import until the user assigns the title manually.
         //
         // Insert a stub download_submissions row for foreign downloads so they
         // get a tracked_state column for restart reconstruction.
@@ -306,6 +340,41 @@ impl TrackedDownloadService {
 
         // Default: Downloading (will be re-evaluated by check cycle).
     }
+}
+
+fn title_id_present(value: Option<&str>) -> bool {
+    value.is_some_and(|id| !id.trim().is_empty())
+}
+
+fn should_reresolve_title(existing: &TrackedDownload, incoming: &DownloadQueueItem) -> bool {
+    if matches!(
+        existing.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) {
+        return false;
+    }
+
+    if matches!(existing.match_type, TitleMatchType::Unmatched) {
+        return true;
+    }
+
+    if !existing.client_item.is_scryer_origin && incoming.is_scryer_origin {
+        return true;
+    }
+
+    if !title_id_present(existing.client_item.title_id.as_deref())
+        && title_id_present(incoming.title_id.as_deref())
+    {
+        return true;
+    }
+
+    if !title_id_present(existing.title_id.as_deref())
+        && title_id_present(incoming.title_id.as_deref())
+    {
+        return true;
+    }
+
+    false
 }
 
 // ── Command Channel ──────────────────────────────────────────────────────────
@@ -424,10 +493,12 @@ mod tests {
     };
     use crate::{
         AppError, AppResult, AppServices, AppUseCase, DownloadSubmissionRepository, FacetRegistry,
-        ImportRepository, IndexerConfigRepository, JwtAuthConfig,
+        ImportRepository, IndexerConfigRepository, JwtAuthConfig, TitleMetadataUpdate,
+        TitleRepository,
     };
     use async_trait::async_trait;
-    use scryer_domain::{DownloadQueueState, Id, ImportRecord, ImportType};
+    use chrono::Utc;
+    use scryer_domain::{DownloadQueueState, Id, ImportRecord, ImportType, MediaFacet, Title};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -485,6 +556,11 @@ mod tests {
     #[derive(Default)]
     struct TestImportRepo {
         import_record: Option<ImportRecord>,
+    }
+
+    #[derive(Default)]
+    struct TestTitleRepo {
+        titles: Vec<Title>,
     }
 
     #[derive(Default)]
@@ -573,12 +649,86 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl TitleRepository for TestTitleRepo {
+        async fn list(&self, _: Option<MediaFacet>, _: Option<String>) -> AppResult<Vec<Title>> {
+            Ok(self.titles.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
+            Ok(self.titles.iter().find(|title| title.id == id).cloned())
+        }
+
+        async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+
+        async fn create(&self, _: Title) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_metadata(
+            &self,
+            _: &str,
+            _: Option<String>,
+            _: Option<MediaFacet>,
+            _: Option<Vec<String>>,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_title_hydrated_metadata(
+            &self,
+            _: &str,
+            _: TitleMetadataUpdate,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn replace_match_state(
+            &self,
+            _: &str,
+            _: Vec<scryer_domain::ExternalId>,
+            _: Vec<String>,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn delete(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn set_folder_path(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_folder_path(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
+            Ok(0)
+        }
+    }
+
     fn build_app(
         download_submissions: Arc<TestDownloadSubmissionRepo>,
         imports: Arc<TestImportRepo>,
     ) -> AppUseCase {
+        build_app_with_title_repo(Arc::new(NullTitleRepository), download_submissions, imports)
+    }
+
+    fn build_app_with_title_repo(
+        title_repo: Arc<dyn TitleRepository>,
+        download_submissions: Arc<TestDownloadSubmissionRepo>,
+        imports: Arc<TestImportRepo>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
-            Arc::new(NullTitleRepository),
+            title_repo,
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
             Arc::new(TestIndexerConfigRepo),
@@ -634,6 +784,45 @@ mod tests {
         }
     }
 
+    fn build_title(name: &str, facet: MediaFacet, aliases: &[&str]) -> Title {
+        Title {
+            id: Id::new().0,
+            name: name.to_string(),
+            facet,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: aliases.iter().map(|value| value.to_string()).collect(),
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
     #[tokio::test]
     async fn reconstruct_state_recovers_imported_from_completed_import_record() {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
@@ -653,7 +842,7 @@ mod tests {
                 id: Id::new().0,
                 source_system: "nzbget".to_string(),
                 source_ref: "dl-1".to_string(),
-                import_type: ImportType::TvDownload,
+                import_type: ImportType::SeriesDownload,
                 status: ImportStatus::Completed,
                 payload_json: "{}".to_string(),
                 result_json: None,
@@ -764,5 +953,89 @@ mod tests {
             tracker.find("nzbget:dl-1").is_some(),
             "tracked download should remain cached when persistence fails"
         );
+    }
+
+    #[tokio::test]
+    async fn completed_episode_download_uses_title_parse_to_become_import_pending() {
+        let title = build_title(
+            "Karasu wa Aruji wo Erabanai",
+            MediaFacet::Anime,
+            &["YATAGARASU The Raven Does Not Choose Its Master"],
+        );
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![title.clone()],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            submission: None,
+            tracked_state: None,
+            tracked_state_updates: Arc::new(Mutex::new(vec![])),
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.client_type = "weaver".to_string();
+        item.client_name = "weaver".to_string();
+        item.download_client_item_id = "job-1".to_string();
+        item.title_name =
+            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL".to_string();
+        item.facet = Some("anime".to_string());
+        item.is_scryer_origin = false;
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find("weaver:job-1").expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
+
+        let tracked = tracker
+            .find_mut("weaver:job-1")
+            .expect("tracked download mut");
+        crate::completed_download_handler::check(&app, tracked).await;
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert!(tracked.status_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn track_reresolves_when_scryer_metadata_arrives_on_later_snapshot() {
+        let title = build_title("Karasu wa Aruji wo Erabanai", MediaFacet::Anime, &[]);
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![title.clone()],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut initial = build_client_item();
+        initial.client_type = "weaver".to_string();
+        initial.client_name = "weaver".to_string();
+        initial.download_client_item_id = "job-2".to_string();
+        initial.title_id = None;
+        initial.facet = Some("anime".to_string());
+        initial.title_name = "YATAGARASU".to_string();
+        initial.is_scryer_origin = false;
+
+        tracker.track(&app, initial).await;
+        let tracked = tracker.find("weaver:job-2").expect("tracked download");
+        assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
+        assert!(tracked.title_id.is_none());
+
+        let mut updated = build_client_item();
+        updated.client_type = "weaver".to_string();
+        updated.client_name = "weaver".to_string();
+        updated.download_client_item_id = "job-2".to_string();
+        updated.title_id = Some(title.id.clone());
+        updated.facet = Some("anime".to_string());
+        updated.title_name = "YATAGARASU".to_string();
+        updated.is_scryer_origin = true;
+
+        tracker.track(&app, updated).await;
+
+        let tracked = tracker.find("weaver:job-2").expect("tracked download");
+        assert_eq!(tracked.match_type, TitleMatchType::ClientParameter);
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert!(tracked.client_item.is_scryer_origin);
     }
 }

@@ -551,6 +551,7 @@ pub(crate) fn from_title(title: Title) -> TitlePayload {
         quality_tier: None,
         size_bytes: None,
         episodes_owned: None,
+        episodes_monitored: None,
         episodes_total: None,
     }
 }
@@ -710,6 +711,7 @@ pub(crate) fn from_job_run(run: JobRun) -> JobRunPayload {
         trigger_source: JobTriggerSourceValue::from_application(run.trigger_source),
         started_at: run.started_at.to_rfc3339(),
         completed_at: run.completed_at.map(|value| value.to_rfc3339()),
+        summary_json: run.summary_json,
         summary_text: run.summary_text,
         error_text: run.error_text,
         progress_json: run.progress_json,
@@ -1114,7 +1116,7 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
         monitored_titles: health.monitored_titles as i32,
         total_users: health.total_users as i32,
         titles_movie: health.titles_movie as i32,
-        titles_tv: health.titles_tv as i32,
+        titles_series: health.titles_series as i32,
         titles_anime: health.titles_anime as i32,
         titles_other: health.titles_other as i32,
         recent_events: health.recent_events as i32,

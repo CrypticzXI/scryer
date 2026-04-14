@@ -1,4 +1,4 @@
-export type Facet = "movie" | "tv" | "anime";
+export type Facet = "movie" | "series" | "anime";
 
 export type ExternalId = {
   source: string;
@@ -8,7 +8,7 @@ export type ExternalId = {
 export type TitleRecord = {
   id: string;
   name: string;
-  facet: string;
+  facet: Facet;
   monitored: boolean;
   tags: string[];
   imdbId?: string | null;
@@ -16,6 +16,7 @@ export type TitleRecord = {
   qualityTier?: string | null;
   sizeBytes?: number | null;
   episodesOwned?: number | null;
+  episodesMonitored?: number | null;
   episodesTotal?: number | null;
   contentStatus?: string | null;
   posterUrl?: string | null;

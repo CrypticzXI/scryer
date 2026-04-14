@@ -1,6 +1,6 @@
 export type ImportType =
   | "movie_download"
-  | "tv_download"
+  | "series_download"
   | "rename_preview"
   | "rename_apply_title"
   | "rename_apply_facet"

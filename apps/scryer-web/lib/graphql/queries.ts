@@ -586,6 +586,7 @@ export const TITLE_LIST_FIELDS = `
     qualityTier
     sizeBytes
     episodesOwned
+    episodesMonitored
     episodesTotal
     contentStatus
     externalIds {
@@ -871,6 +872,7 @@ export const JOB_RUN_FIELDS = `
   triggerSource
   startedAt
   completedAt
+  summaryJson
   summaryText
   errorText
   progressJson
@@ -1005,6 +1007,18 @@ export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset:
 
 export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+}`;
+
+export const manualImportRequiredCountQuery = `query ManualImportRequiredCount {
+  downloadQueue(includeAllActivity: true) {
+    id
+    state
+    attentionReason
+    importStatus
+    importErrorMessage
+    trackedState
+    trackedStatusMessages
   }
 }`;
 
@@ -1327,7 +1341,7 @@ export const systemHealthQuery = `query SystemHealth {
     monitoredTitles
     totalUsers
     titlesMovie
-    titlesTv
+    titlesSeries
     titlesAnime
     titlesOther
     recentEvents

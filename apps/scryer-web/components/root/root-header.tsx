@@ -32,7 +32,7 @@ type RootHeaderProps = {
 };
 
 function catalogFacetFromString(facet: string): Facet {
-  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "tv";
+  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
 }
 
 function SearchSectionLoading({ label }: { label: string }) {
@@ -281,7 +281,7 @@ export const RootHeader = React.memo(function RootHeader({
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">{result.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {result.type || t("label.unknownType")} • {result.year ? result.year : t("label.yearUnknown")} • {result.slug || t("label.unknown")}
+                    {result.year ? result.year : t("label.yearUnknown")}
                   </p>
                   {result.overview ? (
                     <p className="mt-2 text-xs text-muted-foreground line-clamp-2">
@@ -449,10 +449,10 @@ export const RootHeader = React.memo(function RootHeader({
         open={addDialogTarget !== null}
         onOpenChange={(open) => { if (!open) setAddDialogTarget(null); }}
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={addDialogTarget?.facet ?? "tv"}
+        facet={addDialogTarget?.facet ?? "series"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
-        defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "tv")}
-        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "tv"]}
+        defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
+        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         onSubmit={handleAddDialogSubmit}
       />
     </>

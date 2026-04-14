@@ -651,7 +651,7 @@ fn parse_ai_enhanced_bluray_zax() {
     assert!(parsed.is_ai_enhanced);
     assert!(parsed.is_proper_upload);
     assert_eq!(parsed.source.as_deref(), Some("BluRay"));
-    assert_eq!(parsed.audio.as_deref(), Some("DTSHD"));
+    assert_eq!(parsed.audio.as_deref(), Some("DTSMA"));
     assert_eq!(parsed.video_codec.as_deref(), Some("H.265"));
 }
 

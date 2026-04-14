@@ -201,11 +201,11 @@ async fn nzbgeek_search_movie_extracts_download_url() {
 }
 
 // ---------------------------------------------------------------------------
-// TV search
+// Series search
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn nzbgeek_search_tv_by_category() {
+async fn nzbgeek_search_series_by_category() {
     let ctx = TestContext::new().await;
     Mock::given(method("GET"))
         .and(path("/api"))
@@ -220,8 +220,8 @@ async fn nzbgeek_search_tv_by_category() {
         .search(
             "Test Show".to_string(),
             search_ids(None, Some("345678"), None),
-            Some("tv".to_string()),
-            Some("tv".to_string()),
+            Some("series".to_string()),
+            Some("series".to_string()),
             None,
             None,
             SearchMode::Interactive,
@@ -231,16 +231,16 @@ async fn nzbgeek_search_tv_by_category() {
             vec![],
         )
         .await
-        .expect("TV search should succeed")
+        .expect("series search should succeed")
         .results;
 
-    assert!(!results.is_empty(), "TV search should return results");
+    assert!(!results.is_empty(), "series search should return results");
 }
 
 #[tokio::test]
-async fn nzbgeek_search_tv_by_anime_category() {
+async fn nzbgeek_search_series_endpoint_by_anime_category() {
     let ctx = TestContext::new().await;
-    // "anime" category should also use tvsearch
+    // "anime" category should also use the structured episodic search endpoint.
     Mock::given(method("GET"))
         .and(path("/api"))
         .and(query_param("t", "tvsearch"))
@@ -274,7 +274,7 @@ async fn nzbgeek_search_tv_by_anime_category() {
 }
 
 #[tokio::test]
-async fn nzbgeek_search_tv_by_series_category() {
+async fn nzbgeek_search_series_endpoint_by_series_category() {
     let ctx = TestContext::new().await;
     Mock::given(method("GET"))
         .and(path("/api"))
@@ -345,7 +345,7 @@ async fn nzbgeek_search_infers_movie_from_imdb_id() {
 }
 
 #[tokio::test]
-async fn nzbgeek_search_infers_tvsearch_from_tvdb_id() {
+async fn nzbgeek_search_infers_series_endpoint_from_tvdb_id() {
     let ctx = TestContext::new().await;
     Mock::given(method("GET"))
         .and(path("/api"))
@@ -850,6 +850,7 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
                     year: None,
                 },
             ],
+            "spa",
         )
         .await
         .expect("search_tvdb_batch should succeed");
@@ -888,14 +889,18 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
         .expect("query string should be present");
     assert!(query.contains("searchTvdbBatch"));
     assert!(!query.contains("q0: searchTvdb"));
-    assert!(!query.contains("$language"));
+    assert!(query.contains("$language"));
 
     let request_inputs = body
         .pointer("/variables/requests")
         .and_then(serde_json::Value::as_array)
         .expect("batch requests should be present");
     assert_eq!(request_inputs.len(), 2);
-    assert!(body.pointer("/variables/language").is_none());
+    assert_eq!(
+        body.pointer("/variables/language")
+            .and_then(serde_json::Value::as_str),
+        Some("spa")
+    );
     assert_eq!(request_inputs[0]["query"], "Test Movie");
     assert_eq!(request_inputs[0]["type"], "movie");
     assert_eq!(request_inputs[0]["year"], 2024);

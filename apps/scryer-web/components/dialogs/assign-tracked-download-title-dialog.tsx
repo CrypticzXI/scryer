@@ -32,7 +32,7 @@ function facetLabel(facet: string | null | undefined): string {
   switch ((facet ?? "").toLowerCase()) {
     case "movie":
       return "Movie";
-    case "tv":
+    case "series":
       return "Series";
     case "anime":
       return "Anime";

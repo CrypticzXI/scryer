@@ -1,10 +1,10 @@
-import { Clapperboard, Film, Tv, type LucideIcon } from "lucide-react";
+import { Clapperboard, Film, Monitor, type LucideIcon } from "lucide-react";
 import type { Facet } from "@/lib/types/titles";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { MetadataCatalogMonitorType } from "@/lib/hooks/use-global-search";
 
 export type FacetDefinition = {
-  /** Domain enum value: "movie" | "tv" | "anime" */
+  /** Domain enum value: "movie" | "series" | "anime" */
   id: Facet;
   /** URL path segment: "movies" | "series" | "anime" */
   viewId: string;
@@ -51,13 +51,13 @@ export const FACET_REGISTRY: FacetDefinition[] = [
     tvdbSearchType: "movie",
   },
   {
-    id: "tv",
+    id: "series",
     viewId: "series",
     scopeId: "series",
     metadataKey: "series",
-    icon: Tv,
+    icon: Monitor,
     navLabelKey: "nav.series",
-    searchLabelKey: "search.facetTv",
+    searchLabelKey: "search.facetSeries",
     settingsLabelKey: "settings.seriesSettings",
     overviewLabelKey: "title.manageSeries",
     folderSettingKey: "series.path",

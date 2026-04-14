@@ -15,7 +15,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeLibraryScanFacet(value: unknown): LibraryScanProgress["facet"] {
-  return value === "anime" ? "anime" : value === "tv" ? "tv" : "movie";
+  return value === "anime" ? "anime" : value === "series" ? "series" : "movie";
 }
 
 function normalizeLibraryScanMode(value: unknown): LibraryScanMode {
@@ -177,6 +177,8 @@ export function normalizeJobRun(value: unknown): JobRun | null {
         : new Date().toISOString(),
     completedAt:
       typeof value.completedAt === "string" ? value.completedAt : null,
+    summaryJson:
+      typeof value.summaryJson === "string" ? value.summaryJson : null,
     summaryText: typeof value.summaryText === "string" ? value.summaryText : null,
     errorText: typeof value.errorText === "string" ? value.errorText : null,
     progressJson:

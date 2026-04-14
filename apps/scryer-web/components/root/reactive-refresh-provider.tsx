@@ -336,6 +336,9 @@ export function ReactiveRefreshProvider({
   );
 
   useEffect(() => {
+    // React StrictMode runs effect cleanup before the final mounted pass in dev,
+    // so reset the mount flag here before any queued refresh responses apply.
+    isMountedRef.current = true;
     const pendingActions = pendingActionsRef.current;
 
     return () => {

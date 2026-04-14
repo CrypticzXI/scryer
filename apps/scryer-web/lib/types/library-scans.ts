@@ -35,4 +35,5 @@ export type LibraryScanProgress = {
   hydrationProgress: LibraryScanPhaseProgress;
   mediaAnalysisProgress: LibraryScanPhaseProgress;
   summary?: LibraryScanSummary | null;
+  warningMessage?: string | null;
 };

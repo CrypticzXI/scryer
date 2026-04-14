@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 
 type ActionButtonProps = {
@@ -78,7 +79,7 @@ function ActionButton({
 
 export function OverviewControlPanel({
   monitored,
-  searchMonitoredLabel = "Search Monitored",
+  searchMonitoredLabel,
   monitoredUpdating = false,
   searchMonitoredLoading = false,
   interactiveSearchLoading = false,
@@ -93,8 +94,11 @@ export function OverviewControlPanel({
   settingsPanel,
   interactiveSearchPanel,
 }: Props) {
+  const t = useTranslate();
   const [expandedPanel, setExpandedPanel] = React.useState<"settings" | "interactive" | null>(null);
   const hasInteractiveSearch = Boolean(interactiveSearchPanel);
+  const resolvedSearchMonitoredLabel =
+    searchMonitoredLabel ?? t("title.searchMonitoredAction");
 
   const handleToggleSettings = React.useCallback(() => {
     setExpandedPanel((current) => (current === "settings" ? null : "settings"));
@@ -120,7 +124,7 @@ export function OverviewControlPanel({
           )}
         >
           <ActionButton
-            label={monitored ? "Stop Monitoring" : "Monitor"}
+            label={monitored ? t("title.unmonitorAction") : t("title.monitorAction")}
             icon={monitored ? EyeOff : Eye}
             active={monitored}
             destructive={monitored}
@@ -129,7 +133,7 @@ export function OverviewControlPanel({
             onClick={onToggleMonitoring}
           />
           <ActionButton
-            label={searchMonitoredLabel}
+            label={resolvedSearchMonitoredLabel}
             icon={Zap}
             loading={searchMonitoredLoading}
             disabled={!onSearchMonitored}
@@ -137,7 +141,7 @@ export function OverviewControlPanel({
           />
           {hasInteractiveSearch ? (
             <ActionButton
-              label="Interactive Search"
+              label={t("label.interactiveSearch")}
               icon={Search}
               active={expandedPanel === "interactive"}
               loading={interactiveSearchLoading}
@@ -146,27 +150,27 @@ export function OverviewControlPanel({
             />
           ) : null}
           <ActionButton
-            label="Refresh & Scan"
+            label={t("title.refreshAndScanAction")}
             icon={RefreshCw}
             loading={refreshAndScanLoading}
             disabled={!onRefreshAndScan}
             onClick={onRefreshAndScan}
           />
           <ActionButton
-            label="History"
+            label={t("activity.history")}
             icon={ClipboardList}
             disabled={!onHistory}
             onClick={onHistory}
           />
           <ActionButton
-            label="Edit"
+            label={t("label.edit")}
             icon={Edit}
             active={expandedPanel === "settings"}
             disabled={!settingsPanel}
             onClick={handleToggleSettings}
           />
           <ActionButton
-            label="Delete"
+            label={t("label.delete")}
             icon={Trash2}
             destructive
             loading={deleteLoading}

@@ -238,8 +238,8 @@ impl AppUseCase {
         Ok(())
     }
 
-    /// Rebuild the plugin provider from database state + builtins.
-    pub async fn rebuild_plugin_provider(&self) -> AppResult<()> {
+    /// Reload runtime plugin providers from database state + builtins.
+    pub async fn reload_plugin_providers(&self) -> AppResult<()> {
         let enabled = self
             .services
             .customization
@@ -303,7 +303,12 @@ impl AppUseCase {
                 })?;
         }
 
-        // Rebuild rules engine to pick up new/removed scoring policies
+        Ok(())
+    }
+
+    /// Rebuild the runtime plugin providers and rules engine from the latest plugin state.
+    pub async fn rebuild_plugin_provider(&self) -> AppResult<()> {
+        self.reload_plugin_providers().await?;
         self.rebuild_user_rules_engine().await?;
         Ok(())
     }

@@ -379,7 +379,7 @@ impl ShowRepository for FailingShowRepo {
 async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
     let tvdb_id = match facet {
         "movie" => "123456",
-        "tv" | "anime" => "345678",
+        "series" | "anime" => "345678",
         _ => "123456",
     };
     let body = gql(
@@ -3434,7 +3434,7 @@ async fn graphql_delay_profiles_round_trip() {
             "preferredProtocol": "usenet",
             "minAgeMinutes": 15,
             "bypassScoreThreshold": 320,
-            "appliesToFacets": ["movie", "tv"],
+            "appliesToFacets": ["movie", "series"],
             "tags": ["4k", "hdr"],
             "priority": 5,
             "enabled": true
@@ -3446,7 +3446,7 @@ async fn graphql_delay_profiles_round_trip() {
     assert_eq!(upsert["data"]["upsertDelayProfile"]["id"], "balanced-delay");
     assert_eq!(
         upsert["data"]["upsertDelayProfile"]["appliesToFacets"][1],
-        "tv"
+        "series"
     );
 
     let read = gql(
@@ -3481,7 +3481,7 @@ async fn graphql_delay_profiles_round_trip() {
     assert_eq!(profile["minAgeMinutes"], 15);
     assert_eq!(profile["bypassScoreThreshold"], 320);
     assert_eq!(profile["appliesToFacets"][0], "movie");
-    assert_eq!(profile["appliesToFacets"][1], "tv");
+    assert_eq!(profile["appliesToFacets"][1], "series");
     assert_eq!(profile["tags"][0], "4k");
     assert_eq!(profile["priority"], 5);
     assert_eq!(profile["enabled"], true);
@@ -4792,7 +4792,7 @@ async fn graphql_introspection_exposes_import_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(import_type_names.contains(&"tv_download"));
+    assert!(import_type_names.contains(&"series_download"));
     assert!(import_type_names.contains(&"rename_io_failed"));
 
     let import_decision_names: Vec<&str> = body["data"]["importDecision"]["enumValues"]
@@ -4947,7 +4947,7 @@ async fn graphql_add_title_movie() {
 #[tokio::test]
 async fn graphql_add_title_tv() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Test Series", "tv").await;
+    let id = add_test_title(&ctx, "Test Series", "series").await;
     assert!(!id.is_empty());
 }
 
@@ -5027,7 +5027,7 @@ async fn graphql_add_title_then_list() {
 async fn graphql_add_multiple_titles() {
     let ctx = TestContext::new().await;
     add_test_title(&ctx, "Movie One", "movie").await;
-    add_test_title(&ctx, "Series One", "tv").await;
+    add_test_title(&ctx, "Series One", "series").await;
     add_test_title(&ctx, "Anime One", "anime").await;
 
     let body = gql(&ctx, "{ titles { id facet } }", json!({})).await;
@@ -5138,7 +5138,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
 
     let regular_episode_1 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "1", "S01E01").await;
-    let regular_episode_2 =
+    let mut regular_episode_2 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "2", "S01E02").await;
     let _regular_episode_3 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "3", "S01E03").await;
@@ -5150,6 +5150,18 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         create_series_scan_episode(&ctx, &title, &season_zero_collection, "0", "3", "S00E03").await;
     let _season_zero_episode_2 =
         create_series_scan_episode(&ctx, &title, &season_zero_collection, "0", "4", "S00E04").await;
+
+    regular_episode_2 = ctx
+        .catalog
+        .update_episode(
+            &regular_episode_2.id,
+            EpisodeUpdate {
+                monitored: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("update episode monitored flag");
 
     for (index, episode) in [
         regular_episode_1,
@@ -5182,8 +5194,8 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
 
     let body = gql(
         &ctx,
-        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { id name episodesOwned episodesTotal } }"#,
-        json!({ "facet": "tv" }),
+        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { id name episodesOwned episodesMonitored episodesTotal } }"#,
+        json!({ "facet": "series" }),
     )
     .await;
     assert_no_errors(&body);
@@ -5196,6 +5208,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
 
     assert_eq!(listed_title["name"], "Episode Progress Show");
     assert_eq!(listed_title["episodesOwned"], 2);
+    assert_eq!(listed_title["episodesMonitored"], 2);
     assert_eq!(listed_title["episodesTotal"], 3);
 }
 
@@ -7333,7 +7346,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 async fn graphql_filter_titles_by_facet() {
     let ctx = TestContext::new().await;
     add_test_title(&ctx, "Movie A", "movie").await;
-    add_test_title(&ctx, "Series A", "tv").await;
+    add_test_title(&ctx, "Series A", "series").await;
 
     let body = gql(
         &ctx,
@@ -7348,9 +7361,9 @@ async fn graphql_filter_titles_by_facet() {
 }
 
 #[tokio::test]
-async fn graphql_series_titles_expose_tv_facet() {
+async fn graphql_series_titles_expose_series_facet() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "Series A", "tv").await;
+    add_test_title(&ctx, "Series A", "series").await;
 
     let body = gql(&ctx, "{ titles { name facet } }", json!({})).await;
     assert_no_errors(&body);
@@ -7360,7 +7373,7 @@ async fn graphql_series_titles_expose_tv_facet() {
         .iter()
         .find(|title| title["name"] == "Series A")
         .expect("series title should be present");
-    assert_eq!(title["facet"], "tv");
+    assert_eq!(title["facet"], "series");
 }
 
 // ---------------------------------------------------------------------------

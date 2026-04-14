@@ -103,11 +103,11 @@ MVP workflow: open the SPA on `http://127.0.0.1:3000` and use the nav/search exp
 
 ### NZBGet category routing
 
-When queueing titles, Scryer now submits an NZBGet category derived from the title facet (`movie`, `tv`, `anime`, or `other`).
+When queueing titles, Scryer now submits an NZBGet category derived from the title facet (`movie`, `series`, `anime`, or `other`).
 
 For a standard completed-directory workflow:
-- Configure NZBGet with matching category definitions for `movie`, `tv`, `anime`, and `other`.
-- Set category-specific `DestDir` under a common completed root (for example, `/data/completed/movie`, `/data/completed/tv`, etc.).
+- Configure NZBGet with matching category definitions for `movie`, `series`, `anime`, and `other`.
+- Set category-specific `DestDir` under a common completed root (for example, `/data/completed/movie`, `/data/completed/series`, etc.).
 - Configure your Servarr clients to monitor the completed directories and move final assets into your library destinations.
 - Keep this scryer category on queued items as the routing key; NZBGet category should remain your integration point for mover semantics.
 

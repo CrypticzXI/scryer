@@ -291,7 +291,7 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => "60s after startup, then hourly",
+            | Self::BackgroundLibraryRefreshAnime => "Hourly",
             Self::RssSync => "Every 15 minutes",
             Self::SubtitleSearch => "Based on subtitle settings interval",
             Self::MetadataRefresh => "Every 12 hours",
@@ -327,7 +327,7 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => Some(60),
+            | Self::BackgroundLibraryRefreshAnime => None,
             Self::SubtitleSearch => Some(120),
             Self::HealthChecks => Some(30),
             _ => None,
@@ -448,6 +448,7 @@ pub struct JobRun {
     pub trigger_source: JobTriggerSource,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub summary_json: Option<String>,
     pub summary_text: Option<String>,
     pub error_text: Option<String>,
     pub progress_json: Option<String>,
@@ -482,6 +483,7 @@ impl JobRun {
             trigger_source: record.trigger_source,
             started_at: record.started_at,
             completed_at: record.completed_at,
+            summary_json: record.summary_json.clone(),
             summary_text: record.summary_text.clone(),
             error_text: record.error_text.clone(),
             progress_json: record.progress_json.clone(),
@@ -704,6 +706,14 @@ mod tests {
     use super::*;
     use crate::{LibraryScanMode, LibraryScanPhaseProgress, MediaFacet};
 
+    #[test]
+    fn background_library_refresh_definitions_advertise_hourly_schedule() {
+        let definition = JobDefinition::from_key(JobKey::BackgroundLibraryRefreshMovies, None);
+
+        assert_eq!(definition.schedule.description, "Hourly");
+        assert_eq!(definition.schedule.initial_delay_seconds, None);
+    }
+
     #[tokio::test]
     async fn terminal_library_scan_merge_keeps_run_active_until_final_upsert() {
         let tracker = JobRunTracker::new();
@@ -720,6 +730,7 @@ mod tests {
             trigger_source: JobTriggerSource::ScheduledInterval,
             started_at: now,
             completed_at: None,
+            summary_json: None,
             summary_text: None,
             error_text: None,
             progress_json: None,
@@ -755,6 +766,7 @@ mod tests {
                     failed: 0,
                 },
                 summary: None,
+                warning_message: None,
             })
             .await;
 

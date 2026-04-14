@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { useClient } from "urql";
 
 import {
@@ -20,6 +22,7 @@ import {
   refreshPluginRegistryMutation,
   installPluginMutation,
   uninstallPluginMutation,
+  scanLibraryMutation,
 } from "@/lib/graphql/mutations";
 import { DEFAULT_DOWNLOAD_CLIENT_DRAFT, DEFAULT_PORT_FOR_CLIENT_TYPE } from "@/lib/constants/download-clients";
 import {
@@ -137,19 +140,25 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
 
   // ── Import: Preview / Review ────────────────────────────────────────
   const [importPreview, setImportPreview] = useState<ExternalImportPreview | null>(null);
-  const [selectedMoviesPath, setSelectedMoviesPath] = useState<string | null>(null);
-  const [selectedSeriesPath, setSelectedSeriesPath] = useState<string | null>(null);
+  const [selectedMoviesPaths, setSelectedMoviesPaths] = useState<string[]>([]);
+  const [selectedSeriesPaths, setSelectedSeriesPaths] = useState<string[]>([]);
+  const [customMoviesPaths, setCustomMoviesPaths] = useState<string[]>([]);
+  const [customSeriesPaths, setCustomSeriesPaths] = useState<string[]>([]);
   const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
   const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
   // User-supplied API keys for clients whose keys were masked by Sonarr/Radarr.
   const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<Map<string, string>>(new Map());
-  const [selectedAnimePath, setSelectedAnimePath] = useState<string | null>(null);
+  const [selectedAnimePaths, setSelectedAnimePaths] = useState<string[]>([]);
+  const [customAnimePaths, setCustomAnimePaths] = useState<string[]>([]);
   const [importExecuting, setImportExecuting] = useState(false);
   const [importExecuteError, setImportExecuteError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ExternalImportResult | null>(null);
 
   // ── Summary / Finish ────────────────────────────────────────────────
-  const [finishing, setFinishing] = useState(false);
+  const [finishingAction, setFinishingAction] = useState<
+    "finish" | "importOnly" | "importAndScan" | null
+  >(null);
+  const finishing = finishingAction !== null;
 
   const refreshProviderOptions = useCallback(async () => {
     try {
@@ -381,12 +390,18 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     setMediaPathsSaving(true);
     setMediaPathsError(null);
     try {
+      const trimmedMovies = moviesPath.trim();
+      const trimmedSeries = seriesPath.trim();
       const trimmedAnime = animePath.trim();
+      if (!trimmedMovies && !trimmedSeries && !trimmedAnime) {
+        goToStep(3);
+        return;
+      }
       const { error } = await client
         .mutation(updateLibraryPathsMutation, {
           input: {
-            moviePath: moviesPath.trim(),
-            seriesPath: seriesPath.trim(),
+            moviePath: trimmedMovies,
+            seriesPath: trimmedSeries,
             animePath: trimmedAnime.length > 0 ? trimmedAnime : null,
           },
         })
@@ -618,19 +633,16 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       }
       setSelectedIdxKeys(idxKeys);
 
-      // Auto-select first root folder per facet
+      // Auto-select all Radarr roots for movies.
       const radarrFolders = preview.rootFolders.filter((f) => f.source === "radarr");
-      if (radarrFolders.length > 0) setSelectedMoviesPath(radarrFolders[0].path);
-      const sonarrFolders = preview.rootFolders.filter((f) => f.source === "sonarr");
-      if (sonarrFolders.length > 0) setSelectedSeriesPath(sonarrFolders[0].path);
+      setSelectedMoviesPaths(radarrFolders.map((folder) => folder.path));
+      setCustomMoviesPaths([]);
 
-      // Auto-detect anime path if a Sonarr folder looks like anime
-      if (sonarrFolders.length > 1) {
-        const animeFolder = sonarrFolders.find((f) =>
-          f.path.toLowerCase().includes("anime"),
-        );
-        if (animeFolder) setSelectedAnimePath(animeFolder.path);
-      }
+      const sonarrFolders = preview.rootFolders.filter((f) => f.source === "sonarr");
+      setSelectedSeriesPaths(sonarrFolders.map((folder) => folder.path));
+      setSelectedAnimePaths([]);
+      setCustomSeriesPaths([]);
+      setCustomAnimePaths([]);
 
       goToStep(2);
     } catch (err) {
@@ -641,6 +653,35 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   }, [client, sonarrUrl, sonarrApiKey, radarrUrl, radarrApiKey, goToStep]);
 
   // ── Import: Execute ─────────────────────────────────────────────────
+  const buildSelectedImportPaths = useCallback(
+    (selectedImportedPaths: string[], customPaths: string[]) => [
+      ...selectedImportedPaths,
+      ...customPaths.filter((path) => !selectedImportedPaths.includes(path)),
+    ],
+    [],
+  );
+
+  const finalSelectedMoviesPaths = buildSelectedImportPaths(
+    selectedMoviesPaths,
+    customMoviesPaths,
+  );
+  const finalSelectedSeriesPaths = buildSelectedImportPaths(
+    selectedSeriesPaths,
+    customSeriesPaths,
+  );
+  const finalSelectedAnimePaths = buildSelectedImportPaths(
+    selectedAnimePaths,
+    customAnimePaths,
+  );
+
+  const importedSonarrPaths = useMemo(
+    () =>
+      importPreview?.rootFolders
+        .filter((folder) => folder.source === "sonarr")
+        .map((folder) => folder.path) ?? [],
+    [importPreview],
+  );
+
   const handleImportExecute = useCallback(async () => {
     setImportExecuting(true);
     setImportExecuteError(null);
@@ -659,9 +700,9 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
           input: {
             sonarr: sonarr ?? null,
             radarr: radarr ?? null,
-            selectedMoviesPath: selectedMoviesPath ?? null,
-            selectedSeriesPath: selectedSeriesPath ?? null,
-            selectedAnimePath: selectedAnimePath ?? null,
+            selectedMoviesPaths: finalSelectedMoviesPaths,
+            selectedSeriesPaths: finalSelectedSeriesPaths,
+            selectedAnimePaths: finalSelectedAnimePaths,
             selectedDownloadClientDedupKeys: [...selectedDcKeys],
             selectedIndexerDedupKeys: [...selectedIdxKeys],
             downloadClientApiKeyOverrides: [...dcApiKeyOverrides.entries()].map(
@@ -675,9 +716,10 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       const result: ExternalImportResult = data.executeExternalImport;
       setImportResult(result);
 
-      // Update paths for summary display
-      if (selectedMoviesPath) setMoviesPath(selectedMoviesPath);
-      if (selectedSeriesPath) setSeriesPath(selectedSeriesPath);
+      // Keep the wizard summary aligned with the default imported roots.
+      if (finalSelectedMoviesPaths.length > 0) setMoviesPath(finalSelectedMoviesPaths[0]);
+      if (finalSelectedSeriesPaths.length > 0) setSeriesPath(finalSelectedSeriesPaths[0]);
+      if (finalSelectedAnimePaths.length > 0) setAnimePath(finalSelectedAnimePaths[0]);
 
       if (result.errors.length > 0) {
         setImportExecuteError(result.errors.join("; "));
@@ -695,9 +737,9 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     sonarrApiKey,
     radarrUrl,
     radarrApiKey,
-    selectedMoviesPath,
-    selectedSeriesPath,
-    selectedAnimePath,
+    finalSelectedMoviesPaths,
+    finalSelectedSeriesPaths,
+    finalSelectedAnimePaths,
     selectedDcKeys,
     selectedIdxKeys,
     dcApiKeyOverrides,
@@ -705,17 +747,207 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   ]);
 
   // ── Complete setup ──────────────────────────────────────────────────
-  const finishSetup = useCallback(async () => {
-    setFinishing(true);
+  const navigateAfterSetup = useCallback(() => {
+    navigate(isReentry ? "/settings" : "/movies", { replace: true });
+  }, [isReentry, navigate]);
+
+  const finishSetup = useCallback(async (action: "finish" | "importOnly" = "finish") => {
+    setFinishingAction(action);
     try {
       await client.mutation(completeSetupMutation, {}).toPromise();
-      navigate(isReentry ? "/settings" : "/movies", { replace: true });
     } catch {
-      navigate(isReentry ? "/settings" : "/movies", { replace: true });
+      // Setup completion falling through to navigation keeps the wizard resilient.
     }
-  }, [client, navigate, isReentry]);
+    navigateAfterSetup();
+  }, [client, navigateAfterSetup]);
+
+  const finishImportAndScan = useCallback(async () => {
+    setFinishingAction("importAndScan");
+
+    const selectedFacets = [
+      finalSelectedMoviesPaths.length > 0
+        ? { facet: "movie", label: t("setup.facetMovies") }
+        : null,
+      finalSelectedSeriesPaths.length > 0
+        ? { facet: "series", label: t("setup.facetSeries") }
+        : null,
+      finalSelectedAnimePaths.length > 0
+        ? { facet: "anime", label: t("setup.facetAnime") }
+        : null,
+    ].filter((value): value is { facet: "movie" | "series" | "anime"; label: string } => value !== null);
+
+    try {
+      await client.mutation(completeSetupMutation, {}).toPromise();
+
+      await Promise.all(
+        selectedFacets.map(async ({ facet, label }) => {
+          try {
+            const result = await client
+              .mutation(scanLibraryMutation, { facet })
+              .toPromise();
+            if (result.error) throw result.error;
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error ?? "");
+            if (/library scan already running/i.test(message)) {
+              toast.info(
+                t("settings.libraryScanAlreadyRunning").replace("{{facet}}", label),
+              );
+              return;
+            }
+
+            toast.warning(
+              message || t("settings.libraryScanFailed"),
+            );
+          }
+        }),
+      );
+    } catch {
+      // Still navigate into the app even if setup completion reporting fails.
+    }
+
+    navigateAfterSetup();
+  }, [
+    client,
+    finalSelectedAnimePaths.length,
+    finalSelectedMoviesPaths.length,
+    finalSelectedSeriesPaths.length,
+    navigateAfterSetup,
+    t,
+  ]);
 
   // ── Toggle helpers for import review ────────────────────────────────
+  const toggleImportedPathSelection = useCallback(
+    (
+      setter: Dispatch<SetStateAction<string[]>>,
+      path: string,
+      importedPaths: string[],
+    ) => {
+      setter((prev) =>
+        prev.includes(path)
+          ? prev.filter((entry) => entry !== path)
+          : importedPaths.filter((entry) => prev.includes(entry) || entry === path),
+      );
+    },
+    [],
+  );
+
+  const toggleMoviesPath = useCallback(
+    (path: string) => {
+      const importedPaths = importPreview?.rootFolders
+        .filter((folder) => folder.source === "radarr")
+        .map((folder) => folder.path) ?? [];
+      toggleImportedPathSelection(setSelectedMoviesPaths, path, importedPaths);
+    },
+    [importPreview, toggleImportedPathSelection],
+  );
+
+  const toggleSeriesPath = useCallback(
+    (path: string) => {
+      toggleImportedPathSelection(setSelectedSeriesPaths, path, importedSonarrPaths);
+    },
+    [importedSonarrPaths, toggleImportedPathSelection],
+  );
+
+  const toggleAnimePath = useCallback(
+    (path: string) => {
+      toggleImportedPathSelection(setSelectedAnimePaths, path, importedSonarrPaths);
+    },
+    [importedSonarrPaths, toggleImportedPathSelection],
+  );
+
+  const addCustomFacetPath = useCallback(
+    (
+      path: string,
+      importedPaths: string[],
+      customPaths: string[],
+      setCustomPaths: Dispatch<SetStateAction<string[]>>,
+      setSelectedImportedPaths: Dispatch<SetStateAction<string[]>>,
+    ) => {
+      const trimmed = path.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (importedPaths.includes(trimmed)) {
+        setSelectedImportedPaths((prev) =>
+          prev.includes(trimmed)
+            ? prev
+            : importedPaths.filter((entry) => prev.includes(entry) || entry === trimmed),
+        );
+        return;
+      }
+      if (customPaths.includes(trimmed)) {
+        return;
+      }
+      setCustomPaths((prev) => [...prev, trimmed]);
+    },
+    [],
+  );
+
+  const removeCustomFacetPath = useCallback(
+    (path: string, setCustomPaths: Dispatch<SetStateAction<string[]>>) => {
+      setCustomPaths((prev) => prev.filter((entry) => entry !== path));
+    },
+    [],
+  );
+
+  const addCustomMoviesPath = useCallback(
+    (path: string) => {
+      const importedPaths = importPreview?.rootFolders
+        .filter((folder) => folder.source === "radarr")
+        .map((folder) => folder.path) ?? [];
+      addCustomFacetPath(
+        path,
+        importedPaths,
+        customMoviesPaths,
+        setCustomMoviesPaths,
+        setSelectedMoviesPaths,
+      );
+    },
+    [addCustomFacetPath, customMoviesPaths, importPreview],
+  );
+
+  const addCustomSeriesPath = useCallback(
+    (path: string) => {
+      addCustomFacetPath(
+        path,
+        importedSonarrPaths,
+        customSeriesPaths,
+        setCustomSeriesPaths,
+        setSelectedSeriesPaths,
+      );
+    },
+    [addCustomFacetPath, customSeriesPaths, importedSonarrPaths],
+  );
+
+  const addCustomAnimePath = useCallback(
+    (path: string) => {
+      addCustomFacetPath(
+        path,
+        importedSonarrPaths,
+        customAnimePaths,
+        setCustomAnimePaths,
+        setSelectedAnimePaths,
+      );
+    },
+    [addCustomFacetPath, customAnimePaths, importedSonarrPaths],
+  );
+
+  const removeCustomMoviesPath = useCallback(
+    (path: string) => removeCustomFacetPath(path, setCustomMoviesPaths),
+    [removeCustomFacetPath],
+  );
+
+  const removeCustomSeriesPath = useCallback(
+    (path: string) => removeCustomFacetPath(path, setCustomSeriesPaths),
+    [removeCustomFacetPath],
+  );
+
+  const removeCustomAnimePath = useCallback(
+    (path: string) => removeCustomFacetPath(path, setCustomAnimePaths),
+    [removeCustomFacetPath],
+  );
+
   const toggleDcKey = useCallback((key: string) => {
     setSelectedDcKeys((prev) => {
       const next = new Set(prev);
@@ -875,14 +1107,15 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
         <SetupSummaryView
           t={t}
           facetPrefs={facetPrefs}
-          moviesPath={moviesPath}
-          seriesPath={seriesPath}
-          animePath={animePath}
+          moviesPaths={[moviesPath]}
+          seriesPaths={[seriesPath]}
+          animePaths={animePath ? [animePath] : []}
           downloadClientName={dcDraft.name || dcDraft.clientType}
           indexerName={idxName || idxProviderType}
           onFinish={finishSetup}
           onBack={() => goToStep(5)}
           finishing={finishing}
+          finishingAction={finishingAction}
         />
       )}
 
@@ -912,15 +1145,24 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
         <SetupImportReviewView
           t={t}
           preview={importPreview}
-          selectedMoviesPath={selectedMoviesPath}
-          selectedSeriesPath={selectedSeriesPath}
-          selectedAnimePath={selectedAnimePath}
+          selectedMoviesPaths={selectedMoviesPaths}
+          selectedSeriesPaths={selectedSeriesPaths}
+          selectedAnimePaths={selectedAnimePaths}
+          customMoviesPaths={customMoviesPaths}
+          customSeriesPaths={customSeriesPaths}
+          customAnimePaths={customAnimePaths}
           selectedDcKeys={selectedDcKeys}
           selectedIdxKeys={selectedIdxKeys}
           dcApiKeyOverrides={dcApiKeyOverrides}
-          onSelectMoviesPath={setSelectedMoviesPath}
-          onSelectSeriesPath={setSelectedSeriesPath}
-          onSelectAnimePath={setSelectedAnimePath}
+          onToggleMoviesPath={toggleMoviesPath}
+          onToggleSeriesPath={toggleSeriesPath}
+          onToggleAnimePath={toggleAnimePath}
+          onAddCustomMoviesPath={addCustomMoviesPath}
+          onAddCustomSeriesPath={addCustomSeriesPath}
+          onAddCustomAnimePath={addCustomAnimePath}
+          onRemoveCustomMoviesPath={removeCustomMoviesPath}
+          onRemoveCustomSeriesPath={removeCustomSeriesPath}
+          onRemoveCustomAnimePath={removeCustomAnimePath}
           onToggleDc={toggleDcKey}
           onToggleIdx={toggleIdxKey}
           onSetDcApiKey={setDcApiKey}
@@ -948,16 +1190,18 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
         <SetupSummaryView
           t={t}
           facetPrefs={facetPrefs}
-          moviesPath={moviesPath}
-          seriesPath={seriesPath}
-          animePath={selectedAnimePath ?? undefined}
+          moviesPaths={selectedMoviesPaths}
+          seriesPaths={selectedSeriesPaths}
+          animePaths={selectedAnimePaths}
           downloadClientName=""
           indexerName=""
           importedDcCount={importResult?.downloadClientsCreated}
           importedIdxCount={importResult?.indexersCreated}
-          onFinish={finishSetup}
+          onImportOnly={() => finishSetup("importOnly")}
+          onImportAndScan={finishImportAndScan}
           onBack={() => goToStep(3)}
           finishing={finishing}
+          finishingAction={finishingAction}
         />
       )}
     </div>

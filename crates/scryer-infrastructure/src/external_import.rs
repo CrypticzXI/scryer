@@ -30,6 +30,40 @@ pub struct ArrIndexer {
     pub fields: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ArrMovie {
+    pub id: i64,
+    pub root_folder_path: String,
+    pub tmdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    pub monitored: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrSeriesSeason {
+    pub season_number: i32,
+    pub monitored: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrSeries {
+    pub id: i64,
+    pub root_folder_path: String,
+    pub tvdb_id: Option<String>,
+    pub monitored: bool,
+    pub seasons: Vec<ArrSeriesSeason>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrEpisode {
+    pub id: i64,
+    pub series_id: i64,
+    pub tvdb_id: Option<String>,
+    pub season_number: i32,
+    pub episode_number: i32,
+    pub monitored: bool,
+}
+
 /// HTTP client for Sonarr/Radarr v3 API.
 #[derive(Clone)]
 pub struct ExternalArrClient {
@@ -185,6 +219,139 @@ impl ExternalArrClient {
         Ok(results)
     }
 
+    pub async fn list_movies(&self) -> AppResult<Vec<ArrMovie>> {
+        let json = self.api_get("movie").await?;
+        let arr = json
+            .as_array()
+            .ok_or_else(|| AppError::Repository("movie response was not an array".into()))?;
+
+        Ok(arr
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id").and_then(Value::as_i64)?;
+                let root_folder_path = item
+                    .get("rootFolderPath")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_string();
+                if root_folder_path.is_empty() {
+                    return None;
+                }
+
+                Some(ArrMovie {
+                    id,
+                    root_folder_path,
+                    tmdb_id: value_str_or_number(item.get("tmdbId")),
+                    imdb_id: item
+                        .get("imdbId")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    monitored: item
+                        .get("monitored")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn list_series(&self) -> AppResult<Vec<ArrSeries>> {
+        let json = self.api_get("series").await?;
+        let arr = json
+            .as_array()
+            .ok_or_else(|| AppError::Repository("series response was not an array".into()))?;
+
+        Ok(arr
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id").and_then(Value::as_i64)?;
+                let root_folder_path = item
+                    .get("rootFolderPath")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_string();
+                if root_folder_path.is_empty() {
+                    return None;
+                }
+
+                let seasons = item
+                    .get("seasons")
+                    .and_then(Value::as_array)
+                    .map(|seasons| {
+                        seasons
+                            .iter()
+                            .filter_map(|season| {
+                                let season_number = season
+                                    .get("seasonNumber")
+                                    .and_then(Value::as_i64)?
+                                    .try_into()
+                                    .ok()?;
+                                Some(ArrSeriesSeason {
+                                    season_number,
+                                    monitored: season
+                                        .get("monitored")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(ArrSeries {
+                    id,
+                    root_folder_path,
+                    tvdb_id: value_str_or_number(item.get("tvdbId")),
+                    monitored: item
+                        .get("monitored")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    seasons,
+                })
+            })
+            .collect())
+    }
+
+    pub async fn list_episodes_for_series(&self, series_id: i64) -> AppResult<Vec<ArrEpisode>> {
+        let json = self
+            .api_get(&format!("episode?seriesId={series_id}"))
+            .await?;
+        let arr = json
+            .as_array()
+            .ok_or_else(|| AppError::Repository("episode response was not an array".into()))?;
+
+        Ok(arr
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id").and_then(Value::as_i64)?;
+                let season_number = item
+                    .get("seasonNumber")
+                    .and_then(Value::as_i64)?
+                    .try_into()
+                    .ok()?;
+                let episode_number = item
+                    .get("episodeNumber")
+                    .and_then(Value::as_i64)?
+                    .try_into()
+                    .ok()?;
+
+                Some(ArrEpisode {
+                    id,
+                    series_id,
+                    tvdb_id: value_str_or_number(item.get("tvdbId")),
+                    season_number,
+                    episode_number,
+                    monitored: item
+                        .get("monitored")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect())
+    }
+
     async fn api_get(&self, path: &str) -> AppResult<Value> {
         let url = format!("{}/api/v3/{}", self.base_url, path);
         let response = self
@@ -219,10 +386,10 @@ impl ExternalArrClient {
 
 /// Map the Sonarr/Radarr implementation name to a Scryer download client type.
 pub fn map_download_client_type(implementation: &str) -> Option<&'static str> {
-    match implementation {
-        "Nzbget" => Some("nzbget"),
-        "Sabnzbd" => Some("sabnzbd"),
-        // QBittorrent: mapped but not yet implemented in Scryer
+    match implementation.trim().to_ascii_lowercase().as_str() {
+        "nzbget" => Some("nzbget"),
+        "sabnzbd" => Some("sabnzbd"),
+        "qbittorrent" => Some("qbittorrent"),
         _ => None,
     }
 }
@@ -236,20 +403,37 @@ pub fn map_indexer_provider_type(
     implementation: &str,
     fields: &HashMap<String, Value>,
 ) -> Option<&'static str> {
-    match implementation {
-        "Newznab" => {
-            let base_url = field_str(fields, "baseUrl")
-                .unwrap_or_default()
-                .to_lowercase();
-            if base_url.contains("nzbgeek.info") {
-                Some("nzbgeek")
-            } else if base_url.contains("animetosho.org") {
-                Some("animetosho")
-            } else {
-                Some("newznab")
-            }
-        }
+    let native_provider = known_native_indexer_provider_type(
+        field_str(fields, "baseUrl"),
+        field_str(fields, "apiPath"),
+    );
+
+    match implementation.trim().to_ascii_lowercase().as_str() {
+        "newznab" => native_provider.or(Some("newznab")),
+        "torznab" => native_provider.and_then(|provider_type| match provider_type {
+            "animetosho" => Some(provider_type),
+            _ => None,
+        }),
         _ => None,
+    }
+}
+
+fn known_native_indexer_provider_type(
+    base_url: Option<String>,
+    api_path: Option<String>,
+) -> Option<&'static str> {
+    let endpoint = format!(
+        "{} {}",
+        base_url.unwrap_or_default().to_lowercase(),
+        api_path.unwrap_or_default().to_lowercase()
+    );
+
+    if endpoint.contains("nzbgeek.info") {
+        Some("nzbgeek")
+    } else if endpoint.contains("animetosho.org") {
+        Some("animetosho")
+    } else {
+        None
     }
 }
 
@@ -297,6 +481,14 @@ pub fn field_bool(fields: &HashMap<String, Value>, key: &str) -> Option<bool> {
     })
 }
 
+fn value_str_or_number(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    })
+}
+
 fn flatten_arr_fields(fields: &[Value]) -> HashMap<String, Value> {
     fields
         .iter()
@@ -306,4 +498,62 @@ fn flatten_arr_fields(fields: &[Value]) -> HashMap<String, Value> {
             Some((name, value))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::Value;
+
+    use super::{map_download_client_type, map_indexer_provider_type};
+
+    #[test]
+    fn map_download_client_type_recognizes_qbittorrent_variants() {
+        assert_eq!(map_download_client_type("qBittorrent"), Some("qbittorrent"));
+        assert_eq!(map_download_client_type("QBittorrent"), Some("qbittorrent"));
+        assert_eq!(map_download_client_type("qbittorrent"), Some("qbittorrent"));
+    }
+
+    #[test]
+    fn map_indexer_provider_type_maps_animetosho_for_newznab() {
+        assert_eq!(
+            map_indexer_provider_type(
+                "Newznab",
+                &HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://feed.animetosho.org".into()),
+                )]),
+            ),
+            Some("animetosho")
+        );
+    }
+
+    #[test]
+    fn map_indexer_provider_type_maps_animetosho_for_torznab() {
+        assert_eq!(
+            map_indexer_provider_type(
+                "Torznab",
+                &HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://feed.animetosho.org".into()),
+                )]),
+            ),
+            Some("animetosho")
+        );
+    }
+
+    #[test]
+    fn map_indexer_provider_type_keeps_generic_torznab_unsupported() {
+        assert_eq!(
+            map_indexer_provider_type(
+                "Torznab",
+                &HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://torznab.example.com".into()),
+                )]),
+            ),
+            None
+        );
+    }
 }

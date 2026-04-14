@@ -35,11 +35,11 @@ export const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY = "plexmatch.write_on_import.an
 
 export const MOVIE_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "movie")!.folderSettingKey;
 export const DEFAULT_MOVIE_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "movie")!.defaultLibraryPath;
-export const SERIES_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "tv")!.folderSettingKey;
-export const DEFAULT_SERIES_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "tv")!.defaultLibraryPath;
+export const SERIES_FOLDER_KEY = FACET_REGISTRY.find((f) => f.id === "series")!.folderSettingKey;
+export const DEFAULT_SERIES_LIBRARY_PATH = FACET_REGISTRY.find((f) => f.id === "series")!.defaultLibraryPath;
 
 export const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "movie")!.renameTemplateKey;
-export const RENAME_TEMPLATE_SERIES_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "tv")!.renameTemplateKey;
+export const RENAME_TEMPLATE_SERIES_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "series")!.renameTemplateKey;
 export const RENAME_TEMPLATE_ANIME_GLOBAL_KEY = FACET_REGISTRY.find((f) => f.id === "anime")!.renameTemplateKey;
 
 export const QUALITY_PROFILE_SCOPE_ID_MOVIES = "movie" as const;
@@ -58,6 +58,7 @@ export const URL_SECTION_MOVIES = "movies";
 export const URL_SECTION_SERIES = "series";
 export const URL_SECTION_ANIME = "anime";
 export const URL_SECTION_ACTIVITY = "activity";
+export const URL_SECTION_CALENDAR = "calendar";
 export const URL_SECTION_WANTED = "wanted";
 export const URL_SECTION_HISTORY = "history";
 export const URL_SECTION_SYSTEM = "system";
@@ -69,6 +70,7 @@ export const URL_PARAM_CONTENT_SECTION_DEPRECATED = "contentSection";
 export const URL_PATH_SEGMENTS: ViewId[] = [
   ...MEDIA_VIEW_IDS as string[] as ViewId[],
   URL_SECTION_ACTIVITY,
+  URL_SECTION_CALENDAR,
   URL_SECTION_WANTED,
   URL_SECTION_HISTORY,
   URL_SECTION_SETTINGS,

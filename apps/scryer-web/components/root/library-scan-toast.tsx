@@ -13,7 +13,7 @@ function facetLabel(facet: LibraryScanProgress["facet"], t: Translate): string {
   switch (facet) {
     case "movie":
       return t("nav.movies");
-    case "tv":
+    case "series":
       return t("nav.series");
     case "anime":
       return t("nav.anime");
@@ -69,10 +69,13 @@ function statusIcon(status: LibraryScanProgress["status"]) {
   if (status === "failed") {
     return <CircleAlert className="h-4 w-4 text-red-400" />;
   }
+  if (status === "warning") {
+    return <CircleAlert className="h-4 w-4 text-amber-400" />;
+  }
   if (status === "canceled") {
     return <CircleAlert className="h-4 w-4 text-amber-400" />;
   }
-  if (status === "completed" || status === "warning") {
+  if (status === "completed") {
     return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
   }
   return <Loader2 className="h-4 w-4 animate-spin text-sky-400" />;
@@ -209,6 +212,8 @@ export function LibraryScanToast({
           <p className="text-xs text-muted-foreground">
             {session.status === "failed"
               ? t("settings.libraryScanFailed")
+              : session.status === "warning"
+                ? session.warningMessage || t("settings.libraryScanCompletedWithWarnings")
               : session.status === "canceled"
                 ? session.summary
                   ? t("settings.libraryScanCanceledSummary", {

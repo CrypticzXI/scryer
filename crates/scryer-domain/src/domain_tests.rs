@@ -159,8 +159,8 @@ fn tags_sorted() {
 
 #[test]
 fn tags_whitespace_trimmed() {
-    let result = normalize_tags(&[" anime ".into(), "  tv  ".into()]);
-    assert_eq!(result, vec!["anime", "tv"]);
+    let result = normalize_tags(&[" anime ".into(), "  series  ".into()]);
+    assert_eq!(result, vec!["anime", "series"]);
 }
 
 #[test]

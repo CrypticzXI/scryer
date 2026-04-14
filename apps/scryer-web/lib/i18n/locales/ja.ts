@@ -2,7 +2,6 @@ import type { LocaleDictionary } from "../types";
 
 const ja: LocaleDictionary = {
   brand: "scryer",
-
   "label.ready": "準備完了",
   "label.search": "検索",
   "label.interactiveSearch": "手動検索",
@@ -47,9 +46,11 @@ const ja: LocaleDictionary = {
   "label.disable": "無効化",
   "label.version": "バージョン",
   "label.type": "タイプ",
+  "label.title": "タイトル",
   "label.status": "ステータス",
   "label.testConnection": "接続テスト",
   "label.activityStream": "アクティビティストリーム",
+  "external.openOn": "{{site}}で開く",
   "label.unknown": "不明",
   "label.deleting": "削除中…",
   "label.configured": "設定済み",
@@ -60,23 +61,23 @@ const ja: LocaleDictionary = {
   "label.yearUnknown": "年不明",
   "label.noArt": "アートなし",
   "label.emptyEntitlements": "権限なし",
-
   "nav.movies": "映画",
   "nav.series": "シリーズ",
   "nav.anime": "アニメ",
   "nav.activity": "アクティビティ",
+  "nav.calendar": "カレンダー",
   "nav.history": "履歴",
   "nav.settings": "設定",
   "nav.library": "ライブラリ",
+  "nav.import": "輸入",
   "nav.system": "システム",
   "nav.group": "ナビゲーション",
-
   "command.paletteTitle": "移動",
   "command.paletteDescription": "ページと設定セクションを検索",
   "command.palettePlaceholder": "ページ名を入力",
   "command.paletteNoResults": "一致する項目がありません",
   "command.paletteGroup": "ナビゲーション",
-
+  settings: "設定",
   "settings.profile": "プロファイル",
   "settings.general": "一般",
   "settings.users": "ユーザー",
@@ -88,7 +89,6 @@ const ja: LocaleDictionary = {
   "settings.seriesSettings": "シリーズ設定",
   "settings.animeSettings": "アニメ設定",
   "settings.mediaSettings": "メディア設定",
-
   "facetSettings.general": "一般",
   "facetSettings.quality": "品質",
   "facetSettings.renaming": "リネーム",
@@ -103,9 +103,10 @@ const ja: LocaleDictionary = {
   "facetSettings.effectiveScoringOverrides": "スコアリングオーバーライド",
   "facetSettings.effectiveScoringOverridesHint":
     "ペルソナの上に適用されるトグル可能なフラグです。変更するには品質プロファイルを編集してください。",
-
-  "persona.trait.balanced.source": "ソース: 標準的な優先度 (BluRay > WEB-DL > WeRip)",
-  "persona.trait.balanced.audio": "オーディオ: バランスの取れたコーデック重み付け",
+  "persona.trait.balanced.source":
+    "ソース: 標準的な優先度 (BluRay > WEB-DL > WeRip)",
+  "persona.trait.balanced.audio":
+    "オーディオ: バランスの取れたコーデック重み付け",
   "persona.trait.balanced.x265": "x265: 4K未満では減点",
   "persona.trait.balanced.size": "ファイルサイズ: 大きいファイルを優先",
   "persona.trait.balanced.remux": "Remux: デフォルトでは優先しない",
@@ -121,7 +122,8 @@ const ja: LocaleDictionary = {
   "persona.trait.efficient.audio":
     "オーディオ: ロッシーコーデック許容 (DDP優先)",
   "persona.trait.efficient.x265": "x265: 全解像度で加点",
-  "persona.trait.efficient.size": "ファイルサイズ: コンパクトなエンコードを優先",
+  "persona.trait.efficient.size":
+    "ファイルサイズ: コンパクトなエンコードを優先",
   "persona.trait.efficient.remux": "Remux: 優先しない",
   "persona.trait.efficient.hdr": "HDR: 標準",
   "persona.trait.compatible.source": "ソース: WEB-DLを優先",
@@ -131,7 +133,6 @@ const ja: LocaleDictionary = {
   "persona.trait.compatible.size": "ファイルサイズ: 標準的な優先度",
   "persona.trait.compatible.remux": "Remux: 優先しない",
   "persona.trait.compatible.hdr": "HDR: Dolby Vision減点 (互換性リスク)",
-
   "settings.moviesLibrarySettings": "映画メディア設定",
   "settings.seriesLibrarySettings": "シリーズメディア設定",
   "settings.rootFoldersLabel": "ルートフォルダ",
@@ -153,6 +154,13 @@ const ja: LocaleDictionary = {
   "settings.libraryScanSuccess":
     "ライブラリスキャン完了。{{imported}}件インポート、{{skipped}}件スキップ、{{unmatched}}件未一致。",
   "settings.libraryScanFailed": "ライブラリスキャンに失敗しました。",
+  "settings.libraryScanCancel": "キャンセル",
+  "settings.libraryScanCancelFailed":
+    "ライブラリスキャンのキャンセルに失敗しました。",
+  "settings.libraryScanCanceled":
+    "ライブラリのスキャンがキャンセルされました。",
+  "settings.libraryScanCanceledSummary":
+    "ライブラリのスキャンがキャンセルされました。 {{imported}} はインポートされました、{{skipped}} はスキップされました、{{unmatched}} は一致しませんでした。",
   "settings.libraryScanToastTitle": "{{facet}} ライブラリスキャン",
   "settings.libraryScanFoundTitles": "{{count}}件のタイトルを検出",
   "settings.libraryScanDiscovering": "タイトルを検出中…",
@@ -164,13 +172,70 @@ const ja: LocaleDictionary = {
   "settings.libraryScanNoTitleMatchNeeded": "タイトル照合は不要です",
   "settings.libraryScanNoMetadataNeeded": "メタデータ取得は不要です",
   "settings.libraryScanNoFilesToScan": "メディア解析は不要です",
+  "settings.libraryScanAlreadyRunning":
+    "{{facet}} ライブラリ スキャンはすでに実行中です。",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
   "settings.libraryScanCompleted": "ライブラリスキャン完了。",
+  "settings.libraryScanCompletedWithWarnings":
+    "ライブラリスキャンは警告付きで完了しました。",
+  "jobs.title": "求人",
+  "jobs.activeRuns": "実行中のジョブ",
+  "jobs.primary": "主要ジョブ",
+  "jobs.maintenance": "メンテナンス",
+  "jobs.schedule": "スケジュール",
+  "jobs.never": "一度もない",
+  "jobs.completed": "完了",
+  "jobs.running": "実行中",
+  "jobs.runSummaryCompleted": "完了",
+  "jobs.runSummaryRunning": "実行中",
+  "jobs.recentRuns": "最近の実行",
+  "jobs.loadingRecentRuns": "最近のランを読み込み中…",
+  "jobs.noRunsYet": "まだ実行履歴はありません。",
+  "jobs.healthCheckIssues": "ヘルスチェックの問題",
+  "jobs.nextRunPrefix": "次回実行: {{value}}",
+  "jobs.startedAt": "開始 {{value}}",
+  "jobs.completedAt": "完了 {{value}}",
+  "jobs.failedToTrigger": "ジョブを実行できませんでした",
+  "jobs.column.name": "名前",
+  "jobs.column.category": "カテゴリ",
+  "jobs.column.schedule": "スケジュール",
+  "jobs.column.nextRun": "次回実行",
+  "jobs.column.lastRun": "前回実行",
+  "jobs.column.status": "状態",
+  "jobs.column.trigger": "トリガー",
+  "jobs.action.run": "実行",
+  "jobs.action.runNow": "今すぐ実行",
+  "jobs.action.running": "実行中…",
+  "jobs.status.idle": "待機中",
+  "jobs.status.queued": "キュー済み",
+  "jobs.status.discovering": "検出中",
+  "jobs.status.running": "実行中",
+  "jobs.status.completed": "完了",
+  "jobs.status.warning": "警告",
+  "jobs.status.failed": "失敗",
+  "jobs.category.library": "図書館",
+  "jobs.category.acquisition": "取得",
+  "jobs.category.maintenance": "メンテナンス",
+  "jobs.category.subtitles": "字幕",
+  "jobs.category.system": "システム",
+  "jobs.triggerSource.manual": "手動",
+  "jobs.triggerSource.scheduledStartup": "起動時スケジュール",
+  "jobs.triggerSource.scheduledInterval": "定期実行",
+  "jobs.triggerSource.systemInternal": "システム内部",
+  "deletePreview.counting": "削除するファイルを数えています...",
+  "deletePreview.error": "削除プレビューを準備できません。",
+  "deletePreview.files": "ファイル",
+  "deletePreview.media": "メディア",
+  "deletePreview.subtitles": "字幕",
+  "deletePreview.images": "画像",
+  "deletePreview.other": "他の",
+  "deletePreview.folders": "フォルダー",
+  "deletePreview.samplePaths": "サンプルパス",
+  "deletePreview.confirmPrompt": "「DELETE」と入力して削除を確認します。",
   "settings.saveButton": "保存",
   "settings.comingSoon": "このセクションは将来のリリースで提供予定です。",
   "settings.moviesPathLabel": "映画フォルダパス",
-  "settings.moviesPathHelp":
-    "選択した映画リリースの保存先として使用されます。",
+  "settings.moviesPathHelp": "選択した映画リリースの保存先として使用されます。",
   "settings.moviesPathPlaceholder": "/data/movies",
   "settings.moviesPathRequired": "映画フォルダパスは必須です。",
   "settings.seriesPathLabel": "シリーズフォルダパス",
@@ -184,20 +249,25 @@ const ja: LocaleDictionary = {
   "settings.qualityProfileCatalogLabel": "品質プロファイルカタログJSON",
   "settings.qualityProfileCatalogHelp":
     "JSONでプロファイルの動作を定義します。一意の `id` 値を持つプロファイルリストと有効なJSONで保存してください。",
-  "settings.qualityProfileGlobalLabel": "デフォルト品質プロファイル（グローバル）",
+  "settings.qualityProfileGlobalLabel":
+    "デフォルト品質プロファイル（グローバル）",
   "settings.qualityProfileNameRequired": "品質プロファイル名は必須です。",
   "settings.qualityProfileGlobalHelp":
     "カテゴリで個別に指定されていない場合に使用されます。",
   "settings.qualityProfileOverrideLabel": "{{category}} 品質オーバーライド",
-  "settings.qualityProfileOverridesLabel": "カテゴリ別品質プロファイルオーバーライド",
+  "settings.qualityProfileOverridesLabel":
+    "カテゴリ別品質プロファイルオーバーライド",
   "settings.qualityProfileOverrideHelp":
     "このコンテンツカテゴリのグローバルデフォルトに戻すには継承を使用してください。",
   "settings.qualityProfileInheritLabel": "グローバルから継承",
   "settings.qualityProfileCatalogInvalid":
     "品質プロファイルカタログが有効なJSONではありません。",
+  "settings.qualityProfileUnknown": "不明な品質プロファイル ID「{{id}}」。",
   "settings.qualitySettingsSaved": "品質設定を保存しました。",
   "settings.downloadClientRoutingSaved":
     "ダウンロードクライアントルーティングを保存しました。",
+  "settings.downloadClientRoutingSavedFor":
+    "「{{name}}」に保存されたクライアント ルーティングをダウンロードします。",
   "settings.delayProfiles": "遅延プロファイル",
   "settings.delayProfileExisting": "既存の遅延プロファイル",
   "settings.delayProfileNone":
@@ -270,7 +340,7 @@ const ja: LocaleDictionary = {
   "settings.downloadClientUrlBasePlaceholder": "例: api",
   "settings.downloadClientPortPlaceholder": "8080",
   "settings.downloadClientPriorityPlaceholder": "デフォルト",
-  "settings.downloadClientCategoryPlaceholder": "tv",
+  "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "ステータス",
   "settings.existingDownloadClients": "既存のダウンロードクライアント",
   "settings.downloadClientRoutingScope":
@@ -279,7 +349,8 @@ const ja: LocaleDictionary = {
   "settings.downloadClientRoutingEnabled": "有効",
   "settings.downloadClientRoutingNoNzbClients":
     "NZBGetクライアントが設定されていません。メディアカテゴリルーティングを設定するにはダウンロードクライアントで追加してください。",
-  "settings.noDownloadClientsFound": "ダウンロードクライアントが見つかりません。",
+  "settings.noDownloadClientsFound":
+    "ダウンロードクライアントが見つかりません。",
   "settings.indexerRoutingScope": "{{scope}}のインデクサーメタデータ",
   "settings.indexerRoutingPriority": "優先度",
   "settings.indexerRoutingCategories": "カテゴリ",
@@ -288,7 +359,7 @@ const ja: LocaleDictionary = {
   "settings.indexerRoutingNoCategories": "カテゴリが選択されていません。",
   "settings.indexerRoutingCategoriesPlaceholder": "カテゴリを選択",
   "settings.indexerRoutingNoIndexers": "インデクサーが見つかりません。",
-  "settings.indexerCategoryTv": "TV",
+  "settings.indexerCategorySeries": "Series",
   "settings.indexerCategoryMovies": "映画",
   "settings.indexerCategoryOther": "その他",
   "settings.indexerCategoryForeign": "外国語",
@@ -303,8 +374,7 @@ const ja: LocaleDictionary = {
   "settings.indexerCategoryMisc": "その他",
   "indexerCategory.labelCategory": "カテゴリ",
   "settings.downloadClientValidation": "名前とホストは必須です。",
-  "settings.downloadClientBaseUrlRequired":
-    "有効なホストとポートが必要です。",
+  "settings.downloadClientBaseUrlRequired": "有効なホストとポートが必要です。",
   "settings.qualitySource": "ソース",
   "settings.renameSection": "リネーム",
   "settings.renameTemplateLabel": "リネームテンプレート",
@@ -317,7 +387,8 @@ const ja: LocaleDictionary = {
   "settings.renameCollisionPolicyError": "エラー",
   "settings.renameCollisionPolicyReplaceIfBetter": "より良い場合に置換",
   "settings.renameMissingMetadataPolicyLabel": "メタデータ欠落ポリシー",
-  "settings.renameMissingMetadataPolicyFallbackTitle": "タイトルにフォールバック",
+  "settings.renameMissingMetadataPolicyFallbackTitle":
+    "タイトルにフォールバック",
   "settings.renameMissingMetadataPolicySkip": "スキップ",
   "settings.renamePolicyHelp":
     "これらの設定はメディアカテゴリスコープごとに保存されます。",
@@ -344,19 +415,18 @@ const ja: LocaleDictionary = {
   "settings.renameValidationEmpty": "リネームテンプレートは空にできません",
   "settings.renameComingSoon": "リネームルールは近日公開予定です。",
   "settings.mediaSettingsSaved": "メディア設定を保存しました。",
-
   "rename.previewButton": "リネームプレビュー",
   "rename.previewing": "プレビュー中…",
   "rename.applyButton": "リネーム適用",
   "rename.applying": "適用中…",
+  "rename.currentPath": "現在",
+  "rename.proposedPath": "提案された",
   "rename.planSummary":
     "{{total}}件、{{renamable}}件変更可能、{{noop}}件変更なし、{{conflicts}}件競合、{{errors}}件エラー",
-
   "settings.title": "設定",
   "settings.sectionTitle": "設定 • {{section}}",
   "settings.generalText": "一般アプリケーション設定。",
-  "settings.generalPlaceholder":
-    "言語やその他のグローバル設定を構成します。",
+  "settings.generalPlaceholder": "言語やその他のグローバル設定を構成します。",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS証明書パス",
   "settings.tlsCertPathHelp":
@@ -368,9 +438,13 @@ const ja: LocaleDictionary = {
   "settings.tlsKeyPathPlaceholder": "/etc/scryer/key.pem",
   "settings.tlsSaved":
     "TLS設定を保存しました。変更を反映するにはサービスを再起動してください。",
-  "settings.tlsRestartNote":
-    "TLS設定の変更にはサービスの再起動が必要です。",
-
+  "settings.languageChangeTitle": "言語を変更する",
+  "settings.languageChangeWarning":
+    "{{language}} に変更すると、ライブラリ内のすべてのタイトルのメタデータ (名前、説明、並べ替えタイトル) が新しい言語で再ダウンロードされます。ライブラリのサイズによっては、これには数分かかる場合があります。インターフェースはすぐに変わります。",
+  "settings.languageChangeConfirm": "言語を変更する",
+  "settings.metadataRehydrationStarted":
+    "メタデータのリハイドレーションが開始されました。タイトルはバックグラウンドで更新されます。",
+  "settings.tlsRestartNote": "TLS設定の変更にはサービスの再起動が必要です。",
   "search.globalPlaceholder": "何か素敵なものを検索！（/ キーで開く）",
   "search.catalog": "カタログ",
   "search.noCatalogMatches": "管理対象のカタログマッチはまだありません。",
@@ -394,15 +468,15 @@ const ja: LocaleDictionary = {
   "search.monitorType.none": "なし",
   "search.adding": "追加中…",
   "search.facetMovie": "映画",
-  "search.facetTv": "TV",
+  "search.facetSeries": "Series",
   "search.facetAnime": "アニメ",
   "search.metadataSearch": "メタデータ検索",
-
   "label.back": "戻る",
   "label.dismiss": "閉じる",
   "pwa.offline": "オフラインです。一部の機能が利用できない場合があります。",
   "pwa.installApp": "Scryerをインストール",
-
+  "pwa.iosInstallHint":
+    "共有ボタンをタップし、「ホーム画面に追加」を選択してインストールします。",
   "title.addAndQueue": "タイトルを追加してキューに入れる",
   "title.addToCatalog": "カタログに追加",
   "title.name": "タイトル名",
@@ -412,9 +486,18 @@ const ja: LocaleDictionary = {
   "title.manageSeries": "シリーズを管理",
   "title.manageAnime": "アニメを管理",
   "title.monitored": "モニタリング中",
+  "title.ended": "終了しました",
+  "title.continuing": "継続中",
+  "title.upcoming": "今後の予定",
+  "title.backToFacet": "{{facet}}に戻る",
+  "title.notFound": "タイトルが見つかりません。",
+  "title.noPoster": "ポスターなし",
+  "title.addedAt": "追加日 {{date}}",
   "title.monitorAction": "モニター",
   "title.unmonitorAction": "モニター解除",
   "title.markWantedAction": "ウォンテッドにする",
+  "title.searchMonitoredAction": "監視中を検索",
+  "title.refreshAndScanAction": "更新してスキャン",
   "title.filterPlaceholder": "管理タイトルをフィルター",
   "title.loading": "データ未読み込み",
   "title.noManaged": "このセクションにタイトルがありません。",
@@ -424,6 +507,7 @@ const ja: LocaleDictionary = {
   "title.table.poster": "ポスター",
   "title.table.qualityTier": "品質",
   "title.table.episodes": "エピソード",
+  "title.table.status": "状態",
   "title.table.size": "サイズ",
   "title.viewModeToggle": "表示モード",
   "title.viewModeTable": "テーブル表示",
@@ -432,6 +516,34 @@ const ja: LocaleDictionary = {
   "title.seasonMonitored": "シーズンモニタリング中",
   "title.episodeMonitored": "エピソードモニタリング中",
   "title.deleteFilesOnDisk": "ディスク上のファイルを削除",
+  "title.seasonsAndEpisodes": "シーズンとエピソード",
+  "title.noTrackedSeasons":
+    "この作品ではまだ追跡中のシーズンがありません。",
+  "title.fetchingData": "データを取得中",
+  "title.filesOnDisk": "ディスク上のファイル",
+  "title.noFilesTracked": "追跡中のファイルはありません。",
+  "title.noFilesTrackedHint":
+    "ディスク上のファイルを検出するにはライブラリスキャンを実行してください。",
+  "title.descriptionUnavailable": "説明はありません。",
+  "title.canon": "正史",
+  "title.mixed": "混在",
+  "title.specials": "特別編",
+  "title.seasonNumber": "シーズン {{number}}",
+  "title.episodeRange": "第{{start}}話 - 第{{end}}話",
+  "title.episodeCountOne": "{{count}}話",
+  "title.episodeCountOther": "{{count}}話",
+  "title.specialCountOne": "特別編 {{count}}本",
+  "title.specialCountOther": "特別編 {{count}}本",
+  "title.movieCountOne": "映画 {{count}}本",
+  "title.movieCountOther": "映画 {{count}}本",
+  "title.movieDetails": "映画の詳細",
+  "title.searchingReleases": "インデクサーでリリースを検索中…",
+  "title.noReleasesFound": "{{name}} のリリースは見つかりませんでした。",
+  "title.interactiveSearchHint":
+    "インタラクティブ検索を使って、設定済みのインデクサーから {{name}} のリリースを検索します。",
+  "title.blockedReleases": "ブロック済みリリース",
+  "title.noBlockedReleases":
+    "この映画に記録されたブロック済みリリースはありません。",
   "title.settings": "タイトル設定",
   "title.qualityProfile": "品質プロファイル",
   "title.rootFolder": "ルートフォルダ",
@@ -441,11 +553,56 @@ const ja: LocaleDictionary = {
   "title.noWantedItem": "アクティブなウォンテッドアイテムはありません。",
   "title.queueLatest": "最新をキューに追加",
   "title.requiredAudioLanguages": "必須オーディオ言語",
+  "title.requiredAudioLanguagesFacetInfo":
+    "これらの言語は、このファセットのリリース選択およびインポート検証中に適用されます。",
   "title.requiredAudioInherited": "{{facet}}設定から継承",
   "title.requiredAudioResetInherit": "継承にリセット",
-
+  "title.fixMatchHeading": "メタデータの一致を修正",
+  "title.fixMatchAction": "フィックスマッチ",
+  "title.fixMatchDescriptionMovie":
+    "ローカル タイトルとフォルダー名を変更せずに、この映画の TVDB 一致を修復します。",
+  "title.fixMatchDescriptionSeries":
+    "このタイトルの TVDB 一致を修復します。ローカルのタイトルとフォルダー名は変わりません。",
+  "title.fixMatchDialogTitle": "フィックスマッチ",
+  "title.fixMatchDialogDescription":
+    "{{name}} の TVDB の一致を修復します。ローカルのタイトルとフォルダー名は変わりません。シリーズとアニメはシーズンとエピソードを内部的に再構築します。",
+  "title.fixMatchUnnamed": "このタイトル",
+  "title.fixMatchSearchPlaceholder": "TVDB タイトルを検索",
+  "title.fixMatchCurrentTvdbId": "現在の TVDB ID",
+  "title.fixMatchCurrentTvdbNone": "なし",
+  "title.fixMatchSearching": "メタデータを検索しています…",
+  "title.fixMatchNoResults": "一致するメタデータが見つかりませんでした。",
+  "title.fixMatchSelected": "選択済み",
+  "title.fixMatchChoose": "選ぶ",
+  "title.fixMatchApplying": "八百長試合…",
+  "title.fixMatchApply": "一致を適用",
+  "title.fixMatchSearchFailed": "メタデータの検索に失敗しました。",
+  "title.fixMatchApplyFailed": "タイトルマッチの修正に失敗しました。",
+  "pendingImports.title": "保留中のインポート",
+  "pendingImports.description":
+    "正しいメタデータの一致を選択して、{{facet}} の不一致のディスク上の項目を解決します。",
+  "pendingImports.loading": "保留中のインポートをロードしています…",
+  "pendingImports.loadFailed": "保留中のインポートをロードできませんでした。",
+  "pendingImports.empty": "このファセットには保留中のインポートはありません。",
+  "pendingImports.path": "パス",
+  "pendingImports.folderPath": "フォルダ",
+  "pendingImports.searchPlaceholder": "メタデータのタイトルを検索する",
+  "pendingImports.searching": "メタデータを検索しています…",
+  "pendingImports.searchFailed": "メタデータの検索に失敗しました。",
+  "pendingImports.noSearchResults":
+    "一致するメタデータが見つかりませんでした。",
+  "pendingImports.searchAction": "検索と一致",
+  "pendingImports.match": "一致",
+  "pendingImports.resolving": "解決中…",
+  "pendingImports.resolveSuccess":
+    "{{name}} の保留中のインポートが解決されました。",
+  "pendingImports.resolveFailed": "保留中のインポートを解決できませんでした。",
+  "pendingImports.prev": "前の",
+  "pendingImports.next": "次",
+  "pendingImports.pageRange": "{{start}} – {{end}} / {{total}}",
   "tvdb.searchResults": "TVDB検索結果",
   "tvdb.searchPrompt": "上にタイトルを入力してTVDBを検索してください。",
+  "tvdb.searching": "TVDB メタデータ「{{query}}」を検索しています",
   "tvdb.foundMatches": "{{count}}件のTVDBマッチが見つかりました。",
   "tvdb.noMatches": "TVDBマッチが見つかりません。",
   "tvdb.selectPrompt": "続行するにはTVDBマッチを選択してください。",
@@ -453,7 +610,6 @@ const ja: LocaleDictionary = {
   "tvdb.searchButton": "選択したTVDBタイトルでNZBGeekを検索",
   "tvdb.select": "選択",
   "tvdb.popularity": "人気度",
-
   "nzb.searchResults": "NZBGeek検索結果",
   "nzb.searchResultsFor": "{{name}}のNZB結果",
   "nzb.selectTvdbFirst": "NZBGeekを検索するにはTVDBマッチを選択してください。",
@@ -467,9 +623,7 @@ const ja: LocaleDictionary = {
   "nzb.hideScoringLog": "スコアリングログを非表示",
   "nzb.scoringLog": "スコアリングログ",
   "nzb.total": "合計",
-
   "media.posterAlt": "{{name}}のポスター",
-
   "activity.title": "アクティビティ",
   "activity.loading": "アクティビティを読み込み中…",
   "activity.noActivity": "読み込まれたアクティビティはありません。",
@@ -484,7 +638,6 @@ const ja: LocaleDictionary = {
   "activity.scryerOnly": "Scryerのみ",
   "activity.allActivity": "すべてのアクティビティ",
   "activity.history": "履歴",
-
   "queue.title": "タイトル",
   "queue.client": "クライアント",
   "queue.status": "ステータス",
@@ -496,6 +649,7 @@ const ja: LocaleDictionary = {
   "queue.state.paused": "一時停止",
   "queue.state.completed": "完了",
   "queue.state.importPending": "インポート待ち",
+  "queue.state.importBlocked": "輸入がブロックされました",
   "queue.state.failed": "失敗",
   "queue.state.unknown": "不明",
   "queue.empty": "アクティブまたは待機中のダウンロードはありません。",
@@ -514,6 +668,22 @@ const ja: LocaleDictionary = {
   "queue.blockReason": "ブロック理由",
   "queue.showDetails": "詳細を表示",
   "queue.hideDetails": "詳細を隠す",
+  "queue.assignTitle": "タイトルの割り当て",
+  "queue.reassignTitle": "タイトルの変更",
+  "queue.assignTitleTitle": "ダウンロードタイトルの割り当て",
+  "queue.assignTitleDescription":
+    "このブロックされたダウンロードが属するライブラリのタイトルを選択してください。 Scryer は割り当て後にインポートを再チェックします。",
+  "queue.assignTitlePlaceholder": "タイトルを検索…",
+  "queue.assignTitleResults": "一致するタイトル",
+  "queue.assignTitleEmpty": "一致するタイトルが見つかりませんでした。",
+  "queue.assignTitleQueued":
+    "タイトルが割り当てられました。輸入は再評価されるだろう。",
+  "queue.assignTitleFailed": "タイトルの割り当てに失敗しました。",
+  "queue.assignTitleBeforeImport":
+    "手動インポートを開始する前にタイトルを割り当てます。",
+  "queue.ignore": "無視する",
+  "queue.ignoreSuccess": "ダウンロードは無視されました。",
+  "queue.ignoreFailed": "ダウンロードの無視に失敗しました。",
   "queue.pause": "一時停止",
   "queue.pausing": "一時停止中…",
   "queue.pauseSuccess": "ダウンロードを一時停止しました。",
@@ -528,7 +698,6 @@ const ja: LocaleDictionary = {
   "queue.deleteConfirmTitle": "ダウンロードを削除",
   "queue.deleteConfirmDescription":
     "このダウンロードをキューから削除しますか？この操作は元に戻せません。",
-
   "importHistory.title": "インポート履歴",
   "importHistory.empty": "インポート記録が見つかりません。",
   "importHistory.status": "ステータス",
@@ -542,8 +711,8 @@ const ja: LocaleDictionary = {
   "importHistory.passwordRequired": "パスワードが必要です",
   "importHistory.passwordPlaceholder": "アーカイブのパスワード",
   "importHistory.retrySuccess": "インポートの再試行を開始しました",
-
   "system.title": "システムヘルス",
+  "system.jobsTitle": "求人",
   "system.notLoaded": "システムヘルスが読み込まれていません。",
   "system.refreshing": "更新中",
   "system.loaded": "システム状態を読み込みました。",
@@ -566,18 +735,19 @@ const ja: LocaleDictionary = {
   "system.sourcesSupport":
     "これらのサービスがライブラリ運用に役立っている場合、可能であれば寄付によるサポートをご検討ください。",
   "system.sourceTvdbName": "TheTVDB",
-  "system.sourceTvdbDescription": "TVシリーズとエピソードメタデータの主要ソースです。",
+  "system.sourceTvdbDescription":
+    "TVシリーズとエピソードメタデータの主要ソースです。",
   "system.sourceTmdbName": "The Movie Database (TMDB)",
   "system.sourceTmdbDescription": "映画とシリーズの補足メタデータソースです。",
   "system.sourceJikanName": "Jikan API",
   "system.sourceJikanDescription":
     "MALベースのフィラーと総集編メタデータ同期に使用されるアニメAPIです。",
   "system.sourceMalName": "MyAnimeList",
-  "system.sourceMalDescription": "Jikanを通じて提供されるアニメデータセットです。",
+  "system.sourceMalDescription":
+    "Jikanを通じて提供されるアニメデータセットです。",
   "system.sourceAniBridgeName": "AniBridge",
   "system.sourceAniBridgeDescription":
     "クロスソースIDとエピソードマッピングの整合に使用されるアニメマッピングデータセットです。",
-
   "settings.description":
     "インデクサー、クライアント、通知の設定セクションプレースホルダーです。",
   "settings.description2":
@@ -646,6 +816,8 @@ const ja: LocaleDictionary = {
   "settings.ruleLibraryDescription":
     "ワンクリックで追加できるビルトインルール。テンプレートを選択してエディターに反映します。",
   "settings.ruleLibraryAll": "すべて",
+  "settings.ruleLibraryCommunityEmpty":
+    "利用可能なコミュニティ ルール パックはありません。プラグイン レジストリを更新して、新しいパックを確認します。",
   "settings.rulesFacetSection": "{{facet}}のカスタムルール",
   "settings.ruleGlobal": "グローバル",
   "settings.ruleNoFacetRules":
@@ -662,7 +834,8 @@ const ja: LocaleDictionary = {
   "settings.refColReturns": "戻り値",
   "settings.refSectionRelease": "— パースされたリリースメタデータ",
   "settings.refReleaseRawTitle": "インデクサーからの未パースのリリースタイトル",
-  "settings.refReleaseQuality": "検出された品質ティア（例: 2160P, 1080P, 720P）",
+  "settings.refReleaseQuality":
+    "検出された品質ティア（例: 2160P, 1080P, 720P）",
   "settings.refReleaseSource": "メディアソース（例: WEB-DL, BLURAY, HDTV）",
   "settings.refReleaseVideoCodec": "映像コーデック（例: H.265, H.264, AV1）",
   "settings.refReleaseAudio": "主音声コーデック（例: DDP, AAC, TrueHD）",
@@ -674,25 +847,34 @@ const ja: LocaleDictionary = {
   "settings.refReleaseIsAtmos": "Dolby Atmosオーディオがある場合true",
   "settings.refReleaseIsDV": "Dolby Visionメタデータが検出された場合true",
   "settings.refReleaseDetectedHdr": "HDRが検出された場合true（非DV）",
-  "settings.refReleaseIsRemux": "フルリマックスの場合true（トランスコードなし）",
+  "settings.refReleaseIsRemux":
+    "フルリマックスの場合true（トランスコードなし）",
   "settings.refReleaseIsBdDisk": "ブルーレイディスクソースの場合true",
   "settings.refReleaseIsProper": "Properとタグ付けされた場合true",
   "settings.refReleaseIsRepack": "Repackとタグ付けされた場合true",
-  "settings.refReleaseIsAiEnhanced": "AIエンハンスドエンコードマーカーが検出された場合true",
-  "settings.refReleaseIsHardcodedSubs": "リリース名にハードコード字幕が検出された場合true",
-  "settings.refReleaseIsHdr10Plus": "リリースメタデータからHDR10+が検出された場合true",
+  "settings.refReleaseIsAiEnhanced":
+    "AIエンハンスドエンコードマーカーが検出された場合true",
+  "settings.refReleaseIsHardcodedSubs":
+    "リリース名にハードコード字幕が検出された場合true",
+  "settings.refReleaseIsHdr10Plus":
+    "リリースメタデータからHDR10+が検出された場合true",
   "settings.refReleaseIsHlg": "リリースメタデータからHLGが検出された場合true",
-  "settings.refReleaseStreamingService": "検出されたストリーミングサービスタグ（ある場合）",
-  "settings.refReleaseEdition": "extended、IMAX、criterionなどのエディションタグ",
-  "settings.refReleaseAnimeVersion": "v2、v3などのアニメバージョン番号（ある場合）",
+  "settings.refReleaseStreamingService":
+    "検出されたストリーミングサービスタグ（ある場合）",
+  "settings.refReleaseEdition":
+    "extended、IMAX、criterionなどのエディションタグ",
+  "settings.refReleaseAnimeVersion":
+    "v2、v3などのアニメバージョン番号（ある場合）",
   "settings.refReleaseGroup": "リリースグループまたはアップローダー名",
   "settings.refReleaseYear": "公開年",
   "settings.refReleaseParseConf": "パース信頼度スコア（0.0〜1.0）",
-  "settings.refReleaseSizeBytes": "ファイルサイズ（バイト）（scryer.size_gib()で変換可能）",
+  "settings.refReleaseSizeBytes":
+    "ファイルサイズ（バイト）（scryer.size_gib()で変換可能）",
   "settings.refReleaseAgeDays": "リリースからの経過日数",
   "settings.refReleaseThumbsUp": "インデクサーの高評価/投票数",
   "settings.refReleaseThumbsDown": "インデクサーの低評価/否定投票数",
-  "settings.refReleaseExtra": "プラグイン提供メタデータオブジェクト、input.release.extra.<key>でアクセス可能",
+  "settings.refReleaseExtra":
+    "プラグイン提供メタデータオブジェクト、input.release.extra.<key>でアクセス可能",
   "settings.refSectionProfile": "— アクティブ品質プロファイル設定",
   "settings.refProfileId": "プロファイル一意識別子",
   "settings.refProfileName": "プロファイル表示名",
@@ -712,9 +894,12 @@ const ja: LocaleDictionary = {
   "settings.refProfileAllowUpgrades": "既存ファイルのアップグレードを許可",
   "settings.refProfileRequiredLangs": "必須音声言語（ISO 639-3コード）",
   "settings.refSectionContext": "— タイトルと検索コンテキスト",
-  "settings.refCtxTitleId": "具体的なタイトルが既知の場合の内部ScryerタイトルID",
-  "settings.refCtxMediaType": "評価中のメディアタイプ、通常movie、tv、またはanime",
-  "settings.refCtxCategory": "スコアリングとルール評価に使用されるカテゴリヒント",
+  "settings.refCtxTitleId":
+    "具体的なタイトルが既知の場合の内部ScryerタイトルID",
+  "settings.refCtxMediaType":
+    "評価中のメディアタイプ、通常movie、series、またはanime",
+  "settings.refCtxCategory":
+    "スコアリングとルール評価に使用されるカテゴリヒント",
   "settings.refCtxTags": "タイトルのユーザー定義タグ",
   "settings.refCtxHasExisting": "このタイトルのファイルが既に存在する場合true",
   "settings.refCtxExistingScore": "既存ファイルの組み込みスコア（ある場合）",
@@ -724,68 +909,173 @@ const ja: LocaleDictionary = {
   "settings.refCtxIsFiller": "エピソードがフィラーとマークされた場合true",
   "settings.refSectionBuiltinScore": "— 組み込みスコアリングエンジンの結果",
   "settings.refBuiltinTotal": "組み込みスコアリングエンジンの合計スコア",
-  "settings.refBuiltinBlocked": "組み込みルールがこのリリースをブロックした場合true",
-  "settings.refBuiltinCodes": "適用されたスコアリングコードのリスト（例: quality_tier_0）",
-  "settings.refSectionFile": "— 実際に分析されたファイルメタデータ（ダウンロード前はnull）",
+  "settings.refBuiltinBlocked":
+    "組み込みルールがこのリリースをブロックした場合true",
+  "settings.refBuiltinCodes":
+    "適用されたスコアリングコードのリスト（例: quality_tier_0）",
+  "settings.refSectionFile":
+    "— 実際に分析されたファイルメタデータ（ダウンロード前はnull）",
   "settings.refFileVideoCodec": "メディア分析による検証済み映像コーデック",
   "settings.refFileVideoWidth": "検証済み映像幅（ピクセル）",
   "settings.refFileVideoHeight": "検証済み映像高さ（ピクセル）",
   "settings.refFileVideoBitrateKbps": "検証済み映像ビットレート（kbps）",
   "settings.refFileVideoBitDepth": "検証済み映像ビット深度",
-  "settings.refFileVideoHdrFormat": "Dolby Vision、HDR10、HDR10+、HLGなどの検証済みHDRフォーマット",
+  "settings.refFileVideoHdrFormat":
+    "Dolby Vision、HDR10、HDR10+、HLGなどの検証済みHDRフォーマット",
   "settings.refFileDoviProfile": "Dolby Visionプロファイル番号（ある場合）",
-  "settings.refFileDoviBlCompatId": "Dolby Visionベースレイヤー互換性ID（ある場合）",
+  "settings.refFileDoviBlCompatId":
+    "Dolby Visionベースレイヤー互換性ID（ある場合）",
   "settings.refFileVideoFrameRate": "メディア分析による検証済みフレームレート",
-  "settings.refFileVideoProfile": "Main 10やHighなどの検証済みコーデックプロファイル",
+  "settings.refFileVideoProfile":
+    "Main 10やHighなどの検証済みコーデックプロファイル",
   "settings.refFileAudioCodec": "検証済み主音声コーデック",
+  "settings.refFileAudioProfile":
+    "プライマリ検証済みオーディオ プロファイルまたは拡張ラベル（LC、Dolby TrueHD + Dolby Atmos、DTS-HD MA + DTS:X IMAX など）",
   "settings.refFileAudioChannels": "検証済み主音声チャンネル数",
   "settings.refFileAudioBitrateKbps": "検証済み主音声ビットレート（kbps）",
-  "settings.refFileAudioLanguages": "実際のファイルから検出されたすべての音声言語",
-  "settings.refFileAudioStreams": "音声ストリームごとの詳細; input.file.audio_streams[]を参照",
-  "settings.refFileSubtitleLanguages": "実際のファイルから検出されたすべての字幕言語",
-  "settings.refFileSubtitleCodecs": "実際のファイルから検出されたすべての字幕コーデック",
-  "settings.refFileSubtitleStreams": "字幕ストリームごとの詳細; input.file.subtitle_streams[]を参照",
-  "settings.refFileHasMultiAudio": "実際のファイルに複数の音声ストリームがある場合true",
+  "settings.refFileAudioLanguages":
+    "実際のファイルから検出されたすべての音声言語",
+  "settings.refFileAudioStreams":
+    "音声ストリームごとの詳細; input.file.audio_streams[]を参照",
+  "settings.refFileSubtitleLanguages":
+    "実際のファイルから検出されたすべての字幕言語",
+  "settings.refFileSubtitleCodecs":
+    "実際のファイルから検出されたすべての字幕コーデック",
+  "settings.refFileSubtitleStreams":
+    "字幕ストリームごとの詳細; input.file.subtitle_streams[]を参照",
+  "settings.refFileHasMultiAudio":
+    "実際のファイルに複数の音声ストリームがある場合true",
   "settings.refFileDurationSeconds": "検証済み再生時間（秒）",
-  "settings.refFileNumChapters": "コンテナがチャプターを公開している場合の検証済みチャプター数",
-  "settings.refFileContainerFormat": "matroskaやmp4などの検証済みコンテナフォーマット",
+  "settings.refFileNumChapters":
+    "コンテナがチャプターを公開している場合の検証済みチャプター数",
+  "settings.refFileContainerFormat":
+    "matroskaやmp4などの検証済みコンテナフォーマット",
   "settings.refSectionAudioStreams": "— ネストされた音声ストリームエントリ",
   "settings.refAudioStreamCodec": "ストリームごとの音声コーデック",
+  "settings.refAudioStreamProfile":
+    "ストリームごとに検証されたオーディオ プロファイルまたは拡張ラベル",
   "settings.refAudioStreamChannels": "ストリームごとのチャンネル数",
   "settings.refAudioStreamLanguage": "ストリームごとの言語コード",
   "settings.refAudioStreamBitrateKbps": "ストリームごとのビットレート（kbps）",
   "settings.refSectionSubtitleStreams": "— ネストされた字幕ストリームエントリ",
   "settings.refSubtitleStreamCodec": "ストリームごとの字幕コーデック",
   "settings.refSubtitleStreamLanguage": "ストリームごとの言語コード",
-  "settings.refSubtitleStreamName": "ストリームごとの字幕トラックタイトル（ある場合）",
-  "settings.refSubtitleStreamForced": "字幕ストリームが強制としてマークされた場合true",
-  "settings.refSubtitleStreamDefault": "字幕ストリームがデフォルトとしてマークされた場合true",
+  "settings.refSubtitleStreamName":
+    "ストリームごとの字幕トラックタイトル（ある場合）",
+  "settings.refSubtitleStreamForced":
+    "字幕ストリームが強制としてマークされた場合true",
+  "settings.refSubtitleStreamDefault":
+    "字幕ストリームがデフォルトとしてマークされた場合true",
   "settings.refSectionBuiltins": "カスタムScryer関数",
-  "settings.refBuiltinsIntro": "これらのヘルパー関数は、すべての標準OPA組み込み関数に加えてRegoルールで使用できます。",
-  "settings.refFnBlockScore": "リリースを完全にブロックするために使用される定数-10000を返します",
-  "settings.refFnSizeGib": "バイトをGiBに変換（例: scryer.size_gib(input.release.size_bytes) > 50）",
+  "settings.refBuiltinsIntro":
+    "これらのヘルパー関数は、すべての標準OPA組み込み関数に加えてRegoルールで使用できます。",
+  "settings.refFnBlockScore":
+    "リリースを完全にブロックするために使用される定数-10000を返します",
+  "settings.refFnSizeGib":
+    "バイトをGiBに変換（例: scryer.size_gib(input.release.size_bytes) > 50）",
+  "settings.refFnLangMatches":
+    'ISO 639-3 コードとエイリアスを照合します (例: scryer.lang_matches("jpn", "ja") は true)',
+  "settings.refFnNormalizeSource":
+    "ソース名を正規化します (例: 「webdl」は「WEB-DL」になります)",
+  "settings.refFnNormalizeCodec":
+    "コーデック名を正規化します（例：「h264」は「H.264」になります）",
   "settings.refSectionSandbox": "サンドボックスと制限事項",
-  "settings.refSandboxIntro": "すべてのユーザールールは以下の制限を持つサンドボックス化されたRego評価器内で実行されます:",
-  "settings.refSandboxNoIO": "ネットワークまたはファイルシステムアクセス不可 — ルールはHTTPリクエスト、ファイル読み取り、その他のI/Oを実行できません。http.sendなどの標準OPA組み込み関数は利用できません。",
-  "settings.refSandboxPkgIsolation": "パッケージ分離 — 各ルールは自動的に独自のパッケージに名前空間化されます。他のルールのデータを読み取りまたは変更することはできません。",
-  "settings.refSandboxReadOnly": "読み取り専用入力 — ルールはinputドキュメントのみ読み取り可能です。アプリケーション状態の変更や評価間のデータ永続化はできません。",
-  "settings.refSandboxOutputRestricted": "score_entryへの出力制限 — 各ルールからscore_entryマップのみが抽出されます。その他の定義や代入は無視されます。",
-  "settings.refSandboxIntegerOnly": "整数のみのスコアデルタ — score_entryの値はi32範囲内の整数でなければなりません。浮動小数点は検証時に拒否されます（round()またはceil()で変換してください）。",
-  "settings.refSandboxValidation": "保存前検証 — ルールは保存前に合成入力に対してコンパイルおよびテスト実行されます。無効なルールは拒否されます。",
-  "settings.refSandboxErrorIsolation": "エラー分離 — 1つのルールがランタイムで失敗しても、他のすべてのルールは正常に評価を続けます。失敗はログに記録されますがスコアリングを中断しません。",
+  "settings.refSandboxIntro":
+    "すべてのユーザールールは以下の制限を持つサンドボックス化されたRego評価器内で実行されます:",
+  "settings.refSandboxNoIO":
+    "ネットワークまたはファイルシステムアクセス不可 — ルールはHTTPリクエスト、ファイル読み取り、その他のI/Oを実行できません。http.sendなどの標準OPA組み込み関数は利用できません。",
+  "settings.refSandboxPkgIsolation":
+    "パッケージ分離 — 各ルールは自動的に独自のパッケージに名前空間化されます。他のルールのデータを読み取りまたは変更することはできません。",
+  "settings.refSandboxReadOnly":
+    "読み取り専用入力 — ルールはinputドキュメントのみ読み取り可能です。アプリケーション状態の変更や評価間のデータ永続化はできません。",
+  "settings.refSandboxOutputRestricted":
+    "score_entryへの出力制限 — 各ルールからscore_entryマップのみが抽出されます。その他の定義や代入は無視されます。",
+  "settings.refSandboxIntegerOnly":
+    "整数のみのスコアデルタ — score_entryの値はi32範囲内の整数でなければなりません。浮動小数点は検証時に拒否されます（round()またはceil()で変換してください）。",
+  "settings.refSandboxValidation":
+    "保存前検証 — ルールは保存前に合成入力に対してコンパイルおよびテスト実行されます。無効なルールは拒否されます。",
+  "settings.refSandboxErrorIsolation":
+    "エラー分離 — 1つのルールがランタイムで失敗しても、他のすべてのルールは正常に評価を続けます。失敗はログに記録されますがスコアリングを中断しません。",
   "settings.refSectionOutput": "ルール出力フォーマット",
-  "settings.refOutputIntro": "ルールは文字列キー（スコアコード）を整数値（ポイントデルタ）にマッピングするscore_entryルールを定義する必要があります。正の値はリリースをブーストし、負の値はペナルティを与え、scryer.block_score()は完全にブロックします。ファイルベースのルールはinput.fileがダウンロード後の評価時までnullであるため、ダウンロード前は自然にノーオペレーションです。",
-
+  "settings.refOutputIntro":
+    "ルールは文字列キー（スコアコード）を整数値（ポイントデルタ）にマッピングするscore_entryルールを定義する必要があります。正の値はリリースをブーストし、負の値はペナルティを与え、scryer.block_score()は完全にブロックします。ファイルベースのルールはinput.fileがダウンロード後の評価時までnullであるため、ダウンロード前は自然にノーオペレーションです。",
+  "settings.subtitles": "字幕",
+  "settings.subtitlesSaved": "字幕設定が保存されました。",
+  "settings.sub.enabled": "字幕管理を有効にする",
+  "settings.sub.credentials": "OpenSubtitles 認証情報",
+  "settings.sub.username": "ユーザー名",
+  "settings.sub.password": "パスワード",
+  "settings.sub.apiKey": "APIキー",
+  "settings.sub.languages": "字幕言語",
+  "settings.sub.languagesHelp":
+    "ISO 639-2 コード、カンマ区切り (例: eng、spa、fre、deu、jpn)",
+  "settings.sub.languagePickerAriaLabel": "字幕言語を選択してください",
+  "settings.sub.languagePickerSelect": "言語を選択...",
+  "settings.sub.languagePickerSearch": "言語を検索...",
+  "settings.sub.languagePickerEmpty": "言語が見つかりません",
+  "settings.sub.languagePickerRemove": "{{language}} を削除します",
+  "settings.sub.hiPreference": "聴覚障害者",
+  "settings.sub.forcedOnly": "強制字幕のみ",
+  "settings.sub.minScoreSeries": "シリーズの最低マッチスコア",
+  "settings.sub.minScoreMovie": "映画の最低マッチスコア",
+  "settings.sub.minScoreHelp":
+    "このスコア未満の字幕はスキップされます。シリーズはエピソード単位の一致が正確である必要があるため、より高いしきい値が必要です。",
+  "settings.sub.searchInterval": "検索間隔(時間)",
+  "settings.sub.autoDownload": "インポート時に自動ダウンロード",
+  "settings.sub.excludeAi": "AI翻訳された字幕を除外する",
+  "settings.sub.excludeMachine": "機械翻訳された字幕を除外する",
+  "settings.sub.syncEnabled": "字幕タイミングを自動補正",
+  "settings.sub.syncEnabledHelp":
+    "音声解析を使用して、ダウンロードした字幕のタイミングのずれを修正します。",
+  "settings.sub.syncThresholdSeries":
+    "このスコアを下回ると自動修正されます (シリーズ)",
+  "settings.sub.syncThresholdMovie":
+    "このスコアを下回ると自動修正されます (映画)",
+  "settings.sub.syncThresholdHelp":
+    "スコアの低い字幕では、タイミングの問題が発生する可能性が高くなります。このスコアを超える字幕は、タイミングが適切であると見なされます。",
+  "settings.sub.syncMaxOffset": "最大補正時間（秒）",
+  "settings.sub.syncMaxOffsetHelp":
+    "おそらくすでに十分に近づいている字幕の損傷を避けるために、この値より大きいタイミングの変更をスキップします。",
   "settings.postProcessing": "ポストプロセス",
   "settings.postProcessingSaved": "ポストプロセス設定を保存しました。",
-  "settings.pp.intro": "各ファイルのインポート後にカスタムスクリプトを実行します。無効にするには空欄にしてください。作業ディレクトリはインポートされたファイルが含まれるフォルダに設定されます。",
-  "settings.pp.movieScript": "映画スクリプト",
-  "settings.pp.seriesScript": "シリーズスクリプト",
-  "settings.pp.animeScript": "アニメスクリプト",
-  "settings.pp.timeoutSecs": "スクリプトタイムアウト（秒）",
-  "settings.pp.envVarsHeading": "環境変数",
-  "settings.pp.envVarsDescription": "スクリプトで以下の変数が利用可能です:",
-
+  "settings.pp.title": "後処理スクリプト",
+  "settings.pp.description":
+    "メディアがインポートされた後、スクリプトが自動的に実行されます。ブロック スクリプトは優先順位に従って実行されます。 Fire-and-Forget スクリプトは、インポート パイプラインを遅らせることなく並行して実行されます。",
+  "settings.pp.noScripts": "後処理スクリプトが構成されていません。",
+  "settings.pp.name": "スクリプト名",
+  "settings.pp.namePlaceholder": "例えばプレックスに通知する",
+  "settings.pp.descriptionLabel": "説明",
+  "settings.pp.descriptionPlaceholder": "このスクリプトは何をするのでしょうか?",
+  "settings.pp.scriptType": "スクリプトの種類",
+  "settings.pp.inline": "列をなして",
+  "settings.pp.filePath": "ファイルパス",
+  "settings.pp.inlineHelp": "実行するシェルコマンドを入力します。",
+  "settings.pp.filePathHelp": "サーバー上の実行可能スクリプトへのパス。",
+  "settings.pp.blocking": "ブロッキング",
+  "settings.pp.fireAndForget": "ファイア＆フォーゲット",
+  "settings.pp.blockingHelp":
+    "優先順位に従って実行されます。次のスクリプトは、このスクリプトが完了するまで待機します。",
+  "settings.pp.fireAndForgetHelp":
+    "インポートをブロックせずにバックグラウンドで実行されます。",
+  "settings.pp.executionMode": "実行モード",
+  "settings.pp.timeout": "タイムアウト (秒)",
+  "settings.pp.priority": "優先度",
+  "settings.pp.priorityHelp": "小さい番号が最初に実行されます。",
+  "settings.pp.facets": "適用対象",
+  "settings.pp.debug": "スクリプト出力のキャプチャ",
+  "settings.pp.debugHelp":
+    "有効にすると、実行ごとに stdout と stderr が保存されます。トラブルシューティングに役立ちます。",
+  "settings.pp.runHistory": "実行履歴",
+  "settings.pp.noRuns": "まだ処刑はされていない。",
+  "settings.pp.outputNotCaptured":
+    "出力がキャプチャされませんでした。出力を確認するには、このスクリプトでデバッグ モードを有効にします。",
+  "settings.pp.envHeading": "環境変数",
+  "settings.pp.envDescription":
+    "スクリプトは、タイトル、エピソード、リリース、メディア情報のメタデータを含む JSON ペイロードを SCRYER_METADATA 環境変数で受け取ります。 SCRYER_FILE_PATH には、インポートされたファイルのパスが含まれます。",
+  "settings.pp.created": "スクリプトが作成されました。",
+  "settings.pp.updated": "スクリプトが更新されました。",
+  "settings.pp.deleted": "スクリプトが削除されました。",
+  "settings.pp.toggled": "スクリプト {{state}}。",
   "settings.plugins": "プラグイン",
   "settings.pluginsSection": "プラグイン管理",
   "settings.pluginsRefresh": "レジストリを更新",
@@ -795,8 +1085,10 @@ const ja: LocaleDictionary = {
   "settings.pluginsInstalled": "インストール済み",
   "settings.pluginsAvailable": "利用可能",
   "settings.pluginsNoInstalled": "インストール済みのプラグインはありません。",
-  "settings.pluginsNoAvailable": "現在のフィルターに一致するプラグインはありません。",
-  "settings.pluginsNoPlugins": "プラグインが見つかりません。レジストリを更新して利用可能なプラグインを確認してください。",
+  "settings.pluginsNoAvailable":
+    "現在のフィルターに一致するプラグインはありません。",
+  "settings.pluginsNoPlugins":
+    "プラグインが見つかりません。レジストリを更新して利用可能なプラグインを確認してください。",
   "settings.pluginAllCategories": "すべてのカテゴリ",
   "settings.pluginCategoryIndexer": "インデクサー",
   "settings.pluginCategoryDownloadClient": "ダウンロードクライアント",
@@ -805,7 +1097,8 @@ const ja: LocaleDictionary = {
   "settings.pluginInstall": "インストール",
   "settings.pluginInstalling": "インストール中…",
   "settings.pluginUninstall": "アンインストール",
-  "settings.pluginUninstallWarning": "'{{name}}'をアンインストールすると、関連するすべての設定が完全に削除されます。設定を保持したい場合は、プラグインを無効化してください。",
+  "settings.pluginUninstallWarning":
+    "'{{name}}'をアンインストールすると、関連するすべての設定が完全に削除されます。設定を保持したい場合は、プラグインを無効化してください。",
   "settings.pluginBuiltin": "組み込み",
   "settings.pluginInstalled": "インストール済み",
   "settings.pluginNotInstalled": "未インストール",
@@ -813,13 +1106,13 @@ const ja: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新あり: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}にアップグレード",
-
   "status.pluginInstalled": "プラグイン'{{name}}'がインストールされました。",
-  "status.pluginUninstalled": "プラグイン'{{name}}'がアンインストールされました。",
-  "status.pluginUpgraded": "プラグイン'{{name}}'がv{{version}}にアップグレードされました。",
+  "status.pluginUninstalled":
+    "プラグイン'{{name}}'がアンインストールされました。",
+  "status.pluginUpgraded":
+    "プラグイン'{{name}}'がv{{version}}にアップグレードされました。",
   "status.pluginToggled": "プラグイン'{{name}}'が{{state}}されました。",
   "status.registryRefreshed": "プラグインレジストリが更新されました。",
-
   "form.namePlaceholder": "名前",
   "form.indexerNamePlaceholder": "マイNewznabインデクサー",
   "form.providerTypePlaceholder": "プロバイダータイプ",
@@ -840,13 +1133,14 @@ const ja: LocaleDictionary = {
   "form.indexerRateLimitValidation": "レート制限値は数値でなければなりません。",
   "form.rateLimitPlaceholder": "サービスのデフォルト",
   "form.enabled": "有効",
-
   "qualityProfile.existingProfiles": "既存の品質プロファイル",
   "qualityProfile.noProfilesFound": "プロファイルが見つかりません。",
   "qualityProfile.createProfile": "品質プロファイルを作成",
   "qualityProfile.defaultProfileName": "デフォルト",
-  "qualityProfile.idGeneratedDescription": "プロファイルIDは名前から生成されます。",
-  "qualityProfile.createProfileDescription": "プロファイル名は作成後に編集できます。IDは自動生成され、一意でなければなりません。",
+  "qualityProfile.idGeneratedDescription":
+    "プロファイルIDは名前から生成されます。",
+  "qualityProfile.createProfileDescription":
+    "プロファイル名は作成後に編集できます。IDは自動生成され、一意でなければなりません。",
   "qualityProfile.editProfile": "品質プロファイルを編集",
   "qualityProfile.profileNameLabel": "プロファイル名",
   "qualityProfile.qualityTiersAndArchival": "品質ティアとアーカイブ品質",
@@ -855,43 +1149,63 @@ const ja: LocaleDictionary = {
   "qualityProfile.removeQualityTier": "{{value}}品質ティアを削除",
   "qualityProfile.addQualityTier": "{{value}}を選択に追加",
   "qualityProfile.availableQualityTiers": "利用可能な品質ティア",
-  "qualityProfile.allQualityTiersSelected": "すべての品質ティアが選択されています。",
+  "qualityProfile.allQualityTiersSelected":
+    "すべての品質ティアが選択されています。",
   "qualityProfile.archivalQuality": "アーカイブ品質",
-  "qualityProfile.archivalQualityInfo": "長期保存用の品質レベルです。Scryerはアーカイブ品質がまだない場合、先により高い品質をダウンロードし、アーカイブ品質のリリースが見つかったら後で置き換える場合があります。",
+  "qualityProfile.archivalQualityInfo":
+    "長期保存用の品質レベルです。Scryerはアーカイブ品質がまだない場合、先により高い品質をダウンロードし、アーカイブ品質のリリースが見つかったら後で置き換える場合があります。",
   "qualityProfile.qualityTiers": "品質ティア",
   "qualityProfile.otherOptions": "その他のオプション",
   "qualityProfile.allowHdr": "HDR",
   "qualityProfile.detectedHdrAllowed": "HDR許可",
-  "qualityProfile.detectedHdrAllowedInfo": "HDRとして検出されたリリースを許可します（HDR10、HLG、Dolby Visionなど）。注意: 多くのリリース名にHDRが明示的に含まれていないため、HDRリリースを完全にフィルタリングすることは保証されません。",
+  "qualityProfile.detectedHdrAllowedInfo":
+    "HDRとして検出されたリリースを許可します（HDR10、HLG、Dolby Visionなど）。注意: 多くのリリース名にHDRが明示的に含まれていないため、HDRリリースを完全にフィルタリングすることは保証されません。",
   "qualityProfile.allowUnknownQuality": "不明な品質を許可",
-  "qualityProfile.allowUnknownQualityInfo": "パーサールールで品質を識別できないリリースを許可します。非一般的なエンコードに役立ちますが、低信頼度のマッチを許可する可能性があります。",
+  "qualityProfile.allowUnknownQualityInfo":
+    "パーサールールで品質を識別できないリリースを許可します。非一般的なエンコードに役立ちますが、低信頼度のマッチを許可する可能性があります。",
   "qualityProfile.dolbyVisionAllowed": "Dolby Vision",
-  "qualityProfile.dolbyVisionInfo": "Dolby Visionリリースを許可します。一部のディスプレイはDolby Visionコンテンツを正しくレンダリングできないため、すべてのユーザーに適しているとは限りません。",
+  "qualityProfile.dolbyVisionInfo":
+    "Dolby Visionリリースを許可します。一部のディスプレイはDolby Visionコンテンツを正しくレンダリングできないため、すべてのユーザーに適しているとは限りません。",
   "qualityProfile.preferRemux": "Remux優先",
-  "qualityProfile.preferRemuxInfo": "Remuxは物理メディアの完全品質コピーです。主にAudiophileペルソナで有用です。",
+  "qualityProfile.preferRemuxInfo":
+    "Remuxは物理メディアの完全品質コピーです。主にAudiophileペルソナで有用です。",
   "qualityProfile.allowBdDisk": "BDディスク",
-  "qualityProfile.allowBdDiskInfo": "BD/ディスクイメージリリース（ISO/ブルーレイディスクスタイル）がプロファイルを通過することを許可します。",
+  "qualityProfile.allowBdDiskInfo":
+    "BD/ディスクイメージリリース（ISO/ブルーレイディスクスタイル）がプロファイルを通過することを許可します。",
   "qualityProfile.allowDv": "Dolby Vision",
   "qualityProfile.allowUpgrades": "アップグレード許可",
-  "qualityProfile.allowUpgradesInfo": "管理されたコピーをより良いマッチで後から置き換えることを許可しますが、選択したアーカイブ品質を超えることはありません。",
+  "qualityProfile.allowUpgradesInfo":
+    "管理されたコピーをより良いマッチで後から置き換えることを許可しますが、選択したアーカイブ品質を超えることはありません。",
   "qualityProfile.sourceAllowlist": "ソース",
   "qualityProfile.sourceBlocklist": "ソースブロックリスト",
   "qualityProfile.videoCodecAllowlist": "映像コーデック",
   "qualityProfile.videoCodecBlocklist": "映像コーデックブロックリスト",
   "qualityProfile.audioCodecAllowlist": "音声コーデック",
   "qualityProfile.audioCodecBlocklist": "音声コーデックブロックリスト",
-  "qualityProfile.sourceAllowlistDefault": "デフォルトですべてのソースが許可されています。",
-  "qualityProfile.sourceAllowlistInfo": "選択したソース値に一致するリリースのみ許可します（例: WEB-DL, HDTV）。",
-  "qualityProfile.sourceBlocklistDefault": "デフォルトでソースブロックは適用されません。",
-  "qualityProfile.sourceBlocklistInfo": "他の条件に一致しても、これらのソースからのリリースを明示的にブロックします。",
-  "qualityProfile.videoCodecAllowlistDefault": "デフォルトですべての映像コーデックが許可されています。",
-  "qualityProfile.videoCodecAllowlistInfo": "これらの映像コーデックでエンコードされたリリースのみ許可します。",
-  "qualityProfile.videoCodecBlocklistDefault": "デフォルトでブロックされた映像コーデックはありません。",
-  "qualityProfile.videoCodecBlocklistInfo": "これらの映像コーデックを使用するリリースを常に拒否します。",
-  "qualityProfile.audioCodecAllowlistDefault": "デフォルトですべての音声コーデックが許可されています。",
-  "qualityProfile.audioCodecAllowlistInfo": "一致する音声コーデックのリリースのみ許可します。",
-  "qualityProfile.audioCodecBlocklistDefault": "デフォルトでブロックされた音声コーデックはありません。",
-  "qualityProfile.audioCodecBlocklistInfo": "ここにリストされたブロック音声コーデックを含むリリースを拒否します。",
+  "qualityProfile.sourceAllowlistDefault":
+    "デフォルトですべてのソースが許可されています。",
+  "qualityProfile.sourceAllowlistInfo":
+    "選択したソース値に一致するリリースのみ許可します（例: WEB-DL, HDTV）。",
+  "qualityProfile.sourceBlocklistDefault":
+    "デフォルトでソースブロックは適用されません。",
+  "qualityProfile.sourceBlocklistInfo":
+    "他の条件に一致しても、これらのソースからのリリースを明示的にブロックします。",
+  "qualityProfile.videoCodecAllowlistDefault":
+    "デフォルトですべての映像コーデックが許可されています。",
+  "qualityProfile.videoCodecAllowlistInfo":
+    "これらの映像コーデックでエンコードされたリリースのみ許可します。",
+  "qualityProfile.videoCodecBlocklistDefault":
+    "デフォルトでブロックされた映像コーデックはありません。",
+  "qualityProfile.videoCodecBlocklistInfo":
+    "これらの映像コーデックを使用するリリースを常に拒否します。",
+  "qualityProfile.audioCodecAllowlistDefault":
+    "デフォルトですべての音声コーデックが許可されています。",
+  "qualityProfile.audioCodecAllowlistInfo":
+    "一致する音声コーデックのリリースのみ許可します。",
+  "qualityProfile.audioCodecBlocklistDefault":
+    "デフォルトでブロックされた音声コーデックはありません。",
+  "qualityProfile.audioCodecBlocklistInfo":
+    "ここにリストされたブロック音声コーデックを含むリリースを拒否します。",
   "qualityProfile.selectedItemsLabel": "選択済み",
   "qualityProfile.availableItemsLabel": "利用可能",
   "qualityProfile.noSelectedItems": "選択なし。",
@@ -899,48 +1213,74 @@ const ja: LocaleDictionary = {
   "qualityProfile.aboutSection": "{{title}}について",
   "qualityProfile.removeItem": "選択から{{value}}を削除",
   "qualityProfile.addItem": "選択に{{value}}を追加",
-  "qualityProfile.useDefaultQualityFallback": "デフォルト品質フォールバックを使用",
+  "qualityProfile.useDefaultQualityFallback":
+    "デフォルト品質フォールバックを使用",
   "qualityProfile.defaultCategoryProfiles": "デフォルトカテゴリプロファイル",
   "qualityProfile.scoringSection": "スコアリング",
-  "qualityProfile.scoringSectionInfo": "リリースのランキング方法を制御します。ペルソナプリセットを選択し、必要に応じて特定のスコアリング動作をオーバーライドできます。",
+  "qualityProfile.scoringSectionInfo":
+    "リリースのランキング方法を制御します。ペルソナプリセットを選択し、必要に応じて特定のスコアリング動作をオーバーライドできます。",
   "qualityProfile.scoringAndPreferences": "スコアリングと設定",
-  "qualityProfile.scoringAndPreferencesInfo": "リリースのランキングとフィルタリング方法を制御します。スコアリングペルソナ、設定、アップグレード動作を設定します。",
+  "qualityProfile.scoringAndPreferencesInfo":
+    "リリースのランキングとフィルタリング方法を制御します。スコアリングペルソナ、設定、アップグレード動作を設定します。",
   "qualityProfile.facetPersonaOverrides": "カテゴリ別ペルソナ",
-  "qualityProfile.facetPersonaOverridesInfo": "特定のメディアタイプのスコアリングペルソナをオーバーライドします。例: アニメにAudiophile、映画にEfficientを使用。",
+  "qualityProfile.facetPersonaOverridesInfo":
+    "特定のメディアタイプのスコアリングペルソナをオーバーライドします。例: アニメにAudiophile、映画にEfficientを使用。",
   "qualityProfile.facetPersonaUseDefault": "デフォルトを使用",
   "qualityProfile.scoringPersona": "スコアリングペルソナ",
-  "qualityProfile.scoringPersonaInfo": "異なるリリース品質を優先するプリセットスコアリング重み付けです。ほとんどのユーザーにはBalancedが推奨されます。",
+  "qualityProfile.scoringPersonaInfo":
+    "異なるリリース品質を優先するプリセットスコアリング重み付けです。ほとんどのユーザーにはBalancedが推奨されます。",
+  "qualityProfile.scoringPersonaMovedInfo":
+    "スコアリングペルソナは、保存された品質プロファイル内ではなく、品質設定内に存在するようになりました。プロファイルスコアのオーバーライドは、現在のペルソナに加えて引き続き適用されます。",
   "qualityProfile.personaBalanced": "バランス",
   "qualityProfile.personaAudiophile": "オーディオファイル",
   "qualityProfile.personaEfficient": "エフィシェント",
   "qualityProfile.personaCompatible": "コンパチブル",
   "qualityProfile.scoringOverrides": "スコアリングオーバーライド",
-  "qualityProfile.scoringOverridesInfo": "選択したペルソナに関係なく特定のスコアリング動作をオーバーライドします。ペルソナの設定を使用するには「デフォルト」のままにしてください。",
+  "qualityProfile.scoringOverridesInfo":
+    "選択したペルソナに関係なく特定のスコアリング動作をオーバーライドします。ペルソナの設定を使用するには「デフォルト」のままにしてください。",
   "qualityProfile.overrideDefault": "デフォルト",
   "qualityProfile.overrideAllowX265Non4k": "非4Kでx265を許可",
-  "qualityProfile.overrideAllowX265Non4kInfo": "4K未満の解像度でx265/HEVCエンコードされたリリースを許可します。一部のデバイスは低解像度でx265を処理できません。",
-  "qualityProfile.overrideBlockDvNoFallback": "フォールバックなしのDVをブロック",
-  "qualityProfile.overrideBlockDvNoFallbackInfo": "HDR10フォールバックレイヤーのないDolby Visionリリースをブロックします。非DVディスプレイで緑/紫に表示される可能性があります。",
+  "qualityProfile.overrideAllowX265Non4kInfo":
+    "4K未満の解像度でx265/HEVCエンコードされたリリースを許可します。一部のデバイスは低解像度でx265を処理できません。",
+  "qualityProfile.overrideBlockDvNoFallback":
+    "フォールバックなしのDVをブロック",
+  "qualityProfile.overrideBlockDvNoFallbackInfo":
+    "HDR10フォールバックレイヤーのないDolby Visionリリースをブロックします。非DVディスプレイで緑/紫に表示される可能性があります。",
   "qualityProfile.overridePreferCompact": "コンパクトエンコードを優先",
-  "qualityProfile.overridePreferCompactInfo": "小さく帯域効率の良いエンコードに加点します。ストレージが限られている場合や遅い接続でのストリーミングに有用です。",
+  "qualityProfile.overridePreferCompactInfo":
+    "小さく帯域効率の良いエンコードに加点します。ストレージが限られている場合や遅い接続でのストリーミングに有用です。",
   "qualityProfile.overridePreferLossless": "ロスレスオーディオを優先",
-  "qualityProfile.overridePreferLosslessInfo": "ロスレスオーディオトラックを含むリリースに加点します（TrueHD、FLAC、DTS-HD MA）。",
+  "qualityProfile.overridePreferLosslessInfo":
+    "ロスレスオーディオトラックを含むリリースに加点します（TrueHD、FLAC、DTS-HD MA）。",
   "qualityProfile.overrideBlockUpscaled": "AIアップスケールをブロック",
-  "qualityProfile.overrideBlockUpscaledInfo": "AIアップスケールされたリリースをブロックします。これらのリリースにはアーティファクトが多く、真のネイティブ解像度ではありません。",
+  "qualityProfile.overrideBlockUpscaledInfo":
+    "AIアップスケールされたリリースをブロックします。これらのリリースにはアーティファクトが多く、真のネイティブ解像度ではありません。",
   "qualityProfile.cutoffTier": "カットオフティア",
-  "qualityProfile.cutoffTierInfo": "この品質ティア以上が取得されたらアップグレードを停止します。不要な再ダウンロードを防ぎます。",
+  "qualityProfile.cutoffTierInfo":
+    "この品質ティア以上が取得されたらアップグレードを停止します。不要な再ダウンロードを防ぎます。",
   "qualityProfile.cutoffNone": "カットオフなし",
   "qualityProfile.minScoreToGrab": "取得最低スコア",
-  "qualityProfile.minScoreToGrabInfo": "この閾値以上のスコアのリリースのみ取得します。最低値なしの場合は空欄にしてください。",
+  "qualityProfile.minScoreToGrabInfo":
+    "この閾値以上のスコアのリリースのみ取得します。最低値なしの場合は空欄にしてください。",
   "qualityProfile.minScorePlaceholder": "最低値なし",
-
+  "qualityProfile.confirmDeleteTitle": "品質プロファイルの削除",
+  "qualityProfile.confirmDeleteDescription":
+    "品質プロファイル「{{name}}」を削除してもよろしいですか?これを元に戻すことはできません。",
+  "qualityProfile.deleteDisabledInUse":
+    "このプロファイルは使用中です。削除する前に、すべてのタイトルとカテゴリのデフォルトから削除してください。",
   "episode.details": "詳細",
   "episode.search": "検索",
+  "episode.blocklist": "ブロックリスト",
   "episode.overview": "概要",
   "episode.fileOnDisk": "ディスク上のファイル",
+  "episode.airDate": "放送日",
+  "episode.numberLabel": "話数",
   "episode.quality": "品質",
   "episode.missing": "未取得",
   "episode.noFile": "このエピソードはまだダウンロードされていません。",
+  "episode.noBlockedReleases":
+    "このエピソードに記録されたブロック済みリリースはありません。",
+  "episode.untitledRelease": "無題のリリース",
   "episode.filler": "フィラー",
   "episode.recap": "総集編",
   "episode.absoluteNumber": "絶対 #{{number}}",
@@ -949,7 +1289,6 @@ const ja: LocaleDictionary = {
   "episode.ona": "ONA",
   "episode.alternate": "代替",
   "episode.multiAudio": "デュアルオーディオ",
-
   "mediaFile.pendingScan": "スキャン待ち",
   "mediaFile.scanFailed": "スキャン失敗",
   "mediaFile.score": "スコア {{score}}",
@@ -959,7 +1298,29 @@ const ja: LocaleDictionary = {
   "mediaFile.subtitles": "字幕",
   "mediaFile.subtitleCount": "{{count}}字幕",
   "mediaFile.delete": "ファイルを削除",
-
+  "mediaFile.pathNotRecorded": "パスが記録されていません",
+  "subtitle.search": "字幕の検索",
+  "subtitle.searching": "検索中…",
+  "subtitle.download": "ダウンロード",
+  "subtitle.downloading": "ダウンロード中...",
+  "subtitle.noResults": "字幕が見つかりませんでした",
+  "subtitle.score": "スコア: {{score}}",
+  "subtitle.hashMatch": "ハッシュマッチ",
+  "subtitle.hearingImpaired": "聴覚障害者向け",
+  "subtitle.forced": "強制",
+  "subtitle.aiTranslated": "AI翻訳",
+  "subtitle.machineTranslated": "機械翻訳",
+  "subtitle.subtitles": "字幕",
+  "subtitle.embedded": "埋め込み",
+  "subtitle.external": "外部",
+  "subtitle.manualSearch": "手動検索",
+  "subtitle.blacklist": "ブラックリスト",
+  "subtitle.blacklisted": "字幕がブラックリストに登録されました",
+  "subtitle.releaseInfo": "リリース",
+  "subtitle.provider": "プロバイダー",
+  "subtitle.language": "言語",
+  "subtitle.downloadCount": "ダウンロード",
+  "subtitle.selectLanguage": "言語を選択してください",
   "anime.malLink": "MyAnimeList",
   "anime.anilistLink": "AniList",
   "anime.anidbLink": "AniDB",
@@ -968,9 +1329,9 @@ const ja: LocaleDictionary = {
   "anime.malScore": "MALスコア",
   "anime.mediaType": "タイプ",
   "anime.status": "ステータス",
-  "anime.fillerSummary": "{{totalCount}}話中{{fillerCount}}話がフィラー（{{percent}}%）",
+  "anime.fillerSummary":
+    "{{totalCount}}話中{{fillerCount}}話がフィラー（{{percent}}%）",
   "anime.noFiller": "フィラーエピソードなし",
-
   "settings.fillerPolicyLabel": "フィラーエピソードポリシー",
   "settings.fillerPolicyDownloadAll": "すべてのエピソードをダウンロード",
   "settings.fillerPolicySkipFiller": "フィラーエピソードをスキップ",
@@ -978,23 +1339,31 @@ const ja: LocaleDictionary = {
   "settings.recapPolicyDownloadAll": "すべてのエピソードをダウンロード",
   "settings.recapPolicySkipRecap": "総集編エピソードをスキップ",
   "settings.monitorSpecialsLabel": "特別編・OVAのモニタリング",
-  "settings.monitorSpecialsDescription": "アニメ追加時に特別編とOVAを自動モニタリングします",
+  "settings.monitorSpecialsDescription":
+    "アニメ追加時に特別編とOVAを自動モニタリングします",
   "settings.interSeasonMoviesLabel": "シーズン間劇場版",
-  "settings.interSeasonMoviesDescription": "シーズン間の正典劇場版のナラティブエントリを作成します",
+  "settings.interSeasonMoviesDescription":
+    "シーズン間の正典劇場版のナラティブエントリを作成します",
+  "settings.monitorFillerMoviesLabel": "モニターフィラームービー",
+  "settings.monitorFillerMoviesDescription":
+    "フィラーとして分類された映画をダウンロード キューに含める",
   "settings.nfoWriteOnImportLabel": "インポート時にNFOを書き込み",
-  "settings.nfoWriteOnImportDescription": "インポートされたメディアと一緒にKodi/Jellyfin/Emby互換の.nfoメタデータファイルを書き込みます",
+  "settings.nfoWriteOnImportDescription":
+    "インポートされたメディアと一緒にKodi/Jellyfin/Emby互換の.nfoメタデータファイルを書き込みます",
   "settings.plexmatchWriteOnImportLabel": "インポート時に.plexmatchを書き込み",
-  "settings.plexmatchWriteOnImportDescription": "名前推測なしで正確なシリーズマッチングのためのPlexヒントファイルを書き込みます",
+  "settings.plexmatchWriteOnImportDescription":
+    "名前推測なしで正確なシリーズマッチングのためのPlexヒントファイルを書き込みます",
   "settings.minAvailabilityLabel": "最低利用可能性",
   "settings.minAvailability.announced": "告知済み",
   "settings.minAvailability.in_cinemas": "上映中",
   "settings.minAvailability.released": "リリース済み",
-
   "status.titleRequired": "タイトルは必須です。",
   "status.facetRequired": "タイプは必須です。",
   "status.catalogAddSuccess": "{{name}}をカタログに追加しました。",
-  "status.catalogAddSuccessAutoSearch": "{{name}}をカタログに追加しました。自動検索がキューに追加されました。",
-  "status.selectedTvdb": "TVDBマッチを選択: {{name}}。NZBGeek検索を押してください。",
+  "status.catalogAddSuccessAutoSearch":
+    "{{name}}をカタログに追加しました。自動検索がキューに追加されました。",
+  "status.selectedTvdb":
+    "TVDBマッチを選択: {{name}}。NZBGeek検索を押してください。",
   "status.noReleaseSource": "リリースにキュー可能なソースがありません。",
   "status.queueSuccess": "{{name}}をキューに追加しました",
   "status.noSource": "{{name}}にキュー可能なソースがありません",
@@ -1002,27 +1371,41 @@ const ja: LocaleDictionary = {
   "status.queuedLatest": "{{name}}の最新リリースをキューに追加しました",
   "status.queuedForTitle": "{{name}}のリリースをキューに追加しました。",
   "status.nothingFound": "結果が見つかりません。",
+  "status.searchingByQuery": "「{{query}}」を検索しています。",
+  "status.searchingNzb": "NZB で「{{query}}」{{category}} を検索しています。",
+  "status.searchingTvdb": "TVDB メタデータ「{{query}}」を検索しています。",
   "status.foundTvdb": "{{count}}件のTVDB結果が見つかりました。",
   "status.foundNzb": "{{count}}件のNZBGeek結果が見つかりました。",
-  "status.renamePreviewGenerated": "リネームプレビュー準備完了: {{total}}件中{{renamable}}件変更可能。",
-  "status.renameApplied": "リネーム適用完了: {{applied}}件適用、{{skipped}}件スキップ、{{failed}}件失敗。",
-  "status.nzbFoundForTitle": "{{name}}{{source}}に対して{{count}}件のNZBアイテムが見つかりました。",
+  "status.renamePreviewGenerated":
+    "リネームプレビュー準備完了: {{total}}件中{{renamable}}件変更可能。",
+  "status.renameApplied":
+    "リネーム適用完了: {{applied}}件適用、{{skipped}}件スキップ、{{failed}}件失敗。",
+  "status.nzbFoundForTitle":
+    "{{name}}{{source}}に対して{{count}}件のNZBアイテムが見つかりました。",
   "status.noNzbFound": "NZB結果が見つかりません。",
-  "status.deleteCatalogConfirm": "カタログから{{name}}を削除しますか？下のオプションでローカルファイルも削除できます。",
+  "status.deleteCatalogConfirm":
+    "カタログから{{name}}を削除しますか？下のオプションでローカルファイルも削除できます。",
   "status.titleDeleted": "カタログから{{name}}を削除しました。",
-  "status.qualityProfileBlocked": "スキップ: 品質プロファイルによりブロック（{{reason}}）",
-  "status.tvdbRequiredImdb": "選択した映画マッチに使用可能なIMDb IDがありません。",
+  "status.titleMatchUpdated": "{{name}} の一致を更新しました。",
+  "status.qualityProfileBlocked":
+    "スキップ: 品質プロファイルによりブロック（{{reason}}）",
+  "status.tvdbRequiredImdb":
+    "選択した映画マッチに使用可能なIMDb IDがありません。",
   "status.tvdbNoValidId": "選択したTVDBマッチに有効なTVDB IDがありません。",
-  "status.tvdbNeedsTitle": "選択したTVDBマッチに検索可能なタイトルがありません。",
+  "status.tvdbNeedsTitle":
+    "選択したTVDBマッチに検索可能なタイトルがありません。",
   "status.tvdbQueueTip": "続行するにはTVDBマッチを選択してください。",
-  "status.nzbQueueTip": "NZB結果がありません。別のタイトルで検索してみてください。",
-  "status.languageChanged": "インターフェース言語を{{language}}に変更しました。",
+  "status.nzbQueueTip":
+    "NZB結果がありません。別のタイトルで検索してみてください。",
+  "status.languageChanged":
+    "インターフェース言語を{{language}}に変更しました。",
   "status.editingUser": "ユーザー{{name}}を編集中",
   "status.editingIndexer": "インデクサー{{name}}を編集中",
   "status.editingDownloadClient": "ダウンロードクライアント{{name}}を編集中",
   "status.deletingUser": "ユーザー{{name}}を削除しますか？",
   "status.deletingIndexer": "インデクサー{{name}}を削除しますか？",
-  "status.deletingDownloadClient": "ダウンロードクライアント{{name}}を削除しますか？",
+  "status.deletingDownloadClient":
+    "ダウンロードクライアント{{name}}を削除しますか？",
   "status.showingActivityStream": "アクティビティストリームを表示",
   "status.hidingActivityStream": "アクティビティストリームを非表示",
   "status.userRequired": "ユーザー名とパスワードは必須です。",
@@ -1033,15 +1416,20 @@ const ja: LocaleDictionary = {
   "status.failedToUpdate": "アイテムの更新に失敗しました。",
   "status.indexerCreated": "インデクサーを保存しました。",
   "status.indexerUpdated": "インデクサーを更新しました。",
-  "status.searchMonitoredQueued": "{{count}}件のモニタリングアイテムをバックグラウンド検索キューに追加しました。",
-  "status.searchMonitoredEmpty": "現在検索可能なモニタリングアイテムはありません。",
-  "status.titleScanSuccess": "スキャン完了。{{imported}}件インポート、{{skipped}}件スキップ、{{unmatched}}件未一致。",
+  "status.searchMonitoredQueued":
+    "{{count}}件のモニタリングアイテムをバックグラウンド検索キューに追加しました。",
+  "status.searchMonitoredEmpty":
+    "現在検索可能なモニタリングアイテムはありません。",
+  "status.titleScanSuccess":
+    "スキャン完了。{{imported}}件インポート、{{skipped}}件スキップ、{{unmatched}}件未一致。",
   "status.titleMonitoringEnabled": "タイトルモニタリングが有効になりました。",
   "status.titleMonitoringDisabled": "タイトルモニタリングが無効になりました。",
   "status.indexerDeleted": "インデクサー{{name}}を削除しました。",
   "status.testingIndexerConnection": "接続をテスト中…",
-  "status.indexerConnectionTestPassed": "インデクサー接続テストに成功しました。",
-  "status.indexerConnectionTestFailed": "インデクサー接続テストに失敗しました。",
+  "status.indexerConnectionTestPassed":
+    "インデクサー接続テストに成功しました。",
+  "status.indexerConnectionTestFailed":
+    "インデクサー接続テストに失敗しました。",
   "status.ruleCreated": "ルールを保存しました。",
   "status.ruleUpdated": "ルールを更新しました。",
   "status.ruleDeleted": "ルール{{name}}を削除しました。",
@@ -1050,22 +1438,23 @@ const ja: LocaleDictionary = {
   "status.deletingRule": "ルール{{name}}を削除しますか？",
   "status.downloadClientCreated": "ダウンロードクライアントを保存しました。",
   "status.downloadClientUpdated": "ダウンロードクライアントを更新しました。",
-  "status.downloadClientDeleted": "ダウンロードクライアント{{name}}を削除しました。",
-  "status.downloadClientOrderSaved": "ダウンロードクライアントの優先順位を保存しました。",
+  "status.downloadClientDeleted":
+    "ダウンロードクライアント{{name}}を削除しました。",
+  "status.downloadClientOrderSaved":
+    "ダウンロードクライアントの優先順位を保存しました。",
   "status.testingDownloadClient": "{{client}}の接続をテスト中…",
-  "status.downloadClientConnectionTestPassed": "{{client}}の接続テストに成功しました。",
-  "status.downloadClientConnectionTestFailed": "{{client}}の接続テストに失敗しました。",
+  "status.downloadClientConnectionTestPassed":
+    "{{client}}の接続テストに成功しました。",
+  "status.downloadClientConnectionTestFailed":
+    "{{client}}の接続テストに失敗しました。",
   "status.queueFailed": "キュー操作に失敗しました。",
   "status.apiError": "リクエスト失敗",
   "status.generic": "{{message}}",
-
   "system.notReadyTemplate": "システムが準備できていません。",
   "system.recentEventsLabel": "最近のイベントサンプル",
-
   "user.created": "ユーザー{{name}}を作成しました。",
   "user.entitlementsUpdated": "{{name}}の権限を更新しました。",
   "user.passwordUpdated": "{{name}}のパスワードを更新しました。",
-
   "profile.accountInfo": "アカウント",
   "profile.changePassword": "パスワード変更",
   "profile.currentPassword": "現在のパスワード",
@@ -1074,8 +1463,8 @@ const ja: LocaleDictionary = {
   "profile.passwordMismatch": "パスワードが一致しません",
   "profile.passwordUpdated": "パスワードを変更しました。",
   "profile.externalConnections": "外部接続",
-  "profile.externalConnectionsPlaceholder": "Plex、パスキー、その他の外部接続がここに表示される予定です。",
-
+  "profile.externalConnectionsPlaceholder":
+    "Plex、パスキー、その他の外部接続がここに表示される予定です。",
   "auth.loginTitle": "サインイン",
   "auth.usernamePlaceholder": "ユーザー名",
   "auth.passwordPlaceholder": "パスワード",
@@ -1083,8 +1472,8 @@ const ja: LocaleDictionary = {
   "auth.loggingIn": "サインイン中…",
   "auth.loginFailed": "ユーザー名またはパスワードが正しくありません。",
   "auth.logoutButton": "サインアウト",
-  "auth.sessionExpired": "セッションが期限切れです。再度サインインしてください。",
-
+  "auth.sessionExpired":
+    "セッションが期限切れです。再度サインインしてください。",
   "nav.wanted": "ウォンテッド",
   "wanted.title": "ウォンテッドアイテム",
   "wanted.refreshing": "更新中…",
@@ -1104,10 +1493,24 @@ const ja: LocaleDictionary = {
   "wanted.pause": "一時停止",
   "wanted.resume": "再開",
   "wanted.reset": "リセット",
-  "wanted.searchTriggered": "検索がトリガーされました。ポーラーがまもなく処理します。",
+  "wanted.searchTriggered":
+    "検索がトリガーされました。ポーラーがまもなく処理します。",
+  "wanted.status.wanted": "未取得",
+  "wanted.status.grabbed": "取得済み",
+  "wanted.status.completed": "完了",
+  "wanted.status.paused": "一時停止",
+  "wanted.phase.primary": "プライマリ",
+  "wanted.phase.preRelease": "公開前",
+  "wanted.phase.preAir": "放送前",
+  "wanted.phase.secondary": "セカンダリ",
   "wanted.loadingDecisions": "リリース判定を読み込み中…",
   "wanted.noDecisions": "まだリリース判定の記録はありません。",
   "wanted.noItems": "ウォンテッドアイテムが見つかりません。",
+  "wanted.context.movie": "映画の欲しいアイテム",
+  "wanted.context.episode": "エピソードの欲しいアイテム",
+  "wanted.context.seasonEpisode":
+    "シーズン{{seasonNumber}}エピソードの欲しいアイテム",
+  "wanted.context.franchiseMovie": "フランチャイズ映画の手配品",
   "wanted.prev": "前へ",
   "wanted.next": "次へ",
   "wanted.decRelease": "リリース",
@@ -1119,7 +1522,6 @@ const ja: LocaleDictionary = {
   "wanted.tabWanted": "ウォンテッドアイテム",
   "wanted.tabCutoff": "カットオフ未達",
   "wanted.tabCalendar": "カレンダー",
-
   "cutoff.title": "カットオフ未達",
   "cutoff.searchAll": "すべて検索",
   "cutoff.searching": "検索中…",
@@ -1128,16 +1530,16 @@ const ja: LocaleDictionary = {
   "cutoff.colFacet": "タイプ",
   "cutoff.colCurrentQuality": "現在の品質",
   "cutoff.colTargetQuality": "目標品質",
-  "cutoff.noItems": "すべてのモニタリングタイトルが品質プロファイルのカットオフを満たしています。",
+  "cutoff.noItems":
+    "すべてのモニタリングタイトルが品質プロファイルのカットオフを満たしています。",
   "cutoff.totalCount": "カットオフ未達 {{count}}タイトル",
   "cutoff.filterFacet": "タイプ",
   "cutoff.allFacets": "すべてのタイプ",
   "cutoff.searchTriggered": "{{name}}のアップグレード検索がトリガーされました",
   "cutoff.bulkComplete": "一括検索完了: {{total}}件中{{searched}}件検索済み",
-
   "narrative.movie": "映画",
-  "narrative.canonMovieInstallment": "正典劇場版。ナラティブ視聴順に配置されています。",
-
+  "narrative.canonMovieInstallment":
+    "正典劇場版。ナラティブ視聴順に配置されています。",
   "settings.notifications": "通知",
   "settings.notificationsSection": "通知チャンネルとサブスクリプションの管理",
   "settings.notificationChannels": "チャンネル",
@@ -1147,28 +1549,60 @@ const ja: LocaleDictionary = {
   "settings.notificationSubscriptionCreate": "サブスクリプション追加",
   "settings.notificationSubscriptionUpdate": "サブスクリプション更新",
   "settings.notificationNoChannels": "通知チャンネルが設定されていません。",
-  "settings.notificationNoSubscriptions": "通知サブスクリプションが設定されていません。",
+  "settings.notificationNoSubscriptions":
+    "通知サブスクリプションが設定されていません。",
   "settings.notificationEventType": "イベントタイプ",
   "settings.notificationScope": "スコープ",
+  "settings.notificationScope.global": "グローバル",
+  "settings.notificationScope.facet": "ファセット",
+  "settings.notificationScope.title": "タイトル",
+  "settings.notificationScopeId": "スコープID",
+  "settings.notificationScopeIdPlaceholderFacet": "映画、シリーズ、アニメ",
+  "settings.notificationScopeIdPlaceholderTitle": "タイトルID",
   "settings.notificationChannel": "チャンネル",
   "settings.notificationTest": "テスト",
   "settings.notificationTesting": "テスト中…",
   "settings.notificationTestSuccess": "テスト通知を送信しました。",
   "settings.notificationTestFailed": "テスト通知の送信に失敗しました。",
   "settings.notificationProviderType": "プロバイダータイプ",
-  "settings.notificationNoProviders": "通知プラグインがインストールされていません。先にプラグインページから通知プラグインをインストールしてください。",
-
+  "settings.notificationNoProviders":
+    "通知プラグインがインストールされていません。先にプラグインページから通知プラグインをインストールしてください。",
+  "settings.notificationEvent.grab": "リリース取得",
+  "settings.notificationEvent.download": "ダウンロードに失敗しました",
+  "settings.notificationEvent.upgrade": "インポートされたアップグレード",
+  "settings.notificationEvent.importComplete": "インポートが完了しました",
+  "settings.notificationEvent.importRejected": "輸入がブロックされました",
+  "settings.notificationEvent.rename": "ファイル名が変更されました",
+  "settings.notificationEvent.titleAdded": "タイトル追加",
+  "settings.notificationEvent.titleDeleted": "タイトルを削除しました",
+  "settings.notificationEvent.fileDeleted": "ファイルが削除されました",
+  "settings.notificationEvent.fileDeletedForUpgrade":
+    "アップグレードのためにファイルが削除されました",
+  "settings.notificationEvent.postProcessingCompleted": "後処理が完了しました",
+  "settings.notificationEvent.subtitleDownloaded": "字幕をダウンロードしました",
+  "settings.notificationEvent.subtitleSearchFailed": "字幕検索に失敗しました",
+  "settings.notificationEvent.healthIssue": "健康問題",
+  "settings.notificationEvent.healthRestored": "健康が回復しました",
+  "settings.notificationEvent.applicationUpdate":
+    "アプリケーションのアップデート",
+  "settings.notificationEvent.manualInteractionRequired":
+    "手動による操作が必要です",
+  "settings.notificationEvent.test": "テスト通知",
   "status.notificationChannelCreated": "通知チャンネルを保存しました。",
   "status.notificationChannelUpdated": "通知チャンネルを更新しました。",
   "status.notificationChannelDeleted": "通知チャンネル{{name}}を削除しました。",
-  "status.notificationSubscriptionCreated": "通知サブスクリプションを保存しました。",
-  "status.notificationSubscriptionUpdated": "通知サブスクリプションを更新しました。",
-  "status.notificationSubscriptionDeleted": "通知サブスクリプションを削除しました。",
+  "status.notificationSubscriptionCreated":
+    "通知サブスクリプションを保存しました。",
+  "status.notificationSubscriptionUpdated":
+    "通知サブスクリプションを更新しました。",
+  "status.notificationSubscriptionDeleted":
+    "通知サブスクリプションを削除しました。",
   "status.editingNotificationChannel": "チャンネル{{name}}を編集中",
-  "status.deletingNotificationChannel": "通知チャンネル{{name}}を削除しますか？",
+  "status.deletingNotificationChannel":
+    "通知チャンネル{{name}}を削除しますか？",
   "status.editingNotificationSubscription": "サブスクリプションを編集中",
-  "status.deletingNotificationSubscription": "この通知サブスクリプションを削除しますか？",
-
+  "status.deletingNotificationSubscription":
+    "この通知サブスクリプションを削除しますか？",
   "wanted.tabPending": "保留中",
   "pending.title": "保留中のリリース",
   "pending.noItems": "保留中のリリースはありません。",
@@ -1183,16 +1617,16 @@ const ja: LocaleDictionary = {
   "pending.grabbed": "リリースを取得しました。",
   "pending.dismissed": "リリースを取り消しました。",
   "pending.timeRemaining": "残り {{time}}",
-
   "system.rssSync": "RSS同期",
   "system.rssSyncTrigger": "RSS同期を実行",
   "system.rssSyncing": "同期中…",
-  "system.rssSyncComplete": "RSS同期: {{fetched}}件取得、{{matched}}件マッチ、{{grabbed}}件ダウンロード、{{held}}件保留。",
-
+  "system.rssSyncComplete":
+    "RSS同期: {{fetched}}件取得、{{matched}}件マッチ、{{grabbed}}件ダウンロード、{{held}}件保留。",
   "setup.welcomeTitle": "Scryerへようこそ",
   "setup.welcomeDescription": "使い始めるための基本設定を行いましょう。",
   "setup.freshSetup": "新規セットアップ",
-  "setup.freshSetupDescription": "メディアパスを設定し、qBittorrentなどのプロバイダーをインストールし、クライアントとインデクサーをステップごとに追加します。",
+  "setup.freshSetupDescription":
+    "メディアパスを設定し、qBittorrentなどのプロバイダーをインストールし、クライアントとインデクサーをステップごとに追加します。",
   "setup.importSetup": "Sonarr / Radarrからインポート",
   "setup.importSetupDescription": "既存の設定をScryerに取り込みます。",
   "setup.stepPersona": "ペルソナ",
@@ -1204,39 +1638,53 @@ const ja: LocaleDictionary = {
   "setup.stepConnect": "接続",
   "setup.stepReview": "確認",
   "setup.personaTitle": "品質プリファレンス",
-  "setup.personaDescription": "各コンテンツタイプの品質目標とスコアリングの焦点を選択してください。",
+  "setup.personaDescription":
+    "各コンテンツタイプの品質目標とスコアリングの焦点を選択してください。",
   "setup.facetMovies": "映画",
   "setup.facetSeries": "シリーズ",
   "setup.facetAnime": "アニメ",
   "setup.qualityTarget": "品質",
   "setup.scoringFocus": "ペルソナ",
-  "setup.personaBalancedDesc": "ほとんどのセットアップに適したデフォルトです。リマックスを追求せずに良い品質を提供します。",
-  "setup.personaAudiophileDesc": "最高の忠実度。BluRay、リマックス、ロスレスオーディオ、HDR、大きなファイルを優先します。",
-  "setup.personaEfficientDesc": "GBあたり最高品質。x265、WEB-DL、コンパクトなエンコードを優先します。",
-  "setup.personaCompatibleDesc": "あらゆるデバイスで再生可能。H.264をH.265より優先し、Dolby Visionを避け、幅広い互換性を提供します。",
+  "setup.personaBalancedDesc":
+    "ほとんどのセットアップに適したデフォルトです。リマックスを追求せずに良い品質を提供します。",
+  "setup.personaAudiophileDesc":
+    "最高の忠実度。BluRay、リマックス、ロスレスオーディオ、HDR、大きなファイルを優先します。",
+  "setup.personaEfficientDesc":
+    "GBあたり最高品質。x265、WEB-DL、コンパクトなエンコードを優先します。",
+  "setup.personaCompatibleDesc":
+    "あらゆるデバイスで再生可能。H.264をH.265より優先し、Dolby Visionを避け、幅広い互換性を提供します。",
   "setup.pluginsTitle": "使用するプロバイダーをインストール",
-  "setup.pluginsDescription": "qBittorrentなどのサービスは、Scryerで設定する前にプラグインとして追加する必要があります。",
+  "setup.pluginsDescription":
+    "qBittorrentなどのサービスは、Scryerで設定する前にプラグインとして追加する必要があります。",
   "setup.pluginsBuiltInTitle": "組み込み済み",
-  "setup.pluginsBuiltInDescription": "NZBGetとSABnzbdは追加インストールなしで設定できます。",
+  "setup.pluginsBuiltInDescription":
+    "NZBGetとSABnzbdは追加インストールなしで設定できます。",
   "setup.pluginsAvailableHeading": "公式プラグイン",
-  "setup.pluginsAvailableHint": "このホストで使用する公式プラグインをインストールしてください。後で設定から変更できます。",
+  "setup.pluginsAvailableHint":
+    "このホストで使用する公式プラグインをインストールしてください。後で設定から変更できます。",
   "setup.pluginsInstalledHeading": "このホストにインストール済み",
   "setup.pluginsAvailable": "利用可能なプラグイン",
-  "setup.pluginsNoneFound": "プラグインが見つかりません。レジストリを更新するか、組み込みプロバイダーで続行してください。",
-  "setup.pluginsNoneAvailable": "レジストリのすべてのアイテムがインストール済みです。",
+  "setup.pluginsNoneFound":
+    "プラグインが見つかりません。レジストリを更新するか、組み込みプロバイダーで続行してください。",
+  "setup.pluginsNoneAvailable":
+    "レジストリのすべてのアイテムがインストール済みです。",
   "setup.mediaPathsTitle": "メディアの保存場所は？",
-  "setup.mediaPathsDescription": "Scryerが映画とシリーズを整理するルートフォルダを設定してください。",
+  "setup.mediaPathsDescription":
+    "Scryerが映画とシリーズを整理するルートフォルダを設定してください。",
   "setup.moviesPath": "映画パス",
   "setup.seriesPath": "シリーズパス",
   "setup.animePath": "アニメパス",
   "setup.optional": "（任意）",
   "setup.browse": "参照",
   "setup.downloadClientTitle": "ダウンロードクライアントを追加",
-  "setup.downloadClientDescription": "Scryerは選択したクライアントにダウンロードを送信します。前のステップでインストールしたプラグインがここに表示されます。",
+  "setup.downloadClientDescription":
+    "Scryerは選択したクライアントにダウンロードを送信します。前のステップでインストールしたプラグインがここに表示されます。",
   "setup.indexerTitle": "インデクサーを追加",
-  "setup.indexerDescription": "インデクサーはScryerが検索するリリースデータベースを提供します。",
-  "setup.summaryTitle": "セットアップ完了",
-  "setup.summaryDescription": "設定内容は以下の通りです。後で設定から変更できます。",
+  "setup.indexerDescription":
+    "インデクサーはScryerが検索するリリースデータベースを提供します。",
+  "setup.summaryTitle": "準備完了",
+  "setup.summaryDescription":
+    "設定内容は以下の通りです。後で設定から変更できます。",
   "setup.summaryPersona": "ペルソナ",
   "setup.summaryMediaPaths": "メディアパス",
   "setup.summaryDownloadClient": "ダウンロードクライアント",
@@ -1244,7 +1692,9 @@ const ja: LocaleDictionary = {
   "setup.summaryConfigured": "設定済み",
   "setup.next": "次へ",
   "setup.back": "戻る",
-  "setup.finish": "セットアップ完了",
+  "setup.finish": "セットアップを完了",
+  "setup.importOnly": "インポートのみ",
+  "setup.importAndScan": "インポートしてスキャン",
   "setup.connectionSuccess": "接続成功",
   "setup.connectionFailed": "接続失敗",
   "setup.saved": "保存済み",
@@ -1253,7 +1703,8 @@ const ja: LocaleDictionary = {
   "setup.skipSetup": "セットアップをすべてスキップ",
   "setup.skipping": "スキップ中…",
   "setup.connectTitle": "SonarrとRadarrに接続",
-  "setup.connectDescription": "SonarrおよびRadarrインスタンスのURLとAPIキーを入力してください。少なくとも1つは必須です。",
+  "setup.connectDescription":
+    "SonarrおよびRadarrインスタンスのURLとAPIキーを入力してください。少なくとも1つは必須です。",
   "setup.sonarrUrl": "Sonarr URL",
   "setup.sonarrApiKey": "Sonarr APIキー",
   "setup.radarrUrl": "Radarr URL",
@@ -1261,7 +1712,8 @@ const ja: LocaleDictionary = {
   "setup.findApiKey": "APIキーを探す",
   "setup.connectAndScan": "接続してスキャン",
   "setup.connectError": "接続失敗",
-  "setup.atLeastOneRequired": "SonarrまたはRadarrの少なくとも1つを入力してください。",
+  "setup.atLeastOneRequired":
+    "SonarrまたはRadarrの少なくとも1つを入力してください。",
   "setup.urlPlaceholder": "http://localhost:8989",
   "setup.reviewTitle": "確認とインポート",
   "setup.reviewDescription": "Scryerに取り込む設定を選択してください。",
@@ -1276,26 +1728,20 @@ const ja: LocaleDictionary = {
   "setup.fromRadarr": "Radarr",
   "setup.importSelected": "選択をインポート",
   "setup.importing": "インポート中…",
-  "setup.noneSelected": "インポートするアイテムを少なくとも1つ選択してください。",
+  "setup.noneSelected":
+    "インポートするアイテムを少なくとも1つ選択してください。",
   "setup.noItemsFound": "アイテムが見つかりません。",
   "setup.animePathFrom": "アニメパス（Sonarrから、任意）",
   "setup.none": "なし",
-  "setup.customFormatsHint": "カスタムフォーマットを使用していますか？その機能の多くはペルソナセクションでカバーされています。セットアップ後にさらなるカスタマイズが可能です。",
+  "setup.customFormatsHint":
+    "カスタムフォーマットを使用していますか？その機能の多くはペルソナセクションでカバーされています。セットアップ後にさらなるカスタマイズが可能です。",
   "setup.summaryImportedClients": "インポートされたダウンロードクライアント",
   "setup.summaryImportedIndexers": "インポートされたインデクサー",
-  "setup.apiKeyMasked": "Sonarr/RadarrはこのAPIキーを非表示にしています。このクライアントをインポートするには手動で入力してください:",
+  "setup.apiKeyMasked":
+    "Sonarr/RadarrはこのAPIキーを非表示にしています。このクライアントをインポートするには手動で入力してください:",
   "setup.apiKeyPlaceholder": "APIキーを貼り付け…",
   "setup.apiKeyHelpLink": "SABnzbd > Config > General で確認",
   "settings.runSetupWizard": "セットアップウィザードを実行",
-
-  "settings.sub.minScoreSeries": "シリーズの最低マッチスコア",
-  "settings.sub.minScoreMovie": "映画の最低マッチスコア",
-  "settings.sub.minScoreHelp":
-    "このスコア未満の字幕はスキップされます。シリーズはエピソード単位の一致が正確である必要があるため、より高いしきい値が必要です。",
-  "settings.sub.syncEnabled": "字幕タイミングを自動補正",
-  "settings.sub.syncEnabledHelp":
-    "音声解析を使用して、ダウンロードした字幕のタイミングのずれを修正します。",
-
   "history.title": "履歴",
   "history.empty": "履歴イベントはありません",
   "history.event": "イベント",
@@ -1315,11 +1761,32 @@ const ja: LocaleDictionary = {
   "history.downloadIgnored": "無視",
   "history.noMore": "これ以上のイベントはありません",
   "history.loadMore": "もっと読み込む",
-
   "convenience.title": "簡易ルール",
   "convenience.requiredAudioLabel": "必須オーディオ言語",
   "convenience.requiredAudioHelp":
     "これらのオーディオ言語を含まないリリースはブロックされます。設定 > ルールに表示される管理ルールを作成します。",
+  "settings.recycleBin": "ごみ箱",
+  "settings.recycleBinSection": "リサイクルされたメディア ファイルを管理する",
+  "settings.recycleBinEmpty": "ごみ箱が空です。",
+  "settings.recycleBinRestore": "復元する",
+  "settings.recycleBinDelete": "消去",
+  "settings.recycleBinEmptyAll": "ごみ箱を空にする",
+  "settings.recycleBinEmptyConfirm":
+    "ごみ箱内のすべての {count} アイテムを完全に削除しますか?これを元に戻すことはできません。",
+  "settings.recycleBinDeleteConfirm":
+    "このファイルを完全に削除しますか?これを元に戻すことはできません。",
+  "status.recycleBinRestored": "ファイルは {path} に復元されました。",
+  "status.recycleBinDeleted": "ファイルは完全に削除されました。",
+  "status.recycleBinEmptied":
+    "ごみ箱が空になりました ({count} 項目が削除されました)。",
+  "settings.pp.animeScript": "アニメスクリプト",
+  "settings.pp.envVarsDescription": "スクリプトで以下の変数が利用可能です:",
+  "settings.pp.envVarsHeading": "環境変数",
+  "settings.pp.intro":
+    "各ファイルのインポート後にカスタムスクリプトを実行します。無効にするには空欄にしてください。作業ディレクトリはインポートされたファイルが含まれるフォルダに設定されます。",
+  "settings.pp.movieScript": "映画スクリプト",
+  "settings.pp.seriesScript": "シリーズスクリプト",
+  "settings.pp.timeoutSecs": "スクリプトタイムアウト（秒）",
 };
 
 export default ja;

@@ -3,17 +3,21 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
+  InterstitialMovieMetadata,
 } from "@/components/containers/series-overview-container";
 import { MediaInfoBadges } from "@/components/common/media-info-badges";
+import { InterstitialMoviePanel } from "./interstitial-movie-panel";
 import { deriveMediaFileQualityLabel, formatDate, formatFileSize } from "./helpers";
 
 export function EpisodeDetailsPanel({
   episode,
   mediaFiles,
+  linkedMovie,
   onDeleteFile,
 }: {
   episode: CollectionEpisode;
   mediaFiles: EpisodeMediaFile[];
+  linkedMovie?: InterstitialMovieMetadata | null;
   onDeleteFile?: (fileId: string) => void;
 }) {
   const t = useTranslate();
@@ -23,6 +27,18 @@ export function EpisodeDetailsPanel({
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>
           <p className="text-sm leading-relaxed text-muted-foreground">{episode.overview}</p>
+        </div>
+      ) : null}
+      {linkedMovie ? (
+        <div>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">{t("title.movieDetails")}</p>
+          <div className="rounded-xl border border-border/70 bg-card/40 p-3">
+            <InterstitialMoviePanel
+              movie={linkedMovie}
+              hasFile={mediaFiles.length > 0}
+              monitored={episode.monitored}
+            />
+          </div>
         </div>
       ) : null}
       <div>

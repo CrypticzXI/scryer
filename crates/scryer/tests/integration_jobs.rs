@@ -254,6 +254,47 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
 }
 
 #[tokio::test]
+async fn health_check_job_persists_issue_details_in_summary_json() {
+    let ctx = TestContext::new().await;
+    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+
+    ctx.app
+        .run_scheduled_job_now(JobKey::HealthChecks, JobTriggerSource::ScheduledStartup)
+        .await
+        .expect("health checks should complete");
+
+    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+        &workflow_store,
+        Some(JobKey::HealthChecks),
+        1,
+    )
+    .await
+    .expect("list health check runs");
+    let run = runs.first().expect("health check run should exist");
+    assert_eq!(run.status, JobRunStatus::Completed);
+
+    let summary_json = run.summary_json.as_deref().expect("summary json");
+    let summary: Value = serde_json::from_str(summary_json).expect("parse summary json");
+    let checks = summary["checks"]
+        .as_array()
+        .expect("health check summary should include checks");
+
+    assert!(
+        !checks.is_empty(),
+        "health check summary should include at least one check result",
+    );
+    assert_eq!(
+        checks.len(),
+        summary["total"]
+            .as_u64()
+            .expect("summary total should be numeric") as usize,
+    );
+    assert!(checks.iter().any(|check| {
+        check["source"].is_string() && check["status"].is_string() && check["message"].is_string()
+    }));
+}
+
+#[tokio::test]
 async fn scheduled_job_failure_returns_err_and_persists_failed_run() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;

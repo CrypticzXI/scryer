@@ -191,7 +191,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const activeFacetLabel =
     activeFacet === "movie"
       ? t("nav.movies")
-      : activeFacet === "tv"
+      : activeFacet === "series"
         ? t("nav.series")
         : t("nav.anime");
   const {
@@ -356,19 +356,22 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           if (existingIndex !== -1) {
             next.splice(existingIndex, 1);
           }
+          setTitleStatus(t("title.statusTemplate", { count: next.length }));
           return next;
         }
 
         if (existingIndex === -1) {
           next.push(title);
+          setTitleStatus(t("title.statusTemplate", { count: next.length }));
           return next;
         }
 
         next[existingIndex] = title;
+        setTitleStatus(t("title.statusTemplate", { count: next.length }));
         return next;
       });
     },
-    [setMonitoredTitles],
+    [setMonitoredTitles, setTitleStatus, t],
   );
 
   React.useEffect(() => {

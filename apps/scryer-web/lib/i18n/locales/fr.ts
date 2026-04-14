@@ -2,7 +2,6 @@ import type { LocaleDictionary } from "../types";
 
 const fr: LocaleDictionary = {
   brand: "scryer",
-
   "label.ready": "Prêt",
   "label.search": "Rechercher",
   "label.interactiveSearch": "Recherche interactive",
@@ -39,7 +38,7 @@ const fr: LocaleDictionary = {
   "label.yes": "Oui",
   "label.no": "Non",
   "label.category": "Catégorie",
-  "label.filter": "Filtrer",
+  "label.filter": "Filtre",
   "label.for": "pour",
   "label.enabled": "Activé",
   "label.disabled": "Désactivé",
@@ -47,9 +46,11 @@ const fr: LocaleDictionary = {
   "label.disable": "Désactiver",
   "label.version": "Version",
   "label.type": "Type",
-  "label.status": "Statut",
+  "label.title": "Titre",
+  "label.status": "État",
   "label.testConnection": "Tester la connexion",
   "label.activityStream": "Flux d'activité",
+  "external.openOn": "Ouvrir sur {{site}}",
   "label.unknown": "Inconnu",
   "label.deleting": "Suppression…",
   "label.configured": "Configuré",
@@ -60,23 +61,23 @@ const fr: LocaleDictionary = {
   "label.yearUnknown": "année inconnue",
   "label.noArt": "pas d'illustration",
   "label.emptyEntitlements": "Aucun droit",
-
   "nav.movies": "Films",
   "nav.series": "Séries",
-  "nav.anime": "Anime",
+  "nav.anime": "Animé",
   "nav.activity": "Activité",
+  "nav.calendar": "Calendrier",
   "nav.history": "Historique",
   "nav.settings": "Paramètres",
   "nav.library": "Bibliothèque",
+  "nav.import": "Importer",
   "nav.system": "Système",
   "nav.group": "Navigation",
-
   "command.paletteTitle": "Aller à",
-  "command.paletteDescription": "Rechercher les vues et les sections de paramètres",
+  "command.paletteDescription":
+    "Rechercher les vues et les sections de paramètres",
   "command.palettePlaceholder": "Saisissez un nom de page",
   "command.paletteNoResults": "Aucune destination correspondante",
   "command.paletteGroup": "Navigation",
-
   settings: "Paramètres",
   "settings.profile": "Profil",
   "settings.general": "Général",
@@ -107,21 +108,24 @@ const fr: LocaleDictionary = {
     "Source : préférences standard (BluRay > WEB-DL > WEB-Rip)",
   "persona.trait.balanced.audio": "Audio : pondération de codec équilibrée",
   "persona.trait.balanced.x265": "x265 : pénalisé sous 4K",
-  "persona.trait.balanced.size": "Taille de fichier : préfère les fichiers volumineux",
+  "persona.trait.balanced.size":
+    "Taille de fichier : préfère les fichiers volumineux",
   "persona.trait.balanced.remux": "Remux : non prioritaire par défaut",
   "persona.trait.balanced.hdr": "HDR : Dolby Vision et HDR10 récompensés",
   "persona.trait.audiophile.source": "Source : BluRay fortement préféré",
   "persona.trait.audiophile.audio":
     "Audio : codecs sans perte fortement pondérés (TrueHD, DTS-X, FLAC)",
   "persona.trait.audiophile.x265": "x265 : fortement pénalisé sous 4K",
-  "persona.trait.audiophile.size": "Taille de fichier : fichiers volumineux préférés",
+  "persona.trait.audiophile.size":
+    "Taille de fichier : fichiers volumineux préférés",
   "persona.trait.audiophile.remux": "Remux : très fort bonus",
   "persona.trait.audiophile.hdr": "HDR : Dolby Vision fortement récompensé",
   "persona.trait.efficient.source": "Source : WEB-DL et WEB-Rip préférés",
   "persona.trait.efficient.audio":
     "Audio : codecs avec perte acceptables (DDP préféré)",
   "persona.trait.efficient.x265": "x265 : récompensé à toutes les résolutions",
-  "persona.trait.efficient.size": "Taille de fichier : encodes compacts préférés",
+  "persona.trait.efficient.size":
+    "Taille de fichier : encodes compacts préférés",
   "persona.trait.efficient.remux": "Remux : non prioritaire",
   "persona.trait.efficient.hdr": "HDR : standard",
   "persona.trait.compatible.source": "Source : WEB-DL préféré",
@@ -135,8 +139,10 @@ const fr: LocaleDictionary = {
   "settings.moviesLibrarySettings": "Paramètres des médias films",
   "settings.seriesLibrarySettings": "Paramètres des médias séries",
   "settings.rootFoldersLabel": "Dossiers racine",
-  "settings.rootFoldersEmpty": "Aucun dossier racine configuré. Ajoutez au moins un chemin.",
-  "settings.rootFoldersHelp": "Les dossiers racine sont les répertoires principaux où les médias sont stockés. Le dossier étoilé est celui par défaut pour les nouveaux titres.",
+  "settings.rootFoldersEmpty":
+    "Aucun dossier racine configuré. Ajoutez au moins un chemin.",
+  "settings.rootFoldersHelp":
+    "Les dossiers racine sont les répertoires principaux où les médias sont stockés. Le dossier étoilé est celui par défaut pour les nouveaux titres.",
   "settings.rootFolderAdd": "Ajouter un dossier racine",
   "settings.rootFolderEdit": "Modifier le dossier racine",
   "settings.rootFolderAddPlaceholder": "/data/movies",
@@ -151,6 +157,12 @@ const fr: LocaleDictionary = {
   "settings.libraryScanSuccess":
     "Analyse de la bibliothèque terminée. {{imported}} importé(s), {{skipped}} ignoré(s), {{unmatched}} non apparié(s).",
   "settings.libraryScanFailed": "L'analyse de la bibliothèque a échoué.",
+  "settings.libraryScanCancel": "Annuler",
+  "settings.libraryScanCancelFailed":
+    "Échec de l'annulation de l'analyse de la bibliothèque.",
+  "settings.libraryScanCanceled": "Analyse de la bibliothèque annulée.",
+  "settings.libraryScanCanceledSummary":
+    "Analyse de la bibliothèque annulée. {{imported}} importé, {{skipped}} ignoré, {{unmatched}} sans correspondance.",
   "settings.libraryScanToastTitle": "Analyse de la bibliothèque {{facet}}",
   "settings.libraryScanFoundTitles": "{{count}} titres trouvés",
   "settings.libraryScanDiscovering": "Découverte des titres…",
@@ -159,13 +171,75 @@ const fr: LocaleDictionary = {
   "settings.libraryScanTitleMatch": "Correspondance des titres",
   "settings.libraryScanFetchingMetadata": "Récupération des métadonnées",
   "settings.libraryScanFilesScanned": "Analyse des médias",
-  "settings.libraryScanNoTitleMatchNeeded": "Aucune correspondance de titre requise",
-  "settings.libraryScanNoMetadataNeeded": "Aucune récupération de métadonnées requise",
+  "settings.libraryScanNoTitleMatchNeeded":
+    "Aucune correspondance de titre requise",
+  "settings.libraryScanNoMetadataNeeded":
+    "Aucune récupération de métadonnées requise",
   "settings.libraryScanNoFilesToScan": "Aucune analyse des médias requise",
+  "settings.libraryScanAlreadyRunning":
+    "L'analyse de la bibliothèque {{facet}} est déjà en cours.",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
   "settings.libraryScanCompleted": "Analyse de la bibliothèque terminée.",
+  "settings.libraryScanCompletedWithWarnings":
+    "L’analyse de la bibliothèque s’est terminée avec des avertissements.",
+  "jobs.title": "Emplois",
+  "jobs.activeRuns": "Exécutions actives",
+  "jobs.primary": "Tâches principales",
+  "jobs.maintenance": "Maintenance",
+  "jobs.schedule": "Planification",
+  "jobs.never": "Jamais",
+  "jobs.completed": "Complété",
+  "jobs.running": "En cours",
+  "jobs.runSummaryCompleted": "Complété",
+  "jobs.runSummaryRunning": "En cours",
+  "jobs.recentRuns": "Exécutions récentes",
+  "jobs.loadingRecentRuns": "Chargement des exécutions récentes…",
+  "jobs.noRunsYet": "Aucune exécution n’a encore été enregistrée.",
+  "jobs.healthCheckIssues": "Problèmes de vérification d’état",
+  "jobs.nextRunPrefix": "Prochaine exécution : {{value}}",
+  "jobs.startedAt": "Démarré {{value}}",
+  "jobs.completedAt": "Complété {{value}}",
+  "jobs.failedToTrigger": "Impossible de lancer la tâche",
+  "jobs.column.name": "Nom",
+  "jobs.column.category": "Catégorie",
+  "jobs.column.schedule": "Planification",
+  "jobs.column.nextRun": "Prochaine exécution",
+  "jobs.column.lastRun": "Dernière exécution",
+  "jobs.column.status": "État",
+  "jobs.column.trigger": "Déclenchement",
+  "jobs.action.run": "Exécuter",
+  "jobs.action.runNow": "Exécuter maintenant",
+  "jobs.action.running": "Exécution…",
+  "jobs.status.idle": "Inactif",
+  "jobs.status.queued": "En file d’attente",
+  "jobs.status.discovering": "Découverte",
+  "jobs.status.running": "En cours",
+  "jobs.status.completed": "Complété",
+  "jobs.status.warning": "Avertissement",
+  "jobs.status.failed": "Échoué",
+  "jobs.category.library": "Bibliothèque",
+  "jobs.category.acquisition": "Acquisition",
+  "jobs.category.maintenance": "Maintenance",
+  "jobs.category.subtitles": "Sous-titres",
+  "jobs.category.system": "Système",
+  "jobs.triggerSource.manual": "Manuel",
+  "jobs.triggerSource.scheduledStartup": "Démarrage planifié",
+  "jobs.triggerSource.scheduledInterval": "Intervalle planifié",
+  "jobs.triggerSource.systemInternal": "Interne au système",
+  "deletePreview.counting": "Compter les fichiers à supprimer...",
+  "deletePreview.error": "Impossible de préparer l'aperçu de suppression.",
+  "deletePreview.files": "Fichiers",
+  "deletePreview.media": "Médias",
+  "deletePreview.subtitles": "Sous-titres",
+  "deletePreview.images": "Images",
+  "deletePreview.other": "Autre",
+  "deletePreview.folders": "Dossiers",
+  "deletePreview.samplePaths": "Exemples de chemins",
+  "deletePreview.confirmPrompt":
+    "Tapez DELETE pour confirmer cette suppression.",
   "settings.saveButton": "Enregistrer",
-  "settings.comingSoon": "Cette section sera disponible dans une future version.",
+  "settings.comingSoon":
+    "Cette section sera disponible dans une future version.",
   "settings.moviesPathLabel": "Chemin du dossier de films",
   "settings.moviesPathHelp":
     "Chemin utilisé comme destination pour les films sélectionnés.",
@@ -179,25 +253,30 @@ const fr: LocaleDictionary = {
   "settings.movieSettingsSaved": "Paramètres des films enregistrés.",
   "settings.seriesSettingsSaved": "Paramètres des séries enregistrés.",
   "settings.qualityProfileSection": "Profil de qualité",
-  "settings.qualityProfileCatalogLabel": "JSON du catalogue de profils de qualité",
+  "settings.qualityProfileCatalogLabel":
+    "JSON du catalogue de profils de qualité",
   "settings.qualityProfileCatalogHelp":
     "Définissez le comportement du profil en JSON. Enregistrez avec un JSON valide et une liste de profils avec des valeurs `id` uniques.",
   "settings.qualityProfileGlobalLabel": "Profil de qualité par défaut (global)",
-  "settings.qualityProfileNameRequired": "Le nom du profil de qualité est requis.",
+  "settings.qualityProfileNameRequired":
+    "Le nom du profil de qualité est requis.",
   "settings.qualityProfileGlobalHelp":
     "Utilisé lorsqu'une catégorie ne le remplace pas.",
   "settings.qualityProfileOverrideLabel": "Remplacement qualité {{category}}",
-  "settings.qualityProfileOverridesLabel": "Remplacements de profil de qualité par catégorie",
+  "settings.qualityProfileOverridesLabel":
+    "Remplacements de profil de qualité par catégorie",
   "settings.qualityProfileOverrideHelp":
     "Utilisez « hériter » pour utiliser le profil global par défaut pour cette catégorie de contenu.",
   "settings.qualityProfileInheritLabel": "Hériter du global",
   "settings.qualityProfileCatalogInvalid":
     "Le catalogue de profils de qualité n'est pas un JSON valide.",
-  "settings.qualityProfileUnknown": 'ID de profil de qualité inconnu « {{id}} ».',
+  "settings.qualityProfileUnknown":
+    "ID de profil de qualité inconnu « {{id}} ».",
   "settings.qualitySettingsSaved": "Paramètres de qualité enregistrés.",
-  "settings.downloadClientRoutingSaved": "Routage des clients de téléchargement enregistré.",
+  "settings.downloadClientRoutingSaved":
+    "Routage des clients de téléchargement enregistré.",
   "settings.downloadClientRoutingSavedFor":
-    'Routage du client de téléchargement enregistré pour « {{name}} ».',
+    "Routage du client de téléchargement enregistré pour « {{name}} ».",
   "settings.delayProfiles": "Profils de délai",
   "settings.delayProfileExisting": "Profils de délai existants",
   "settings.delayProfileNone":
@@ -220,7 +299,8 @@ const fr: LocaleDictionary = {
   "settings.delayProfileMinAgeHelp":
     "Usenet uniquement. Barrière stricte — les versions plus récentes sont retenues quel que soit le score. Empêche de récupérer des NZB incomplets. 0 = désactivé.",
   "settings.delayProfileBypassLabel": "Seuil de contournement par score",
-  "settings.delayProfileBypassPlaceholder": "Laisser vide pour ne jamais contourner",
+  "settings.delayProfileBypassPlaceholder":
+    "Laisser vide pour ne jamais contourner",
   "settings.delayProfileBypassHelp":
     "Si une version du protocole préféré atteint ou dépasse ce seuil de score, la récupérer immédiatement quel que soit le délai.",
   "settings.delayProfileFacetsLabel": "S'applique à",
@@ -237,7 +317,8 @@ const fr: LocaleDictionary = {
     "Un numéro plus bas = priorité plus haute. Le premier profil correspondant l'emporte.",
   "settings.delayProfileEnabledLabel": "Activé",
   "settings.delayProfilesSaved": "Profils de délai enregistrés.",
-  "settings.delayProfileSaveError": "Échec de l'enregistrement des profils de délai.",
+  "settings.delayProfileSaveError":
+    "Échec de l'enregistrement des profils de délai.",
   "settings.downloadClientSection": "Paramètres du client de téléchargement",
   "settings.downloadClientCreate": "Enregistrer le client de téléchargement",
   "settings.downloadClientUpdate": "Mettre à jour le client de téléchargement",
@@ -270,7 +351,7 @@ const fr: LocaleDictionary = {
   "settings.downloadClientUrlBasePlaceholder": "ex. api",
   "settings.downloadClientPortPlaceholder": "8080",
   "settings.downloadClientPriorityPlaceholder": "Par défaut",
-  "settings.downloadClientCategoryPlaceholder": "tv",
+  "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "Statut",
   "settings.existingDownloadClients": "Clients de téléchargement existants",
   "settings.downloadClientRoutingScope":
@@ -288,7 +369,7 @@ const fr: LocaleDictionary = {
   "settings.indexerRoutingNoCategories": "Aucune catégorie sélectionnée.",
   "settings.indexerRoutingCategoriesPlaceholder": "Sélectionner des catégories",
   "settings.indexerRoutingNoIndexers": "Aucun indexeur trouvé.",
-  "settings.indexerCategoryTv": "TV",
+  "settings.indexerCategorySeries": "Series",
   "settings.indexerCategoryMovies": "Films",
   "settings.indexerCategoryOther": "Autre",
   "settings.indexerCategoryForeign": "Étranger",
@@ -296,7 +377,7 @@ const fr: LocaleDictionary = {
   "settings.indexerCategoryHd": "HD",
   "settings.indexerCategoryUhd": "UHD",
   "settings.indexerCategorySport": "Sport",
-  "settings.indexerCategoryAnime": "Anime",
+  "settings.indexerCategoryAnime": "Animé",
   "settings.indexerCategoryDocumentary": "Documentaire",
   "settings.indexerCategoryBluRay": "Blu-ray",
   "settings.indexerCategoryThreeD": "3D",
@@ -316,7 +397,8 @@ const fr: LocaleDictionary = {
   "settings.renameCollisionPolicySkip": "Ignorer",
   "settings.renameCollisionPolicyError": "Erreur",
   "settings.renameCollisionPolicyReplaceIfBetter": "Remplacer si meilleur",
-  "settings.renameMissingMetadataPolicyLabel": "Politique de métadonnées manquantes",
+  "settings.renameMissingMetadataPolicyLabel":
+    "Politique de métadonnées manquantes",
   "settings.renameMissingMetadataPolicyFallbackTitle": "Revenir au titre",
   "settings.renameMissingMetadataPolicySkip": "Ignorer",
   "settings.renamePolicyHelp":
@@ -338,16 +420,21 @@ const fr: LocaleDictionary = {
   "settings.renameTokenEpisodeTitle": "Titre de l'épisode",
   "settings.renameTokenGroup": "Groupe de release",
   "settings.renameTokenExt": "Extension de fichier",
-  "settings.renameValidationUnmatchedOpen": "Accolade ouvrante '{' non appariée",
-  "settings.renameValidationUnmatchedClose": "Accolade fermante '}' non appariée",
+  "settings.renameValidationUnmatchedOpen":
+    "Accolade ouvrante '{' non appariée",
+  "settings.renameValidationUnmatchedClose":
+    "Accolade fermante '}' non appariée",
   "settings.renameValidationUnknownToken": "Jeton inconnu : {{token}}",
-  "settings.renameValidationEmpty": "Le modèle de renommage ne peut pas être vide",
+  "settings.renameValidationEmpty":
+    "Le modèle de renommage ne peut pas être vide",
   "settings.renameComingSoon": "Les règles de renommage arrivent bientôt.",
   "settings.mediaSettingsSaved": "Paramètres des médias enregistrés.",
   "rename.previewButton": "Aperçu du renommage",
   "rename.previewing": "Aperçu en cours…",
   "rename.applyButton": "Appliquer le renommage",
   "rename.applying": "Application en cours…",
+  "rename.currentPath": "Actuel",
+  "rename.proposedPath": "Proposé",
   "rename.planSummary":
     "{{total}} élément(s), {{renamable}} renommable(s), {{noop}} sans changement, {{conflicts}} conflit(s), {{errors}} erreur(s)",
   "settings.title": "Paramètres",
@@ -366,13 +453,19 @@ const fr: LocaleDictionary = {
   "settings.tlsKeyPathPlaceholder": "/etc/scryer/key.pem",
   "settings.tlsSaved":
     "Paramètres TLS enregistrés. Redémarrez le service pour que les modifications prennent effet.",
+  "settings.languageChangeTitle": "Changer de langue",
+  "settings.languageChangeWarning":
+    "Le passage à {{language}} téléchargera à nouveau les métadonnées de tous les titres de votre bibliothèque (noms, descriptions, titres de tri) dans la nouvelle langue. Cela peut prendre plusieurs minutes en fonction de la taille de votre bibliothèque. L'interface changera immédiatement.",
+  "settings.languageChangeConfirm": "Changer de langue",
+  "settings.metadataRehydrationStarted":
+    "La réhydratation des métadonnées a commencé. Les titres seront mis à jour en arrière-plan.",
   "settings.tlsRestartNote":
     "Les modifications des paramètres TLS nécessitent un redémarrage du service.",
-
   "search.globalPlaceholder": "Rechercher quelque chose ! (appuyez sur /)",
   "search.catalog": "Catalogue",
   "search.noCatalogMatches": "Aucune correspondance dans le catalogue géré.",
-  "search.noMetadataMatches": "Aucune correspondance de métadonnées dans cette section.",
+  "search.noMetadataMatches":
+    "Aucune correspondance de métadonnées dans cette section.",
   "search.alreadyCataloged": "Déjà dans le catalogue",
   "search.configureAdd": "Configurer les options d'ajout",
   "search.addConfigQualityProfile": "Profil de qualité",
@@ -391,18 +484,16 @@ const fr: LocaleDictionary = {
   "search.monitorType.none": "Aucun",
   "search.adding": "Ajout en cours…",
   "search.facetMovie": "Film",
-  "search.facetTv": "TV",
-  "search.facetAnime": "Anime",
+  "search.facetSeries": "Series",
+  "search.facetAnime": "Animé",
   "search.metadataSearch": "Recherche de métadonnées",
-
   "label.back": "Retour",
   "label.dismiss": "Fermer",
-
-  "pwa.offline": "Vous êtes hors ligne. Certaines fonctionnalités peuvent être indisponibles.",
+  "pwa.offline":
+    "Vous êtes hors ligne. Certaines fonctionnalités peuvent être indisponibles.",
   "pwa.installApp": "Installer Scryer",
   "pwa.iosInstallHint":
-    'Appuyez sur le bouton de partage et sélectionnez « Ajouter à l\'écran d\'accueil » pour installer.',
-
+    "Appuyez sur le bouton de partage et sélectionnez « Ajouter à l'écran d'accueil » pour installer.",
   "title.addAndQueue": "Ajouter et mettre en file",
   "title.addToCatalog": "Ajouter au catalogue",
   "title.name": "Nom du titre",
@@ -412,9 +503,18 @@ const fr: LocaleDictionary = {
   "title.manageSeries": "Gérer les séries",
   "title.manageAnime": "Gérer les anime",
   "title.monitored": "Surveillé",
+  "title.ended": "Terminé",
+  "title.continuing": "En production",
+  "title.upcoming": "À venir",
+  "title.backToFacet": "Retour à {{facet}}",
+  "title.notFound": "Titre introuvable.",
+  "title.noPoster": "Pas d'affiche",
+  "title.addedAt": "Ajouté le {{date}}",
   "title.monitorAction": "Surveiller",
   "title.unmonitorAction": "Ne plus surveiller",
   "title.markWantedAction": "Marquer comme recherché",
+  "title.searchMonitoredAction": "Rechercher les éléments suivis",
+  "title.refreshAndScanAction": "Rafraîchir et analyser",
   "title.filterPlaceholder": "Filtrer les titres gérés",
   "title.loading": "Aucune donnée chargée",
   "title.noManaged": "Aucun titre trouvé pour cette section.",
@@ -424,14 +524,45 @@ const fr: LocaleDictionary = {
   "title.table.poster": "Affiche",
   "title.table.qualityTier": "Qualité",
   "title.table.episodes": "Épisodes",
+  "title.table.status": "État",
   "title.table.size": "Taille",
   "title.viewModeToggle": "Mode d'affichage",
   "title.viewModeTable": "Vue tableau",
   "title.viewModePoster": "Vue affiche",
-  "title.interactiveSearchComingSoon": "La recherche interactive arrive bientôt.",
+  "title.interactiveSearchComingSoon":
+    "La recherche interactive arrive bientôt.",
   "title.seasonMonitored": "Saison surveillée",
   "title.episodeMonitored": "Épisode surveillé",
   "title.deleteFilesOnDisk": "Supprimer les fichiers sur le disque",
+  "title.seasonsAndEpisodes": "Saisons et épisodes",
+  "title.noTrackedSeasons":
+    "Aucune saison n'est encore suivie pour cette série.",
+  "title.fetchingData": "Récupération des données",
+  "title.filesOnDisk": "Fichiers sur le disque",
+  "title.noFilesTracked": "Aucun fichier suivi.",
+  "title.noFilesTrackedHint":
+    "Lancez une analyse de la bibliothèque pour détecter les fichiers sur le disque.",
+  "title.descriptionUnavailable": "Aucune description disponible.",
+  "title.canon": "Canon",
+  "title.mixed": "Mixte",
+  "title.specials": "Épisodes spéciaux",
+  "title.seasonNumber": "Saison {{number}}",
+  "title.episodeRange": "Épisodes {{start}} - {{end}}",
+  "title.episodeCountOne": "{{count}} épisode",
+  "title.episodeCountOther": "{{count}} épisodes",
+  "title.specialCountOne": "{{count}} spécial",
+  "title.specialCountOther": "{{count}} spéciaux",
+  "title.movieCountOne": "{{count}} film",
+  "title.movieCountOther": "{{count}} films",
+  "title.movieDetails": "Détails du film",
+  "title.searchingReleases":
+    "Recherche de publications sur les indexeurs…",
+  "title.noReleasesFound": "Aucune publication trouvée pour {{name}}.",
+  "title.interactiveSearchHint":
+    "Utilisez la recherche interactive pour interroger vos indexeurs configurés à la recherche de publications pour {{name}}.",
+  "title.blockedReleases": "Publications bloquées",
+  "title.noBlockedReleases":
+    "Aucune publication bloquée n'a été enregistrée pour ce film.",
   "title.settings": "Paramètres du titre",
   "title.qualityProfile": "Profil de qualité",
   "title.rootFolder": "Dossier racine",
@@ -441,12 +572,59 @@ const fr: LocaleDictionary = {
   "title.noWantedItem": "Aucun élément recherché actif.",
   "title.queueLatest": "Récupérer le dernier",
   "title.requiredAudioLanguages": "Langues audio requises",
+  "title.requiredAudioLanguagesFacetInfo":
+    "Ces langues sont appliquées lors de la sélection des versions et de la validation de l'importation pour cette facette.",
   "title.requiredAudioInherited": "Hérité des paramètres {{facet}}",
   "title.requiredAudioResetInherit": "Réinitialiser pour hériter",
-
+  "title.fixMatchHeading": "Corriger la correspondance des métadonnées",
+  "title.fixMatchAction": "Corriger la correspondance",
+  "title.fixMatchDescriptionMovie":
+    "Réparez la correspondance TVDB pour ce film tout en conservant le titre local et le nom du dossier inchangés.",
+  "title.fixMatchDescriptionSeries":
+    "Réparez la correspondance TVDB pour ce titre. Le titre local et le nom du dossier restent les mêmes.",
+  "title.fixMatchDialogTitle": "Corriger la correspondance",
+  "title.fixMatchDialogDescription":
+    "Réparez la correspondance TVDB pour {{name}}. Le titre local et le nom du dossier restent les mêmes. Les séries et les anime reconstruiront les saisons et les épisodes en interne.",
+  "title.fixMatchUnnamed": "ce titre",
+  "title.fixMatchSearchPlaceholder": "Rechercher des titres TVDB",
+  "title.fixMatchCurrentTvdbId": "ID TVDB actuel",
+  "title.fixMatchCurrentTvdbNone": "aucun",
+  "title.fixMatchSearching": "Recherche de métadonnées…",
+  "title.fixMatchNoResults": "Aucune correspondance de métadonnées trouvée.",
+  "title.fixMatchSelected": "Choisi",
+  "title.fixMatchChoose": "Choisir",
+  "title.fixMatchApplying": "Corriger le match…",
+  "title.fixMatchApply": "Appliquer la correspondance",
+  "title.fixMatchSearchFailed": "Échec de la recherche des métadonnées.",
+  "title.fixMatchApplyFailed":
+    "Échec de la correction de la correspondance du titre.",
+  "pendingImports.title": "Importations en attente",
+  "pendingImports.description":
+    "Résolvez les éléments sur disque sans correspondance pour {{facet}} en sélectionnant la correspondance de métadonnées correcte.",
+  "pendingImports.loading": "Chargement des importations en attente…",
+  "pendingImports.loadFailed":
+    "Échec du chargement des importations en attente.",
+  "pendingImports.empty": "Aucune importation en attente pour cette facette.",
+  "pendingImports.path": "Chemin",
+  "pendingImports.folderPath": "Dossier",
+  "pendingImports.searchPlaceholder": "Rechercher des titres de métadonnées",
+  "pendingImports.searching": "Recherche de métadonnées…",
+  "pendingImports.searchFailed": "Échec de la recherche des métadonnées.",
+  "pendingImports.noSearchResults":
+    "Aucune correspondance de métadonnées trouvée.",
+  "pendingImports.searchAction": "Rechercher et faire correspondre",
+  "pendingImports.match": "Associer",
+  "pendingImports.resolving": "Résoudre…",
+  "pendingImports.resolveSuccess":
+    "Résolu en attente d'importation pour {{name}}.",
+  "pendingImports.resolveFailed":
+    "Échec de la résolution de l'importation en attente.",
+  "pendingImports.prev": "Précédent",
+  "pendingImports.next": "Suivant",
+  "pendingImports.pageRange": "{{start}}–{{end}} / {{total}}",
   "tvdb.searchResults": "Résultats de recherche TVDB",
   "tvdb.searchPrompt": "Recherchez sur TVDB en saisissant un titre ci-dessus.",
-  "tvdb.searching": 'Recherche de métadonnées TVDB pour « {{query}} »',
+  "tvdb.searching": "Recherche de métadonnées TVDB pour « {{query}} »",
   "tvdb.foundMatches": "{{count}} résultat(s) TVDB trouvé(s).",
   "tvdb.noMatches": "Aucun résultat TVDB trouvé.",
   "tvdb.selectPrompt": "Sélectionnez un résultat TVDB pour continuer.",
@@ -454,23 +632,22 @@ const fr: LocaleDictionary = {
   "tvdb.searchButton": "Rechercher sur NZBGeek pour le titre TVDB sélectionné",
   "tvdb.select": "Sélectionner",
   "tvdb.popularity": "Popularité",
-
   "nzb.searchResults": "Résultats de recherche NZBGeek",
   "nzb.searchResultsFor": "Résultats NZB pour {{name}}",
-  "nzb.selectTvdbFirst": "Sélectionnez un résultat TVDB pour rechercher sur NZBGeek.",
+  "nzb.selectTvdbFirst":
+    "Sélectionnez un résultat TVDB pour rechercher sur NZBGeek.",
   "nzb.noResultsYet": "Aucun résultat pour le moment.",
   "nzb.blockedByProfile": "Bloqué par le profil : {{reason}}",
-  "nzb.queue": "Récupérer",
+  "nzb.queue": "File d'attente",
   "nzb.blocked": "Bloqué",
-  "nzb.noConsideredResults": "Aucune version n'a satisfait le profil de qualité.",
+  "nzb.noConsideredResults":
+    "Aucune version n'a satisfait le profil de qualité.",
   "nzb.blockedResults": "{{count}} version(s) bloquée(s)",
   "nzb.showScoringLog": "Afficher le journal de scoring",
   "nzb.hideScoringLog": "Masquer le journal de scoring",
   "nzb.scoringLog": "Journal de scoring",
   "nzb.total": "Total",
-
   "media.posterAlt": "Affiche de {{name}}",
-
   "activity.title": "Activité",
   "activity.loading": "Chargement de l'activité…",
   "activity.noActivity": "Aucune activité chargée.",
@@ -487,7 +664,7 @@ const fr: LocaleDictionary = {
   "activity.history": "Historique",
   "queue.title": "Titre",
   "queue.client": "Client",
-  "queue.status": "Statut",
+  "queue.status": "État",
   "queue.progress": "Progression",
   "queue.size": "Taille",
   "queue.state.queued": "En file d'attente",
@@ -496,24 +673,41 @@ const fr: LocaleDictionary = {
   "queue.state.paused": "En pause",
   "queue.state.completed": "Terminé",
   "queue.state.importPending": "Importation en attente",
+  "queue.state.importBlocked": "Importation bloquée",
   "queue.state.failed": "Échoué",
   "queue.state.unknown": "Inconnu",
   "queue.empty": "Aucun téléchargement actif ou en attente.",
   "queue.error": "Échec du chargement de la file d'attente de téléchargement.",
-  "queue.refresh": "Actualiser",
+  "queue.refresh": "Rafraîchir",
   "queue.lastRefresh": "Dernière actualisation {{time}}",
   "queue.summary":
     "{{downloading}} en téléchargement, {{waiting}} en attente d'importation, {{attention}} nécessite une attention",
   "queue.manualImport": "Importation manuelle",
-  "queue.manualImporting": "Mise en file…",
+  "queue.manualImporting": "Ajout à la file…",
   "queue.manualImportQueued": "Importation manuelle mise en file d'attente.",
-  "queue.manualImportFailed": "Échec de la mise en file d'attente de l'importation manuelle.",
+  "queue.manualImportFailed":
+    "Échec de la mise en file d'attente de l'importation manuelle.",
   "queue.manualImportTooltip":
     "L'importation manuelle est disponible pour les éléments de file d'attente nécessitant une attention.",
-  "queue.releaseTitle": "Release",
+  "queue.releaseTitle": "Version",
   "queue.blockReason": "Raison du blocage",
   "queue.showDetails": "Afficher les détails",
   "queue.hideDetails": "Masquer les détails",
+  "queue.assignTitle": "Attribuer un titre",
+  "queue.reassignTitle": "Changer le titre",
+  "queue.assignTitleTitle": "Attribuer un titre de téléchargement",
+  "queue.assignTitleDescription":
+    "Choisissez le titre de bibliothèque auquel appartient ce téléchargement bloqué. Scryer revérifiera l'importation après l'affectation.",
+  "queue.assignTitlePlaceholder": "Rechercher des titres…",
+  "queue.assignTitleResults": "Titres correspondants",
+  "queue.assignTitleEmpty": "Aucun titre correspondant trouvé.",
+  "queue.assignTitleQueued": "Titre attribué. L'importation sera réévaluée.",
+  "queue.assignTitleFailed": "Échec de l'attribution du titre.",
+  "queue.assignTitleBeforeImport":
+    "Attribuez un titre avant de lancer l’importation manuelle.",
+  "queue.ignore": "Ignorer",
+  "queue.ignoreSuccess": "Téléchargement ignoré.",
+  "queue.ignoreFailed": "Échec de l'ignorance du téléchargement.",
   "queue.pause": "Pause",
   "queue.pausing": "Mise en pause…",
   "queue.pauseSuccess": "Téléchargement mis en pause.",
@@ -528,10 +722,9 @@ const fr: LocaleDictionary = {
   "queue.deleteConfirmTitle": "Supprimer le téléchargement",
   "queue.deleteConfirmDescription":
     "Êtes-vous sûr de vouloir supprimer ce téléchargement de la file d'attente ? Cette action est irréversible.",
-
   "importHistory.title": "Historique d'importation",
   "importHistory.empty": "Aucun enregistrement d'importation trouvé.",
-  "importHistory.status": "Statut",
+  "importHistory.status": "État",
   "importHistory.sourceRef": "Source",
   "importHistory.decision": "Décision",
   "importHistory.error": "Erreur",
@@ -542,8 +735,8 @@ const fr: LocaleDictionary = {
   "importHistory.passwordRequired": "Mot de passe requis",
   "importHistory.passwordPlaceholder": "Mot de passe de l'archive",
   "importHistory.retrySuccess": "Réimportation lancée",
-
   "system.title": "Santé du système",
+  "system.jobsTitle": "Emplois",
   "system.notLoaded": "État du système non chargé.",
   "system.refreshing": "Actualisation",
   "system.loaded": "État du système chargé.",
@@ -580,7 +773,6 @@ const fr: LocaleDictionary = {
   "system.sourceAniBridgeName": "AniBridge",
   "system.sourceAniBridgeDescription":
     "Jeu de données de correspondance anime utilisé pour aligner les identifiants multi-sources et les correspondances d'épisodes.",
-
   "settings.description":
     "Sections de paramètres pour les indexeurs, clients et notifications.",
   "settings.description2":
@@ -601,7 +793,7 @@ const fr: LocaleDictionary = {
   "settings.indexerLimits": "Limites",
   "settings.indexerInteractiveSearch": "Interactif",
   "settings.indexerAutoSearch": "Auto",
-  "settings.indexerStatus": "Statut",
+  "settings.indexerStatus": "État",
   "settings.indexerDisabledUntil": "Retrait temporaire {{time}}",
   "settings.indexerLastError": "Erreur {{time}}",
   "settings.indexerLastSearched": "Recherché {{time}}",
@@ -613,22 +805,23 @@ const fr: LocaleDictionary = {
   "settings.noIndexersFound": "Aucun indexeur trouvé.",
   "settings.indexerConfig": "Configuration du plugin",
   "settings.downloadClientsSection": "Clients de téléchargement",
-  "settings.downloadClientFilterPlaceholder": "Filtrer par nom ou type de client",
+  "settings.downloadClientFilterPlaceholder":
+    "Filtrer par nom ou type de client",
   "settings.newPassword": "Nouveau mot de passe",
   "settings.save": "Enregistrer",
   "settings.noEntitlements": "Aucun droit",
-  "settings.filter": "Filtrer",
+  "settings.filter": "Filtre",
   "settings.acquisition": "Acquisition",
   "settings.acquisitionSaved": "Paramètres d'acquisition enregistrés.",
   "settings.acq.enabled": "Activer l'acquisition en arrière-plan",
   "settings.acq.cooldownHours": "Cooldown de mise à niveau (heures)",
   "settings.acq.sameTierDelta": "Delta min du même palier",
   "settings.acq.crossTierDelta": "Delta min inter-paliers",
-  "settings.acq.forcedBypassDelta": "Contournement delta forcé pour mise à niveau",
+  "settings.acq.forcedBypassDelta":
+    "Contournement delta forcé pour mise à niveau",
   "settings.acq.pollInterval": "Intervalle d'interrogation (secondes)",
   "settings.acq.syncInterval": "Intervalle de synchronisation (secondes)",
   "settings.acq.batchSize": "Taille du lot",
-
   "settings.rules": "Règles personnalisées",
   "settings.rulesSection": "Règles de scoring personnalisées",
   "settings.existingRules": "Règles existantes",
@@ -639,7 +832,8 @@ const fr: LocaleDictionary = {
   "settings.ruleRegoSource": "Source Rego",
   "settings.rulePriority": "Priorité",
   "settings.ruleAppliedFacets": "Types appliqués",
-  "settings.ruleAppliedFacetsHelp": "Laissez vide pour appliquer à tous les types de médias.",
+  "settings.ruleAppliedFacetsHelp":
+    "Laissez vide pour appliquer à tous les types de médias.",
   "settings.ruleValidate": "Valider",
   "settings.ruleValidating": "Validation…",
   "settings.ruleValid": "La règle est valide.",
@@ -648,11 +842,12 @@ const fr: LocaleDictionary = {
   "settings.ruleLibraryDescription":
     "Règles prédéfinies ajoutables en un clic. Sélectionnez un modèle pour pré-remplir l'éditeur.",
   "settings.ruleLibraryAll": "Toutes",
+  "settings.ruleLibraryCommunityEmpty":
+    "Aucun pack de règles communautaires disponible. Actualisez le registre des plugins pour rechercher de nouveaux packs.",
   "settings.rulesFacetSection": "Règles personnalisées pour {{facet}}",
   "settings.ruleGlobal": "Global",
   "settings.ruleNoFacetRules":
     "Aucune règle personnalisée disponible. Créez des règles dans Paramètres > Règles personnalisées.",
-
   "settings.refTitle": "Référence de contexte d'entrée",
   "settings.refSubtitle":
     "Cliquez pour développer la référence complète de tous les champs disponibles pour vos règles Rego.",
@@ -663,26 +858,28 @@ const fr: LocaleDictionary = {
   "settings.refColDescription": "Description",
   "settings.refColFunction": "Fonction",
   "settings.refColReturns": "Retourne",
-
   "settings.refSectionRelease": "— Métadonnées de version analysées",
   "settings.refReleaseRawTitle":
     "Titre brut non analysé de la version provenant de l'indexeur",
-  "settings.refReleaseQuality":
-    "Qualité détectée (ex. 2160P, 1080P, 720P)",
+  "settings.refReleaseQuality": "Qualité détectée (ex. 2160P, 1080P, 720P)",
   "settings.refReleaseSource": "Source du média (ex. WEB-DL, BLURAY, HDTV)",
   "settings.refReleaseVideoCodec": "Codec vidéo (ex. H.265, H.264, AV1)",
   "settings.refReleaseAudio": "Codec audio principal (ex. DDP, AAC, TrueHD)",
-  "settings.refReleaseAudioCodecs": "Tous les codecs audio détectés sous forme de tableau",
+  "settings.refReleaseAudioCodecs":
+    "Tous les codecs audio détectés sous forme de tableau",
   "settings.refReleaseAudioChannels":
     "Configuration des canaux audio (ex. 5.1, 7.1, 2.0)",
   "settings.refReleaseLangsAudio":
     "Codes de langue audio ISO 639-3 (ex. eng, jpn)",
   "settings.refReleaseLangsSub": "Codes de langue des sous-titres ISO 639-3",
-  "settings.refReleaseIsDualAudio": "Vrai quand plusieurs pistes audio sont détectées",
+  "settings.refReleaseIsDualAudio":
+    "Vrai quand plusieurs pistes audio sont détectées",
   "settings.refReleaseIsAtmos": "Vrai quand Dolby Atmos est présent",
-  "settings.refReleaseIsDV": "Vrai quand les métadonnées Dolby Vision sont détectées",
+  "settings.refReleaseIsDV":
+    "Vrai quand les métadonnées Dolby Vision sont détectées",
   "settings.refReleaseDetectedHdr": "Vrai quand HDR est détecté (hors DV)",
-  "settings.refReleaseIsRemux": "Vrai pour les remux complets (sans transcodage)",
+  "settings.refReleaseIsRemux":
+    "Vrai pour les remux complets (sans transcodage)",
   "settings.refReleaseIsBdDisk": "Vrai pour une source disque Blu-ray",
   "settings.refReleaseIsProper": "Vrai quand la version est marquée Proper",
   "settings.refReleaseIsRepack": "Vrai quand la version est marquée Repack",
@@ -710,16 +907,16 @@ const fr: LocaleDictionary = {
   "settings.refReleaseThumbsDown": "Votes négatifs de l'indexeur",
   "settings.refReleaseExtra":
     "Objet de métadonnées fourni par le plugin, accessible via input.release.extra.<key>",
-
   "settings.refSectionProfile": "— Configuration du profil de qualité actif",
   "settings.refProfileId": "Identifiant unique du profil",
   "settings.refProfileName": "Nom d'affichage du profil",
-  "settings.refProfileQualityTiers": "Liste ordonnée des paliers de qualité acceptés",
+  "settings.refProfileQualityTiers":
+    "Liste ordonnée des paliers de qualité acceptés",
   "settings.refProfileArchivalQuality":
     "Palier de qualité le plus élevé considéré comme archivage",
-  "settings.refProfileAllowUnknown":
-    "Accepter les qualités non reconnues",
-  "settings.refProfileSourceAllow": "Sources autorisées (vide = toutes autorisées)",
+  "settings.refProfileAllowUnknown": "Accepter les qualités non reconnues",
+  "settings.refProfileSourceAllow":
+    "Sources autorisées (vide = toutes autorisées)",
   "settings.refProfileSourceBlock": "Sources bloquées",
   "settings.refProfileVCodecAllow":
     "Codecs vidéo autorisés (vide = tous autorisés)",
@@ -729,12 +926,13 @@ const fr: LocaleDictionary = {
   "settings.refProfileACodecBlock": "Codecs audio bloqués",
   "settings.refProfileDVAllowed": "Les versions Dolby Vision sont acceptées",
   "settings.refProfileHdrAllowed": "Les versions HDR sont acceptées",
-  "settings.refProfilePreferRemux": "Le profil préfère les versions remux complètes",
+  "settings.refProfilePreferRemux":
+    "Le profil préfère les versions remux complètes",
   "settings.refProfileAllowBdDisk": "Les sources disque Blu-ray sont acceptées",
-  "settings.refProfileAllowUpgrades": "La mise à niveau des fichiers existants est autorisée",
+  "settings.refProfileAllowUpgrades":
+    "La mise à niveau des fichiers existants est autorisée",
   "settings.refProfileRequiredLangs":
     "Langues audio obligatoires (codes ISO 639-3)",
-
   "settings.refSectionContext": "— Contexte du titre et de la recherche",
   "settings.refCtxTitleId":
     "Identifiant interne scryer du titre lorsqu'un titre concret est déjà connu",
@@ -752,16 +950,16 @@ const fr: LocaleDictionary = {
   "settings.refCtxRuntimeMin": "Durée du contenu en minutes",
   "settings.refCtxIsAnime": "Vrai quand le titre est classé comme anime",
   "settings.refCtxIsFiller": "Vrai quand l'épisode est marqué comme filler",
-
   "settings.refSectionBuiltinScore": "— Résultats du moteur de scoring intégré",
   "settings.refBuiltinTotal": "Score total du moteur de scoring intégré",
-  "settings.refBuiltinBlocked": "Vrai quand les règles intégrées ont bloqué cette version",
+  "settings.refBuiltinBlocked":
+    "Vrai quand les règles intégrées ont bloqué cette version",
   "settings.refBuiltinCodes":
     "Liste des codes de scoring appliqués (ex. quality_tier_0)",
-
   "settings.refSectionFile":
     "— Métadonnées réelles du fichier analysé (null avant téléchargement)",
-  "settings.refFileVideoCodec": "Codec vidéo vérifié à partir de l'analyse du média",
+  "settings.refFileVideoCodec":
+    "Codec vidéo vérifié à partir de l'analyse du média",
   "settings.refFileVideoWidth": "Largeur vidéo vérifiée en pixels",
   "settings.refFileVideoHeight": "Hauteur vidéo vérifiée en pixels",
   "settings.refFileVideoBitrateKbps": "Débit vidéo vérifié en kbps",
@@ -776,6 +974,8 @@ const fr: LocaleDictionary = {
   "settings.refFileVideoProfile":
     "Profil de codec vérifié comme Main 10 ou High",
   "settings.refFileAudioCodec": "Codec audio principal vérifié",
+  "settings.refFileAudioProfile":
+    "Profil audio vérifié principal ou étiquette d'extension, telle que LC, Dolby TrueHD + Dolby Atmos ou DTS-HD MA + DTS:X IMAX",
   "settings.refFileAudioChannels": "Nombre de canaux audio principaux vérifié",
   "settings.refFileAudioBitrateKbps": "Débit audio principal vérifié en kbps",
   "settings.refFileAudioLanguages":
@@ -795,14 +995,15 @@ const fr: LocaleDictionary = {
     "Nombre de chapitres vérifié lorsque le conteneur expose des chapitres",
   "settings.refFileContainerFormat":
     "Format de conteneur vérifié comme matroska ou mp4",
-
   "settings.refSectionAudioStreams": "— Entrées de flux audio imbriquées",
   "settings.refAudioStreamCodec": "Codec audio par flux",
+  "settings.refAudioStreamProfile":
+    "Profil audio ou étiquette d'extension vérifié par flux",
   "settings.refAudioStreamChannels": "Nombre de canaux par flux",
   "settings.refAudioStreamLanguage": "Code de langue par flux",
   "settings.refAudioStreamBitrateKbps": "Débit par flux en kbps",
-
-  "settings.refSectionSubtitleStreams": "— Entrées de flux de sous-titres imbriquées",
+  "settings.refSectionSubtitleStreams":
+    "— Entrées de flux de sous-titres imbriquées",
   "settings.refSubtitleStreamCodec": "Codec de sous-titres par flux",
   "settings.refSubtitleStreamLanguage": "Code de langue par flux",
   "settings.refSubtitleStreamName":
@@ -811,7 +1012,6 @@ const fr: LocaleDictionary = {
     "Vrai quand le flux de sous-titres est marqué comme forcé",
   "settings.refSubtitleStreamDefault":
     "Vrai quand le flux de sous-titres est marqué par défaut",
-
   "settings.refSectionBuiltins": "Fonctions scryer personnalisées",
   "settings.refBuiltinsIntro":
     "Ces fonctions utilitaires sont disponibles dans vos règles Rego en plus de tous les builtins OPA standard.",
@@ -825,7 +1025,6 @@ const fr: LocaleDictionary = {
     'Normalise les noms de source (ex. "webdl" devient "WEB-DL")',
   "settings.refFnNormalizeCodec":
     'Normalise les noms de codec (ex. "h264" devient "H.264")',
-
   "settings.refSectionSandbox": "Bac à sable et restrictions",
   "settings.refSandboxIntro":
     "Toutes les règles utilisateur s'exécutent dans un évaluateur Rego sandboxé avec les restrictions suivantes :",
@@ -843,23 +1042,90 @@ const fr: LocaleDictionary = {
     "Validation avant enregistrement — les règles sont compilées et testées avec des données synthétiques avant de pouvoir être enregistrées. Les règles invalides sont rejetées.",
   "settings.refSandboxErrorIsolation":
     "Isolation des erreurs — si une règle échoue à l'exécution, toutes les autres règles continuent de s'évaluer normalement. Les échecs sont journalisés mais n'interrompent jamais le scoring.",
-
   "settings.refSectionOutput": "Format de sortie des règles",
   "settings.refOutputIntro":
     "Les règles doivent définir une règle score_entry qui retourne une map de clés chaîne (codes de score) vers des valeurs entières (deltas de points). Les valeurs positives favorisent la version, les valeurs négatives la pénalisent, et scryer.block_score() la bloque complètement. Les règles basées sur le fichier n'ont naturellement aucun effet avant le téléchargement car input.file est null jusqu'à l'évaluation post-téléchargement.",
-
+  "settings.subtitles": "Sous-titres",
+  "settings.subtitlesSaved": "Paramètres de sous-titres enregistrés.",
+  "settings.sub.enabled": "Activer la gestion des sous-titres",
+  "settings.sub.credentials": "Informations d'identification OpenSubtitles",
+  "settings.sub.username": "Nom d'utilisateur",
+  "settings.sub.password": "Mot de passe",
+  "settings.sub.apiKey": "Clé API",
+  "settings.sub.languages": "Langues des sous-titres",
+  "settings.sub.languagesHelp":
+    "Codes ISO 639-2, séparés par des virgules (par exemple, eng, spa, fre, deu, jpn)",
+  "settings.sub.languagePickerAriaLabel":
+    "Sélectionnez les langues des sous-titres",
+  "settings.sub.languagePickerSelect": "Sélectionnez les langues...",
+  "settings.sub.languagePickerSearch": "Rechercher des langues...",
+  "settings.sub.languagePickerEmpty": "Aucune langue trouvée",
+  "settings.sub.languagePickerRemove": "Supprimer {{language}}",
+  "settings.sub.hiPreference": "Malentendant",
+  "settings.sub.forcedOnly": "Sous-titres forcés uniquement",
+  "settings.sub.minScoreSeries": "Score minimum pour les séries",
+  "settings.sub.minScoreMovie": "Score minimum pour les films",
+  "settings.sub.minScoreHelp":
+    "Les sous-titres en dessous de ce score sont ignorés. Les séries nécessitent un seuil plus élevé car la correspondance au niveau de l'épisode doit être exacte.",
+  "settings.sub.searchInterval": "Intervalle de recherche (heures)",
+  "settings.sub.autoDownload": "Téléchargement automatique à l'importation",
+  "settings.sub.excludeAi": "Exclure les sous-titres traduits par l'IA",
+  "settings.sub.excludeMachine":
+    "Exclure les sous-titres traduits automatiquement",
+  "settings.sub.syncEnabled":
+    "Corriger automatiquement le timing des sous-titres",
+  "settings.sub.syncEnabledHelp":
+    "Utilise l'analyse audio pour corriger les décalages de timing dans les sous-titres téléchargés.",
+  "settings.sub.syncThresholdSeries":
+    "Correction automatique en dessous de ce score (série)",
+  "settings.sub.syncThresholdMovie":
+    "Correction automatique en dessous de ce score (films)",
+  "settings.sub.syncThresholdHelp":
+    "Les sous-titres à faible score sont plus susceptibles d'avoir des problèmes de timing. Les sous-titres supérieurs à ce score sont supposés être au bon moment.",
+  "settings.sub.syncMaxOffset": "Correction maximale (secondes)",
+  "settings.sub.syncMaxOffsetHelp":
+    "Ignorez les changements de timing supérieurs à cette valeur pour éviter d'endommager un sous-titre qui est probablement déjà suffisamment proche.",
   "settings.postProcessing": "Post-traitement",
   "settings.postProcessingSaved": "Paramètres de post-traitement enregistrés.",
-  "settings.pp.intro":
-    "Exécuter un script personnalisé après chaque importation de fichier. Laissez vide pour désactiver. Le répertoire de travail est le dossier contenant le fichier importé.",
-  "settings.pp.movieScript": "Script films",
-  "settings.pp.seriesScript": "Script séries",
-  "settings.pp.animeScript": "Script anime",
-  "settings.pp.timeoutSecs": "Délai d'expiration du script (secondes)",
-  "settings.pp.envVarsHeading": "Variables d'environnement",
-  "settings.pp.envVarsDescription":
-    "Les variables suivantes sont disponibles dans votre script :",
-
+  "settings.pp.title": "Scripts de post-traitement",
+  "settings.pp.description":
+    "Les scripts s'exécutent automatiquement après l'importation du média. Les scripts de blocage s'exécutent par ordre de priorité. Les scripts Fire-and-Forget s'exécutent en parallèle sans retarder le pipeline d'importation.",
+  "settings.pp.noScripts": "Aucun script de post-traitement configuré.",
+  "settings.pp.name": "Nom du script",
+  "settings.pp.namePlaceholder": "par ex. Notifier Plex",
+  "settings.pp.descriptionLabel": "Description",
+  "settings.pp.descriptionPlaceholder": "Que fait ce script ?",
+  "settings.pp.scriptType": "Type de script",
+  "settings.pp.inline": "En ligne",
+  "settings.pp.filePath": "Chemin du fichier",
+  "settings.pp.inlineHelp": "Entrez une commande shell à exécuter.",
+  "settings.pp.filePathHelp":
+    "Chemin d'accès à un script exécutable sur le serveur.",
+  "settings.pp.blocking": "Blocage",
+  "settings.pp.fireAndForget": "Feu et oublier",
+  "settings.pp.blockingHelp":
+    "S'exécute par ordre de priorité. Le script suivant attend que celui-ci se termine.",
+  "settings.pp.fireAndForgetHelp":
+    "S'exécute en arrière-plan sans bloquer l'importation.",
+  "settings.pp.executionMode": "Mode d'exécution",
+  "settings.pp.timeout": "Délai d'expiration (secondes)",
+  "settings.pp.priority": "Priorité",
+  "settings.pp.priorityHelp": "Le numéro inférieur s'exécute en premier.",
+  "settings.pp.facets": "S'applique à",
+  "settings.pp.debug": "Capturer la sortie du script",
+  "settings.pp.debugHelp":
+    "Lorsqu'ils sont activés, stdout et stderr sont enregistrés pour chaque exécution. Utile pour le dépannage.",
+  "settings.pp.runHistory": "Historique d'exécution",
+  "settings.pp.noRuns": "Aucune exécution pour l’instant.",
+  "settings.pp.outputNotCaptured":
+    "Sortie non capturée. Activez le mode débogage sur ce script pour voir la sortie.",
+  "settings.pp.envHeading": "Variables d'environnement",
+  "settings.pp.envDescription":
+    "Les scripts reçoivent une charge utile JSON dans la variable d'environnement SCRYER_METADATA contenant les métadonnées du titre, de l'épisode, de la version et des informations multimédias. SCRYER_FILE_PATH contient le chemin du fichier importé.",
+  "settings.pp.created": "Script créé.",
+  "settings.pp.updated": "Script mis à jour.",
+  "settings.pp.deleted": "Script supprimé.",
+  "settings.pp.toggled": "Script {{state}}.",
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Gérer les plugins",
   "settings.pluginsRefresh": "Actualiser le registre",
@@ -889,13 +1155,12 @@ const fr: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Mise à jour : v{{version}}",
   "settings.pluginUpgrade": "Mettre à niveau vers v{{version}}",
-
   "status.pluginInstalled": "Plugin « {{name}} » installé.",
   "status.pluginUninstalled": "Plugin « {{name}} » désinstallé.",
-  "status.pluginUpgraded": "Plugin « {{name}} » mis à niveau vers v{{version}}.",
+  "status.pluginUpgraded":
+    "Plugin « {{name}} » mis à niveau vers v{{version}}.",
   "status.pluginToggled": "Plugin « {{name}} » {{state}}.",
   "status.registryRefreshed": "Registre des plugins actualisé.",
-
   "form.namePlaceholder": "Nom",
   "form.indexerNamePlaceholder": "Mon indexeur Newznab",
   "form.providerTypePlaceholder": "Type de fournisseur",
@@ -911,12 +1176,13 @@ const fr: LocaleDictionary = {
   "form.usernamePlaceholder": "nom d'utilisateur",
   "form.passwordPlaceholder": "mot de passe",
   "form.newPasswordPlaceholder": "nouveau mot de passe",
-  "form.indexerValidation": "Le nom, le type de fournisseur et l'URL de base sont requis.",
+  "form.indexerValidation":
+    "Le nom, le type de fournisseur et l'URL de base sont requis.",
   "form.indexerApiKeyRequired": "Une clé API est requise pour cet indexeur.",
-  "form.indexerRateLimitValidation": "Les valeurs de limite de requêtes doivent être numériques.",
+  "form.indexerRateLimitValidation":
+    "Les valeurs de limite de requêtes doivent être numériques.",
   "form.rateLimitPlaceholder": "Par défaut du service",
   "form.enabled": "Activé",
-
   "qualityProfile.existingProfiles": "Profils de qualité existants",
   "qualityProfile.noProfilesFound": "Aucun profil trouvé.",
   "qualityProfile.createProfile": "Créer un profil de qualité",
@@ -929,12 +1195,15 @@ const fr: LocaleDictionary = {
   "qualityProfile.profileNameLabel": "Nom du profil",
   "qualityProfile.qualityTiersAndArchival":
     "Paliers de qualité et qualité d'archivage",
-  "qualityProfile.allowedQualityTiers": "Paliers de qualité autorisés (sélectionnés)",
-  "qualityProfile.noQualityTiersSelected": "Aucun palier de qualité sélectionné.",
+  "qualityProfile.allowedQualityTiers":
+    "Paliers de qualité autorisés (sélectionnés)",
+  "qualityProfile.noQualityTiersSelected":
+    "Aucun palier de qualité sélectionné.",
   "qualityProfile.removeQualityTier": "Retirer le palier de qualité {{value}}",
   "qualityProfile.addQualityTier": "Ajouter {{value}} à la sélection",
   "qualityProfile.availableQualityTiers": "Paliers de qualité disponibles",
-  "qualityProfile.allQualityTiersSelected": "Tous les paliers de qualité connus sont sélectionnés.",
+  "qualityProfile.allQualityTiersSelected":
+    "Tous les paliers de qualité connus sont sélectionnés.",
   "qualityProfile.archivalQuality": "Qualité d'archivage",
   "qualityProfile.archivalQualityInfo":
     "Le niveau de qualité à conserver pour la rétention à long terme. Scryer peut d'abord télécharger une qualité supérieure si aucune qualité d'archivage n'existe encore, puis la remplacer lorsque la version en qualité d'archivage est trouvée.",
@@ -997,7 +1266,8 @@ const fr: LocaleDictionary = {
   "qualityProfile.aboutSection": "À propos de {{title}}",
   "qualityProfile.removeItem": "Retirer {{value}} de la sélection",
   "qualityProfile.addItem": "Ajouter {{value}} à la sélection",
-  "qualityProfile.useDefaultQualityFallback": "Utiliser la qualité par défaut de repli",
+  "qualityProfile.useDefaultQualityFallback":
+    "Utiliser la qualité par défaut de repli",
   "qualityProfile.defaultCategoryProfiles": "Profils de catégorie par défaut",
   "qualityProfile.scoringSection": "Scoring",
   "qualityProfile.scoringSectionInfo":
@@ -1012,6 +1282,8 @@ const fr: LocaleDictionary = {
   "qualityProfile.scoringPersona": "Persona de scoring",
   "qualityProfile.scoringPersonaInfo":
     "Pondérations de scoring prédéfinies qui priorisent différentes qualités de version. Balanced est recommandé pour la plupart des utilisateurs.",
+  "qualityProfile.scoringPersonaMovedInfo":
+    "Le personnage de notation réside désormais dans les paramètres de qualité, et non dans les profils de qualité enregistrés. Les remplacements de notation de profil s’appliquent toujours au personnage actuel.",
   "qualityProfile.personaBalanced": "Équilibré",
   "qualityProfile.personaAudiophile": "Audiophile",
   "qualityProfile.personaEfficient": "Efficient",
@@ -1043,14 +1315,24 @@ const fr: LocaleDictionary = {
   "qualityProfile.minScoreToGrabInfo":
     "Ne récupérer que les versions atteignant ou dépassant ce seuil. Laissez vide pour aucun minimum.",
   "qualityProfile.minScorePlaceholder": "Pas de minimum",
-
+  "qualityProfile.confirmDeleteTitle": "Supprimer le profil de qualité",
+  "qualityProfile.confirmDeleteDescription":
+    "Êtes-vous sûr de vouloir supprimer le profil de qualité « {{name}} » ? Cela ne peut pas être annulé.",
+  "qualityProfile.deleteDisabledInUse":
+    "Ce profil est en cours d'utilisation. Supprimez-le de tous les titres et catégories par défaut avant de le supprimer.",
   "episode.details": "Détails",
   "episode.search": "Rechercher",
-  "episode.overview": "Synopsis",
+  "episode.blocklist": "Liste de blocage",
+  "episode.overview": "Aperçu",
   "episode.fileOnDisk": "Fichier sur le disque",
+  "episode.airDate": "Date de diffusion",
+  "episode.numberLabel": "Épisode",
   "episode.quality": "Qualité",
   "episode.missing": "Manquant",
   "episode.noFile": "Cet épisode n'a pas encore été téléchargé.",
+  "episode.noBlockedReleases":
+    "Aucune publication bloquée n'a été enregistrée pour cet épisode.",
+  "episode.untitledRelease": "Publication sans titre",
   "episode.filler": "Filler",
   "episode.recap": "Récapitulatif",
   "episode.absoluteNumber": "Abs #{{number}}",
@@ -1068,6 +1350,29 @@ const fr: LocaleDictionary = {
   "mediaFile.subtitles": "Sous-titres",
   "mediaFile.subtitleCount": "{{count}} sous-titres",
   "mediaFile.delete": "Supprimer le fichier",
+  "mediaFile.pathNotRecorded": "Chemin non enregistré",
+  "subtitle.search": "Rechercher des sous-titres",
+  "subtitle.searching": "Recherche…",
+  "subtitle.download": "Téléchargement",
+  "subtitle.downloading": "Téléchargement...",
+  "subtitle.noResults": "Aucun sous-titre trouvé",
+  "subtitle.score": "Note : {{score}}",
+  "subtitle.hashMatch": "Correspondance de hachage",
+  "subtitle.hearingImpaired": "Malentendants",
+  "subtitle.forced": "Forcé",
+  "subtitle.aiTranslated": "Traduit par IA",
+  "subtitle.machineTranslated": "Traduit automatiquement",
+  "subtitle.subtitles": "Sous-titres",
+  "subtitle.embedded": "Intégré",
+  "subtitle.external": "Externe",
+  "subtitle.manualSearch": "Recherche manuelle",
+  "subtitle.blacklist": "Liste noire",
+  "subtitle.blacklisted": "Sous-titres sur liste noire",
+  "subtitle.releaseInfo": "Version",
+  "subtitle.provider": "Fournisseur",
+  "subtitle.language": "Langue",
+  "subtitle.downloadCount": "Téléchargements",
+  "subtitle.selectLanguage": "Sélectionnez la langue",
   "anime.malLink": "MyAnimeList",
   "anime.anilistLink": "AniList",
   "anime.anidbLink": "AniDB",
@@ -1075,11 +1380,10 @@ const fr: LocaleDictionary = {
   "anime.metadataPanel": "Infos anime",
   "anime.malScore": "Score MAL",
   "anime.mediaType": "Type",
-  "anime.status": "Statut",
+  "anime.status": "État",
   "anime.fillerSummary":
     "{{fillerCount}} sur {{totalCount}} épisodes sont des fillers ({{percent}} %)",
   "anime.noFiller": "Pas d'épisodes filler",
-
   "settings.fillerPolicyLabel": "Politique pour les épisodes filler",
   "settings.fillerPolicyDownloadAll": "Télécharger tous les épisodes",
   "settings.fillerPolicySkipFiller": "Ignorer les épisodes filler",
@@ -1092,6 +1396,9 @@ const fr: LocaleDictionary = {
   "settings.interSeasonMoviesLabel": "Films inter-saisons",
   "settings.interSeasonMoviesDescription":
     "Créer des entrées narratives pour les films canoniques entre les saisons",
+  "settings.monitorFillerMoviesLabel": "Films de remplissage de moniteur",
+  "settings.monitorFillerMoviesDescription":
+    "Inclure les films classés comme remplissage dans la file d'attente de téléchargement",
   "settings.nfoWriteOnImportLabel": "Écrire les NFO à l'importation",
   "settings.nfoWriteOnImportDescription":
     "Écrire des fichiers de métadonnées .nfo compatibles Kodi/Jellyfin/Emby à côté des médias importés",
@@ -1102,7 +1409,6 @@ const fr: LocaleDictionary = {
   "settings.minAvailability.announced": "Annoncé",
   "settings.minAvailability.in_cinemas": "En salles",
   "settings.minAvailability.released": "Sorti",
-
   "status.titleRequired": "Le titre est requis.",
   "status.facetRequired": "Le type est requis.",
   "status.catalogAddSuccess": "{{name}} ajouté au catalogue.",
@@ -1117,9 +1423,9 @@ const fr: LocaleDictionary = {
   "status.queuedLatest": "Dernière version récupérée pour {{name}}",
   "status.queuedForTitle": "{{name}} version(s) mise(s) en file d'attente.",
   "status.nothingFound": "Aucun résultat trouvé.",
-  "status.searchingByQuery": 'Recherche de « {{query}} ».',
-  "status.searchingNzb": 'Recherche NZB de « {{query}} »{{category}}.',
-  "status.searchingTvdb": 'Recherche de métadonnées TVDB pour « {{query}} ».',
+  "status.searchingByQuery": "Recherche de « {{query}} ».",
+  "status.searchingNzb": "Recherche NZB de « {{query}} »{{category}}.",
+  "status.searchingTvdb": "Recherche de métadonnées TVDB pour « {{query}} ».",
   "status.foundTvdb": "{{count}} résultat(s) TVDB trouvé(s).",
   "status.foundNzb": "{{count}} résultat(s) NZBGeek trouvé(s).",
   "status.renamePreviewGenerated":
@@ -1132,21 +1438,27 @@ const fr: LocaleDictionary = {
   "status.deleteCatalogConfirm":
     "Retirer {{name}} du catalogue ? Utilisez l'option ci-dessous pour supprimer également les fichiers locaux.",
   "status.titleDeleted": "{{name}} retiré du catalogue.",
+  "status.titleMatchUpdated": "Correspondance mise à jour pour {{name}}.",
   "status.qualityProfileBlocked":
     "Ignoré : bloqué par le profil de qualité ({{reason}})",
-  "status.tvdbRequiredImdb": "Le film sélectionné n'a pas d'identifiant IMDb utilisable.",
-  "status.tvdbNoValidId": "Le résultat TVDB sélectionné n'a pas d'identifiant TVDB valide.",
-  "status.tvdbNeedsTitle": "Le résultat TVDB sélectionné n'a pas de titre recherchable.",
+  "status.tvdbRequiredImdb":
+    "Le film sélectionné n'a pas d'identifiant IMDb utilisable.",
+  "status.tvdbNoValidId":
+    "Le résultat TVDB sélectionné n'a pas d'identifiant TVDB valide.",
+  "status.tvdbNeedsTitle":
+    "Le résultat TVDB sélectionné n'a pas de titre recherchable.",
   "status.tvdbQueueTip": "Sélectionnez un résultat TVDB pour continuer.",
-  "status.nzbQueueTip": "Aucun résultat NZB. Essayez de rechercher avec un titre différent.",
+  "status.nzbQueueTip":
+    "Aucun résultat NZB. Essayez de rechercher avec un titre différent.",
   "status.languageChanged": "Langue de l'interface définie sur {{language}}.",
-
   "status.editingUser": "Modification de l'utilisateur {{name}}",
   "status.editingIndexer": "Modification de l'indexeur {{name}}",
-  "status.editingDownloadClient": "Modification du client de téléchargement {{name}}",
+  "status.editingDownloadClient":
+    "Modification du client de téléchargement {{name}}",
   "status.deletingUser": "Supprimer l'utilisateur {{name}} ?",
   "status.deletingIndexer": "Supprimer l'indexeur {{name}} ?",
-  "status.deletingDownloadClient": "Supprimer le client de téléchargement {{name}} ?",
+  "status.deletingDownloadClient":
+    "Supprimer le client de téléchargement {{name}} ?",
   "status.showingActivityStream": "Afficher le flux d'activité",
   "status.hidingActivityStream": "Masquer le flux d'activité",
   "status.userRequired": "Le nom d'utilisateur et le mot de passe sont requis.",
@@ -1167,8 +1479,10 @@ const fr: LocaleDictionary = {
   "status.titleMonitoringDisabled": "Surveillance du titre désactivée.",
   "status.indexerDeleted": "Indexeur {{name}} supprimé.",
   "status.testingIndexerConnection": "Test de connexion en cours…",
-  "status.indexerConnectionTestPassed": "Test de connexion de l'indexeur réussi.",
-  "status.indexerConnectionTestFailed": "Test de connexion de l'indexeur échoué.",
+  "status.indexerConnectionTestPassed":
+    "Test de connexion de l'indexeur réussi.",
+  "status.indexerConnectionTestFailed":
+    "Test de connexion de l'indexeur échoué.",
   "status.ruleCreated": "Règle enregistrée.",
   "status.ruleUpdated": "Règle mise à jour.",
   "status.ruleDeleted": "Règle {{name}} supprimée.",
@@ -1178,21 +1492,21 @@ const fr: LocaleDictionary = {
   "status.downloadClientCreated": "Client de téléchargement enregistré.",
   "status.downloadClientUpdated": "Client de téléchargement mis à jour.",
   "status.downloadClientDeleted": "Client de téléchargement {{name}} supprimé.",
-  "status.downloadClientOrderSaved": "Ordre de priorité des clients de téléchargement enregistré.",
+  "status.downloadClientOrderSaved":
+    "Ordre de priorité des clients de téléchargement enregistré.",
   "status.testingDownloadClient": "Test de connexion {{client}} en cours…",
-  "status.downloadClientConnectionTestPassed": "Test de connexion {{client}} réussi.",
-  "status.downloadClientConnectionTestFailed": "Test de connexion {{client}} échoué.",
+  "status.downloadClientConnectionTestPassed":
+    "Test de connexion {{client}} réussi.",
+  "status.downloadClientConnectionTestFailed":
+    "Test de connexion {{client}} échoué.",
   "status.queueFailed": "L'opération de mise en file d'attente a échoué.",
   "status.apiError": "La requête a échoué",
   "status.generic": "{{message}}",
   "system.notReadyTemplate": "Le système n'est pas prêt.",
-
   "system.recentEventsLabel": "Échantillon d'événements récents",
-
   "user.created": "Utilisateur {{name}} créé.",
   "user.entitlementsUpdated": "Droits mis à jour pour {{name}}.",
   "user.passwordUpdated": "Mot de passe mis à jour pour {{name}}.",
-
   "profile.accountInfo": "Compte",
   "profile.changePassword": "Changer le mot de passe",
   "profile.currentPassword": "Mot de passe actuel",
@@ -1203,7 +1517,6 @@ const fr: LocaleDictionary = {
   "profile.externalConnections": "Connexions externes",
   "profile.externalConnectionsPlaceholder":
     "Plex, passkeys et autres connexions externes seront disponibles ici.",
-
   "auth.loginTitle": "Connexion",
   "auth.usernamePlaceholder": "Nom d'utilisateur",
   "auth.passwordPlaceholder": "Mot de passe",
@@ -1212,18 +1525,17 @@ const fr: LocaleDictionary = {
   "auth.loginFailed": "Nom d'utilisateur ou mot de passe incorrect.",
   "auth.logoutButton": "Se déconnecter",
   "auth.sessionExpired": "Session expirée. Veuillez vous reconnecter.",
-
-  "nav.wanted": "Recherché",
+  "nav.wanted": "À rechercher",
   "wanted.title": "Éléments recherchés",
   "wanted.refreshing": "Actualisation…",
-  "wanted.filterStatus": "Statut",
+  "wanted.filterStatus": "État",
   "wanted.filterMediaType": "Type de média",
   "wanted.allStatuses": "Tous les statuts",
   "wanted.allTypes": "Tous les types",
   "wanted.totalCount": "{{count}} éléments",
   "wanted.colTitle": "Titre",
   "wanted.colType": "Type",
-  "wanted.colStatus": "Statut",
+  "wanted.colStatus": "État",
   "wanted.colPhase": "Phase",
   "wanted.colNextSearch": "Prochaine recherche",
   "wanted.colScore": "Score",
@@ -1234,9 +1546,24 @@ const fr: LocaleDictionary = {
   "wanted.reset": "Réinitialiser",
   "wanted.searchTriggered":
     "Recherche déclenchée — le poller la prendra en charge sous peu.",
+  "wanted.status.wanted": "À rechercher",
+  "wanted.status.grabbed": "Récupéré",
+  "wanted.status.completed": "Terminé",
+  "wanted.status.paused": "En pause",
+  "wanted.phase.primary": "Principale",
+  "wanted.phase.preRelease": "Pré-sortie",
+  "wanted.phase.preAir": "Pré-diffusion",
+  "wanted.phase.secondary": "Secondaire",
   "wanted.loadingDecisions": "Chargement des décisions de version…",
-  "wanted.noDecisions": "Aucune décision de version enregistrée pour le moment.",
+  "wanted.noDecisions":
+    "Aucune décision de version enregistrée pour le moment.",
   "wanted.noItems": "Aucun élément recherché trouvé.",
+  "wanted.context.movie": "Objet recherché pour un film",
+  "wanted.context.episode": "Objet recherché pour l'épisode",
+  "wanted.context.seasonEpisode":
+    "Article recherché dans l'épisode de la saison {{seasonNumber}}",
+  "wanted.context.franchiseMovie":
+    "Article recherché pour un film de franchise",
   "wanted.prev": "Précédent",
   "wanted.next": "Suivant",
   "wanted.decRelease": "Version",
@@ -1248,7 +1575,6 @@ const fr: LocaleDictionary = {
   "wanted.tabWanted": "Éléments recherchés",
   "wanted.tabCutoff": "Cutoff non atteint",
   "wanted.tabCalendar": "Calendrier",
-
   "cutoff.title": "Cutoff non atteint",
   "cutoff.searchAll": "Tout rechercher",
   "cutoff.searching": "Recherche…",
@@ -1257,18 +1583,18 @@ const fr: LocaleDictionary = {
   "cutoff.colFacet": "Type",
   "cutoff.colCurrentQuality": "Actuel",
   "cutoff.colTargetQuality": "Cible",
-  "cutoff.noItems": "Tous les titres surveillés atteignent le cutoff de leur profil de qualité.",
+  "cutoff.noItems":
+    "Tous les titres surveillés atteignent le cutoff de leur profil de qualité.",
   "cutoff.totalCount": "{{count}} titre(s) sous le cutoff",
   "cutoff.filterFacet": "Type",
   "cutoff.allFacets": "Tous les types",
-  "cutoff.searchTriggered": "Recherche de mise à niveau déclenchée pour {{name}}",
+  "cutoff.searchTriggered":
+    "Recherche de mise à niveau déclenchée pour {{name}}",
   "cutoff.bulkComplete":
     "Recherche en lot terminée : {{searched}} sur {{total}} titres recherchés",
-
   "narrative.movie": "Film",
   "narrative.canonMovieInstallment":
     "Film canonique. Positionné dans l'ordre de visionnage narratif.",
-
   "settings.notifications": "Notifications",
   "settings.notificationsSection":
     "Gérer les canaux de notification et les abonnements",
@@ -1283,28 +1609,60 @@ const fr: LocaleDictionary = {
     "Aucun abonnement de notification configuré.",
   "settings.notificationEventType": "Type d'événement",
   "settings.notificationScope": "Portée",
+  "settings.notificationScope.global": "Global",
+  "settings.notificationScope.facet": "Facette",
+  "settings.notificationScope.title": "Titre",
+  "settings.notificationScopeId": "ID de portée",
+  "settings.notificationScopeIdPlaceholderFacet": "film, série, anime",
+  "settings.notificationScopeIdPlaceholderTitle": "Identifiant du titre",
   "settings.notificationChannel": "Canal",
   "settings.notificationTest": "Test",
   "settings.notificationTesting": "Test en cours…",
-  "settings.notificationTestSuccess": "Notification de test envoyée avec succès.",
+  "settings.notificationTestSuccess":
+    "Notification de test envoyée avec succès.",
   "settings.notificationTestFailed": "Échec de la notification de test.",
   "settings.notificationProviderType": "Type de fournisseur",
   "settings.notificationNoProviders":
     "Aucun plugin de notification installé. Installez d'abord un plugin de notification depuis la page Plugins.",
+  "settings.notificationEvent.grab": "Version récupérée",
+  "settings.notificationEvent.download": "Échec du téléchargement",
+  "settings.notificationEvent.upgrade": "Mise à niveau importée",
+  "settings.notificationEvent.importComplete": "Importation terminée",
+  "settings.notificationEvent.importRejected": "Importation bloquée",
+  "settings.notificationEvent.rename": "Fichier renommé",
+  "settings.notificationEvent.titleAdded": "Titre ajouté",
+  "settings.notificationEvent.titleDeleted": "Titre supprimé",
+  "settings.notificationEvent.fileDeleted": "Fichier supprimé",
+  "settings.notificationEvent.fileDeletedForUpgrade":
+    "Fichier supprimé pour la mise à niveau",
+  "settings.notificationEvent.postProcessingCompleted":
+    "Post-traitement terminé",
+  "settings.notificationEvent.subtitleDownloaded": "Sous-titre téléchargé",
+  "settings.notificationEvent.subtitleSearchFailed":
+    "Échec de la recherche de sous-titres",
+  "settings.notificationEvent.healthIssue": "Problème de santé",
+  "settings.notificationEvent.healthRestored": "Santé restaurée",
+  "settings.notificationEvent.applicationUpdate":
+    "Mise à jour des applications",
+  "settings.notificationEvent.manualInteractionRequired":
+    "Interaction manuelle requise",
+  "settings.notificationEvent.test": "Avis de test",
   "status.notificationChannelCreated": "Canal de notification enregistré.",
   "status.notificationChannelUpdated": "Canal de notification mis à jour.",
-  "status.notificationChannelDeleted": "Canal de notification {{name}} supprimé.",
-  "status.notificationSubscriptionCreated": "Abonnement de notification enregistré.",
+  "status.notificationChannelDeleted":
+    "Canal de notification {{name}} supprimé.",
+  "status.notificationSubscriptionCreated":
+    "Abonnement de notification enregistré.",
   "status.notificationSubscriptionUpdated":
     "Abonnement de notification mis à jour.",
   "status.notificationSubscriptionDeleted":
     "Abonnement de notification supprimé.",
   "status.editingNotificationChannel": "Modification du canal {{name}}",
-  "status.deletingNotificationChannel": "Supprimer le canal de notification {{name}} ?",
+  "status.deletingNotificationChannel":
+    "Supprimer le canal de notification {{name}} ?",
   "status.editingNotificationSubscription": "Modification de l'abonnement",
   "status.deletingNotificationSubscription":
     "Supprimer cet abonnement de notification ?",
-
   "wanted.tabPending": "En attente",
   "pending.title": "Versions en attente",
   "pending.noItems": "Aucune version en attente.",
@@ -1319,16 +1677,13 @@ const fr: LocaleDictionary = {
   "pending.grabbed": "Version récupérée.",
   "pending.dismissed": "Version ignorée.",
   "pending.timeRemaining": "{{time}} restant",
-
   "system.rssSync": "Synchronisation RSS",
   "system.rssSyncTrigger": "Lancer la synchronisation RSS",
   "system.rssSyncing": "Synchronisation…",
   "system.rssSyncComplete":
     "Synchronisation RSS : {{fetched}} récupéré(s), {{matched}} correspondant(s), {{grabbed}} pris, {{held}} retenu(s).",
-
   "setup.welcomeTitle": "Bienvenue sur Scryer",
-  "setup.welcomeDescription":
-    "Configurons l'essentiel pour vous lancer.",
+  "setup.welcomeDescription": "Configurons l'essentiel pour vous lancer.",
   "setup.freshSetup": "Configurer à partir de zéro",
   "setup.freshSetupDescription":
     "Configurez les chemins de médias, installez des fournisseurs comme qBittorrent, et ajoutez des clients et indexeurs étape par étape.",
@@ -1343,7 +1698,6 @@ const fr: LocaleDictionary = {
   "setup.stepSummary": "Résumé",
   "setup.stepConnect": "Connexion",
   "setup.stepReview": "Vérification",
-
   "setup.personaTitle": "Préférences de qualité",
   "setup.personaDescription":
     "Choisissez un objectif de qualité et un focus de scoring pour chaque type de contenu.",
@@ -1360,7 +1714,6 @@ const fr: LocaleDictionary = {
     "Meilleure qualité par Go. Préfère x265, WEB-DL, encodes compacts.",
   "setup.personaCompatibleDesc":
     "Compatible partout. H.264 plutôt que H.265, évite Dolby Vision, large compatibilité.",
-
   "setup.pluginsTitle": "Installer les fournisseurs souhaités",
   "setup.pluginsDescription":
     "Certains services, comme qBittorrent, sont ajoutés en tant que plugins avant de pouvoir être configurés dans Scryer.",
@@ -1376,7 +1729,6 @@ const fr: LocaleDictionary = {
     "Aucun plugin trouvé. Actualisez le registre ou continuez avec les fournisseurs intégrés.",
   "setup.pluginsNoneAvailable":
     "Tout ce qui est dans le registre est déjà installé.",
-
   "setup.mediaPathsTitle": "Où sont stockés vos médias ?",
   "setup.mediaPathsDescription":
     "Définissez les dossiers racine où Scryer organisera vos films et séries.",
@@ -1385,15 +1737,12 @@ const fr: LocaleDictionary = {
   "setup.animePath": "Chemin des anime",
   "setup.optional": "(optionnel)",
   "setup.browse": "Parcourir",
-
   "setup.downloadClientTitle": "Ajouter un client de téléchargement",
   "setup.downloadClientDescription":
     "Scryer envoie les téléchargements à votre client préféré. Les plugins installés à l'étape précédente apparaîtront ici.",
-
   "setup.indexerTitle": "Ajouter un indexeur",
   "setup.indexerDescription":
     "Les indexeurs fournissent la base de données de versions que Scryer interroge.",
-
   "setup.summaryTitle": "Tout est prêt",
   "setup.summaryDescription":
     "Voici ce que vous avez configuré. Vous pouvez modifier tout cela plus tard dans les Paramètres.",
@@ -1402,10 +1751,11 @@ const fr: LocaleDictionary = {
   "setup.summaryDownloadClient": "Client de téléchargement",
   "setup.summaryIndexer": "Indexeur",
   "setup.summaryConfigured": "Configuré",
-
   "setup.next": "Suivant",
   "setup.back": "Retour",
   "setup.finish": "Terminer la configuration",
+  "setup.importOnly": "Importer uniquement",
+  "setup.importAndScan": "Importer et analyser",
   "setup.connectionSuccess": "Connexion réussie",
   "setup.connectionFailed": "Échec de la connexion",
   "setup.saved": "Enregistré",
@@ -1413,7 +1763,6 @@ const fr: LocaleDictionary = {
   "setup.skip": "Passer",
   "setup.skipSetup": "Ignorer complètement la configuration",
   "setup.skipping": "Passage…",
-
   "setup.connectTitle": "Connecter Sonarr et Radarr",
   "setup.connectDescription":
     "Saisissez l'URL et la clé API de votre instance Sonarr et/ou Radarr. Au moins une est requise.",
@@ -1426,7 +1775,6 @@ const fr: LocaleDictionary = {
   "setup.connectError": "Échec de la connexion",
   "setup.atLeastOneRequired": "Saisissez au moins Sonarr ou Radarr.",
   "setup.urlPlaceholder": "http://localhost:8989",
-
   "setup.reviewTitle": "Vérification et importation",
   "setup.reviewDescription":
     "Sélectionnez les configurations à intégrer dans Scryer.",
@@ -1453,17 +1801,7 @@ const fr: LocaleDictionary = {
     "Sonarr/Radarr masque cette clé API. Saisissez-la manuellement pour importer ce client :",
   "setup.apiKeyPlaceholder": "Collez la clé API…",
   "setup.apiKeyHelpLink": "Trouvez-la dans SABnzbd → Config → Général",
-
   "settings.runSetupWizard": "Lancer l'assistant de configuration",
-
-  "settings.sub.minScoreSeries": "Score minimum pour les séries",
-  "settings.sub.minScoreMovie": "Score minimum pour les films",
-  "settings.sub.minScoreHelp":
-    "Les sous-titres en dessous de ce score sont ignorés. Les séries nécessitent un seuil plus élevé car la correspondance au niveau de l'épisode doit être exacte.",
-  "settings.sub.syncEnabled": "Corriger automatiquement le timing des sous-titres",
-  "settings.sub.syncEnabledHelp":
-    "Utilise l'analyse audio pour corriger les décalages de timing dans les sous-titres téléchargés.",
-
   "history.title": "Historique",
   "history.empty": "Aucun événement dans l'historique",
   "history.event": "Événement",
@@ -1483,11 +1821,32 @@ const fr: LocaleDictionary = {
   "history.downloadIgnored": "Ignoré",
   "history.noMore": "Plus d'événements",
   "history.loadMore": "Charger plus",
-
   "convenience.title": "Règles de commodité",
   "convenience.requiredAudioLabel": "Langues audio requises",
   "convenience.requiredAudioHelp":
     "Les releases sans ces langues audio seront bloquées. Crée une règle gérée visible dans Paramètres > Règles.",
+  "settings.recycleBin": "Corbeille",
+  "settings.recycleBinSection": "Gérer les fichiers multimédias recyclés",
+  "settings.recycleBinEmpty": "La corbeille est vide.",
+  "settings.recycleBinRestore": "Restaurer",
+  "settings.recycleBinDelete": "Supprimer",
+  "settings.recycleBinEmptyAll": "Corbeille vide",
+  "settings.recycleBinEmptyConfirm":
+    "Supprimer définitivement tous les éléments {count} de la corbeille ? Cela ne peut pas être annulé.",
+  "settings.recycleBinDeleteConfirm":
+    "Supprimer définitivement ce fichier ? Cela ne peut pas être annulé.",
+  "status.recycleBinRestored": "Fichier restauré dans {path}.",
+  "status.recycleBinDeleted": "Fichier définitivement supprimé.",
+  "status.recycleBinEmptied": "Corbeille vidée ({count} éléments supprimés).",
+  "settings.pp.animeScript": "Script anime",
+  "settings.pp.envVarsDescription":
+    "Les variables suivantes sont disponibles dans votre script :",
+  "settings.pp.envVarsHeading": "Variables d'environnement",
+  "settings.pp.intro":
+    "Exécuter un script personnalisé après chaque importation de fichier. Laissez vide pour désactiver. Le répertoire de travail est le dossier contenant le fichier importé.",
+  "settings.pp.movieScript": "Script films",
+  "settings.pp.seriesScript": "Script séries",
+  "settings.pp.timeoutSecs": "Délai d'expiration du script (secondes)",
 };
 
 export default fr;

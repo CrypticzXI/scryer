@@ -54,6 +54,7 @@ type LibraryScanPhasePayload = {
   filesCompleted: number;
   filesTotal: number | null;
   summary?: LibraryScanSummary | null;
+  warningMessage?: string | null;
 };
 
 type LibraryScanFailedPayload = {
@@ -82,8 +83,8 @@ function normalizeFacet(value: unknown): Facet {
     return "anime";
   }
 
-  if (value === "tv" || value === "series") {
-    return "tv";
+  if (value === "series") {
+    return "series";
   }
 
   return "movie";
@@ -92,7 +93,6 @@ function normalizeFacet(value: unknown): Facet {
 function normalizeFacetOrNull(value: unknown): Facet | null {
   if (
     value === "movie" ||
-    value === "tv" ||
     value === "series" ||
     value === "anime"
   ) {
@@ -180,6 +180,7 @@ function emptySession(
     hydrationProgress: emptyPhaseProgress(),
     mediaAnalysisProgress: emptyPhaseProgress(),
     summary: null,
+    warningMessage: null,
   };
 }
 
@@ -288,6 +289,10 @@ function normalizePhasePayload(
     filesCompleted: normalizeNonNegativeNumber(data.files_completed),
     filesTotal,
     summary: normalizeSummary(data.summary),
+    warningMessage:
+      typeof data.warning_message === "string" && data.warning_message.trim().length > 0
+        ? data.warning_message
+        : null,
   };
 }
 
@@ -394,6 +399,9 @@ function applyProgressPayload(
   session.mediaAnalysisProgress.completed = payload.filesCompleted;
   if (payload.summary !== undefined) {
     session.summary = payload.summary;
+  }
+  if (payload.warningMessage !== undefined) {
+    session.warningMessage = payload.warningMessage;
   }
 }
 

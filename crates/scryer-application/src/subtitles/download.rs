@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn subtitle_path_with_spaces_forced() {
         let path = build_subtitle_path(
-            Path::new("/data/tv/My Show S01E02.mkv"),
+            Path::new("/data/series/My Show S01E02.mkv"),
             "spa",
             "srt",
             true,
@@ -183,7 +183,7 @@ mod tests {
         );
         assert_eq!(
             path,
-            PathBuf::from("/data/tv/My Show S01E02.spa.forced.srt")
+            PathBuf::from("/data/series/My Show S01E02.spa.forced.srt")
         );
     }
 
@@ -262,13 +262,16 @@ mod tests {
     #[test]
     fn subtitle_path_forced_precedence_different_language() {
         let path = build_subtitle_path(
-            Path::new("/data/tv/Show.S01E01.mkv"),
+            Path::new("/data/series/Show.S01E01.mkv"),
             "fre",
             "srt",
             true,
             true,
         );
-        assert_eq!(path, PathBuf::from("/data/tv/Show.S01E01.fre.forced.srt"));
+        assert_eq!(
+            path,
+            PathBuf::from("/data/series/Show.S01E01.fre.forced.srt")
+        );
     }
 
     // ── Various formats ─────────────────────────────────────────────

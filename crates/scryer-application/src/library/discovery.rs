@@ -313,7 +313,9 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
 
 pub(crate) fn is_ignored_library_dir_name(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
-    normalized.starts_with('.') || LIBRARY_IGNORED_DIR_NAMES.contains(&normalized.as_str())
+    normalized.starts_with('.')
+        || normalized.ends_with(".trickplay")
+        || LIBRARY_IGNORED_DIR_NAMES.contains(&normalized.as_str())
 }
 
 pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
@@ -354,15 +356,9 @@ pub(crate) fn should_skip_library_subpath(root: &Path, path: &Path, is_dir: bool
         let Some(name) = name.to_str() else {
             continue;
         };
-        if components.peek().is_some() {
-            if is_ignored_library_dir_name(name) {
-                return true;
-            }
-        } else if is_dir {
-            if is_ignored_library_dir_name(name) {
-                return true;
-            }
-        } else if is_ignored_library_file_name(name) {
+        if ((components.peek().is_some() || is_dir) && is_ignored_library_dir_name(name))
+            || is_ignored_library_file_name(name)
+        {
             return true;
         }
     }
@@ -387,10 +383,8 @@ pub(crate) fn should_skip_movie_library_subpath(root: &Path, path: &Path, is_dir
         let Some(name) = name.to_str() else {
             continue;
         };
-        if components.peek().is_some() || is_dir {
-            if is_ignored_movie_subdir_name(name) {
-                return true;
-            }
+        if (components.peek().is_some() || is_dir) && is_ignored_movie_subdir_name(name) {
+            return true;
         }
     }
 
@@ -682,6 +676,9 @@ mod tests {
         tokio::fs::create_dir_all(dir.path().join(".stfolder"))
             .await
             .expect(".stfolder");
+        tokio::fs::create_dir_all(dir.path().join("Show A.trickplay"))
+            .await
+            .expect(".trickplay");
 
         let child_dirs = list_child_directories(dir.path())
             .await
@@ -730,5 +727,13 @@ mod tests {
         let path = Path::new("/library/Movie Title/Sample.2024.BluRay.mkv");
 
         assert!(!should_skip_movie_library_subpath(root, path, false));
+    }
+
+    #[test]
+    fn should_skip_library_subpath_for_trickplay_directories() {
+        let root = Path::new("/library");
+        let path = Path::new("/library/Show Name/Show.Name.S01E01.trickplay");
+
+        assert!(should_skip_library_subpath(root, path, true));
     }
 }

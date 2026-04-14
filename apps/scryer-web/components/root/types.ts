@@ -1,4 +1,4 @@
-export type ViewId = "movies" | "series" | "anime" | "activity" | "wanted" | "history" | "settings" | "system";
+export type ViewId = "movies" | "series" | "anime" | "activity" | "calendar" | "wanted" | "history" | "settings" | "system";
 export type SystemSection = "overview" | "jobs";
 export type SettingsSection =
   | "profile"
@@ -61,7 +61,7 @@ export type SystemHealth = {
   monitoredTitles: number;
   totalUsers: number;
   titlesMovie: number;
-  titlesTv: number;
+  titlesSeries: number;
   titlesAnime: number;
   titlesOther: number;
   recentEvents: number;

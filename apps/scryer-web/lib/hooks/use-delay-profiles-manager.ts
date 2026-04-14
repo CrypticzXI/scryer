@@ -24,7 +24,7 @@ type DelayProfilePayload = {
   preferredProtocol: "usenet" | "torrent";
   minAgeMinutes: number;
   bypassScoreThreshold?: number | null;
-  appliesToFacets: Array<"movie" | "tv" | "anime">;
+  appliesToFacets: Array<"movie" | "series" | "anime">;
   tags: string[];
   priority: number;
   enabled: boolean;
@@ -39,7 +39,7 @@ function fromDelayProfilePayload(profile: DelayProfilePayload): ParsedDelayProfi
     preferred_protocol: profile.preferredProtocol,
     min_age_minutes: profile.minAgeMinutes,
     bypass_score_threshold: profile.bypassScoreThreshold ?? null,
-    applies_to_facets: profile.appliesToFacets.map((facet) => facet === "tv" ? "series" : facet),
+    applies_to_facets: profile.appliesToFacets,
     tags: profile.tags,
     priority: profile.priority,
     enabled: profile.enabled,
@@ -55,7 +55,7 @@ function toDelayProfileInput(profile: ParsedDelayProfile) {
     preferredProtocol: profile.preferred_protocol,
     minAgeMinutes: profile.min_age_minutes,
     bypassScoreThreshold: profile.bypass_score_threshold,
-    appliesToFacets: profile.applies_to_facets.map((facet) => facet === "series" ? "tv" : facet),
+    appliesToFacets: profile.applies_to_facets,
     tags: profile.tags,
     priority: profile.priority,
     enabled: profile.enabled,

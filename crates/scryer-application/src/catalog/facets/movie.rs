@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use scryer_domain::MediaFacet;
 
 use crate::facet_handler::{FacetHandler, HydrationResult, movie_to_hydration_result};
-use crate::{ActivityKind, AppResult, MetadataGateway};
+use crate::{AppResult, MetadataGateway};
 
 pub struct MovieFacetHandler;
 
@@ -34,10 +34,6 @@ impl FacetHandler for MovieFacetHandler {
 
     fn has_episodes(&self) -> bool {
         false
-    }
-
-    fn title_added_activity_kind(&self) -> Option<ActivityKind> {
-        Some(ActivityKind::MovieAdded)
     }
 
     fn search_category(&self) -> &str {

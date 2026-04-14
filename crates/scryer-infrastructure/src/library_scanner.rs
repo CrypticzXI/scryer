@@ -161,10 +161,12 @@ fn walk_scan_batches_blocking(
     let walker = if discover_movie_nfo {
         FilesystemWalker::new()
             .skip_movie_scan_junk_and_extras()
+            .supported_video_and_nfo_files()
             .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
     } else {
         FilesystemWalker::new()
             .skip_library_scan_junk()
+            .supported_video_files_only()
             .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
     };
 
@@ -289,6 +291,7 @@ fn scan_directory_with_metrics_blocking(
 
     FilesystemWalker::new()
         .skip_library_scan_junk()
+        .supported_video_files_only()
         .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
         .walk_with(&root_path, |walked_dir| {
             collect_directory_files_with_source_snapshot(
@@ -514,6 +517,9 @@ mod tests {
         tokio::fs::write(movie_path.with_extension("nfo"), b"<movie/>")
             .await
             .expect("write nfo");
+        tokio::fs::write(dir.path().join("poster.jpg"), b"poster")
+            .await
+            .expect("write poster");
 
         let scanner = FileSystemLibraryScanner::new();
         let files = scanner
@@ -526,6 +532,33 @@ mod tests {
         assert!(files[0].size_bytes.is_none());
         assert!(files[0].source_signature_scheme.is_none());
         assert!(files[0].source_signature_value.is_none());
+    }
+
+    #[tokio::test]
+    async fn scan_directory_for_progress_with_metrics_ignores_non_video_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let episode_path = dir.path().join("Episode.S01E01.mkv");
+        tokio::fs::write(&episode_path, b"video")
+            .await
+            .expect("write episode");
+        tokio::fs::write(dir.path().join("Episode.S01E01.nfo"), b"<episodedetails/>")
+            .await
+            .expect("write nfo");
+        tokio::fs::write(dir.path().join("Episode.S01E01-thumb.jpg"), b"thumb")
+            .await
+            .expect("write thumb");
+        tokio::fs::write(dir.path().join("poster.jpg"), b"poster")
+            .await
+            .expect("write poster");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let result = scanner
+            .scan_directory_for_progress_with_metrics(dir.path().to_string_lossy().as_ref())
+            .await
+            .expect("scan directory for progress");
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, episode_path.to_string_lossy());
     }
 
     #[tokio::test]
@@ -665,15 +698,22 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let show_dir = dir.path().join("Show");
         let junk_dir = show_dir.join("@eaDir");
+        let trickplay_dir = show_dir.join("Episode.S01E01.trickplay");
         tokio::fs::create_dir_all(&junk_dir)
             .await
             .expect("junk dir");
+        tokio::fs::create_dir_all(&trickplay_dir)
+            .await
+            .expect("trickplay dir");
         tokio::fs::write(show_dir.join("Episode.S01E01.mkv"), b"video")
             .await
             .expect("episode");
         tokio::fs::write(junk_dir.join("Episode.S01E02.mkv"), b"video")
             .await
             .expect("junk episode");
+        tokio::fs::write(trickplay_dir.join("segment001.mkv"), b"video")
+            .await
+            .expect("trickplay segment");
 
         let scanner = FileSystemLibraryScanner::new();
         let result = scanner

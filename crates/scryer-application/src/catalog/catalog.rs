@@ -26,6 +26,61 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
 ];
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
 
+fn title_external_id_value(title: &Title, source: &str) -> Option<String> {
+    if source == "imdb"
+        && let Some(imdb_id) = title.imdb_id.as_deref()
+        && !imdb_id.trim().is_empty()
+    {
+        return Some(imdb_id.trim().to_string());
+    }
+
+    title
+        .external_ids
+        .iter()
+        .find(|external_id| external_id.source == source && !external_id.value.trim().is_empty())
+        .map(|external_id| external_id.value.trim().to_string())
+}
+
+fn push_title_external_id_index(
+    map: &mut HashMap<String, Vec<Title>>,
+    key: Option<String>,
+    title: &Title,
+) {
+    let Some(key) = key else { return };
+    map.entry(key).or_default().push(title.clone());
+}
+
+fn unique_title_match(map: &HashMap<String, Vec<Title>>, key: Option<&str>) -> Option<Title> {
+    let key = key?.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let matches = map.get(key)?;
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
+fn unique_episode_match(
+    episodes_by_tvdb: &HashMap<String, Vec<Episode>>,
+    episodes_by_number: &HashMap<(String, String), Vec<Episode>>,
+    tvdb_id: Option<&str>,
+    season_number: i32,
+    episode_number: i32,
+) -> Option<Episode> {
+    let tvdb_match = tvdb_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| episodes_by_tvdb.get(value))
+        .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()));
+
+    tvdb_match.or_else(|| {
+        let key = (season_number.to_string(), episode_number.to_string());
+        episodes_by_number
+            .get(&key)
+            .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()))
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HydrationCompletionOptions {
     sync_wanted_after_completion: bool,
@@ -136,7 +191,7 @@ impl AppUseCase {
     }
 
     pub(crate) async fn metadata_language(&self) -> String {
-        self.read_setting_string_value_for_scope("system", "metadata_language", None)
+        self.read_setting_string_value_for_scope(SETTINGS_SCOPE_SYSTEM, METADATA_LANGUAGE_KEY, None)
             .await
             .ok()
             .flatten()
@@ -1812,6 +1867,229 @@ impl AppUseCase {
         Ok(episode)
     }
 
+    async fn apply_movie_monitor_snapshot_entries(
+        &self,
+        entries: &[ExternalImportMonitorMovieEntry],
+        now: &DateTime<Utc>,
+    ) -> AppResult<()> {
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(MediaFacet::Movie), None)
+            .await?;
+        let mut titles_by_tmdb = HashMap::<String, Vec<Title>>::new();
+        let mut titles_by_imdb = HashMap::<String, Vec<Title>>::new();
+
+        for title in &titles {
+            push_title_external_id_index(
+                &mut titles_by_tmdb,
+                title_external_id_value(title, "tmdb"),
+                title,
+            );
+            push_title_external_id_index(
+                &mut titles_by_imdb,
+                title_external_id_value(title, "imdb"),
+                title,
+            );
+        }
+
+        let mut touched_title_ids = HashSet::new();
+        for entry in entries {
+            let matched_title = unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref())
+                .or_else(|| unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()));
+            let Some(title) = matched_title else { continue };
+
+            let updated = self
+                .persist_title_monitoring(&title.id, entry.monitored)
+                .await?;
+            touched_title_ids.insert(updated.id);
+        }
+
+        for title_id in touched_title_ids {
+            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
+                continue;
+            };
+
+            if title.monitored {
+                self.sync_wanted_movie_inner(&title, now, true).await;
+            } else {
+                self.services
+                    .workflow
+                    .wanted_items
+                    .delete_wanted_items_for_title(&title.id)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_series_monitor_snapshot_entries(
+        &self,
+        facet: &MediaFacet,
+        entries: &[ExternalImportMonitorSeriesEntry],
+        now: &DateTime<Utc>,
+    ) -> AppResult<()> {
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(facet.clone()), None)
+            .await?;
+        let mut titles_by_tvdb = HashMap::<String, Vec<Title>>::new();
+
+        for title in &titles {
+            push_title_external_id_index(
+                &mut titles_by_tvdb,
+                title_external_id_value(title, "tvdb"),
+                title,
+            );
+        }
+
+        let mut touched_title_ids = HashSet::new();
+        for entry in entries {
+            let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref()) else {
+                continue;
+            };
+
+            let updated_title = self
+                .persist_title_monitoring(&title.id, entry.monitored)
+                .await?;
+            touched_title_ids.insert(updated_title.id.clone());
+
+            let collections = self
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(&updated_title.id)
+                .await?;
+            let episodes = self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&updated_title.id)
+                .await?;
+
+            let mut collections_by_season = HashMap::<String, Collection>::new();
+            let mut episodes_by_tvdb = HashMap::<String, Vec<Episode>>::new();
+            let mut episodes_by_number = HashMap::<(String, String), Vec<Episode>>::new();
+
+            for collection in &collections {
+                collections_by_season
+                    .entry(collection.collection_index.clone())
+                    .or_insert_with(|| collection.clone());
+            }
+
+            for episode in &episodes {
+                if let Some(tvdb_id) = episode.tvdb_id.as_deref().filter(|value| !value.is_empty())
+                {
+                    episodes_by_tvdb
+                        .entry(tvdb_id.to_string())
+                        .or_default()
+                        .push(episode.clone());
+                }
+                if let (Some(season_number), Some(episode_number)) = (
+                    episode.season_number.as_deref(),
+                    episode.episode_number.as_deref(),
+                ) {
+                    episodes_by_number
+                        .entry((season_number.to_string(), episode_number.to_string()))
+                        .or_default()
+                        .push(episode.clone());
+                }
+            }
+
+            for collection in &collections {
+                self.persist_collection_monitoring(&collection.id, false, false)
+                    .await?;
+            }
+            for episode in &episodes {
+                self.persist_episode_monitoring(&episode.id, false).await?;
+            }
+
+            if updated_title.monitored {
+                for season in entry.seasons.iter().filter(|season| season.monitored) {
+                    if let Some(collection) =
+                        collections_by_season.get(&season.season_number.to_string())
+                    {
+                        self.persist_collection_monitoring(&collection.id, true, false)
+                            .await?;
+                    }
+                }
+
+                for episode in entry.episodes.iter().filter(|episode| episode.monitored) {
+                    if let Some(matched_episode) = unique_episode_match(
+                        &episodes_by_tvdb,
+                        &episodes_by_number,
+                        episode.tvdb_id.as_deref(),
+                        episode.season_number,
+                        episode.episode_number,
+                    ) {
+                        self.persist_episode_monitoring(&matched_episode.id, true)
+                            .await?;
+                    }
+                }
+            }
+        }
+
+        for title_id in touched_title_ids {
+            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
+                continue;
+            };
+
+            if title.monitored {
+                self.sync_wanted_series_inner(&title, now, true).await;
+            } else {
+                self.services
+                    .workflow
+                    .wanted_items
+                    .delete_wanted_items_for_title(&title.id)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn apply_pending_external_import_monitor_snapshot_for_facet(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<bool> {
+        let Some(snapshot) = self.pending_external_import_monitor_snapshot(facet).await? else {
+            return Ok(false);
+        };
+
+        let now = Utc::now();
+        match (&snapshot.facet, &snapshot.payload) {
+            (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Movie { entries }) => {
+                self.apply_movie_monitor_snapshot_entries(entries, &now)
+                    .await?;
+            }
+            (
+                MediaFacet::Series | MediaFacet::Anime,
+                ExternalImportMonitorSnapshotPayload::Series { entries },
+            ) => {
+                self.apply_series_monitor_snapshot_entries(&snapshot.facet, entries, &now)
+                    .await?;
+            }
+            (snapshot_facet, _) => {
+                return Err(AppError::Validation(format!(
+                    "monitor snapshot payload did not match facet {}",
+                    snapshot_facet.as_str()
+                )));
+            }
+        }
+
+        self.services
+            .workflow
+            .external_import_monitor_snapshots
+            .delete_external_import_monitor_snapshot(facet)
+            .await?;
+
+        Ok(true)
+    }
+
     /// Canonical owner for collection monitoring orchestration. Dedicated
     /// monitor mutations and generic collection updates must both delegate here
     /// so propagation and immediate acquisition behavior cannot drift.
@@ -2864,11 +3142,7 @@ impl AppUseCase {
         Ok(refreshed)
     }
 
-    pub async fn rehydrate_all_metadata(
-        &self,
-        actor: &User,
-        language: &str,
-    ) -> AppResult<(u64, u32)> {
+    pub async fn rehydrate_all_metadata(&self, actor: &User, language: &str) -> AppResult<u64> {
         require(actor, &Entitlement::ManageConfig)?;
 
         let language = language.trim().to_ascii_lowercase();
@@ -2881,7 +3155,7 @@ impl AppUseCase {
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
-                "metadata_language",
+                METADATA_LANGUAGE_KEY,
                 None,
                 serde_json::to_string(&language)
                     .map_err(|error| AppError::Repository(error.to_string()))?,
@@ -2896,9 +3170,29 @@ impl AppUseCase {
             .titles
             .clear_metadata_language_for_all()
             .await?;
-        let refreshed = self.hydrate_all_titles_for_current_language().await?;
+        let app = self.clone();
+        tokio::spawn(async move {
+            match app.hydrate_all_titles_for_current_language().await {
+                Ok(refreshed) => {
+                    info!(
+                        language = %language,
+                        titles_cleared = cleared,
+                        titles_refreshed = refreshed,
+                        "metadata rehydration completed"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        language = %language,
+                        titles_cleared = cleared,
+                        "metadata rehydration failed"
+                    );
+                }
+            }
+        });
 
-        Ok((cleared, refreshed))
+        Ok(cleared)
     }
 }
 

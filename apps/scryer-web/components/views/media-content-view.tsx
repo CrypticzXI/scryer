@@ -35,7 +35,7 @@ import type {
 } from "@/lib/types/quality-profiles";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
-type Facet = "movie" | "tv" | "anime";
+type Facet = "movie" | "series" | "anime";
 
 type ParsedQualityProfile = {
   id: string;
@@ -307,7 +307,7 @@ export function MediaContentView({
     activeQualityScopeId === "movie"
       ? t("search.facetMovie")
       : activeQualityScopeId === "series"
-        ? t("search.facetTv")
+        ? t("search.facetSeries")
         : t("search.facetAnime");
   type ContentViewMode = "table" | "poster";
   const [viewMode, setViewMode] = React.useState<ContentViewMode>(() => {

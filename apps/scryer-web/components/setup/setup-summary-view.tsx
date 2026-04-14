@@ -11,16 +11,19 @@ interface SummaryItem {
 interface SetupSummaryViewProps {
   t: (key: string) => string;
   facetPrefs: Record<ViewCategoryId, FacetQualityPrefs>;
-  moviesPath: string;
-  seriesPath: string;
-  animePath?: string;
+  moviesPaths: string[];
+  seriesPaths: string[];
+  animePaths?: string[];
   downloadClientName: string;
   indexerName: string;
   importedDcCount?: number;
   importedIdxCount?: number;
-  onFinish: () => void;
+  onFinish?: () => void;
+  onImportOnly?: () => void;
+  onImportAndScan?: () => void;
   onBack: () => void;
   finishing: boolean;
+  finishingAction?: "finish" | "importOnly" | "importAndScan" | null;
 }
 
 function formatFacetPrefs(
@@ -45,22 +48,26 @@ function formatFacetPrefs(
 export function SetupSummaryView({
   t,
   facetPrefs,
-  moviesPath,
-  seriesPath,
-  animePath,
+  moviesPaths,
+  seriesPaths,
+  animePaths,
   downloadClientName,
   indexerName,
   importedDcCount,
   importedIdxCount,
   onFinish,
+  onImportOnly,
+  onImportAndScan,
   onBack,
   finishing,
+  finishingAction,
 }: SetupSummaryViewProps) {
   const isImportPath = importedDcCount !== undefined || importedIdxCount !== undefined;
+  const mediaPathsSummary = [...moviesPaths, ...seriesPaths, ...(animePaths ?? [])].join(", ");
 
   const items: SummaryItem[] = [
     { label: t("setup.summaryPersona"), value: formatFacetPrefs(facetPrefs, t) },
-    { label: t("setup.summaryMediaPaths"), value: [moviesPath, seriesPath, animePath].filter(Boolean).join(", ") },
+    { label: t("setup.summaryMediaPaths"), value: mediaPathsSummary },
   ];
 
   if (isImportPath) {
@@ -102,9 +109,28 @@ export function SetupSummaryView({
       </Card>
       <div className="flex justify-between pt-2">
         <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
-        <Button onClick={onFinish} disabled={finishing}>
-          {finishing ? t("label.saving") : t("setup.finish")}
-        </Button>
+        {isImportPath && onImportOnly && onImportAndScan ? (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={onImportOnly}
+              disabled={finishing}
+            >
+              {finishingAction === "importOnly"
+                ? t("setup.importing")
+                : t("setup.importOnly")}
+            </Button>
+            <Button onClick={onImportAndScan} disabled={finishing}>
+              {finishingAction === "importAndScan"
+                ? t("setup.importing")
+                : t("setup.importAndScan")}
+            </Button>
+          </div>
+        ) : (
+          <Button onClick={onFinish} disabled={finishing}>
+            {finishing ? t("label.saving") : t("setup.finish")}
+          </Button>
+        )}
       </div>
     </div>
   );

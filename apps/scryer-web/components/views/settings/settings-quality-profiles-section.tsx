@@ -827,10 +827,6 @@ export function SettingsQualityProfilesSection({
               </span>
             </summary>
             <div className="mt-3 space-y-4">
-              <p className="text-sm text-muted-foreground">
-                {t("qualityProfile.scoringPersonaMovedInfo")}
-              </p>
-
               {/* Preferences */}
               <div className="space-y-3">
                 <label className="mb-2 flex items-center gap-3">

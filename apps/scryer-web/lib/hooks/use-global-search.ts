@@ -201,11 +201,16 @@ export function useGlobalSearch({
   );
   const [isGlobalSearchPanelOpen, setIsGlobalSearchPanelOpen] = useState(false);
   const [rootFoldersByFacet, setRootFoldersByFacet] = useState<Record<Facet, RootFolderOption[]>>(
-    () => ({ movie: [], tv: [], anime: [] }),
+    () => ({ movie: [], series: [], anime: [] }),
   );
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const catalogTvdbIdsRef = useRef<Record<Facet, Set<string>>>({
+    movie: new Set<string>(),
+    series: new Set<string>(),
+    anime: new Set<string>(),
+  });
 
   const isTitleInCatalogByFacet = useMemo(() => {
     const buckets = Object.fromEntries(
@@ -213,7 +218,7 @@ export function useGlobalSearch({
     ) as Record<Facet, Set<string>>;
 
     for (const title of catalogSearchResults) {
-      const facet: Facet = title.facet === "movie" ? "movie" : title.facet === "anime" ? "anime" : "tv";
+      const facet = title.facet;
       const tvdbIds = title.externalIds
         .filter((externalId) => externalId.source.toLowerCase() === "tvdb")
         .map((externalId) => externalId.value.trim())
@@ -224,6 +229,10 @@ export function useGlobalSearch({
 
     return buckets;
   }, [catalogSearchResults]);
+
+  useEffect(() => {
+    catalogTvdbIdsRef.current = isTitleInCatalogByFacet;
+  }, [isTitleInCatalogByFacet]);
 
   const selectedTvdb = useMemo(() => {
     if (!selectedTvdbId) {
@@ -323,11 +332,11 @@ export function useGlobalSearch({
 
       const nextRootFolders: Record<Facet, RootFolderOption[]> = {
         movie: data.movieSettings?.rootFolders ?? [],
-        tv: data.seriesSettings?.rootFolders ?? [],
+        series: data.seriesSettings?.rootFolders ?? [],
         anime: data.animeSettings?.rootFolders ?? [],
       };
       setRootFoldersByFacet((previous) => {
-        const same = (["movie", "tv", "anime"] as Facet[]).every((f) => {
+        const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
           const prev = previous[f];
           const next = nextRootFolders[f];
           return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
@@ -382,10 +391,14 @@ export function useGlobalSearch({
     [isMetadataSearchResultInAnyCatalog],
   );
 
-  const filterMetadataSearchResults = useCallback(
-    (facet: Facet, results: MetadataTvdbSearchItem[]) =>
-      results.filter((result) => !isMetadataSearchResultInCatalog(facet, result)),
-    [isMetadataSearchResultInCatalog],
+  const filterCatalogedMetadataResultsForAutocomplete = useCallback(
+    (results: MetadataTvdbSearchItem[]) =>
+      results.filter((result) => {
+        const tvdbId = String(result.tvdbId).trim();
+        if (!tvdbId) return true;
+        return !Object.values(catalogTvdbIdsRef.current).some((bucket) => bucket.has(tvdbId));
+      }),
+    [],
   );
 
   const mapFacetToTvdbType = useCallback((facet: Facet) => {
@@ -588,20 +601,24 @@ export function useGlobalSearch({
           if (requestId !== autocompleteRequestId.current) return;
           const multi = data.searchMetadataMulti ?? { movies: [], series: [], anime: [] };
           const movieResults = sortByRelevance(
-            filterMetadataSearchResults("movie", (multi.movies || []) as MetadataTvdbSearchItem[]),
+            filterCatalogedMetadataResultsForAutocomplete(
+              (multi.movies || []) as MetadataTvdbSearchItem[],
+            ),
             trimmed,
           );
           const animeResults = sortByRelevance(
-            filterMetadataSearchResults("anime", (multi.anime || []) as MetadataTvdbSearchItem[]),
+            filterCatalogedMetadataResultsForAutocomplete(
+              (multi.anime || []) as MetadataTvdbSearchItem[],
+            ),
             trimmed,
           );
           const animeTvdbIds = new Set(
             animeResults.map((item) => String(item.tvdbId).trim()),
           );
           const seriesResults = sortByRelevance(
-            filterMetadataSearchResults("tv", (multi.series || []) as MetadataTvdbSearchItem[]).filter(
-              (item) => !animeTvdbIds.has(String(item.tvdbId).trim()),
-            ),
+            filterCatalogedMetadataResultsForAutocomplete(
+              (multi.series || []) as MetadataTvdbSearchItem[],
+            ).filter((item) => !animeTvdbIds.has(String(item.tvdbId).trim())),
             trimmed,
           );
           const nextMetadata: MetadataSearchResults = {
@@ -652,7 +669,7 @@ export function useGlobalSearch({
       setSearching(false);
     },
     [
-      filterMetadataSearchResults,
+      filterCatalogedMetadataResultsForAutocomplete,
       client,
       t,
       setGlobalStatus,
@@ -693,6 +710,12 @@ export function useGlobalSearch({
       window.clearTimeout(debounceTimer);
     };
   }, [globalSearch, runMetadataAutocomplete, emptyMetadataSearchResults]);
+
+  useEffect(() => {
+    return () => {
+      autocompleteAbortRef.current?.abort();
+    };
+  }, []);
 
   const openGlobalSearchPanel = useCallback((force?: boolean) => {
     if (force) {

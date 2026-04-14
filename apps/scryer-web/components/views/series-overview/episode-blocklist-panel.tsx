@@ -1,4 +1,5 @@
 import type { TitleReleaseBlocklistEntry } from "@/components/containers/series-overview-container";
+import { useTranslate } from "@/lib/context/translate-context";
 import { formatDate } from "./helpers";
 
 export function EpisodeBlocklistPanel({
@@ -6,10 +7,11 @@ export function EpisodeBlocklistPanel({
 }: {
   entries: TitleReleaseBlocklistEntry[];
 }) {
+  const t = useTranslate();
   if (entries.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No blocked releases recorded for this episode.
+        {t("episode.noBlockedReleases")}
       </p>
     );
   }
@@ -22,7 +24,7 @@ export function EpisodeBlocklistPanel({
           className="rounded-lg border border-border bg-background/35 p-3"
         >
           <p className="break-words text-sm text-card-foreground">
-            {entry.sourceTitle || "Untitled release"}
+            {entry.sourceTitle || t("episode.untitledRelease")}
           </p>
           {entry.sourceHint ? (
             <p className="mt-1 break-all font-mono text-xs text-muted-foreground/60">

@@ -18,6 +18,7 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -51,6 +52,7 @@ type RootSidebarProps = {
   systemSection: SystemSection;
   entitlements: string[];
   pendingImportCounts: PendingImportCounts | null;
+  manualImportRequiredCount: number;
   children?: React.ReactNode;
   onNavigate: (
     nextView: ViewId,
@@ -163,6 +165,7 @@ function RootSidebarContent({
   systemSection,
   entitlements,
   pendingImportCounts,
+  manualImportRequiredCount,
   children,
   onNavigate,
 }: RootSidebarProps) {
@@ -292,6 +295,11 @@ function RootSidebarContent({
                           <Icon className="h-4 w-4" />
                           {item.label}
                         </SidebarMenuButton>
+                        {item.id === "activity" && manualImportRequiredCount > 0 ? (
+                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
+                            {manualImportRequiredCount}
+                          </SidebarMenuBadge>
+                        ) : null}
                       </SidebarMenuItem>
 
                       {showSeparator ? <SidebarSeparator /> : null}
@@ -323,6 +331,11 @@ function RootSidebarContent({
                           <Icon className="h-4 w-4" />
                           {item.label}
                         </SidebarMenuButton>
+                        {item.id === "activity" && manualImportRequiredCount > 0 ? (
+                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
+                            {manualImportRequiredCount}
+                          </SidebarMenuBadge>
+                        ) : null}
                       </SidebarMenuItem>
 
                     {shouldShowChildren ? (

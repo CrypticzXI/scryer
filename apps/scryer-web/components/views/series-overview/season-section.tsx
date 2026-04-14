@@ -45,6 +45,7 @@ import type {
 } from "@/components/containers/series-overview-container";
 import type { EpisodePanelTab } from "./episode-panel-reducer";
 import {
+  buildSpecialsMovieEpisodeMatches,
   isSpecialsCollection,
   seasonHeading,
   formatDate,
@@ -148,6 +149,10 @@ export function SeasonSection({
   const Chevron = expanded ? ChevronDown : ChevronRight;
   const [seasonToggling, setSeasonToggling] = React.useState(false);
   const [episodeToggling, setEpisodeToggling] = React.useState<Set<string>>(new Set());
+  const { linkedMovieByEpisodeId, standaloneSpecialMovies } = React.useMemo(
+    () => buildSpecialsMovieEpisodeMatches(collection, episodes),
+    [collection, episodes],
+  );
 
   const seasonCheckedState: boolean | "indeterminate" = React.useMemo(() => {
     if (episodes.length === 0) return collection.monitored;
@@ -156,6 +161,41 @@ export function SeasonSection({
     if (monitoredCount === episodes.length) return true;
     return "indeterminate";
   }, [episodes, collection.monitored]);
+
+  const episodeRangeLabel = React.useMemo(() => {
+    if (!collection.firstEpisodeNumber && !collection.lastEpisodeNumber) return null;
+    return t("title.episodeRange", {
+      start: collection.firstEpisodeNumber ?? "?",
+      end: collection.lastEpisodeNumber ?? "?",
+    });
+  }, [collection.firstEpisodeNumber, collection.lastEpisodeNumber, t]);
+
+  const episodeCountLabel = React.useMemo(
+    () => (
+      episodes.length === 1
+        ? t("title.episodeCountOne", { count: episodes.length })
+        : t("title.episodeCountOther", { count: episodes.length })
+    ),
+    [episodes.length, t],
+  );
+
+  const specialCountLabel = React.useMemo(
+    () => (
+      episodes.length === 1
+        ? t("title.specialCountOne", { count: episodes.length })
+        : t("title.specialCountOther", { count: episodes.length })
+    ),
+    [episodes.length, t],
+  );
+
+  const movieCountLabel = React.useMemo(
+    () => (
+      standaloneSpecialMovies.length === 1
+        ? t("title.movieCountOne", { count: standaloneSpecialMovies.length })
+        : t("title.movieCountOther", { count: standaloneSpecialMovies.length })
+    ),
+    [standaloneSpecialMovies.length, t],
+  );
 
   const renderEpisodeTypeBadges = React.useCallback((episode: CollectionEpisode) => (
     <>
@@ -245,13 +285,14 @@ export function SeasonSection({
   );
 
   const renderEpisodePanel = React.useCallback(
-    (
-      episode: CollectionEpisode,
-      activeTab: EpisodePanelTab,
-      episodeResults: Release[],
-      episodeLoading: boolean,
-      episodeFiles: EpisodeMediaFile[],
-    ) => (
+      (
+        episode: CollectionEpisode,
+        activeTab: EpisodePanelTab,
+        episodeResults: Release[],
+        episodeLoading: boolean,
+        episodeFiles: EpisodeMediaFile[],
+        linkedMovie = linkedMovieByEpisodeId[episode.id] ?? null,
+      ) => (
       <Tabs
         value={activeTab}
         onValueChange={(val) => onEpisodeTabChange(episode.id, val as EpisodePanelTab, episode)}
@@ -259,10 +300,15 @@ export function SeasonSection({
         <TabsList className="flex w-full flex-nowrap overflow-x-auto">
           <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
           <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
-          <TabsTrigger value="blocklist" className="shrink-0">Blocklist</TabsTrigger>
+          <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
         </TabsList>
         <TabsContent value="details">
-          <EpisodeDetailsPanel episode={episode} mediaFiles={episodeFiles} onDeleteFile={onDeleteFile} />
+          <EpisodeDetailsPanel
+            episode={episode}
+            mediaFiles={episodeFiles}
+            linkedMovie={linkedMovie}
+            onDeleteFile={onDeleteFile}
+          />
         </TabsContent>
         <TabsContent value="search">
           <div className="mb-2 flex items-center justify-end">
@@ -301,7 +347,7 @@ export function SeasonSection({
         </TabsContent>
       </Tabs>
     ),
-    [collection, onDeleteFile, onEpisodeTabChange, onQueueFromEpisodeSearch, onRunEpisodeSearch, releaseBlocklistEntries, t],
+    [collection, linkedMovieByEpisodeId, onDeleteFile, onEpisodeTabChange, onQueueFromEpisodeSearch, onRunEpisodeSearch, releaseBlocklistEntries, t],
   );
 
   return (
@@ -351,13 +397,9 @@ export function SeasonSection({
           <Chevron className="h-4 w-4 shrink-0 text-muted-foreground" />
           <div>
             <p className="text-sm font-semibold text-foreground">
-              {seasonHeading(collection)}
+              {seasonHeading(collection, t)}
             </p>
-            {collection.firstEpisodeNumber || collection.lastEpisodeNumber ? (
-              <p className="text-xs text-muted-foreground">
-                Episodes {collection.firstEpisodeNumber ?? "?"} - {collection.lastEpisodeNumber ?? "?"}
-              </p>
-            ) : null}
+            {episodeRangeLabel ? <p className="text-xs text-muted-foreground">{episodeRangeLabel}</p> : null}
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -365,21 +407,18 @@ export function SeasonSection({
             {collection.collectionType === "interstitial" ? (
               <span className="inline-flex items-center gap-1">
                 <Film className="h-3 w-3" />
-                Movie
+                {t("narrative.movie")}
               </span>
             ) : isSpecialsCollection(collection) ? (
               <span className="inline-flex items-center gap-1">
                 <Star className="h-3 w-3" />
-                {collection.specialsMovies.length > 0
-                  ? `${collection.specialsMovies.length} movie${collection.specialsMovies.length === 1 ? "" : "s"} · `
+                {standaloneSpecialMovies.length > 0
+                  ? `${movieCountLabel} · `
                   : ""}
-                {episodes.length} special{episodes.length === 1 ? "" : "s"}
+                {specialCountLabel}
               </span>
             ) : (
-              <>
-                {episodes.length} episode
-                {episodes.length === 1 ? "" : "s"}
-              </>
+              <>{episodeCountLabel}</>
             )}
           </span>
           {onRunSeasonSearch && !isSpecialsCollection(collection) && collection.collectionType !== "interstitial" ? (
@@ -438,10 +477,10 @@ export function SeasonSection({
           </div>
         ) : (
           <>
-            {isSpecialsCollection(collection) && collection.specialsMovies.length > 0 ? (
+            {isSpecialsCollection(collection) && standaloneSpecialMovies.length > 0 ? (
               <div className="border-t border-border px-4 py-3">
                 <div className="space-y-4">
-                  {collection.specialsMovies.map((movie) => (
+                  {standaloneSpecialMovies.map((movie) => (
                     <div
                       key={`${collection.id}-${movie.tvdbId || movie.name}`}
                       className="rounded-xl border border-border/70 bg-card/40 p-3"
@@ -463,7 +502,7 @@ export function SeasonSection({
             ) : null}
             {episodes.length === 0 ? (
               <div className="border-t border-border px-4 py-3 text-sm text-muted-foreground">
-                {collection.specialsMovies.length > 0
+                {standaloneSpecialMovies.length > 0
                   ? "No episode records for this season."
                   : "No episode records for this season."}
               </div>
@@ -611,11 +650,11 @@ export function SeasonSection({
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-10 text-center" />
-                        <TableHead className="w-16 text-center">Episode</TableHead>
-                        <TableHead>Title</TableHead>
-                        <TableHead className="w-40">Air Date</TableHead>
+                        <TableHead className="w-16 text-center">{t("episode.numberLabel")}</TableHead>
+                        <TableHead>{t("label.title")}</TableHead>
+                        <TableHead className="w-40">{t("episode.airDate")}</TableHead>
                         <TableHead className="w-28 text-center">{t("episode.quality")}</TableHead>
-                        <TableHead className="w-28 text-right">Actions</TableHead>
+                        <TableHead className="w-28 text-right">{t("label.actions")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

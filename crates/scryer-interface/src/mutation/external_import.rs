@@ -1,17 +1,24 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_graphql::{Context, Object, Result as GqlResult};
-use scryer_application::{ExternalImportLibraryPathsSelection, IndexerConfigUpdate};
-use scryer_domain::{Entitlement, NewDownloadClientConfig, NewIndexerConfig};
-use scryer_infrastructure::external_import::{
-    self, ArrDownloadClient, ArrIndexer, ExternalArrClient,
+use scryer_application::{
+    AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
+    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
+    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotPayload, IndexerConfigUpdate,
 };
+use scryer_domain::{Entitlement, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
+use scryer_infrastructure::external_import::{
+    self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ExternalArrClient,
+};
+use tokio::task::JoinSet;
 
 use crate::context::{actor_from_ctx, app_from_ctx};
 use crate::types::*;
 
 #[derive(Default)]
 pub(crate) struct ExternalImportMutations;
+
+const SONARR_EPISODE_FETCH_CONCURRENCY: usize = 8;
 
 #[Object]
 impl ExternalImportMutations {
@@ -132,7 +139,7 @@ impl ExternalImportMutations {
             .collect();
         let selected_idx_keys: HashSet<String> =
             input.selected_indexer_dedup_keys.into_iter().collect();
-        let dc_api_key_overrides: std::collections::HashMap<String, String> = input
+        let dc_api_key_overrides: HashMap<String, String> = input
             .download_client_api_key_overrides
             .into_iter()
             .map(|o| (o.dedup_key, o.api_key))
@@ -151,9 +158,9 @@ impl ExternalImportMutations {
             .save_external_import_library_paths(
                 &actor,
                 ExternalImportLibraryPathsSelection {
-                    movie_path: input.selected_movies_path.clone(),
-                    series_path: input.selected_series_path.clone(),
-                    anime_path: input.selected_anime_path.clone(),
+                    movie_paths: input.selected_movies_paths.clone(),
+                    series_paths: input.selected_series_paths.clone(),
+                    anime_paths: input.selected_anime_paths.clone(),
                 },
             )
             .await
@@ -408,8 +415,330 @@ impl ExternalImportMutations {
             }
         }
 
+        match &input.radarr {
+            Some(conn) if !input.selected_movies_paths.is_empty() => {
+                let client = ExternalArrClient::new(conn.base_url.clone(), conn.api_key.clone());
+                match capture_movie_monitor_snapshot(&client, &input.selected_movies_paths).await {
+                    Ok(payload) => {
+                        if let Err(err) = app
+                            .save_external_import_monitor_snapshot(
+                                &actor,
+                                MediaFacet::Movie,
+                                payload,
+                            )
+                            .await
+                        {
+                            result
+                                .errors
+                                .push(format!("failed to save movie monitoring snapshot: {err}"));
+                        }
+                    }
+                    Err(err) => result.errors.push(format!(
+                        "failed to capture movie monitoring snapshot: {err}"
+                    )),
+                }
+            }
+            _ => {
+                if let Err(err) = app
+                    .clear_external_import_monitor_snapshot(&actor, MediaFacet::Movie)
+                    .await
+                {
+                    result
+                        .errors
+                        .push(format!("failed to clear movie monitoring snapshot: {err}"));
+                }
+            }
+        }
+
+        match &input.sonarr {
+            Some(conn)
+                if !input.selected_series_paths.is_empty()
+                    || !input.selected_anime_paths.is_empty() =>
+            {
+                let client = ExternalArrClient::new(conn.base_url.clone(), conn.api_key.clone());
+                match capture_sonarr_monitor_snapshots(
+                    &client,
+                    &input.selected_series_paths,
+                    &input.selected_anime_paths,
+                )
+                .await
+                {
+                    Ok((series_payload, anime_payload)) => {
+                        if !input.selected_series_paths.is_empty() {
+                            if let Err(err) = app
+                                .save_external_import_monitor_snapshot(
+                                    &actor,
+                                    MediaFacet::Series,
+                                    series_payload,
+                                )
+                                .await
+                            {
+                                result.errors.push(format!(
+                                    "failed to save series monitoring snapshot: {err}"
+                                ));
+                            }
+                        } else if let Err(err) = app
+                            .clear_external_import_monitor_snapshot(&actor, MediaFacet::Series)
+                            .await
+                        {
+                            result
+                                .errors
+                                .push(format!("failed to clear series monitoring snapshot: {err}"));
+                        }
+
+                        if !input.selected_anime_paths.is_empty() {
+                            if let Err(err) = app
+                                .save_external_import_monitor_snapshot(
+                                    &actor,
+                                    MediaFacet::Anime,
+                                    anime_payload,
+                                )
+                                .await
+                            {
+                                result.errors.push(format!(
+                                    "failed to save anime monitoring snapshot: {err}"
+                                ));
+                            }
+                        } else if let Err(err) = app
+                            .clear_external_import_monitor_snapshot(&actor, MediaFacet::Anime)
+                            .await
+                        {
+                            result
+                                .errors
+                                .push(format!("failed to clear anime monitoring snapshot: {err}"));
+                        }
+                    }
+                    Err(err) => {
+                        if !input.selected_series_paths.is_empty() {
+                            result.errors.push(format!(
+                                "failed to capture series monitoring snapshot: {err}"
+                            ));
+                        }
+                        if !input.selected_anime_paths.is_empty() {
+                            result.errors.push(format!(
+                                "failed to capture anime monitoring snapshot: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Err(err) = app
+                    .clear_external_import_monitor_snapshot(&actor, MediaFacet::Series)
+                    .await
+                {
+                    result
+                        .errors
+                        .push(format!("failed to clear series monitoring snapshot: {err}"));
+                }
+                if let Err(err) = app
+                    .clear_external_import_monitor_snapshot(&actor, MediaFacet::Anime)
+                    .await
+                {
+                    result
+                        .errors
+                        .push(format!("failed to clear anime monitoring snapshot: {err}"));
+                }
+            }
+        }
+
         Ok(result)
     }
+}
+
+fn normalize_import_root_path(path: &str) -> String {
+    path.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn selected_root_paths(paths: &[String]) -> HashSet<String> {
+    paths
+        .iter()
+        .map(|path| normalize_import_root_path(path))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+fn movie_monitor_entry_from_arr(movie: ArrMovie) -> ExternalImportMonitorMovieEntry {
+    ExternalImportMonitorMovieEntry {
+        root_path: movie.root_folder_path,
+        tmdb_id: movie.tmdb_id,
+        imdb_id: movie.imdb_id,
+        monitored: movie.monitored,
+    }
+}
+
+fn series_monitor_entry_from_arr(
+    series: ArrSeries,
+    episodes: Vec<scryer_infrastructure::external_import::ArrEpisode>,
+) -> ExternalImportMonitorSeriesEntry {
+    ExternalImportMonitorSeriesEntry {
+        root_path: series.root_folder_path,
+        tvdb_id: series.tvdb_id,
+        monitored: series.monitored,
+        seasons: series
+            .seasons
+            .into_iter()
+            .map(|season| ExternalImportMonitorSeasonEntry {
+                season_number: season.season_number,
+                monitored: season.monitored,
+            })
+            .collect(),
+        episodes: episodes
+            .into_iter()
+            .map(|episode| ExternalImportMonitorEpisodeEntry {
+                tvdb_id: episode.tvdb_id,
+                season_number: episode.season_number,
+                episode_number: episode.episode_number,
+                monitored: episode.monitored,
+            })
+            .collect(),
+    }
+}
+
+async fn capture_movie_monitor_snapshot(
+    client: &ExternalArrClient,
+    selected_paths: &[String],
+) -> scryer_application::AppResult<ExternalImportMonitorSnapshotPayload> {
+    let selected_paths = selected_root_paths(selected_paths);
+    if selected_paths.is_empty() {
+        return Ok(ExternalImportMonitorSnapshotPayload::Movie { entries: vec![] });
+    }
+
+    let entries = client
+        .list_movies()
+        .await?
+        .into_iter()
+        .filter(|movie| {
+            selected_paths.contains(&normalize_import_root_path(&movie.root_folder_path))
+        })
+        .map(movie_monitor_entry_from_arr)
+        .collect();
+
+    Ok(ExternalImportMonitorSnapshotPayload::Movie { entries })
+}
+
+fn capture_series_monitor_snapshot(
+    series_entries: Vec<ExternalImportMonitorSeriesEntry>,
+) -> scryer_application::AppResult<ExternalImportMonitorSnapshotPayload> {
+    Ok(ExternalImportMonitorSnapshotPayload::Series {
+        entries: series_entries,
+    })
+}
+
+fn filter_sonarr_series_for_selected_paths(
+    all_series: &[ArrSeries],
+    selected_paths: &HashSet<String>,
+) -> Vec<ArrSeries> {
+    all_series
+        .iter()
+        .filter(|series| {
+            selected_paths.contains(&normalize_import_root_path(&series.root_folder_path))
+        })
+        .cloned()
+        .collect()
+}
+
+async fn fetch_sonarr_episodes_for_series(
+    client: &ExternalArrClient,
+    series: &[ArrSeries],
+) -> scryer_application::AppResult<HashMap<i64, Vec<ArrEpisode>>> {
+    let mut episodes_by_series = HashMap::new();
+    let mut pending_series = series.iter().cloned();
+    let mut join_set = JoinSet::new();
+
+    let spawn_episode_fetch =
+        |join_set: &mut JoinSet<(i64, scryer_application::AppResult<Vec<ArrEpisode>>)>,
+         client: &ExternalArrClient,
+         series: ArrSeries| {
+            let client = client.clone();
+            join_set.spawn(async move {
+                let series_id = series.id;
+                let episodes = client.list_episodes_for_series(series_id).await;
+                (series_id, episodes)
+            });
+        };
+
+    for _ in 0..SONARR_EPISODE_FETCH_CONCURRENCY {
+        let Some(series) = pending_series.next() else {
+            break;
+        };
+        spawn_episode_fetch(&mut join_set, client, series);
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        let (series_id, episodes_result) = join_result.map_err(|err| {
+            AppError::Repository(format!("failed to join Sonarr episode fetch task: {err}"))
+        })?;
+        episodes_by_series.insert(series_id, episodes_result?);
+
+        if let Some(series) = pending_series.next() {
+            spawn_episode_fetch(&mut join_set, client, series);
+        }
+    }
+
+    Ok(episodes_by_series)
+}
+
+fn series_entries_from_snapshot_data(
+    series: Vec<ArrSeries>,
+    episodes_by_series: &HashMap<i64, Vec<ArrEpisode>>,
+) -> Vec<ExternalImportMonitorSeriesEntry> {
+    series
+        .into_iter()
+        .map(|series| {
+            let episodes = episodes_by_series
+                .get(&series.id)
+                .cloned()
+                .unwrap_or_default();
+            series_monitor_entry_from_arr(series, episodes)
+        })
+        .collect()
+}
+
+async fn capture_sonarr_monitor_snapshots(
+    client: &ExternalArrClient,
+    selected_series_paths: &[String],
+    selected_anime_paths: &[String],
+) -> scryer_application::AppResult<(
+    ExternalImportMonitorSnapshotPayload,
+    ExternalImportMonitorSnapshotPayload,
+)> {
+    let selected_series_paths = selected_root_paths(selected_series_paths);
+    let selected_anime_paths = selected_root_paths(selected_anime_paths);
+
+    if selected_series_paths.is_empty() && selected_anime_paths.is_empty() {
+        return Ok((
+            ExternalImportMonitorSnapshotPayload::Series { entries: vec![] },
+            ExternalImportMonitorSnapshotPayload::Series { entries: vec![] },
+        ));
+    }
+
+    let all_series = client.list_series().await?;
+    let selected_series =
+        filter_sonarr_series_for_selected_paths(&all_series, &selected_series_paths);
+    let selected_anime =
+        filter_sonarr_series_for_selected_paths(&all_series, &selected_anime_paths);
+
+    let mut unique_matched_series = HashMap::new();
+    for series in selected_series.iter().chain(selected_anime.iter()) {
+        unique_matched_series
+            .entry(series.id)
+            .or_insert_with(|| series.clone());
+    }
+
+    let matched_series = unique_matched_series.into_values().collect::<Vec<_>>();
+    let episodes_by_series = fetch_sonarr_episodes_for_series(client, &matched_series).await?;
+
+    let series_payload = capture_series_monitor_snapshot(series_entries_from_snapshot_data(
+        selected_series,
+        &episodes_by_series,
+    ))?;
+    let anime_payload = capture_series_monitor_snapshot(series_entries_from_snapshot_data(
+        selected_anime,
+        &episodes_by_series,
+    ))?;
+
+    Ok((series_payload, anime_payload))
 }
 
 fn map_download_client(
@@ -469,5 +798,55 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
         api_key,
         dedup_key,
         supported: scryer_type.is_some(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use scryer_infrastructure::external_import::{ArrDownloadClient, ArrIndexer};
+    use serde_json::Value;
+
+    use super::{map_download_client, map_indexer};
+
+    #[test]
+    fn map_download_client_marks_qbittorrent_as_supported() {
+        let payload = map_download_client(
+            &ArrDownloadClient {
+                id: 1,
+                name: "qBittorrent".into(),
+                implementation: "qBittorrent".into(),
+                fields: HashMap::from([
+                    ("host".into(), Value::String("qb.local".into())),
+                    ("port".into(), Value::String("8080".into())),
+                ]),
+            },
+            "sonarr",
+        );
+
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_client_type.as_deref(), Some("qbittorrent"));
+        assert_eq!(payload.dedup_key, "qbittorrent:qb.local:8080");
+    }
+
+    #[test]
+    fn map_indexer_marks_sonarr_animetosho_as_supported() {
+        let payload = map_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "AnimeTosho".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://feed.animetosho.org".into()),
+                )]),
+            },
+            "sonarr",
+        );
+
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_provider_type.as_deref(), Some("animetosho"));
+        assert_eq!(payload.dedup_key, "animetosho:https://feed.animetosho.org");
     }
 }

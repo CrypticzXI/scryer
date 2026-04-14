@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
+  CalendarDays,
   History,
   MonitorCog,
   Settings,
@@ -98,6 +99,14 @@ export function buildRouteCommands({
       keywords: ["activity", "events", "log", "audit", "system"],
       icon: ActivitySquare,
       onSelect: buildNavigate(onNavigate, "activity"),
+    },
+    {
+      id: "calendar",
+      label: t("nav.calendar"),
+      description: t("nav.calendar"),
+      keywords: ["calendar", "episodes", "airing", "schedule", "upcoming"],
+      icon: CalendarDays,
+      onSelect: buildNavigate(onNavigate, "calendar"),
     },
     {
       id: "history",

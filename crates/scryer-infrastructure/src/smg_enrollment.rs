@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tracing::info;
@@ -13,10 +15,18 @@ pub struct VersionIncompatible {
     pub message: String,
 }
 
+/// Returned when SMG rejects registration due to a rate limit.
+#[derive(Debug, Clone)]
+pub struct RateLimited {
+    pub retry_after: Option<Duration>,
+    pub message: String,
+}
+
 /// Errors that can occur during SMG enrollment.
 #[derive(Debug)]
 pub enum EnrollmentError {
     VersionIncompatible(VersionIncompatible),
+    RateLimited(RateLimited),
     Other(String),
 }
 
@@ -28,6 +38,18 @@ impl std::fmt::Display for EnrollmentError {
                 "version incompatible: minimum={}, yours={}, message={}",
                 v.minimum_version, v.your_version, v.message
             ),
+            Self::RateLimited(rate_limited) => {
+                if let Some(retry_after) = rate_limited.retry_after {
+                    write!(
+                        f,
+                        "rate limited: retry_after={}s, message={}",
+                        retry_after.as_secs(),
+                        rate_limited.message
+                    )
+                } else {
+                    write!(f, "rate limited: message={}", rate_limited.message)
+                }
+            }
             Self::Other(s) => f.write_str(s),
         }
     }
@@ -200,6 +222,8 @@ async fn enroll_with_smg(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after =
+            parse_retry_after_header(response.headers().get(reqwest::header::RETRY_AFTER));
         let body = response.text().await.unwrap_or_default();
 
         // Check for structured version incompatibility response (HTTP 422)
@@ -223,6 +247,13 @@ async fn enroll_with_smg(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+            }));
+        }
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(EnrollmentError::RateLimited(RateLimited {
+                retry_after,
+                message: format!("SMG registration failed (HTTP {status}): {body}"),
             }));
         }
 
@@ -317,6 +348,30 @@ pub fn build_mtls_identity(state: &EnrollmentState) -> Result<reqwest::Identity,
 pub fn build_ca_certificate(state: &EnrollmentState) -> Result<reqwest::Certificate, String> {
     reqwest::Certificate::from_pem(state.ca_cert_pem.as_bytes())
         .map_err(|e| format!("failed to parse CA certificate: {e}"))
+}
+
+fn parse_retry_after_header(value: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
+    value
+        .and_then(|header| header.to_str().ok())
+        .and_then(parse_retry_after_value)
+}
+
+fn parse_retry_after_value(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let retry_at = chrono::DateTime::parse_from_rfc2822(trimmed).ok()?;
+    let now = Utc::now();
+    let retry_at_utc = retry_at.with_timezone(&Utc);
+    (retry_at_utc > now)
+        .then(|| (retry_at_utc - now).to_std().ok())
+        .flatten()
 }
 
 /// Sign a request for application-layer instance authentication.
@@ -419,4 +474,43 @@ fn extract_pem_issuer_cn(pem_str: &str) -> Option<String> {
         .next()
         .and_then(|attr| attr.as_str().ok())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EnrollmentError, parse_retry_after_value};
+    use std::time::Duration;
+
+    #[test]
+    fn parse_retry_after_value_reads_seconds() {
+        assert_eq!(parse_retry_after_value("17"), Some(Duration::from_secs(17)));
+    }
+
+    #[test]
+    fn parse_retry_after_value_reads_http_date() {
+        let future = (chrono::Utc::now() + chrono::Duration::seconds(12))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+
+        let delay = parse_retry_after_value(&future).expect("expected parsed retry-after delay");
+        assert!(delay >= Duration::from_secs(10));
+        assert!(delay <= Duration::from_secs(12));
+    }
+
+    #[test]
+    fn parse_retry_after_value_ignores_invalid_values() {
+        assert_eq!(parse_retry_after_value("nonsense"), None);
+    }
+
+    #[test]
+    fn rate_limited_display_includes_retry_after_when_present() {
+        let error = EnrollmentError::RateLimited(super::RateLimited {
+            retry_after: Some(Duration::from_secs(42)),
+            message: "too many registration requests".to_string(),
+        });
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("retry_after=42s"));
+        assert!(rendered.contains("too many registration requests"));
+    }
 }

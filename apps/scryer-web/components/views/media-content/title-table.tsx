@@ -62,14 +62,14 @@ function bytesToReadable(raw: number | null | undefined) {
 
 function formatEpisodeProgress(
   ownedEpisodes: number | null | undefined,
-  totalEpisodes: number | null | undefined,
+  monitoredEpisodes: number | null | undefined,
 ) {
-  if (typeof totalEpisodes !== "number" || totalEpisodes <= 0) {
+  if (typeof monitoredEpisodes !== "number" || monitoredEpisodes <= 0) {
     return "—";
   }
 
   const owned = typeof ownedEpisodes === "number" && ownedEpisodes >= 0 ? ownedEpisodes : 0;
-  return `${owned}/${totalEpisodes}`;
+  return `${owned}/${monitoredEpisodes}`;
 }
 
 type SortKey = "name" | "monitored" | "quality" | "episodes" | "status" | "size";
@@ -129,10 +129,10 @@ function compareNumbers(left: number | null | undefined, right: number | null | 
 function compareEpisodeProgressValues(left: TitleRecord, right: TitleRecord) {
   const leftOwned = left.episodesOwned ?? 0;
   const rightOwned = right.episodesOwned ?? 0;
-  const leftTotal = left.episodesTotal ?? 0;
-  const rightTotal = right.episodesTotal ?? 0;
-  const leftRatio = leftTotal > 0 ? leftOwned / leftTotal : Number.NEGATIVE_INFINITY;
-  const rightRatio = rightTotal > 0 ? rightOwned / rightTotal : Number.NEGATIVE_INFINITY;
+  const leftTarget = left.episodesMonitored ?? left.episodesTotal ?? 0;
+  const rightTarget = right.episodesMonitored ?? right.episodesTotal ?? 0;
+  const leftRatio = leftTarget > 0 ? leftOwned / leftTarget : Number.NEGATIVE_INFINITY;
+  const rightRatio = rightTarget > 0 ? rightOwned / rightTarget : Number.NEGATIVE_INFINITY;
 
   const ratioDelta = leftRatio - rightRatio;
   if (ratioDelta !== 0) {
@@ -144,7 +144,7 @@ function compareEpisodeProgressValues(left: TitleRecord, right: TitleRecord) {
     return ownedDelta;
   }
 
-  return leftTotal - rightTotal;
+  return leftTarget - rightTarget;
 }
 
 type TitleTableProps = {
@@ -517,7 +517,10 @@ export function TitleTable({
           </TableCell>
           {!isMovieView ? (
             <TableCell className="align-middle whitespace-nowrap tabular-nums">
-              {formatEpisodeProgress(item.episodesOwned, item.episodesTotal)}
+              {formatEpisodeProgress(
+                item.episodesOwned,
+                item.episodesMonitored ?? item.episodesTotal,
+              )}
             </TableCell>
           ) : null}
           {!isMovieView ? (

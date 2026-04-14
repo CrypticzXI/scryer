@@ -8,6 +8,7 @@ import { useLibraryScanEventStream } from "@/lib/hooks/use-library-scan-event-st
 import type { LibraryScanStatus } from "@/lib/types";
 
 const TERMINAL_TOAST_DURATION_MS = 6_000;
+const TOAST_EXIT_GRACE_MS = 200;
 const LIBRARY_SCAN_TOASTER_ID = "library-scans";
 const MAX_VISIBLE_LIBRARY_SCAN_TOASTS = 3;
 const MAX_VISIBLE_GENERAL_TOASTS = 3;
@@ -69,9 +70,11 @@ export function LibraryScanProgressProvider({
         if (!existingTimer) {
           dismissTimersRef.current[session.sessionId] = setTimeout(() => {
             toast.dismiss(session.sessionId);
-            dismissSession(session.sessionId);
-            delete dismissTimersRef.current[session.sessionId];
-            shownToastIdsRef.current.delete(session.sessionId);
+            dismissTimersRef.current[session.sessionId] = setTimeout(() => {
+              dismissSession(session.sessionId);
+              delete dismissTimersRef.current[session.sessionId];
+              shownToastIdsRef.current.delete(session.sessionId);
+            }, TOAST_EXIT_GRACE_MS);
           }, TERMINAL_TOAST_DURATION_MS);
         }
       } else {

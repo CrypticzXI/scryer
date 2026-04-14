@@ -569,6 +569,7 @@ fn library_scan_progressed_event_data(
         files_total: session
             .file_total_known
             .then_some(session.file_progress.total as i64),
+        warning_message: session.warning_message.clone(),
     }
 }
 
@@ -589,6 +590,7 @@ fn library_scan_completed_event_data(
             .summary
             .as_ref()
             .map(library_scan_summary_event_data),
+        warning_message: session.warning_message.clone(),
     }
 }
 

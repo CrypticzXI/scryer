@@ -24,7 +24,7 @@ type MobileSearchOverlayProps = {
 };
 
 function catalogFacetFromString(facet: string): Facet {
-  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "tv";
+  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
 }
 
 function SearchSectionLoading({ label }: { label: string }) {
@@ -134,8 +134,9 @@ export function MobileSearchOverlay({
   );
 
   const renderCatalogItem = React.useCallback(
-    (title: import("@/lib/types").TitleRecord, facet: "movie" | "tv" | "anime") => {
-      const targetView: ViewId = facet === "tv" ? "series" : facet === "anime" ? "anime" : "movies";
+    (title: import("@/lib/types").TitleRecord, facet: "movie" | "series" | "anime") => {
+      const targetView: ViewId =
+        facet === "series" ? "series" : facet === "anime" ? "anime" : "movies";
       const tvdbId = title.externalIds
         .find((externalId) => externalId.source.toLowerCase() === "tvdb")
         ?.value.trim();
@@ -183,7 +184,7 @@ export function MobileSearchOverlay({
   );
 
   const renderMetadataItem = React.useCallback(
-    (result: MetadataTvdbSearchItem, facet: "movie" | "tv" | "anime") => {
+    (result: MetadataTvdbSearchItem, facet: "movie" | "series" | "anime") => {
       const isInCatalog = isMetadataSearchResultInCatalog(facet, result);
       const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
 
@@ -358,10 +359,10 @@ export function MobileSearchOverlay({
         open={addDialogTarget !== null}
         onOpenChange={(open) => { if (!open) setAddDialogTarget(null); }}
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
-        facet={addDialogTarget?.facet ?? "tv"}
+        facet={addDialogTarget?.facet ?? "series"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
-        defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "tv")}
-        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "tv"]}
+        defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
+        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         onSubmit={handleAddDialogSubmit}
       />
     </div>

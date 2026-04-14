@@ -17,6 +17,7 @@ pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
 pub const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
+pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
 
 pub const MOVIES_PATH_KEY: &str = "movies.path";
 pub const SERIES_PATH_KEY: &str = "series.path";

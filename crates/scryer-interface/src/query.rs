@@ -25,7 +25,7 @@ use crate::types::*;
 fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
     match facet {
         MediaFacetValue::Movie => ContentScopeValue::Movie,
-        MediaFacetValue::Tv => ContentScopeValue::Series,
+        MediaFacetValue::Series => ContentScopeValue::Series,
         MediaFacetValue::Anime => ContentScopeValue::Anime,
     }
 }
@@ -184,6 +184,7 @@ impl QueryRoot {
                 payload.size_bytes = media_size_map.get(id.as_str()).copied();
                 if let Some(summary) = episode_progress_map.get(id.as_str()) {
                     payload.episodes_owned = Some(summary.owned_episodes);
+                    payload.episodes_monitored = Some(summary.monitored_episodes);
                     payload.episodes_total = Some(summary.total_episodes);
                 }
                 payload

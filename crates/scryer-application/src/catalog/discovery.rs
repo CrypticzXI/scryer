@@ -1311,7 +1311,7 @@ impl AppUseCase {
             let normalized = value.to_ascii_lowercase();
             match normalized.as_str() {
                 "movie" => return Some("movie".to_string()),
-                "tv" | "series" => return Some("series".to_string()),
+                "series" => return Some("series".to_string()),
                 "anime" => return Some("anime".to_string()),
                 "5070" => return Some("series".to_string()),
                 _ => {}

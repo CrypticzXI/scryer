@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use scryer_domain::MediaFacet;
 
 use crate::facet_handler::{FacetHandler, HydrationResult, series_to_hydration_result};
-use crate::{ActivityKind, AppResult, MetadataGateway};
+use crate::{AppResult, MetadataGateway};
 
 /// Handles both TV and Anime facets (they share series behavior
 /// with different scope IDs and rename templates).
@@ -53,10 +53,6 @@ impl FacetHandler for SeriesFacetHandler {
 
     fn has_episodes(&self) -> bool {
         true
-    }
-
-    fn title_added_activity_kind(&self) -> Option<ActivityKind> {
-        None
     }
 
     fn search_category(&self) -> &str {

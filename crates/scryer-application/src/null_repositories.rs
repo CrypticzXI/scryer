@@ -14,18 +14,19 @@ use scryer_domain::{BlocklistEntry, TitleHistoryEventType, TitleHistoryRecord};
 
 use crate::{
     AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadSubmission,
-    DownloadSubmissionRepository, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
-    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
-    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
-    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
-    TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository,
-    TitleImageBlob, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
-    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
-    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
+    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
+    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
+    LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, NewBlocklistEntry,
+    NewTitleHistoryEvent, NotificationChannelRepository, NotificationSubscriptionRepository,
+    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
+    PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
+    StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary,
+    TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository, TitleImageBlob, TitleImageKind,
+    TitleImageProcessor, TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
+    TitleMediaFile, TitleMediaSizeSummary, WantedItem, WantedItemRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -69,6 +70,33 @@ impl ImportRepository for NullImportRepository {
     }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
+    }
+}
+
+#[derive(Default)]
+pub struct NullExternalImportMonitorSnapshotRepository;
+
+#[async_trait]
+impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapshotRepository {
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        _: &crate::ExternalImportMonitorSnapshot,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        _: &crate::MediaFacet,
+    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>> {
+        Ok(None)
+    }
+
+    async fn delete_external_import_monitor_snapshot(
+        &self,
+        _: &crate::MediaFacet,
+    ) -> AppResult<()> {
+        Ok(())
     }
 }
 

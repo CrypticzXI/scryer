@@ -206,6 +206,7 @@ pub(crate) async fn list_title_episode_progress_summaries_query(
     let sql = format!(
         "SELECT e.title_id,
                 COUNT(DISTINCT e.id) AS total_episodes,
+                COUNT(DISTINCT CASE WHEN e.monitored = 1 THEN e.id END) AS monitored_episodes,
                 COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
          FROM episodes e
          INNER JOIN collections c ON c.id = e.collection_id
@@ -236,6 +237,9 @@ pub(crate) async fn list_title_episode_progress_summaries_query(
                 .map_err(|err| AppError::Repository(err.to_string()))?,
             owned_episodes: row
                 .try_get("owned_episodes")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            monitored_episodes: row
+                .try_get("monitored_episodes")
                 .map_err(|err| AppError::Repository(err.to_string()))?,
             total_episodes: row
                 .try_get("total_episodes")
@@ -817,6 +821,7 @@ mod tests {
         assert_eq!(episode_progress.len(), 1);
         assert_eq!(episode_progress[0].title_id, title.id);
         assert_eq!(episode_progress[0].total_episodes, 2);
+        assert_eq!(episode_progress[0].monitored_episodes, 2);
         assert_eq!(episode_progress[0].owned_episodes, 1);
 
         let _ = std::fs::remove_file(db);

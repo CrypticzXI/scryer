@@ -61,7 +61,7 @@ type SettingsRulesSectionProps = {
 
 const FACET_OPTIONS = [
   { value: "movie", label: "Movie" },
-  { value: "tv", label: "TV" },
+  { value: "series", label: "Series" },
   { value: "anime", label: "Anime" },
 ];
 

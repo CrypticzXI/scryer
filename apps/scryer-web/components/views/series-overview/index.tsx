@@ -37,6 +37,7 @@ import { OverviewBackLink } from "../overview-back-link";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import { localizedFacetLabel, localizedTitleStatus } from "../overview-localization";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
@@ -347,12 +348,12 @@ export function SeriesOverviewView({
     return (
       <div className="space-y-4">
         <OverviewBackLink
-          label={`Back to ${backLabel}`}
+          label={t("title.backToFacet", { facet: backLabel })}
           onClick={() => onBackToList?.()}
         />
         <Card>
           <CardContent className="pt-6">
-            <p className="text-muted-foreground">Title not found.</p>
+            <p className="text-muted-foreground">{t("title.notFound")}</p>
           </CardContent>
         </Card>
       </div>
@@ -362,7 +363,7 @@ export function SeriesOverviewView({
   return (
     <div className="space-y-4">
       <OverviewBackLink
-        label={`Back to ${backLabel}`}
+        label={t("title.backToFacet", { facet: backLabel })}
         onClick={() => onBackToList?.()}
       />
 
@@ -387,7 +388,7 @@ export function SeriesOverviewView({
                 />
               ) : (
                 <div className="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]">
-                  No Poster
+                  {t("title.noPoster")}
                 </div>
               )}
             </div>
@@ -410,14 +411,16 @@ export function SeriesOverviewView({
                       : "bg-accent text-muted-foreground"
                   }`}
                 >
-                  {title.monitored ? "Monitored" : "Unmonitored"}
+                  {title.monitored
+                    ? t("title.monitored")
+                    : t("search.monitorType.unmonitored")}
                 </span>
                 <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {title.facet}
+                  {localizedFacetLabel(t, title.facet)}
                 </span>
-                {title.contentStatus ? (
+                {localizedTitleStatus(t, title.contentStatus) ? (
                   <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                    {title.contentStatus}
+                    {localizedTitleStatus(t, title.contentStatus)}
                   </span>
                 ) : null}
                 {title.network ? (
@@ -454,7 +457,7 @@ export function SeriesOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on IMDb"
+                    aria-label={t("external.openOn", { site: "IMDb" })}
                   >
                     <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
                     <span className="text-muted-foreground">IMDb</span>
@@ -466,7 +469,7 @@ export function SeriesOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on TVDB"
+                    aria-label={t("external.openOn", { site: "TVDB" })}
                   >
                     <img src={tvdbLogoUrl} alt="TVDB" className="h-8 w-8" />
                     <span className="text-muted-foreground">TVDB</span>
@@ -478,7 +481,7 @@ export function SeriesOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on TMDB"
+                    aria-label={t("external.openOn", { site: "TMDB" })}
                   >
                     <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
                     <span className="text-muted-foreground">TMDB</span>
@@ -492,7 +495,7 @@ export function SeriesOverviewView({
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label="Open on MyAnimeList"
+                        aria-label={t("external.openOn", { site: "MyAnimeList" })}
                       >
                         <img src={malLogoUrl} alt="MyAnimeList" className="h-8 w-8" />
                         <span className="text-muted-foreground">MAL</span>
@@ -504,7 +507,7 @@ export function SeriesOverviewView({
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label="Open on AniList"
+                        aria-label={t("external.openOn", { site: "AniList" })}
                       >
                         <img src={anilistLogoUrl} alt="AniList" className="h-8 w-8" />
                         <span className="text-muted-foreground">AniList</span>
@@ -516,7 +519,7 @@ export function SeriesOverviewView({
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label="Open on AniDB"
+                        aria-label={t("external.openOn", { site: "AniDB" })}
                       >
                         <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
                         <span className="text-muted-foreground">AniDB</span>
@@ -525,7 +528,7 @@ export function SeriesOverviewView({
                   </>
                 ) : null}
                 <span className="ml-auto text-xs text-muted-foreground/60">
-                  Added {formatDate(title.createdAt)}
+                  {t("title.addedAt", { date: formatDate(title.createdAt) })}
                 </span>
               </div>
             </div>
@@ -565,7 +568,7 @@ export function SeriesOverviewView({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="flex items-center gap-2 text-base">
                 <FolderOpen className="h-4 w-4" />
-                Seasons and Episodes
+                {t("title.seasonsAndEpisodes")}
               </CardTitle>
               {onOpenManualImport && completedDownloads && completedDownloads.length > 0 ? (
                 <Button
@@ -575,7 +578,7 @@ export function SeriesOverviewView({
                   onClick={() => onOpenManualImport(completedDownloads[0])}
                 >
                   <FileInput className="mr-1.5 h-4 w-4" />
-                  Manual Import
+                  {t("queue.manualImport")}
                 </Button>
               ) : null}
             </div>
@@ -629,7 +632,7 @@ export function SeriesOverviewView({
               })
             ) : (
               <p className="text-sm text-muted-foreground">
-                No seasons are tracked for this show yet.
+                {t("title.noTrackedSeasons")}
               </p>
             )}
           </CardContent>
@@ -637,7 +640,7 @@ export function SeriesOverviewView({
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/75 backdrop-blur-sm">
               <div className="flex items-center gap-3 rounded-full border border-border bg-card/95 px-4 py-2 text-sm font-medium text-foreground shadow-lg">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Fetching data</span>
+                <span>{t("title.fetchingData")}</span>
               </div>
             </div>
           ) : null}

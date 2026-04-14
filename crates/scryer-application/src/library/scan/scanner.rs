@@ -217,6 +217,7 @@ pub trait MetadataGateway: Send + Sync {
     async fn search_tvdb_batch(
         &self,
         queries: &[MetadataSearchQuery],
+        language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>>;
 
     async fn search_tvdb_rich(
@@ -424,6 +425,7 @@ impl MetadataGateway for NullMetadataGateway {
     async fn search_tvdb_batch(
         &self,
         _queries: &[MetadataSearchQuery],
+        _language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         Err(AppError::Repository(
             "metadata gateway is not configured".into(),

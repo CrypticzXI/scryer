@@ -1,9 +1,9 @@
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, DownloadSubmission, PendingReleaseStatus, ReleaseDownloadAttemptOutcome,
-    SuccessfulGrabCommit, WantedStatus,
+    AppError, AppResult, DownloadSubmission, ExternalImportMonitorSnapshot, PendingReleaseStatus,
+    ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit, WantedStatus,
 };
-use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType};
+use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType, MediaFacet};
 use sqlx::Row;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -77,6 +77,83 @@ fn workflow_operation_from_row(
             .try_get("updated_at")
             .map_err(|err| AppError::Repository(err.to_string()))?,
     })
+}
+
+pub(crate) async fn upsert_external_import_monitor_snapshot_query(
+    pool: &SqlitePool,
+    snapshot: &ExternalImportMonitorSnapshot,
+) -> AppResult<()> {
+    let payload_json = serde_json::to_string(&snapshot.payload)
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    sqlx::query(
+        "INSERT INTO external_import_monitor_snapshots (facet, payload_json, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(facet) DO UPDATE SET
+             payload_json = excluded.payload_json,
+             created_at = excluded.created_at",
+    )
+    .bind(snapshot.facet.as_str())
+    .bind(payload_json)
+    .bind(&snapshot.created_at)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(())
+}
+
+pub(crate) async fn get_external_import_monitor_snapshot_query(
+    pool: &SqlitePool,
+    facet: &MediaFacet,
+) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
+    let row = sqlx::query(
+        "SELECT facet, payload_json, created_at
+         FROM external_import_monitor_snapshots
+         WHERE facet = ?",
+    )
+    .bind(facet.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let facet_value: String = row
+        .try_get("facet")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let payload_json: String = row
+        .try_get("payload_json")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let created_at: String = row
+        .try_get("created_at")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let facet = MediaFacet::parse(&facet_value)
+        .ok_or_else(|| AppError::Repository(format!("invalid snapshot facet: {facet_value}")))?;
+    let payload =
+        serde_json::from_str(&payload_json).map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(Some(ExternalImportMonitorSnapshot {
+        facet,
+        payload,
+        created_at,
+    }))
+}
+
+pub(crate) async fn delete_external_import_monitor_snapshot_query(
+    pool: &SqlitePool,
+    facet: &MediaFacet,
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM external_import_monitor_snapshots WHERE facet = ?")
+        .bind(facet.as_str())
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(())
 }
 
 pub(crate) async fn create_workflow_operation_query(

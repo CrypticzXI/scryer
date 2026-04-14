@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { ActivitySquare, Clapperboard, Film, History, ListChecks, MonitorCog, Settings, Tv } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -28,6 +28,7 @@ const TOP_NAV_IDS: ViewId[] = [
   "series",
   "anime",
   "activity",
+  "calendar",
   "wanted",
   "history",
   "settings",
@@ -36,9 +37,10 @@ const TOP_NAV_IDS: ViewId[] = [
 
 const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   movies: Film,
-  series: Tv,
+  series: Monitor,
   anime: Clapperboard,
   activity: ActivitySquare,
+  calendar: CalendarDays,
   wanted: ListChecks,
   history: History,
   settings: Settings,
@@ -115,7 +117,7 @@ export function SeriesOverviewShell() {
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <GlobalSearchProvider activeFacet="tv" queueFacet="tv" uiLanguage={uiLanguage} onCatalogChanged={() => undefined}>
+          <GlobalSearchProvider activeFacet="series" queueFacet="series" uiLanguage={uiLanguage} onCatalogChanged={() => undefined}>
             <div className="min-h-screen bg-background text-foreground">
               <RootHeader routeCommandPalette={routeCommandPaletteConfig} />
 
@@ -128,6 +130,7 @@ export function SeriesOverviewShell() {
                   systemSection="overview"
                   entitlements={[]}
                   pendingImportCounts={null}
+                  manualImportRequiredCount={0}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

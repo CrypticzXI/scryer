@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn media_facet_value_maps_tv_to_series_domain() {
-        assert_eq!(MediaFacetValue::Tv.into_domain(), MediaFacet::Series);
+    fn media_facet_value_maps_series_to_series_domain() {
+        assert_eq!(MediaFacetValue::Series.into_domain(), MediaFacet::Series);
     }
 }

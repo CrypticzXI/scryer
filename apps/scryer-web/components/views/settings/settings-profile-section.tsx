@@ -86,15 +86,6 @@ export function SettingsProfileSection({
           </Button>
         </div>
       </div>
-
-      <Separator />
-
-      <div className="space-y-2">
-        <h3 className="text-base font-medium">{t("profile.externalConnections")}</h3>
-        <p className="text-muted-foreground">
-          {t("profile.externalConnectionsPlaceholder")}
-        </p>
-      </div>
     </div>
   );
 }

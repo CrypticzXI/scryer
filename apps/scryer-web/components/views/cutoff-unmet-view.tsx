@@ -126,7 +126,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             <SelectContent>
               <SelectItem value="__all__">{t("cutoff.allFacets")}</SelectItem>
               <SelectItem value="movie">movie</SelectItem>
-              <SelectItem value="tv">tv</SelectItem>
+              <SelectItem value="series">series</SelectItem>
               <SelectItem value="anime">anime</SelectItem>
             </SelectContent>
           </Select>

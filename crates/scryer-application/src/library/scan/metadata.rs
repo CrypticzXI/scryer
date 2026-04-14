@@ -112,7 +112,7 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
 
 #[derive(Clone, Debug)]
 pub(crate) enum PreparedMovieLibraryScanEntry {
-    Candidate(PreparedMovieLibraryScanCandidate),
+    Candidate(Box<PreparedMovieLibraryScanCandidate>),
     Skipped { item_path: String },
 }
 
@@ -225,6 +225,7 @@ pub(crate) fn library_scan_unmatched_reason_code(
 async fn execute_batch_metadata_searches(
     metadata_gateway: Arc<dyn MetadataGateway>,
     search_keys: Vec<BatchMetadataSearchKey>,
+    metadata_language: &str,
     cancel_token: Option<&CancellationToken>,
 ) -> AppResult<MetadataSearchResults> {
     if search_keys.is_empty() {
@@ -241,7 +242,7 @@ async fn execute_batch_metadata_searches(
         .collect::<Vec<_>>();
     let Some(batched_results) = await_cancellable_app_result(
         cancel_token,
-        metadata_gateway.search_tvdb_batch(&search_queries),
+        metadata_gateway.search_tvdb_batch(&search_queries, metadata_language),
     )
     .await?
     else {
@@ -506,6 +507,7 @@ impl StreamingMetadataProgressUpdate {
 
 pub(crate) struct StreamingMovieMetadataResolver {
     metadata_gateway: Arc<dyn MetadataGateway>,
+    metadata_language: String,
     search_results: MetadataSearchResults,
     pending_candidates: Vec<PreparedMovieLibraryScanCandidate>,
     metadata_lookup_stats: MetadataLookupBatchStats,
@@ -513,9 +515,13 @@ pub(crate) struct StreamingMovieMetadataResolver {
 }
 
 impl StreamingMovieMetadataResolver {
-    pub(crate) fn new(metadata_gateway: Arc<dyn MetadataGateway>) -> Self {
+    pub(crate) fn new(
+        metadata_gateway: Arc<dyn MetadataGateway>,
+        metadata_language: impl Into<String>,
+    ) -> Self {
         Self {
             metadata_gateway,
+            metadata_language: metadata_language.into(),
             search_results: MetadataSearchResults::new(),
             pending_candidates: Vec::new(),
             metadata_lookup_stats: MetadataLookupBatchStats::default(),
@@ -622,6 +628,7 @@ impl StreamingMovieMetadataResolver {
                 execute_batch_metadata_searches(
                     self.metadata_gateway.clone(),
                     search_chunk,
+                    &self.metadata_language,
                     cancel_token,
                 )
                 .await?,
@@ -661,6 +668,7 @@ fn register_streaming_movie_metadata_batch(
 
 pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateKeys>(
     metadata_gateway: Arc<dyn MetadataGateway>,
+    metadata_language: &str,
     coordinator: &LibraryScanCoordinator,
     unresolved_candidates: Vec<T>,
     metadata_lookup_stats: &mut MetadataLookupBatchStats,
@@ -728,8 +736,13 @@ where
         }
 
         batch_search_results.extend(
-            execute_batch_metadata_searches(metadata_gateway.clone(), search_chunk, cancel_token)
-                .await?,
+            execute_batch_metadata_searches(
+                metadata_gateway.clone(),
+                search_chunk,
+                metadata_language,
+                cancel_token,
+            )
+            .await?,
         );
     }
 
@@ -915,7 +928,7 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
 
     let (prepared_tx, prepared_rx) =
         tokio::sync::mpsc::channel(LIBRARY_SCAN_PREPARED_ENTRY_QUEUE_CAPACITY);
-    let flush_batch_size = batch_size.min(MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE).max(1);
+    let flush_batch_size = batch_size.clamp(1, MOVIE_PREPARED_ENTRY_FLUSH_BATCH_SIZE);
 
     tokio::spawn(async move {
         let mut pending_entries = VecDeque::new();
@@ -1086,9 +1099,9 @@ async fn prepare_movie_library_scan_entry(
     discovered_files.sort_by(|left, right| left.path.cmp(&right.path));
     let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
 
-    Ok(PreparedMovieLibraryScanEntry::Candidate(
+    Ok(PreparedMovieLibraryScanEntry::Candidate(Box::new(
         build_prepared_movie_library_scan_candidate(file, discovered_files, library_path).await?,
-    ))
+    )))
 }
 
 async fn build_movie_entry_representative_file(
@@ -1330,7 +1343,7 @@ pub(crate) async fn preload_movie_library_scan_candidates(
     let prepared_candidates = prepare_movie_library_scan_candidates(files, library_path).await?;
     let (batch_searches, stats) = build_movie_metadata_batch_stats(&prepared_candidates);
     let batch_search_results =
-        execute_batch_metadata_searches(metadata_gateway, batch_searches, None).await?;
+        execute_batch_metadata_searches(metadata_gateway, batch_searches, "eng", None).await?;
     let mut results = Vec::with_capacity(prepared_candidates.len());
 
     for candidate in prepared_candidates {
@@ -1359,7 +1372,7 @@ pub(crate) async fn preload_series_library_scan_candidates(
     let prepared_candidates = prepare_series_library_scan_candidates(folders).await?;
     let (batch_searches, stats) = build_series_metadata_batch_stats(&prepared_candidates);
     let batch_search_results =
-        execute_batch_metadata_searches(metadata_gateway, batch_searches, None).await;
+        execute_batch_metadata_searches(metadata_gateway, batch_searches, "eng", None).await;
     let batch_search_error = batch_search_results.as_ref().err().map(ToString::to_string);
     let batch_search_results = batch_search_results.unwrap_or_default();
     let mut results = Vec::with_capacity(prepared_candidates.len());
@@ -1449,10 +1462,10 @@ pub(crate) fn select_best_match(
     if same_year_matches.len() == 1 {
         let candidate = same_year_matches[0];
         let candidate_key = crate::title_matching::canonical_lookup_key(&candidate.name);
-        if title_match_candidates.iter().any(|query_key| {
-            query_key.starts_with(&format!("{candidate_key} "))
-                || candidate_key.starts_with(&format!("{query_key} "))
-        }) {
+        if title_match_candidates
+            .iter()
+            .any(|query_key| query_key.starts_with(&format!("{candidate_key} ")))
+        {
             return Some(candidate.clone());
         }
     }
@@ -1545,6 +1558,7 @@ mod tests {
         async fn search_tvdb_batch(
             &self,
             queries: &[MetadataSearchQuery],
+            _language: &str,
         ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
             let mut results = HashMap::new();
 
@@ -1615,9 +1629,11 @@ mod tests {
         }
     }
 
+    type DelayedScanResponses = Arc<Mutex<HashMap<String, (u64, Vec<LibraryFile>)>>>;
+
     #[derive(Clone, Default)]
     struct DelayedLibraryScanner {
-        responses: Arc<Mutex<HashMap<String, (u64, Vec<LibraryFile>)>>>,
+        responses: DelayedScanResponses,
     }
 
     impl DelayedLibraryScanner {
@@ -1654,6 +1670,7 @@ mod tests {
         async fn search_tvdb_batch(
             &self,
             queries: &[MetadataSearchQuery],
+            _language: &str,
         ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
             tokio::time::sleep(self.delay).await;
             Ok(queries
@@ -2314,7 +2331,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_millis(150),
-            execute_batch_metadata_searches(gateway, search_keys, Some(&cancel_token)),
+            execute_batch_metadata_searches(gateway, search_keys, "eng", Some(&cancel_token)),
         )
         .await
         .expect("metadata search should stop waiting after cancel")
@@ -2340,7 +2357,7 @@ mod tests {
             }],
         );
 
-        let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()));
+        let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()), "eng");
 
         let (first_ready, first_progress) = resolver
             .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])], None)

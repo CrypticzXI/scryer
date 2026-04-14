@@ -36,13 +36,13 @@ type CalendarViewProps = {
 const FACET_COLORS: Record<string, string> = {
   anime: "#8b5cf6",
   movie: "#f59e0b",
-  tv: "#3b82f6",
+  series: "#3b82f6",
 };
 
 const FACET_LABELS: Record<string, string> = {
   anime: "Anime",
   movie: "Movie",
-  tv: "TV",
+  series: "Series",
 };
 
 function hexToRgbChannels(hex: string): string {
@@ -112,7 +112,7 @@ export function CalendarView({
 }: CalendarViewProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
-  const [facetFilter, setFacetFilter] = useState<string[]>(["anime", "movie", "tv"]);
+  const [facetFilter, setFacetFilter] = useState<string[]>(["anime", "movie", "series"]);
 
   const filteredEpisodes = useMemo(
     () => episodes.filter((ep) => facetFilter.includes(ep.titleFacet)),

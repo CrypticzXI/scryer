@@ -417,9 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_profile_accepts_legacy_tv_facet_value() {
+    fn resolve_profile_accepts_series_facet_value() {
         let mut profile = make_profile("series", 10, 60, 360);
-        profile.applies_to_facets = vec!["tv".to_string()];
+        profile.applies_to_facets = vec!["series".to_string()];
         let profiles = vec![profile];
 
         let result = resolve_delay_profile(&profiles, &[], &MediaFacet::Series);

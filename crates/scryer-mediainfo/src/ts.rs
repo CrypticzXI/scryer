@@ -306,11 +306,9 @@ fn read_psi_section<T: Read + Seek>(
             continue;
         }
 
-        if section.is_empty() {
-            if data[0] != table_id {
-                assembling = false;
-                continue;
-            }
+        if section.is_empty() && data[0] != table_id {
+            assembling = false;
+            continue;
         }
 
         section.extend_from_slice(data);

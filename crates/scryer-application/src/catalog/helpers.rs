@@ -286,7 +286,7 @@ mod routing_tests {
     fn routing_entry_parses_legacy_and_new_queue_priority_fields() {
         let entry = parse_download_client_routing_entry(&json!({
             "enabled": true,
-            "category": "tv",
+            "category": "series",
             "recentPriority": "high",
             "olderQueuePriority": "low",
             "removeCompleted": true,
@@ -294,7 +294,7 @@ mod routing_tests {
         }));
 
         assert!(entry.enabled);
-        assert_eq!(entry.category.as_deref(), Some("tv"));
+        assert_eq!(entry.category.as_deref(), Some("series"));
         assert_eq!(entry.recent_queue_priority.as_deref(), Some("high"));
         assert_eq!(entry.older_queue_priority.as_deref(), Some("low"));
         assert!(entry.remove_completed);

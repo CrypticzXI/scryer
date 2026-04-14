@@ -31,6 +31,12 @@ import { MediaInfoBadges } from "@/components/common/media-info-badges";
 import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-panel";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
+import {
+  localizedFacetLabel,
+  localizedTitleStatus,
+  localizedWantedPhase,
+  localizedWantedStatus,
+} from "@/components/views/overview-localization";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { TitlePoster } from "@/components/title-poster";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -46,7 +52,11 @@ const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
 
 function formatDate(iso: string) {
   try {
-    return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const locale =
+      typeof document !== "undefined"
+        ? document.documentElement.lang || undefined
+        : undefined;
+    return new Date(iso).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
   } catch {
     return iso;
   }
@@ -55,7 +65,11 @@ function formatDate(iso: string) {
 function formatDateTime(iso: string | null | undefined) {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString();
+    const locale =
+      typeof document !== "undefined"
+        ? document.documentElement.lang || undefined
+        : undefined;
+    return new Date(iso).toLocaleString(locale);
   } catch {
     return iso;
   }
@@ -176,10 +190,6 @@ function wantedPhaseClass(phase: WantedSearchPhase) {
     default:
       return "bg-muted text-muted-foreground";
   }
-}
-
-function formatWantedPhase(phase: WantedSearchPhase) {
-  return phase.replaceAll("_", " ");
 }
 
 type SubtitleInventoryEntry = {
@@ -644,12 +654,12 @@ export function MovieOverviewView({
     return (
       <div className="space-y-4">
         <OverviewBackLink
-          label={`Back to ${t("nav.movies")}`}
+          label={t("title.backToFacet", { facet: t("nav.movies") })}
           onClick={() => onBackToList?.()}
         />
         <Card>
           <CardContent className="pt-6">
-            <p className="text-muted-foreground">Title not found.</p>
+            <p className="text-muted-foreground">{t("title.notFound")}</p>
           </CardContent>
         </Card>
       </div>
@@ -676,14 +686,17 @@ export function MovieOverviewView({
     (collection) => !collection.orderedPath || !mediaFiles.some((file) => file.filePath === collection.orderedPath),
   );
   const wantedStatusLabel = wantedItem?.status
-    ? wantedItem.status.charAt(0).toUpperCase() + wantedItem.status.slice(1)
+    ? localizedWantedStatus(t, wantedItem.status)
+    : null;
+  const wantedPhaseLabel = wantedItem?.searchPhase
+    ? localizedWantedPhase(t, wantedItem.searchPhase)
     : null;
   const interactiveSearchPanel = (
     <div className="p-4">
       {searching ? (
         <div className="flex flex-col items-center gap-4 py-8">
           <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
-          <p className="text-sm text-muted-foreground">Searching indexers for releases&hellip;</p>
+          <p className="text-sm text-muted-foreground">{t("title.searchingReleases")}</p>
           <div className="w-full space-y-2">
             {[1, 2, 3].map((n) => (
               <div
@@ -701,12 +714,11 @@ export function MovieOverviewView({
         />
       ) : interactiveSearchAttempted ? (
         <p className="text-sm text-muted-foreground">
-          No releases found for <span className="text-foreground">{title.name}</span>.
+          {t("title.noReleasesFound", { name: title.name })}
         </p>
       ) : (
         <p className="text-sm text-muted-foreground">
-          Use interactive search to query your configured indexers for releases of{" "}
-          <span className="text-foreground">{title.name}</span>.
+          {t("title.interactiveSearchHint", { name: title.name })}
         </p>
       )}
     </div>
@@ -715,7 +727,7 @@ export function MovieOverviewView({
   return (
     <div className="space-y-4">
       <OverviewBackLink
-        label={`Back to ${t("nav.movies")}`}
+        label={t("title.backToFacet", { facet: t("nav.movies") })}
         onClick={() => onBackToList?.()}
       />
 
@@ -741,7 +753,7 @@ export function MovieOverviewView({
                 />
               ) : (
                 <div className="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]">
-                  No Poster
+                  {t("title.noPoster")}
                 </div>
               )}
             </div>
@@ -758,14 +770,16 @@ export function MovieOverviewView({
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${title.monitored ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300" : "bg-accent text-muted-foreground"}`}>
-                  {title.monitored ? "Monitored" : "Unmonitored"}
+                  {title.monitored
+                    ? t("title.monitored")
+                    : t("search.monitorType.unmonitored")}
                 </span>
                 <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {title.facet}
+                  {localizedFacetLabel(t, title.facet)}
                 </span>
-              {title.contentStatus ? (
+              {localizedTitleStatus(t, title.contentStatus) ? (
                 <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {title.contentStatus}
+                  {localizedTitleStatus(t, title.contentStatus)}
                 </span>
               ) : null}
                 {runtime ? (
@@ -800,7 +814,7 @@ export function MovieOverviewView({
                     <span
                       className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${wantedPhaseClass(wantedItem.searchPhase)}`}
                     >
-                      {formatWantedPhase(wantedItem.searchPhase)}
+                      {wantedPhaseLabel}
                     </span>
                     <span className="text-xs text-muted-foreground">
                       {t("wanted.colNextSearch")}: {formatDateTime(wantedItem.nextSearchAt)}
@@ -879,7 +893,7 @@ export function MovieOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on IMDb"
+                    aria-label={t("external.openOn", { site: "IMDb" })}
                   >
                     <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
                     <span className="text-muted-foreground">IMDb</span>
@@ -891,7 +905,7 @@ export function MovieOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on TMDB"
+                    aria-label={t("external.openOn", { site: "TMDB" })}
                   >
                     <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
                     <span className="text-muted-foreground">TMDB</span>
@@ -903,7 +917,7 @@ export function MovieOverviewView({
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label="Open on AniDB"
+                    aria-label={t("external.openOn", { site: "AniDB" })}
                   >
                     <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
                     <span className="text-muted-foreground">AniDB</span>
@@ -918,7 +932,7 @@ export function MovieOverviewView({
                     </div>
                   ))}
                 <span className="ml-auto text-xs text-muted-foreground/60">
-                  Added {formatDate(title.createdAt)}
+                  {t("title.addedAt", { date: formatDate(title.createdAt) })}
                 </span>
               </div>
             </div>
@@ -928,7 +942,7 @@ export function MovieOverviewView({
 
       <OverviewControlPanel
         monitored={title.monitored}
-        searchMonitoredLabel="Search"
+        searchMonitoredLabel={t("label.search")}
         monitoredUpdating={monitoredUpdating}
         searchMonitoredLoading={searchMonitoredLoading}
         interactiveSearchLoading={searching}
@@ -957,10 +971,10 @@ export function MovieOverviewView({
       <Card>
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FolderOpen className="h-4 w-4" />
-              Files on Disk
-            </CardTitle>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <FolderOpen className="h-4 w-4" />
+              {t("title.filesOnDisk")}
+              </CardTitle>
             <Button
               className="w-full sm:w-auto"
               size="sm"
@@ -975,7 +989,9 @@ export function MovieOverviewView({
         <CardContent>
           {mediaFiles.length === 0 && orphanCollections.length === 0 ? (
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">No files tracked. Run a library scan to detect files on disk.</p>
+              <p className="text-sm text-muted-foreground">
+                {t("title.noFilesTracked")} {t("title.noFilesTrackedHint")}
+              </p>
               <Button size="sm" onClick={onRefreshAndScan} disabled={refreshAndScanLoading}>
                 {t("settings.libraryScanButton")}
               </Button>
@@ -1037,7 +1053,9 @@ export function MovieOverviewView({
                           {qualityHint ? (
                             <span className="rounded bg-accent px-1 py-0.5 text-card-foreground">{qualityHint}</span>
                           ) : null}
-                          <span className="text-muted-foreground/60">Added {formatDate(collection.createdAt)}</span>
+                          <span className="text-muted-foreground/60">
+                            {t("title.addedAt", { date: formatDate(collection.createdAt) })}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1121,7 +1139,7 @@ export function MovieOverviewView({
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">
           <span className="inline-flex items-center gap-2">
-            Blocked Releases
+            {t("title.blockedReleases")}
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {blocklistEntries.length}
             </span>
@@ -1130,7 +1148,7 @@ export function MovieOverviewView({
         <div className="border-t border-border p-4">
           {blocklistEntries.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No blocked releases recorded for this movie.
+              {t("title.noBlockedReleases")}
             </p>
           ) : (
             <div className="space-y-2">
@@ -1140,7 +1158,7 @@ export function MovieOverviewView({
                   className="rounded-lg border border-border bg-background/30 p-3"
                 >
                   <p className="break-words text-sm text-card-foreground">
-                    {entry.sourceTitle || "Untitled release"}
+                    {entry.sourceTitle || t("episode.untitledRelease")}
                   </p>
                   {entry.sourceHint ? (
                     <p className="mt-1 break-all font-mono text-xs text-muted-foreground/60">

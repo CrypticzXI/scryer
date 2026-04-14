@@ -254,10 +254,19 @@ export function useQualityProfilesManager(
     () =>
       ({
         movie: t("search.facetMovie"),
-        series: t("search.facetTv"),
+        series: t("search.facetSeries"),
         anime: t("search.facetAnime"),
       }) as Record<ViewCategoryId, string>,
     [t],
+  );
+  const categoryPersonaSelectionInputs = React.useMemo(
+    () =>
+      Object.values(categoryPersonaSelections).map((selection) => ({
+        scope: selection.scope,
+        persona: selection.overridePersona,
+        inheritGlobal: selection.inheritsGlobal,
+      })),
+    [categoryPersonaSelections],
   );
 
   const getQualityProfileCriteria = React.useCallback(
@@ -577,7 +586,9 @@ export function useQualityProfilesManager(
             input: {
               profiles: parsedEntries.map(qualityProfileEntryToMutationInput),
               globalProfileId: normalizedGlobalProfile,
+              globalScoringPersona,
               categorySelections: [],
+              categoryPersonaSelections: categoryPersonaSelectionInputs,
               replaceExisting: true,
             },
           },
@@ -597,9 +608,11 @@ export function useQualityProfilesManager(
     },
     [
       applyQualityProfileSettingsPayload,
+      categoryPersonaSelectionInputs,
       client,
       commitQualityProfileDraftToCatalog,
       globalQualityProfileId,
+      globalScoringPersona,
       qualityProfilesSaving,
       setGlobalStatus,
       t,
@@ -628,7 +641,9 @@ export function useQualityProfilesManager(
             input: {
               profiles: [],
               globalProfileId: normalizedValue,
+              globalScoringPersona,
               categorySelections: [],
+              categoryPersonaSelections: categoryPersonaSelectionInputs,
               replaceExisting: false,
             },
           },
@@ -649,7 +664,14 @@ export function useQualityProfilesManager(
         setQualityProfilesSaving(false);
       }
     },
-    [qualityProfiles, client, setGlobalStatus, t],
+    [
+      categoryPersonaSelectionInputs,
+      client,
+      globalScoringPersona,
+      qualityProfiles,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const saveGlobalScoringPersona = React.useCallback(
@@ -717,6 +739,7 @@ export function useQualityProfilesManager(
             input: {
               profiles: [],
               globalProfileId: null,
+              globalScoringPersona,
               categorySelections: [
                 {
                   scope: normalizedScope,
@@ -725,6 +748,7 @@ export function useQualityProfilesManager(
                   inheritGlobal: normalizedValue === QUALITY_PROFILE_INHERIT_VALUE,
                 },
               ],
+              categoryPersonaSelections: categoryPersonaSelectionInputs,
               replaceExisting: false,
             },
           },
@@ -751,7 +775,14 @@ export function useQualityProfilesManager(
         }));
       }
     },
-    [qualityProfiles, client, setGlobalStatus, t],
+    [
+      categoryPersonaSelectionInputs,
+      client,
+      globalScoringPersona,
+      qualityProfiles,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const saveCategoryScoringPersona = React.useCallback(

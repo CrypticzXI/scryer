@@ -18,8 +18,7 @@ use scryer_domain::{
 #[graphql(rename_items = "lowercase")]
 pub enum MediaFacetValue {
     Movie,
-    #[graphql(name = "tv")]
-    Tv,
+    Series,
     Anime,
 }
 
@@ -27,7 +26,7 @@ impl MediaFacetValue {
     pub fn into_domain(self) -> MediaFacet {
         match self {
             Self::Movie => MediaFacet::Movie,
-            Self::Tv => MediaFacet::Series,
+            Self::Series => MediaFacet::Series,
             Self::Anime => MediaFacet::Anime,
         }
     }
@@ -35,7 +34,7 @@ impl MediaFacetValue {
     pub fn from_domain(value: MediaFacet) -> Self {
         match value {
             MediaFacet::Movie => Self::Movie,
-            MediaFacet::Series => Self::Tv,
+            MediaFacet::Series => Self::Series,
             MediaFacet::Anime => Self::Anime,
         }
     }
@@ -43,7 +42,7 @@ impl MediaFacetValue {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "movie" => Some(Self::Movie),
-            "tv" | "series" => Some(Self::Tv),
+            "series" => Some(Self::Series),
             "anime" => Some(Self::Anime),
             _ => None,
         }
@@ -78,7 +77,7 @@ impl ContentScopeValue {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "movie" => Some(Self::Movie),
-            "series" | "tv" => Some(Self::Series),
+            "series" => Some(Self::Series),
             "anime" => Some(Self::Anime),
             _ => None,
         }
@@ -456,7 +455,7 @@ impl ImportStatusValue {
 #[graphql(rename_items = "snake_case")]
 pub enum ImportTypeValue {
     MovieDownload,
-    TvDownload,
+    SeriesDownload,
     RenamePreview,
     RenameApplyTitle,
     RenameApplyFacet,
@@ -470,7 +469,7 @@ impl ImportTypeValue {
     pub fn from_domain(value: ImportType) -> Self {
         match value {
             ImportType::MovieDownload => Self::MovieDownload,
-            ImportType::TvDownload => Self::TvDownload,
+            ImportType::SeriesDownload => Self::SeriesDownload,
             ImportType::RenamePreview => Self::RenamePreview,
             ImportType::RenameApplyTitle => Self::RenameApplyTitle,
             ImportType::RenameApplyFacet => Self::RenameApplyFacet,
@@ -541,7 +540,7 @@ impl ImportSkipReasonValue {
 pub enum ActivityKindValue {
     SettingSaved,
     MovieFetched,
-    MovieAdded,
+    TitleAdded,
     TitleUpdated,
     MetadataHydrationStarted,
     MetadataHydrationCompleted,
@@ -565,7 +564,7 @@ impl ActivityKindValue {
         match value {
             AppActivityKind::SettingSaved => Self::SettingSaved,
             AppActivityKind::MovieFetched => Self::MovieFetched,
-            AppActivityKind::MovieAdded => Self::MovieAdded,
+            AppActivityKind::TitleAdded => Self::TitleAdded,
             AppActivityKind::TitleUpdated => Self::TitleUpdated,
             AppActivityKind::MetadataHydrationStarted => Self::MetadataHydrationStarted,
             AppActivityKind::MetadataHydrationCompleted => Self::MetadataHydrationCompleted,
@@ -795,6 +794,9 @@ pub struct TitlePayload {
     pub size_bytes: Option<i64>,
     /// Owned-vs-total episode progress, excluding specials, populated in list queries.
     pub episodes_owned: Option<i64>,
+    /// Monitored episode count, excluding specials, populated in list queries.
+    pub episodes_monitored: Option<i64>,
+    /// Total episode count, excluding specials, populated in list queries.
     pub episodes_total: Option<i64>,
 }
 
@@ -961,7 +963,7 @@ pub struct SystemHealthPayload {
     pub monitored_titles: i32,
     pub total_users: i32,
     pub titles_movie: i32,
-    pub titles_tv: i32,
+    pub titles_series: i32,
     pub titles_anime: i32,
     pub titles_other: i32,
     pub recent_events: i32,
@@ -1303,6 +1305,7 @@ pub struct JobRunPayload {
     pub trigger_source: JobTriggerSourceValue,
     pub started_at: String,
     pub completed_at: Option<String>,
+    pub summary_json: Option<String>,
     pub summary_text: Option<String>,
     pub error_text: Option<String>,
     pub progress_json: Option<String>,
@@ -2631,7 +2634,7 @@ pub struct ValidateRuleSetInput {
 #[derive(InputObject)]
 pub struct SetTitleRequiredAudioInput {
     pub title_id: String,
-    /// The facet of the title: "movie", "tv", or "anime"
+    /// The facet of the title: "movie", "series", or "anime"
     pub facet: MediaFacetValue,
     /// `null` removes the override and inherits from the facet.
     /// `[]` stores an explicit "no required languages" override for the title.
@@ -3030,9 +3033,9 @@ pub struct DownloadClientApiKeyOverrideInput {
 pub struct ExecuteExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
-    pub selected_movies_path: Option<String>,
-    pub selected_series_path: Option<String>,
-    pub selected_anime_path: Option<String>,
+    pub selected_movies_paths: Vec<String>,
+    pub selected_series_paths: Vec<String>,
+    pub selected_anime_paths: Vec<String>,
     pub selected_download_client_dedup_keys: Vec<String>,
     pub selected_indexer_dedup_keys: Vec<String>,
     /// User-supplied API keys for download clients whose keys were masked by

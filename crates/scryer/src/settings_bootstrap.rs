@@ -2,7 +2,7 @@ use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, MOVIES_ROOT_FOLDERS_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
     POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
     POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
@@ -120,6 +120,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: ANIME_ROOT_FOLDERS_KEY,
             data_type: "json",
             default_value_json: "[]",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: METADATA_LANGUAGE_KEY,
+            data_type: "string",
+            default_value_json: "\"eng\"",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -795,6 +803,16 @@ mod tests {
             seed.scope == SETTINGS_SCOPE_SYSTEM
                 && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
                 && seed.data_type == "bool"
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_metadata_language() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == METADATA_LANGUAGE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"eng\""
         }));
     }
 }

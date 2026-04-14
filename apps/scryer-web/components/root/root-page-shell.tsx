@@ -1,11 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { ActivitySquare, Download, History, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
+import { ActivitySquare, CalendarDays, Download, History, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import { RootHeader } from "@/components/root/root-header";
+import { JobRunProvider } from "@/components/root/job-run-provider";
 import { LibraryScanProgressProvider } from "@/components/root/library-scan-progress-provider";
 import { ReactiveRefreshProvider } from "@/components/root/reactive-refresh-provider";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -45,9 +46,16 @@ import {
 } from "@/lib/utils/routing";
 import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
-import { pendingImportCountsQuery } from "@/lib/graphql/queries";
+import {
+  manualImportRequiredCountQuery,
+  pendingImportCountsQuery,
+} from "@/lib/graphql/queries";
 import type { PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
+import {
+  isManualImportRequiredQueueItem,
+  type DownloadQueueDisplayStateInput,
+} from "@/lib/utils/download-queue";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -77,6 +85,10 @@ const SystemContainer = lazy(() =>
 
 const WantedContainer = lazy(() =>
   import("@/components/containers/wanted-container").then((m) => ({ default: m.WantedContainer })),
+);
+
+const CalendarContainer = lazy(() =>
+  import("@/components/containers/calendar-container").then((m) => ({ default: m.CalendarContainer })),
 );
 
 const ImportHistoryContainer = lazy(() =>
@@ -134,8 +146,11 @@ function MainContent({
   if (view === "activity") {
     return <ActivityContainer key="activity" />;
   }
+  if (view === "calendar") {
+    return <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />;
+  }
   if (view === "wanted") {
-    return <WantedContainer key="wanted" onOpenOverview={handleOpenOverview} />;
+    return <WantedContainer key="wanted" />;
   }
   if (view === "history") {
     return <ImportHistoryContainer key="history" />;
@@ -298,6 +313,7 @@ function AuthenticatedHomePage({
     onServiceRestarting: useCallback(() => setServiceRestarting(true), [setServiceRestarting]),
   });
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
+  const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -334,39 +350,57 @@ function AuthenticatedHomePage({
 
   const onCatalogChanged = useCallback(() => {}, []);
 
-  const refreshPendingImportCounts = useCallback(async () => {
+  const refreshSidebarCounts = useCallback(async () => {
     try {
-      const { data, error } = await backendClient.query(pendingImportCountsQuery, {}).toPromise();
-      if (error) {
-        throw error;
+      const [pendingImportsResult, manualImportResult] = await Promise.all([
+        backendClient.query(pendingImportCountsQuery, {}).toPromise(),
+        backendClient.query(manualImportRequiredCountQuery, {}).toPromise(),
+      ]);
+
+      if (pendingImportsResult.error) {
+        throw pendingImportsResult.error;
       }
-      if (data?.pendingImportCounts) {
-        setPendingImportCounts(data.pendingImportCounts as PendingImportCounts);
+      if (manualImportResult.error) {
+        throw manualImportResult.error;
+      }
+
+      if (pendingImportsResult.data?.pendingImportCounts) {
+        setPendingImportCounts(pendingImportsResult.data.pendingImportCounts as PendingImportCounts);
       } else {
         setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
       }
+
+      const manualImportItems = (
+        manualImportResult.data?.downloadQueue ?? []
+      ) as DownloadQueueDisplayStateInput[];
+      setManualImportRequiredCount(
+        manualImportItems.filter((item) => isManualImportRequiredQueueItem(item)).length,
+      );
     } catch {
       setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
+      setManualImportRequiredCount(0);
     }
   }, []);
 
   useEffect(() => {
-    void refreshPendingImportCounts();
-  }, [refreshPendingImportCounts]);
+    void refreshSidebarCounts();
+  }, [refreshSidebarCounts]);
 
   useEffect(() => {
-    const handlePendingImportsRefresh = () => {
-      void refreshPendingImportCounts();
+    const handleSidebarCountsRefresh = () => {
+      void refreshSidebarCounts();
     };
-    window.addEventListener("scryer:pendingImportsRefresh", handlePendingImportsRefresh);
+    window.addEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
+    window.addEventListener("scryer:activityQueueRefresh", handleSidebarCountsRefresh);
     const intervalId = window.setInterval(() => {
-      void refreshPendingImportCounts();
+      void refreshSidebarCounts();
     }, 30_000);
     return () => {
-      window.removeEventListener("scryer:pendingImportsRefresh", handlePendingImportsRefresh);
+      window.removeEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
+      window.removeEventListener("scryer:activityQueueRefresh", handleSidebarCountsRefresh);
       window.clearInterval(intervalId);
     };
-  }, [refreshPendingImportCounts]);
+  }, [refreshSidebarCounts]);
 
   const activeFacet = useMemo<Facet>(() => facetForView(view)?.id ?? "movie", [view]);
   const queueFacet = activeFacet;
@@ -440,6 +474,7 @@ function AuthenticatedHomePage({
     () => [
       ...FACET_REGISTRY.map((f) => ({ id: f.viewId as ViewId, label: t(f.navLabelKey), icon: f.icon })),
       { id: "activity" as ViewId, label: t("nav.activity"), icon: ActivitySquare },
+      { id: "calendar" as ViewId, label: t("nav.calendar"), icon: CalendarDays },
       { id: "wanted" as ViewId, label: t("nav.wanted"), icon: ListChecks },
       { id: "history" as ViewId, label: t("nav.history"), icon: History },
       { id: "settings" as ViewId, label: t("nav.settings"), icon: Settings },
@@ -503,84 +538,87 @@ function AuthenticatedHomePage({
       )}
       <Suspense fallback={<ViewLoadingFallback />}>
         <LibraryScanProgressProvider>
-          <ReactiveRefreshProvider>
-            <GlobalSearchProvider
-              activeFacet={activeFacet}
-              queueFacet={queueFacet}
-              uiLanguage={uiLanguage}
-              onCatalogChanged={onCatalogChanged}
-            >
-              <RootHeader
-                onOpenOverview={handleOpenOverview}
-                routeCommandPalette={routeCommandPaletteConfig}
-              />
+          <JobRunProvider>
+            <ReactiveRefreshProvider>
+              <GlobalSearchProvider
+                activeFacet={activeFacet}
+                queueFacet={queueFacet}
+                uiLanguage={uiLanguage}
+                onCatalogChanged={onCatalogChanged}
+              >
+                <RootHeader
+                  onOpenOverview={handleOpenOverview}
+                  routeCommandPalette={routeCommandPaletteConfig}
+                />
 
-              {!isOnline ? (
-                <div className="flex items-center justify-center gap-2 bg-amber-900/80 px-4 py-2 text-sm text-amber-100">
-                  <WifiOff className="h-4 w-4 flex-none" />
-                  <span>{t("pwa.offline")}</span>
-                </div>
-              ) : null}
+                {!isOnline ? (
+                  <div className="flex items-center justify-center gap-2 bg-amber-900/80 px-4 py-2 text-sm text-amber-100">
+                    <WifiOff className="h-4 w-4 flex-none" />
+                    <span>{t("pwa.offline")}</span>
+                  </div>
+                ) : null}
 
-              {showInstallBanner ? (
-                <div className="flex items-center justify-center gap-3 bg-emerald-100 dark:bg-emerald-900/60 px-4 py-2 text-sm text-emerald-800 dark:text-emerald-100">
-                  <Download className="h-4 w-4 flex-none" />
-                  <span>{isIosSafari ? t("pwa.iosInstallHint") : t("pwa.installApp")}</span>
-                  {canPrompt ? (
+                {showInstallBanner ? (
+                  <div className="flex items-center justify-center gap-3 bg-emerald-100 dark:bg-emerald-900/60 px-4 py-2 text-sm text-emerald-800 dark:text-emerald-100">
+                    <Download className="h-4 w-4 flex-none" />
+                    <span>{isIosSafari ? t("pwa.iosInstallHint") : t("pwa.installApp")}</span>
+                    {canPrompt ? (
+                      <button
+                        type="button"
+                        onClick={() => void promptInstall()}
+                        className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-foreground hover:bg-emerald-500"
+                      >
+                        {t("pwa.installApp")}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => void promptInstall()}
-                      className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-foreground hover:bg-emerald-500"
+                      onClick={dismissInstallBanner}
+                      className="ml-auto text-emerald-700 dark:text-emerald-300 hover:text-foreground"
+                      aria-label={t("label.dismiss")}
                     >
-                      {t("pwa.installApp")}
+                      <X className="h-4 w-4" />
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={dismissInstallBanner}
-                    className="ml-auto text-emerald-700 dark:text-emerald-300 hover:text-foreground"
-                    aria-label={t("label.dismiss")}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              ) : null}
+                  </div>
+                ) : null}
 
-              <div className="mx-auto flex w-full max-w-[1480px] flex-1 min-h-0 px-3 pb-10 pt-4">
-                <RootSidebar
-                  topNav={topNav}
-                  view={view}
-                  settingsSection={settingsSection}
-                  contentSettingsSection={contentSettingsSection}
-                  systemSection={systemSection}
-                  entitlements={entitlements}
-                  pendingImportCounts={pendingImportCounts}
-                  onNavigate={navigateTo}
-                >
-                  <main className={view === "wanted" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
-                    <Suspense fallback={<ViewLoadingFallback />}>
-                      <MainContent
-                        view={view}
-                        overviewTitleId={overviewTitleId}
-                        overviewEpisodeId={overviewEpisodeId}
-                        handleBackToList={handleBackToList}
-                        handleTitleNotFound={handleTitleNotFound}
-                        settingsSection={settingsSection}
-                        userId={user?.id}
-                        username={user?.username}
-                        selectedLanguage={selectedLanguage}
-                        uiLanguage={uiLanguage}
-                        setLanguagePreferenceFromShell={setLanguagePreferenceFromShell}
-                        contentSettingsSection={contentSettingsSection}
-                        systemSection={systemSection}
-                        handleOpenOverview={handleOpenOverview}
-                      />
-                    </Suspense>
-                  </main>
-                </RootSidebar>
-              </div>
-            </GlobalSearchProvider>
-          </ReactiveRefreshProvider>
+                <div className="mx-auto flex w-full max-w-[1480px] flex-1 min-h-0 px-3 pb-10 pt-4">
+                  <RootSidebar
+                    topNav={topNav}
+                    view={view}
+                    settingsSection={settingsSection}
+                    contentSettingsSection={contentSettingsSection}
+                    systemSection={systemSection}
+                    entitlements={entitlements}
+                    pendingImportCounts={pendingImportCounts}
+                    manualImportRequiredCount={manualImportRequiredCount}
+                    onNavigate={navigateTo}
+                  >
+                    <main className={view === "wanted" || view === "calendar" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
+                      <Suspense fallback={<ViewLoadingFallback />}>
+                        <MainContent
+                          view={view}
+                          overviewTitleId={overviewTitleId}
+                          overviewEpisodeId={overviewEpisodeId}
+                          handleBackToList={handleBackToList}
+                          handleTitleNotFound={handleTitleNotFound}
+                          settingsSection={settingsSection}
+                          userId={user?.id}
+                          username={user?.username}
+                          selectedLanguage={selectedLanguage}
+                          uiLanguage={uiLanguage}
+                          setLanguagePreferenceFromShell={setLanguagePreferenceFromShell}
+                          contentSettingsSection={contentSettingsSection}
+                          systemSection={systemSection}
+                          handleOpenOverview={handleOpenOverview}
+                        />
+                      </Suspense>
+                    </main>
+                  </RootSidebar>
+                </div>
+              </GlobalSearchProvider>
+            </ReactiveRefreshProvider>
+          </JobRunProvider>
         </LibraryScanProgressProvider>
       </Suspense>
     </div>

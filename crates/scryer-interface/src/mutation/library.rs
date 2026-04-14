@@ -192,7 +192,7 @@ impl LibraryMutations {
     async fn rehydrate_all_metadata(&self, ctx: &Context<'_>, language: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let (cleared, refreshed) = app
+        let cleared = app
             .rehydrate_all_metadata(&actor, &language)
             .await
             .map_err(to_gql_error)?;
@@ -200,8 +200,7 @@ impl LibraryMutations {
         tracing::info!(
             language = %language,
             titles_cleared = cleared,
-            titles_refreshed = refreshed,
-            "metadata rehydration completed"
+            "metadata rehydration accepted"
         );
 
         Ok(true)

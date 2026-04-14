@@ -20,7 +20,7 @@ export type IndexerCategoryGroupDefinition = {
 };
 
 export const indexerCategoryGroupLabelMap = {
-  tv: "settings.indexerCategoryTv",
+  series: "settings.indexerCategorySeries",
   movies: "settings.indexerCategoryMovies",
   other: "settings.indexerCategoryOther",
   foreign: "settings.indexerCategoryForeign",
@@ -55,8 +55,8 @@ export const indexerCategoryLabelMap: Record<string, string> = {
 };
 
 export const INDEXER_CATEGORY_DEFINITIONS: Record<string, IndexerCategoryGroupDefinition> = {
-  tv: {
-    labelKey: "tv",
+  series: {
+    labelKey: "series",
     code: "5000",
     categories: [
       { code: "5020", labelKey: "settings.indexerCategoryForeign" },
@@ -93,11 +93,11 @@ export const INDEXER_CATEGORY_DEFINITIONS: Record<string, IndexerCategoryGroupDe
 
 export const INDEXER_CATEGORY_GROUPS_BY_SCOPE: Record<
   ViewCategoryId,
-  Array<"movies" | "tv" | "other">
+  Array<"movies" | "series" | "other">
 > = {
   movie: ["movies", "other"],
-  series: ["tv", "other"],
-  anime: ["tv", "other"],
+  series: ["series", "other"],
+  anime: ["series", "other"],
 };
 
 export function sortCategoryCodes(values: string[]): string[] {
@@ -268,7 +268,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
     });
   };
 
-  const toggleCategoryHeader = (groupKey: "movies" | "tv" | "other") => {
+  const toggleCategoryHeader = (groupKey: "movies" | "series" | "other") => {
     const groupCode = INDEXER_CATEGORY_DEFINITIONS[groupKey].code;
     setDraftCategories((previous) => {
       const next = new Set(previous.map((entry) => entry.trim()));

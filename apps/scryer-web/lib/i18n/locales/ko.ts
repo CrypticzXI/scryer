@@ -2,7 +2,6 @@ import type { LocaleDictionary } from "../types";
 
 const ko: LocaleDictionary = {
   brand: "scryer",
-
   "label.ready": "준비됨",
   "label.search": "검색",
   "label.interactiveSearch": "수동 검색",
@@ -47,36 +46,38 @@ const ko: LocaleDictionary = {
   "label.disable": "비활성화",
   "label.version": "버전",
   "label.type": "유형",
+  "label.title": "제목",
   "label.status": "상태",
   "label.testConnection": "연결 테스트",
   "label.activityStream": "활동 스트림",
+  "external.openOn": "{{site}}에서 열기",
   "label.unknown": "알 수 없음",
   "label.deleting": "삭제 중…",
   "label.configured": "설정됨",
-  "label.missing": "누락",
+  "label.missing": "누락됨",
   "label.default": "기본값",
   "label.language": "언어",
   "label.unknownType": "알 수 없는 유형",
   "label.yearUnknown": "연도 미상",
   "label.noArt": "아트 없음",
   "label.emptyEntitlements": "권한 없음",
-
   "nav.movies": "영화",
   "nav.series": "시리즈",
   "nav.anime": "애니메이션",
   "nav.activity": "활동",
-  "nav.history": "기록",
+  "nav.calendar": "캘린더",
+  "nav.history": "내역",
   "nav.settings": "설정",
   "nav.library": "라이브러리",
+  "nav.import": "가져오기",
   "nav.system": "시스템",
   "nav.group": "내비게이션",
-
   "command.paletteTitle": "이동",
   "command.paletteDescription": "페이지와 설정 섹션을 검색합니다",
   "command.palettePlaceholder": "페이지 이름 입력",
   "command.paletteNoResults": "일치하는 항목 없음",
   "command.paletteGroup": "내비게이션",
-
+  settings: "설정",
   "settings.profile": "프로필",
   "settings.general": "일반",
   "settings.users": "사용자",
@@ -88,7 +89,6 @@ const ko: LocaleDictionary = {
   "settings.seriesSettings": "시리즈 설정",
   "settings.animeSettings": "애니메이션 설정",
   "settings.mediaSettings": "미디어 설정",
-
   "facetSettings.general": "일반",
   "facetSettings.quality": "품질",
   "facetSettings.renaming": "이름 변경",
@@ -103,7 +103,6 @@ const ko: LocaleDictionary = {
   "facetSettings.effectiveScoringOverrides": "스코어링 오버라이드",
   "facetSettings.effectiveScoringOverridesHint":
     "페르소나 위에 적용되는 토글 가능한 플래그입니다. 변경하려면 품질 프로필을 편집하세요.",
-
   "persona.trait.balanced.source": "소스: 표준 선호 (BluRay > WEB-DL > WeRip)",
   "persona.trait.balanced.audio": "오디오: 균형 잡힌 코덱 가중치",
   "persona.trait.balanced.x265": "x265: 4K 미만에서 감점",
@@ -118,20 +117,17 @@ const ko: LocaleDictionary = {
   "persona.trait.audiophile.remux": "Remux: 매우 높은 가산점",
   "persona.trait.audiophile.hdr": "HDR: Dolby Vision 높은 가산점",
   "persona.trait.efficient.source": "소스: WEB-DL 및 WEB-Rip 선호",
-  "persona.trait.efficient.audio":
-    "오디오: 손실 코덱 허용 (DDP 선호)",
+  "persona.trait.efficient.audio": "오디오: 손실 코덱 허용 (DDP 선호)",
   "persona.trait.efficient.x265": "x265: 모든 해상도에서 가산점",
   "persona.trait.efficient.size": "파일 크기: 작은 인코드 선호",
   "persona.trait.efficient.remux": "Remux: 우선시하지 않음",
   "persona.trait.efficient.hdr": "HDR: 표준",
   "persona.trait.compatible.source": "소스: WEB-DL 선호",
-  "persona.trait.compatible.audio":
-    "오디오: 호환성을 위해 DDP 및 AAC 우선",
+  "persona.trait.compatible.audio": "오디오: 호환성을 위해 DDP 및 AAC 우선",
   "persona.trait.compatible.x265": "x265: H.264를 H.265보다 선호",
   "persona.trait.compatible.size": "파일 크기: 표준 선호",
   "persona.trait.compatible.remux": "Remux: 우선시하지 않음",
   "persona.trait.compatible.hdr": "HDR: Dolby Vision 감점 (호환성 위험)",
-
   "settings.moviesLibrarySettings": "영화 미디어 설정",
   "settings.seriesLibrarySettings": "시리즈 미디어 설정",
   "settings.rootFoldersLabel": "루트 폴더",
@@ -153,6 +149,11 @@ const ko: LocaleDictionary = {
   "settings.libraryScanSuccess":
     "라이브러리 스캔 완료. {{imported}}개 가져옴, {{skipped}}개 건너뜀, {{unmatched}}개 매칭 안됨.",
   "settings.libraryScanFailed": "라이브러리 스캔 실패.",
+  "settings.libraryScanCancel": "취소",
+  "settings.libraryScanCancelFailed": "라이브러리 스캔을 취소하지 못했습니다.",
+  "settings.libraryScanCanceled": "라이브러리 스캔이 취소되었습니다.",
+  "settings.libraryScanCanceledSummary":
+    "라이브러리 스캔이 취소되었습니다. {{imported}} 가져옴, {{skipped}} 건너뛰기, {{unmatched}} 일치하지 않음.",
   "settings.libraryScanToastTitle": "{{facet}} 라이브러리 스캔",
   "settings.libraryScanFoundTitles": "{{count}}개 타이틀 발견",
   "settings.libraryScanDiscovering": "타이틀 확인 중…",
@@ -162,15 +163,73 @@ const ko: LocaleDictionary = {
   "settings.libraryScanFetchingMetadata": "메타데이터 가져오기",
   "settings.libraryScanFilesScanned": "미디어 분석",
   "settings.libraryScanNoTitleMatchNeeded": "타이틀 매칭이 필요하지 않습니다",
-  "settings.libraryScanNoMetadataNeeded": "메타데이터 가져오기가 필요하지 않습니다",
+  "settings.libraryScanNoMetadataNeeded":
+    "메타데이터 가져오기가 필요하지 않습니다",
   "settings.libraryScanNoFilesToScan": "미디어 분석이 필요하지 않습니다",
+  "settings.libraryScanAlreadyRunning":
+    "{{facet}} 라이브러리 스캔이 이미 실행 중입니다.",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
   "settings.libraryScanCompleted": "라이브러리 스캔 완료.",
+  "settings.libraryScanCompletedWithWarnings":
+    "라이브러리 스캔이 경고와 함께 완료되었습니다.",
+  "jobs.title": "채용 정보",
+  "jobs.activeRuns": "실행 중인 작업",
+  "jobs.primary": "주요 작업",
+  "jobs.maintenance": "유지 관리",
+  "jobs.schedule": "일정",
+  "jobs.never": "절대",
+  "jobs.completed": "완료됨",
+  "jobs.running": "실행 중",
+  "jobs.runSummaryCompleted": "완료됨",
+  "jobs.runSummaryRunning": "실행 중",
+  "jobs.recentRuns": "최근 실행",
+  "jobs.loadingRecentRuns": "최근 실행 로드 중…",
+  "jobs.noRunsYet": "아직 기록된 실행이 없습니다.",
+  "jobs.healthCheckIssues": "상태 점검 문제",
+  "jobs.nextRunPrefix": "다음 실행: {{value}}",
+  "jobs.startedAt": "시작 {{value}}",
+  "jobs.completedAt": "완료 {{value}}",
+  "jobs.failedToTrigger": "작업을 실행하지 못했습니다",
+  "jobs.column.name": "이름",
+  "jobs.column.category": "카테고리",
+  "jobs.column.schedule": "일정",
+  "jobs.column.nextRun": "다음 실행",
+  "jobs.column.lastRun": "마지막 실행",
+  "jobs.column.status": "상태",
+  "jobs.column.trigger": "방아쇠",
+  "jobs.action.run": "실행",
+  "jobs.action.runNow": "지금 실행",
+  "jobs.action.running": "실행 중…",
+  "jobs.status.idle": "유휴",
+  "jobs.status.queued": "대기 중",
+  "jobs.status.discovering": "탐색 중",
+  "jobs.status.running": "실행 중",
+  "jobs.status.completed": "완료됨",
+  "jobs.status.warning": "경고",
+  "jobs.status.failed": "실패",
+  "jobs.category.library": "도서관",
+  "jobs.category.acquisition": "수집",
+  "jobs.category.maintenance": "유지 관리",
+  "jobs.category.subtitles": "자막",
+  "jobs.category.system": "시스템",
+  "jobs.triggerSource.manual": "수동",
+  "jobs.triggerSource.scheduledStartup": "시작 시 예약",
+  "jobs.triggerSource.scheduledInterval": "예약 간격",
+  "jobs.triggerSource.systemInternal": "시스템 내부",
+  "deletePreview.counting": "삭제할 파일 수를 계산하는 중...",
+  "deletePreview.error": "삭제 미리보기를 준비할 수 없습니다.",
+  "deletePreview.files": "파일",
+  "deletePreview.media": "메디아",
+  "deletePreview.subtitles": "자막",
+  "deletePreview.images": "이미지",
+  "deletePreview.other": "기타",
+  "deletePreview.folders": "폴더",
+  "deletePreview.samplePaths": "샘플 경로",
+  "deletePreview.confirmPrompt": "삭제를 확인하려면 DELETE를 입력하세요.",
   "settings.saveButton": "저장",
   "settings.comingSoon": "이 섹션은 향후 업데이트에서 제공됩니다.",
   "settings.moviesPathLabel": "영화 폴더 경로",
-  "settings.moviesPathHelp":
-    "선택한 영화 릴리스의 대상 폴더로 사용됩니다.",
+  "settings.moviesPathHelp": "선택한 영화 릴리스의 대상 폴더로 사용됩니다.",
   "settings.moviesPathPlaceholder": "/data/movies",
   "settings.moviesPathRequired": "영화 폴더 경로는 필수입니다.",
   "settings.seriesPathLabel": "시리즈 폴더 경로",
@@ -195,9 +254,12 @@ const ko: LocaleDictionary = {
   "settings.qualityProfileInheritLabel": "글로벌에서 상속",
   "settings.qualityProfileCatalogInvalid":
     "품질 프로필 카탈로그가 유효한 JSON이 아닙니다.",
+  "settings.qualityProfileUnknown": '알 수 없는 품질 프로필 ID "{{id}}".',
   "settings.qualitySettingsSaved": "품질 설정이 저장되었습니다.",
   "settings.downloadClientRoutingSaved":
     "다운로드 클라이언트 라우팅이 저장되었습니다.",
+  "settings.downloadClientRoutingSavedFor":
+    '"{{name}}"에 대해 저장된 클라이언트 라우팅을 다운로드합니다.',
   "settings.delayProfiles": "지연 프로필",
   "settings.delayProfileExisting": "기존 지연 프로필",
   "settings.delayProfileNone":
@@ -270,7 +332,7 @@ const ko: LocaleDictionary = {
   "settings.downloadClientUrlBasePlaceholder": "예: api",
   "settings.downloadClientPortPlaceholder": "8080",
   "settings.downloadClientPriorityPlaceholder": "기본값",
-  "settings.downloadClientCategoryPlaceholder": "tv",
+  "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "상태",
   "settings.existingDownloadClients": "기존 다운로드 클라이언트",
   "settings.downloadClientRoutingScope":
@@ -288,7 +350,7 @@ const ko: LocaleDictionary = {
   "settings.indexerRoutingNoCategories": "카테고리가 선택되지 않았습니다.",
   "settings.indexerRoutingCategoriesPlaceholder": "카테고리 선택",
   "settings.indexerRoutingNoIndexers": "인덱서를 찾을 수 없습니다.",
-  "settings.indexerCategoryTv": "TV",
+  "settings.indexerCategorySeries": "Series",
   "settings.indexerCategoryMovies": "영화",
   "settings.indexerCategoryOther": "기타",
   "settings.indexerCategoryForeign": "외국어",
@@ -319,8 +381,7 @@ const ko: LocaleDictionary = {
   "settings.renameMissingMetadataPolicyLabel": "메타데이터 누락 정책",
   "settings.renameMissingMetadataPolicyFallbackTitle": "제목으로 대체",
   "settings.renameMissingMetadataPolicySkip": "건너뛰기",
-  "settings.renamePolicyHelp":
-    "이 설정은 미디어 카테고리 범위별로 저장됩니다.",
+  "settings.renamePolicyHelp": "이 설정은 미디어 카테고리 범위별로 저장됩니다.",
   "settings.renameSectionTitle": "파일 이름 변경",
   "settings.renameAvailableTokens": "사용 가능한 토큰",
   "settings.renameTokenTitle": "제목",
@@ -344,19 +405,18 @@ const ko: LocaleDictionary = {
   "settings.renameValidationEmpty": "이름 변경 템플릿은 비워둘 수 없습니다",
   "settings.renameComingSoon": "이름 변경 규칙은 곧 제공됩니다.",
   "settings.mediaSettingsSaved": "미디어 설정이 저장되었습니다.",
-
   "rename.previewButton": "이름 변경 미리보기",
   "rename.previewing": "미리보기 중…",
   "rename.applyButton": "이름 변경 적용",
   "rename.applying": "적용 중…",
+  "rename.currentPath": "현재의",
+  "rename.proposedPath": "제안됨",
   "rename.planSummary":
     "{{total}}개 항목, {{renamable}}개 변경 가능, {{noop}}개 변경 없음, {{conflicts}}개 충돌, {{errors}}개 오류",
-
   "settings.title": "설정",
   "settings.sectionTitle": "설정 • {{section}}",
   "settings.generalText": "일반 애플리케이션 설정.",
-  "settings.generalPlaceholder":
-    "언어 및 기타 글로벌 환경 설정을 구성합니다.",
+  "settings.generalPlaceholder": "언어 및 기타 글로벌 환경 설정을 구성합니다.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS 인증서 경로",
   "settings.tlsCertPathHelp":
@@ -368,14 +428,17 @@ const ko: LocaleDictionary = {
   "settings.tlsKeyPathPlaceholder": "/etc/scryer/key.pem",
   "settings.tlsSaved":
     "TLS 설정이 저장되었습니다. 변경 사항을 적용하려면 서비스를 재시작하세요.",
-  "settings.tlsRestartNote":
-    "TLS 설정 변경은 서비스 재시작이 필요합니다.",
-
+  "settings.languageChangeTitle": "언어 변경",
+  "settings.languageChangeWarning":
+    "{{language}}로 변경하면 라이브러리의 모든 도서(이름, 설명, 정렬 제목)에 대한 메타데이터가 새 언어로 다시 다운로드됩니다. 라이브러리 크기에 따라 몇 분 정도 걸릴 수 있습니다. 인터페이스가 즉시 변경됩니다.",
+  "settings.languageChangeConfirm": "언어 변경",
+  "settings.metadataRehydrationStarted":
+    "메타데이터 복원이 시작되었습니다. 제목은 백그라운드에서 업데이트됩니다.",
+  "settings.tlsRestartNote": "TLS 설정 변경은 서비스 재시작이 필요합니다.",
   "search.globalPlaceholder": "멋진 것을 검색하세요! (/ 키를 누르세요)",
   "search.catalog": "카탈로그",
   "search.noCatalogMatches": "관리 중인 카탈로그 매치가 아직 없습니다.",
-  "search.noMetadataMatches":
-    "이 섹션에서 아직 메타데이터 매치가 없습니다.",
+  "search.noMetadataMatches": "이 섹션에서 아직 메타데이터 매치가 없습니다.",
   "search.alreadyCataloged": "이미 카탈로그에 있음",
   "search.configureAdd": "추가 옵션 설정",
   "search.addConfigQualityProfile": "품질 프로필",
@@ -386,23 +449,23 @@ const ko: LocaleDictionary = {
   "search.addConfigNoQualityProfiles": "품질 프로필이 설정되지 않았습니다.",
   "search.seasonFolder.enabled": "활성화",
   "search.seasonFolder.disabled": "비활성화",
-  "search.monitorType.monitored": "모니터링",
-  "search.monitorType.unmonitored": "모니터링 안함",
+  "search.monitorType.monitored": "모니터링됨",
+  "search.monitorType.unmonitored": "모니터링되지 않음",
   "search.monitorType.futureEpisodes": "향후 에피소드",
   "search.monitorType.missingAndFutureEpisodes": "누락 + 향후 에피소드",
   "search.monitorType.allEpisodes": "모든 에피소드",
   "search.monitorType.none": "없음",
   "search.adding": "추가 중…",
   "search.facetMovie": "영화",
-  "search.facetTv": "TV",
+  "search.facetSeries": "Series",
   "search.facetAnime": "애니메이션",
   "search.metadataSearch": "메타데이터 검색",
-
   "label.back": "뒤로",
   "label.dismiss": "닫기",
   "pwa.offline": "오프라인 상태입니다. 일부 기능을 사용할 수 없습니다.",
   "pwa.installApp": "Scryer 설치",
-
+  "pwa.iosInstallHint":
+    '공유 버튼을 누르고 "홈 화면에 추가"를 선택하여 설치하세요.',
   "title.addAndQueue": "타이틀 추가 및 대기열",
   "title.addToCatalog": "카탈로그에 추가",
   "title.name": "타이틀 이름",
@@ -411,19 +474,29 @@ const ko: LocaleDictionary = {
   "title.manageMovies": "영화 관리",
   "title.manageSeries": "시리즈 관리",
   "title.manageAnime": "애니메이션 관리",
-  "title.monitored": "모니터링 중",
+  "title.monitored": "모니터링됨",
+  "title.ended": "끝남",
+  "title.continuing": "계속하다",
+  "title.upcoming": "예정",
+  "title.backToFacet": "{{facet}}로 돌아가기",
+  "title.notFound": "제목을 찾을 수 없습니다.",
+  "title.noPoster": "포스터 없음",
+  "title.addedAt": "{{date}}에 추가됨",
   "title.monitorAction": "모니터링",
   "title.unmonitorAction": "모니터링 해제",
   "title.markWantedAction": "원하는 항목으로 표시",
+  "title.searchMonitoredAction": "모니터링 중인 항목 검색",
+  "title.refreshAndScanAction": "새로고침 및 스캔",
   "title.filterPlaceholder": "관리 중인 타이틀 필터",
   "title.loading": "데이터 없음",
   "title.noManaged": "이 섹션에 타이틀이 없습니다.",
   "title.statusTemplate": "{{count}}개 타이틀 로드됨.",
   "title.table.facet": "유형",
-  "title.table.monitored": "모니터링",
+  "title.table.monitored": "모니터링됨",
   "title.table.poster": "포스터",
   "title.table.qualityTier": "품질",
   "title.table.episodes": "에피소드",
+  "title.table.status": "상태",
   "title.table.size": "크기",
   "title.viewModeToggle": "보기 모드",
   "title.viewModeTable": "테이블 보기",
@@ -432,6 +505,34 @@ const ko: LocaleDictionary = {
   "title.seasonMonitored": "시즌 모니터링 중",
   "title.episodeMonitored": "에피소드 모니터링 중",
   "title.deleteFilesOnDisk": "디스크에서 파일 삭제",
+  "title.seasonsAndEpisodes": "시즌 및 에피소드",
+  "title.noTrackedSeasons":
+    "이 작품에서는 아직 모니터링 중인 시즌이 없습니다.",
+  "title.fetchingData": "데이터를 가져오는 중",
+  "title.filesOnDisk": "디스크의 파일",
+  "title.noFilesTracked": "추적 중인 파일이 없습니다.",
+  "title.noFilesTrackedHint":
+    "디스크에 있는 파일을 감지하려면 라이브러리 스캔을 실행하세요.",
+  "title.descriptionUnavailable": "설명이 없습니다.",
+  "title.canon": "정사",
+  "title.mixed": "혼합",
+  "title.specials": "스페셜",
+  "title.seasonNumber": "시즌 {{number}}",
+  "title.episodeRange": "에피소드 {{start}} - {{end}}",
+  "title.episodeCountOne": "에피소드 {{count}}개",
+  "title.episodeCountOther": "에피소드 {{count}}개",
+  "title.specialCountOne": "스페셜 {{count}}개",
+  "title.specialCountOther": "스페셜 {{count}}개",
+  "title.movieCountOne": "영화 {{count}}편",
+  "title.movieCountOther": "영화 {{count}}편",
+  "title.movieDetails": "영화 세부 정보",
+  "title.searchingReleases": "인덱서에서 릴리스를 검색하는 중…",
+  "title.noReleasesFound": "{{name}}에 대한 릴리스를 찾지 못했습니다.",
+  "title.interactiveSearchHint":
+    "대화형 검색으로 설정된 인덱서에서 {{name}} 릴리스를 조회하세요.",
+  "title.blockedReleases": "차단된 릴리스",
+  "title.noBlockedReleases":
+    "이 영화에 기록된 차단된 릴리스가 없습니다.",
   "title.settings": "타이틀 설정",
   "title.qualityProfile": "품질 프로필",
   "title.rootFolder": "루트 폴더",
@@ -441,11 +542,55 @@ const ko: LocaleDictionary = {
   "title.noWantedItem": "활성 원하는 항목이 없습니다.",
   "title.queueLatest": "최신 대기열",
   "title.requiredAudioLanguages": "필수 오디오 언어",
+  "title.requiredAudioLanguagesFacetInfo":
+    "이러한 언어는 이 패싯에 대한 릴리스 선택 및 가져오기 검증 중에 적용됩니다.",
   "title.requiredAudioInherited": "{{facet}} 설정에서 상속됨",
   "title.requiredAudioResetInherit": "상속으로 초기화",
-
+  "title.fixMatchHeading": "메타데이터 일치 수정",
+  "title.fixMatchAction": "경기 수정",
+  "title.fixMatchDescriptionMovie":
+    "로컬 제목과 폴더 이름을 변경하지 않고 이 영화에 대한 TVDB 일치를 복구합니다.",
+  "title.fixMatchDescriptionSeries":
+    "이 타이틀에 대한 TVDB 일치를 복구합니다. 로컬 제목과 폴더 이름 지정은 동일하게 유지됩니다.",
+  "title.fixMatchDialogTitle": "경기 수정",
+  "title.fixMatchDialogDescription":
+    "{{name}}에 대한 TVDB 일치를 복구합니다. 로컬 제목과 폴더 이름은 동일하게 유지됩니다. 시리즈와 애니메이션은 내부적으로 시즌과 에피소드를 재구성합니다.",
+  "title.fixMatchUnnamed": "이 제목",
+  "title.fixMatchSearchPlaceholder": "TVDB 타이틀 검색",
+  "title.fixMatchCurrentTvdbId": "현재 TVDB ID",
+  "title.fixMatchCurrentTvdbNone": "없음",
+  "title.fixMatchSearching": "메타데이터 검색 중…",
+  "title.fixMatchNoResults": "일치하는 메타데이터가 없습니다.",
+  "title.fixMatchSelected": "선택된",
+  "title.fixMatchChoose": "선택하다",
+  "title.fixMatchApplying": "경기 수정 중…",
+  "title.fixMatchApply": "일치 적용",
+  "title.fixMatchSearchFailed": "메타데이터를 검색하지 못했습니다.",
+  "title.fixMatchApplyFailed": "제목 일치를 수정하지 못했습니다.",
+  "pendingImports.title": "보류 중인 수입품",
+  "pendingImports.description":
+    "올바른 메타데이터 일치를 선택하여 {{facet}}에 대한 일치하지 않는 디스크 항목을 해결하세요.",
+  "pendingImports.loading": "대기 중인 가져오기 로드 중…",
+  "pendingImports.loadFailed": "대기 중인 가져오기를 로드하지 못했습니다.",
+  "pendingImports.empty": "이 속성에 대해 보류 중인 가져오기가 없습니다.",
+  "pendingImports.path": "경로",
+  "pendingImports.folderPath": "폴더",
+  "pendingImports.searchPlaceholder": "메타데이터 제목 검색",
+  "pendingImports.searching": "메타데이터 검색 중…",
+  "pendingImports.searchFailed": "메타데이터를 검색하지 못했습니다.",
+  "pendingImports.noSearchResults": "일치하는 메타데이터가 없습니다.",
+  "pendingImports.searchAction": "검색 및 일치",
+  "pendingImports.match": "일치",
+  "pendingImports.resolving": "해결 중…",
+  "pendingImports.resolveSuccess":
+    "{{name}}에 대한 가져오기 보류 문제가 해결되었습니다.",
+  "pendingImports.resolveFailed": "보류 중인 가져오기를 해결하지 못했습니다.",
+  "pendingImports.prev": "이전의",
+  "pendingImports.next": "다음",
+  "pendingImports.pageRange": "{{start}}~{{end}} / {{total}}",
   "tvdb.searchResults": "TVDB 검색 결과",
   "tvdb.searchPrompt": "위에 제목을 입력하여 TVDB를 검색하세요.",
+  "tvdb.searching": '"{{query}}"에 대한 TVDB 메타데이터 검색 중',
   "tvdb.foundMatches": "{{count}}개 TVDB 매치를 찾았습니다.",
   "tvdb.noMatches": "TVDB 매치를 찾을 수 없습니다.",
   "tvdb.selectPrompt": "계속하려면 TVDB 매치를 선택하세요.",
@@ -453,7 +598,6 @@ const ko: LocaleDictionary = {
   "tvdb.searchButton": "선택한 TVDB 타이틀로 NZBGeek 검색",
   "tvdb.select": "선택",
   "tvdb.popularity": "인기도",
-
   "nzb.searchResults": "NZBGeek 검색 결과",
   "nzb.searchResultsFor": "{{name}}에 대한 NZB 결과",
   "nzb.selectTvdbFirst": "NZBGeek을 검색하려면 TVDB 매치를 선택하세요.",
@@ -467,9 +611,7 @@ const ko: LocaleDictionary = {
   "nzb.hideScoringLog": "스코어링 로그 숨기기",
   "nzb.scoringLog": "스코어링 로그",
   "nzb.total": "합계",
-
   "media.posterAlt": "{{name}} 포스터",
-
   "activity.title": "활동",
   "activity.loading": "활동 로딩 중…",
   "activity.noActivity": "로드된 활동이 없습니다.",
@@ -484,7 +626,6 @@ const ko: LocaleDictionary = {
   "activity.scryerOnly": "Scryer만",
   "activity.allActivity": "모든 활동",
   "activity.history": "기록",
-
   "queue.title": "제목",
   "queue.client": "클라이언트",
   "queue.status": "상태",
@@ -496,6 +637,7 @@ const ko: LocaleDictionary = {
   "queue.state.paused": "일시 중지",
   "queue.state.completed": "완료됨",
   "queue.state.importPending": "가져오기 대기 중",
+  "queue.state.importBlocked": "가져오기가 차단되었습니다.",
   "queue.state.failed": "실패",
   "queue.state.unknown": "알 수 없음",
   "queue.empty": "활성 또는 대기 중인 다운로드가 없습니다.",
@@ -514,6 +656,21 @@ const ko: LocaleDictionary = {
   "queue.blockReason": "차단 사유",
   "queue.showDetails": "세부 정보 표시",
   "queue.hideDetails": "세부 정보 숨기기",
+  "queue.assignTitle": "제목 지정",
+  "queue.reassignTitle": "제목 변경",
+  "queue.assignTitleTitle": "다운로드 제목 할당",
+  "queue.assignTitleDescription":
+    "차단된 다운로드가 속한 라이브러리 제목을 선택하세요. Scryer는 할당 후 가져오기를 다시 확인합니다.",
+  "queue.assignTitlePlaceholder": "제목 검색…",
+  "queue.assignTitleResults": "일치하는 제목",
+  "queue.assignTitleEmpty": "일치하는 제목이 없습니다.",
+  "queue.assignTitleQueued": "제목이 지정되었습니다. 가져오기가 재평가됩니다.",
+  "queue.assignTitleFailed": "제목을 할당하지 못했습니다.",
+  "queue.assignTitleBeforeImport":
+    "수동 가져오기를 시작하기 전에 제목을 지정하세요.",
+  "queue.ignore": "무시하다",
+  "queue.ignoreSuccess": "다운로드가 무시되었습니다.",
+  "queue.ignoreFailed": "다운로드를 무시하지 못했습니다.",
   "queue.pause": "일시 중지",
   "queue.pausing": "일시 중지 중…",
   "queue.pauseSuccess": "다운로드가 일시 중지되었습니다.",
@@ -528,7 +685,6 @@ const ko: LocaleDictionary = {
   "queue.deleteConfirmTitle": "다운로드 제거",
   "queue.deleteConfirmDescription":
     "이 다운로드를 대기열에서 제거하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-
   "importHistory.title": "가져오기 기록",
   "importHistory.empty": "가져오기 기록이 없습니다.",
   "importHistory.status": "상태",
@@ -542,8 +698,8 @@ const ko: LocaleDictionary = {
   "importHistory.passwordRequired": "비밀번호 필요",
   "importHistory.passwordPlaceholder": "아카이브 비밀번호",
   "importHistory.retrySuccess": "가져오기 재시도가 시작되었습니다",
-
   "system.title": "시스템 상태",
+  "system.jobsTitle": "채용 정보",
   "system.notLoaded": "시스템 상태가 로드되지 않았습니다.",
   "system.refreshing": "새로고침 중",
   "system.loaded": "시스템 상태 로드됨.",
@@ -569,8 +725,7 @@ const ko: LocaleDictionary = {
   "system.sourceTvdbDescription":
     "TV 시리즈 및 에피소드 메타데이터의 주요 소스입니다.",
   "system.sourceTmdbName": "The Movie Database (TMDB)",
-  "system.sourceTmdbDescription":
-    "영화 및 시리즈 메타데이터 보충 소스입니다.",
+  "system.sourceTmdbDescription": "영화 및 시리즈 메타데이터 보충 소스입니다.",
   "system.sourceJikanName": "Jikan API",
   "system.sourceJikanDescription":
     "MAL 기반 필러 및 총집편 메타데이터 동기화에 사용되는 애니메이션 API입니다.",
@@ -580,7 +735,6 @@ const ko: LocaleDictionary = {
   "system.sourceAniBridgeName": "AniBridge",
   "system.sourceAniBridgeDescription":
     "크로스 소스 ID와 에피소드 매핑 정렬에 사용되는 애니메이션 매핑 데이터셋입니다.",
-
   "settings.description":
     "인덱서, 클라이언트 및 알림에 대한 설정 섹션 자리 표시자.",
   "settings.description2":
@@ -639,8 +793,7 @@ const ko: LocaleDictionary = {
   "settings.ruleRegoSource": "Rego 소스",
   "settings.rulePriority": "우선순위",
   "settings.ruleAppliedFacets": "적용 유형",
-  "settings.ruleAppliedFacetsHelp":
-    "비워두면 모든 미디어 유형에 적용됩니다.",
+  "settings.ruleAppliedFacetsHelp": "비워두면 모든 미디어 유형에 적용됩니다.",
   "settings.ruleValidate": "검증",
   "settings.ruleValidating": "검증 중…",
   "settings.ruleValid": "규칙이 유효합니다.",
@@ -649,6 +802,8 @@ const ko: LocaleDictionary = {
   "settings.ruleLibraryDescription":
     "클릭 한 번으로 추가할 수 있는 기본 제공 규칙입니다. 템플릿을 선택하여 편집기에 반영하세요.",
   "settings.ruleLibraryAll": "전체",
+  "settings.ruleLibraryCommunityEmpty":
+    "사용 가능한 커뮤니티 규칙 팩이 없습니다. 새 팩이 있는지 확인하려면 플러그인 레지스트리를 새로 고치세요.",
   "settings.rulesFacetSection": "{{facet}}에 대한 커스텀 규칙",
   "settings.ruleGlobal": "글로벌",
   "settings.ruleNoFacetRules":
@@ -665,23 +820,17 @@ const ko: LocaleDictionary = {
   "settings.refColReturns": "반환",
   "settings.refSectionRelease": "— 파싱된 릴리스 메타데이터",
   "settings.refReleaseRawTitle": "인덱서의 원본 파싱 전 릴리스 제목",
-  "settings.refReleaseQuality":
-    "감지된 품질 티어 (예: 2160P, 1080P, 720P)",
-  "settings.refReleaseSource":
-    "미디어 소스 (예: WEB-DL, BLURAY, HDTV)",
+  "settings.refReleaseQuality": "감지된 품질 티어 (예: 2160P, 1080P, 720P)",
+  "settings.refReleaseSource": "미디어 소스 (예: WEB-DL, BLURAY, HDTV)",
   "settings.refReleaseVideoCodec": "비디오 코덱 (예: H.265, H.264, AV1)",
-  "settings.refReleaseAudio":
-    "기본 오디오 코덱 (예: DDP, AAC, TrueHD)",
+  "settings.refReleaseAudio": "기본 오디오 코덱 (예: DDP, AAC, TrueHD)",
   "settings.refReleaseAudioCodecs": "감지된 모든 오디오 코덱 배열",
-  "settings.refReleaseAudioChannels":
-    "오디오 채널 구성 (예: 5.1, 7.1, 2.0)",
-  "settings.refReleaseLangsAudio":
-    "ISO 639-3 오디오 언어 코드 (예: eng, jpn)",
+  "settings.refReleaseAudioChannels": "오디오 채널 구성 (예: 5.1, 7.1, 2.0)",
+  "settings.refReleaseLangsAudio": "ISO 639-3 오디오 언어 코드 (예: eng, jpn)",
   "settings.refReleaseLangsSub": "ISO 639-3 자막 언어 코드",
   "settings.refReleaseIsDualAudio": "다중 오디오 트랙이 감지되면 true",
   "settings.refReleaseIsAtmos": "Dolby Atmos 오디오가 있으면 true",
-  "settings.refReleaseIsDV":
-    "Dolby Vision 메타데이터가 감지되면 true",
+  "settings.refReleaseIsDV": "Dolby Vision 메타데이터가 감지되면 true",
   "settings.refReleaseDetectedHdr": "HDR이 감지되면 true (비DV)",
   "settings.refReleaseIsRemux": "전체 리먹스이면 true (트랜스코딩 없음)",
   "settings.refReleaseIsBdDisk": "블루레이 디스크 소스이면 true",
@@ -693,12 +842,10 @@ const ko: LocaleDictionary = {
     "릴리스 이름에서 하드코딩 자막이 감지되면 true",
   "settings.refReleaseIsHdr10Plus":
     "릴리스 메타데이터에서 HDR10+가 감지되면 true",
-  "settings.refReleaseIsHlg":
-    "릴리스 메타데이터에서 HLG가 감지되면 true",
+  "settings.refReleaseIsHlg": "릴리스 메타데이터에서 HLG가 감지되면 true",
   "settings.refReleaseStreamingService":
     "감지된 스트리밍 서비스 태그 (있는 경우)",
-  "settings.refReleaseEdition":
-    "Extended, IMAX, Criterion 등의 에디션 태그",
+  "settings.refReleaseEdition": "Extended, IMAX, Criterion 등의 에디션 태그",
   "settings.refReleaseAnimeVersion":
     "v2, v3 등의 애니메이션 버전 번호 (있는 경우)",
   "settings.refReleaseGroup": "릴리스 그룹 또는 업로더 이름",
@@ -717,44 +864,35 @@ const ko: LocaleDictionary = {
   "settings.refProfileQualityTiers": "허용 품질 티어의 순서 목록",
   "settings.refProfileArchivalQuality": "보관용으로 간주되는 최고 품질 티어",
   "settings.refProfileAllowUnknown": "인식되지 않는 품질의 허용 여부",
-  "settings.refProfileSourceAllow":
-    "허용 소스 (비어있으면 모두 허용)",
+  "settings.refProfileSourceAllow": "허용 소스 (비어있으면 모두 허용)",
   "settings.refProfileSourceBlock": "차단 소스",
-  "settings.refProfileVCodecAllow":
-    "허용 비디오 코덱 (비어있으면 모두 허용)",
+  "settings.refProfileVCodecAllow": "허용 비디오 코덱 (비어있으면 모두 허용)",
   "settings.refProfileVCodecBlock": "차단 비디오 코덱",
-  "settings.refProfileACodecAllow":
-    "허용 오디오 코덱 (비어있으면 모두 허용)",
+  "settings.refProfileACodecAllow": "허용 오디오 코덱 (비어있으면 모두 허용)",
   "settings.refProfileACodecBlock": "차단 오디오 코덱",
   "settings.refProfileDVAllowed": "Dolby Vision 릴리스 허용",
   "settings.refProfileHdrAllowed": "HDR 릴리스 허용",
   "settings.refProfilePreferRemux": "프로필이 전체 리먹스를 선호함",
   "settings.refProfileAllowBdDisk": "블루레이 디스크 소스 허용",
   "settings.refProfileAllowUpgrades": "기존 파일 업그레이드 허용",
-  "settings.refProfileRequiredLangs":
-    "필수 오디오 언어 (ISO 639-3 코드)",
+  "settings.refProfileRequiredLangs": "필수 오디오 언어 (ISO 639-3 코드)",
   "settings.refSectionContext": "— 타이틀 및 검색 컨텍스트",
   "settings.refCtxTitleId":
     "구체적인 타이틀이 알려진 경우 내부 Scryer 타이틀 ID",
   "settings.refCtxMediaType":
-    "평가 중인 미디어 유형, 일반적으로 movie, tv, 또는 anime",
-  "settings.refCtxCategory":
-    "스코어링 및 규칙 평가에 사용되는 카테고리 힌트",
+    "평가 중인 미디어 유형, 일반적으로 movie, series, 또는 anime",
+  "settings.refCtxCategory": "스코어링 및 규칙 평가에 사용되는 카테고리 힌트",
   "settings.refCtxTags": "타이틀의 사용자 정의 태그",
-  "settings.refCtxHasExisting":
-    "이 타이틀에 대해 파일이 이미 존재하면 true",
+  "settings.refCtxHasExisting": "이 타이틀에 대해 파일이 이미 존재하면 true",
   "settings.refCtxExistingScore": "기존 파일의 기본 점수 (있는 경우)",
-  "settings.refCtxSearchMode":
-    "평가 모드. 현재 값은 auto와 post_download",
+  "settings.refCtxSearchMode": "평가 모드. 현재 값은 auto와 post_download",
   "settings.refCtxRuntimeMin": "콘텐츠 러닝타임 (분)",
-  "settings.refCtxIsAnime":
-    "타이틀이 애니메이션으로 분류되면 true",
+  "settings.refCtxIsAnime": "타이틀이 애니메이션으로 분류되면 true",
   "settings.refCtxIsFiller": "에피소드가 필러로 표시되면 true",
   "settings.refSectionBuiltinScore": "— 기본 스코어링 엔진 결과",
   "settings.refBuiltinTotal": "기본 스코어링 엔진의 총 점수",
   "settings.refBuiltinBlocked": "기본 규칙이 이 릴리스를 차단하면 true",
-  "settings.refBuiltinCodes":
-    "적용된 스코어링 코드 목록 (예: quality_tier_0)",
+  "settings.refBuiltinCodes": "적용된 스코어링 코드 목록 (예: quality_tier_0)",
   "settings.refSectionFile":
     "— 실제 분석된 파일 메타데이터 (다운로드 전에는 null)",
   "settings.refFileVideoCodec": "미디어 분석을 통한 검증된 비디오 코덱",
@@ -764,24 +902,21 @@ const ko: LocaleDictionary = {
   "settings.refFileVideoBitDepth": "검증된 비디오 비트 깊이",
   "settings.refFileVideoHdrFormat":
     "Dolby Vision, HDR10, HDR10+, HLG 등의 검증된 HDR 포맷",
-  "settings.refFileDoviProfile":
-    "Dolby Vision 프로필 번호 (있는 경우)",
+  "settings.refFileDoviProfile": "Dolby Vision 프로필 번호 (있는 경우)",
   "settings.refFileDoviBlCompatId":
     "Dolby Vision 베이스 레이어 호환성 ID (있는 경우)",
   "settings.refFileVideoFrameRate": "미디어 분석을 통한 검증된 프레임레이트",
-  "settings.refFileVideoProfile":
-    "Main 10 또는 High 등의 검증된 코덱 프로필",
+  "settings.refFileVideoProfile": "Main 10 또는 High 등의 검증된 코덱 프로필",
   "settings.refFileAudioCodec": "검증된 기본 오디오 코덱",
+  "settings.refFileAudioProfile":
+    "LC, Dolby TrueHD + Dolby Atmos 또는 DTS-HD MA + DTS:X IMAX와 같은 기본 검증 오디오 프로필 또는 확장 레이블",
   "settings.refFileAudioChannels": "검증된 기본 오디오 채널 수",
   "settings.refFileAudioBitrateKbps": "검증된 기본 오디오 비트레이트 (kbps)",
-  "settings.refFileAudioLanguages":
-    "실제 파일에서 감지된 모든 오디오 언어",
+  "settings.refFileAudioLanguages": "실제 파일에서 감지된 모든 오디오 언어",
   "settings.refFileAudioStreams":
     "오디오 스트림별 상세 정보; input.file.audio_streams[] 참조",
-  "settings.refFileSubtitleLanguages":
-    "실제 파일에서 감지된 모든 자막 언어",
-  "settings.refFileSubtitleCodecs":
-    "실제 파일에서 감지된 모든 자막 코덱",
+  "settings.refFileSubtitleLanguages": "실제 파일에서 감지된 모든 자막 언어",
+  "settings.refFileSubtitleCodecs": "실제 파일에서 감지된 모든 자막 코덱",
   "settings.refFileSubtitleStreams":
     "자막 스트림별 상세 정보; input.file.subtitle_streams[] 참조",
   "settings.refFileHasMultiAudio":
@@ -789,22 +924,20 @@ const ko: LocaleDictionary = {
   "settings.refFileDurationSeconds": "검증된 러닝타임 (초)",
   "settings.refFileNumChapters":
     "컨테이너가 챕터를 노출하는 경우 검증된 챕터 수",
-  "settings.refFileContainerFormat":
-    "matroska, mp4 등의 검증된 컨테이너 포맷",
+  "settings.refFileContainerFormat": "matroska, mp4 등의 검증된 컨테이너 포맷",
   "settings.refSectionAudioStreams": "— 중첩 오디오 스트림 항목",
   "settings.refAudioStreamCodec": "스트림별 오디오 코덱",
+  "settings.refAudioStreamProfile":
+    "스트림별로 검증된 오디오 프로필 또는 확장 라벨",
   "settings.refAudioStreamChannels": "스트림별 채널 수",
   "settings.refAudioStreamLanguage": "스트림별 언어 코드",
   "settings.refAudioStreamBitrateKbps": "스트림별 비트레이트 (kbps)",
   "settings.refSectionSubtitleStreams": "— 중첩 자막 스트림 항목",
   "settings.refSubtitleStreamCodec": "스트림별 자막 코덱",
   "settings.refSubtitleStreamLanguage": "스트림별 언어 코드",
-  "settings.refSubtitleStreamName":
-    "스트림별 자막 트랙 제목 (있는 경우)",
-  "settings.refSubtitleStreamForced":
-    "자막 스트림이 강제로 표시되면 true",
-  "settings.refSubtitleStreamDefault":
-    "자막 스트림이 기본값으로 표시되면 true",
+  "settings.refSubtitleStreamName": "스트림별 자막 트랙 제목 (있는 경우)",
+  "settings.refSubtitleStreamForced": "자막 스트림이 강제로 표시되면 true",
+  "settings.refSubtitleStreamDefault": "자막 스트림이 기본값으로 표시되면 true",
   "settings.refSectionBuiltins": "커스텀 Scryer 함수",
   "settings.refBuiltinsIntro":
     "이 헬퍼 함수들은 모든 표준 OPA 내장 함수 외에 Rego 규칙에서 사용할 수 있습니다.",
@@ -812,6 +945,12 @@ const ko: LocaleDictionary = {
     "릴리스를 완전 차단하는 데 사용되는 상수 -10000을 반환합니다",
   "settings.refFnSizeGib":
     "바이트를 GiB로 변환 (예: scryer.size_gib(input.release.size_bytes) > 50)",
+  "settings.refFnLangMatches":
+    '별칭이 있는 ISO 639-3 코드와 일치합니다(예: scryer.lang_matches("jpn", "ja")는 true입니다).',
+  "settings.refFnNormalizeSource":
+    '소스 이름을 정규화합니다(예: "webdl"이 "WEB-DL"이 됨)',
+  "settings.refFnNormalizeCodec":
+    '코덱 이름을 정규화합니다(예: "h264"는 "H.264"가 됨)',
   "settings.refSectionSandbox": "샌드박스 및 제한 사항",
   "settings.refSandboxIntro":
     "모든 사용자 규칙은 다음 제한 사항이 있는 샌드박스된 Rego 평가기 내에서 실행됩니다:",
@@ -832,19 +971,81 @@ const ko: LocaleDictionary = {
   "settings.refSectionOutput": "규칙 출력 형식",
   "settings.refOutputIntro":
     "규칙은 문자열 키(스코어 코드)를 정수 값(포인트 델타)으로 매핑하는 score_entry 규칙을 정의해야 합니다. 양수는 릴리스를 부스트하고, 음수는 감점하며, scryer.block_score()는 완전 차단합니다. 파일 기반 규칙은 input.file이 다운로드 후 평가 전까지 null이므로 다운로드 전에는 자연스럽게 무작동합니다.",
-
+  "settings.subtitles": "자막",
+  "settings.subtitlesSaved": "자막 설정이 저장되었습니다.",
+  "settings.sub.enabled": "자막 관리 활성화",
+  "settings.sub.credentials": "OpenSubtitles 자격 증명",
+  "settings.sub.username": "사용자이르",
+  "settings.sub.password": "비밀번호",
+  "settings.sub.apiKey": "API 키",
+  "settings.sub.languages": "자막 언어",
+  "settings.sub.languagesHelp":
+    "쉼표로 구분된 ISO 639-2 코드(예: eng, spa, fre, deu, jpn)",
+  "settings.sub.languagePickerAriaLabel": "자막 언어 선택",
+  "settings.sub.languagePickerSelect": "언어 선택...",
+  "settings.sub.languagePickerSearch": "언어 검색...",
+  "settings.sub.languagePickerEmpty": "언어를 찾을 수 없습니다.",
+  "settings.sub.languagePickerRemove": "{{language}} 제거",
+  "settings.sub.hiPreference": "청각 장애",
+  "settings.sub.forcedOnly": "강제 자막만",
+  "settings.sub.minScoreSeries": "시리즈 최소 매칭 점수",
+  "settings.sub.minScoreMovie": "영화 최소 매칭 점수",
+  "settings.sub.minScoreHelp":
+    "이 점수 미만의 자막은 건너뜁니다. 시리즈는 에피소드 단위 매칭이 정확해야 하므로 더 높은 임계값이 필요합니다.",
+  "settings.sub.searchInterval": "검색 간격(시간)",
+  "settings.sub.autoDownload": "가져오기 시 자동 다운로드",
+  "settings.sub.excludeAi": "AI 번역 자막 제외",
+  "settings.sub.excludeMachine": "기계 번역된 자막 제외",
+  "settings.sub.syncEnabled": "자막 타이밍 자동 보정",
+  "settings.sub.syncEnabledHelp":
+    "오디오 분석을 사용하여 다운로드한 자막의 타이밍 오차를 보정합니다.",
+  "settings.sub.syncThresholdSeries": "이 점수 이하에서는 자동 수정(시리즈)",
+  "settings.sub.syncThresholdMovie": "이 점수 이하에서는 자동 수정(영화)",
+  "settings.sub.syncThresholdHelp":
+    "점수가 낮은 자막에는 타이밍 문제가 있을 가능성이 더 높습니다. 이 점수 이상의 자막은 시기적절한 것으로 간주됩니다.",
+  "settings.sub.syncMaxOffset": "최대 수정(초)",
+  "settings.sub.syncMaxOffsetHelp":
+    "이미 충분히 가까운 자막이 손상되는 것을 방지하려면 이 값보다 큰 타이밍 변경을 건너뜁니다.",
   "settings.postProcessing": "후처리",
   "settings.postProcessingSaved": "후처리 설정이 저장되었습니다.",
-  "settings.pp.intro":
-    "각 파일을 가져온 후 커스텀 스크립트를 실행합니다. 비활성화하려면 비워두세요. 작업 디렉토리는 가져온 파일이 있는 폴더로 설정됩니다.",
-  "settings.pp.movieScript": "영화 스크립트",
-  "settings.pp.seriesScript": "시리즈 스크립트",
-  "settings.pp.animeScript": "애니메이션 스크립트",
-  "settings.pp.timeoutSecs": "스크립트 제한시간 (초)",
-  "settings.pp.envVarsHeading": "환경 변수",
-  "settings.pp.envVarsDescription":
-    "스크립트에서 다음 변수를 사용할 수 있습니다:",
-
+  "settings.pp.title": "후처리 스크립트",
+  "settings.pp.description":
+    "미디어를 가져온 후 스크립트가 자동으로 실행됩니다. 차단 스크립트는 우선순위에 따라 실행됩니다. Fire-and-forget 스크립트는 가져오기 파이프라인을 지연시키지 않고 병렬로 실행됩니다.",
+  "settings.pp.noScripts": "구성된 사후 처리 스크립트가 없습니다.",
+  "settings.pp.name": "스크립트 이름",
+  "settings.pp.namePlaceholder": "예를 들어 Plex에 알림",
+  "settings.pp.descriptionLabel": "설명",
+  "settings.pp.descriptionPlaceholder": "이 스크립트는 무엇을 합니까?",
+  "settings.pp.scriptType": "스크립트 유형",
+  "settings.pp.inline": "인라인",
+  "settings.pp.filePath": "파일 경로",
+  "settings.pp.inlineHelp": "실행할 쉘 명령을 입력하세요.",
+  "settings.pp.filePathHelp": "서버에서 실행 가능한 스크립트의 경로입니다.",
+  "settings.pp.blocking": "블로킹",
+  "settings.pp.fireAndForget": "화재 및 잊어 버리기",
+  "settings.pp.blockingHelp":
+    "우선순위로 실행됩니다. 다음 스크립트는 이 스크립트가 완료될 때까지 기다립니다.",
+  "settings.pp.fireAndForgetHelp":
+    "가져오기를 차단하지 않고 백그라운드에서 실행됩니다.",
+  "settings.pp.executionMode": "실행 모드",
+  "settings.pp.timeout": "시간 초과(초)",
+  "settings.pp.priority": "우선순위",
+  "settings.pp.priorityHelp": "낮은 숫자가 먼저 실행됩니다.",
+  "settings.pp.facets": "적용 대상",
+  "settings.pp.debug": "스크립트 출력 캡처",
+  "settings.pp.debugHelp":
+    "활성화되면 각 실행마다 stdout 및 stderr이 저장됩니다. 문제 해결에 유용합니다.",
+  "settings.pp.runHistory": "실행 기록",
+  "settings.pp.noRuns": "아직 처형이 없습니다.",
+  "settings.pp.outputNotCaptured":
+    "출력이 캡처되지 않았습니다. 출력을 보려면 이 스크립트에서 디버그 모드를 활성화하세요.",
+  "settings.pp.envHeading": "환경 변수",
+  "settings.pp.envDescription":
+    "스크립트는 제목, 에피소드, 릴리스 및 미디어 정보 메타데이터가 포함된 SCRYER_METADATA 환경 변수에서 JSON 페이로드를 수신합니다. SCRYER_FILE_PATH에는 가져온 파일 경로가 포함됩니다.",
+  "settings.pp.created": "스크립트가 생성되었습니다.",
+  "settings.pp.updated": "스크립트가 업데이트되었습니다.",
+  "settings.pp.deleted": "스크립트가 삭제되었습니다.",
+  "settings.pp.toggled": "스크립트 {{state}}.",
   "settings.plugins": "플러그인",
   "settings.pluginsSection": "플러그인 관리",
   "settings.pluginsRefresh": "레지스트리 새로고침",
@@ -874,14 +1075,12 @@ const ko: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "업데이트: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}으로 업그레이드",
-
   "status.pluginInstalled": "'{{name}}' 플러그인이 설치되었습니다.",
   "status.pluginUninstalled": "'{{name}}' 플러그인이 제거되었습니다.",
   "status.pluginUpgraded":
     "'{{name}}' 플러그인이 v{{version}}으로 업그레이드되었습니다.",
   "status.pluginToggled": "'{{name}}' 플러그인이 {{state}}되었습니다.",
   "status.registryRefreshed": "플러그인 레지스트리가 새로고침되었습니다.",
-
   "form.namePlaceholder": "이름",
   "form.indexerNamePlaceholder": "내 Newznab 인덱서",
   "form.providerTypePlaceholder": "제공자 유형",
@@ -897,33 +1096,27 @@ const ko: LocaleDictionary = {
   "form.usernamePlaceholder": "사용자명",
   "form.passwordPlaceholder": "비밀번호",
   "form.newPasswordPlaceholder": "새 비밀번호",
-  "form.indexerValidation":
-    "이름, 제공자 유형, 기본 URL은 필수입니다.",
+  "form.indexerValidation": "이름, 제공자 유형, 기본 URL은 필수입니다.",
   "form.indexerApiKeyRequired": "이 인덱서에는 API 키가 필요합니다.",
-  "form.indexerRateLimitValidation":
-    "속도 제한 값은 숫자여야 합니다.",
+  "form.indexerRateLimitValidation": "속도 제한 값은 숫자여야 합니다.",
   "form.rateLimitPlaceholder": "서비스 기본값",
   "form.enabled": "활성화",
-
   "qualityProfile.existingProfiles": "기존 품질 프로필",
   "qualityProfile.noProfilesFound": "프로필을 찾을 수 없습니다.",
   "qualityProfile.createProfile": "품질 프로필 생성",
   "qualityProfile.defaultProfileName": "기본값",
-  "qualityProfile.idGeneratedDescription":
-    "프로필 ID는 이름에서 생성됩니다.",
+  "qualityProfile.idGeneratedDescription": "프로필 ID는 이름에서 생성됩니다.",
   "qualityProfile.createProfileDescription":
     "프로필 이름은 생성 후 편집할 수 있습니다. ID는 자동 생성되며 고유해야 합니다.",
   "qualityProfile.editProfile": "품질 프로필 편집",
   "qualityProfile.profileNameLabel": "프로필 이름",
   "qualityProfile.qualityTiersAndArchival": "품질 티어 및 보관 품질",
   "qualityProfile.allowedQualityTiers": "허용 품질 티어 (선택됨)",
-  "qualityProfile.noQualityTiersSelected":
-    "품질 티어가 선택되지 않았습니다.",
+  "qualityProfile.noQualityTiersSelected": "품질 티어가 선택되지 않았습니다.",
   "qualityProfile.removeQualityTier": "{{value}} 품질 티어 제거",
   "qualityProfile.addQualityTier": "{{value}}을(를) 선택에 추가",
   "qualityProfile.availableQualityTiers": "사용 가능한 품질 티어",
-  "qualityProfile.allQualityTiersSelected":
-    "모든 품질 티어가 선택되었습니다.",
+  "qualityProfile.allQualityTiersSelected": "모든 품질 티어가 선택되었습니다.",
   "qualityProfile.archivalQuality": "보관 품질",
   "qualityProfile.archivalQualityInfo":
     "장기 보존을 위한 품질 수준입니다. Scryer는 아직 보관 품질이 없으면 먼저 더 높은 품질을 다운로드한 다음, 보관 품질 릴리스가 발견되면 나중에 교체할 수 있습니다.",
@@ -955,8 +1148,7 @@ const ko: LocaleDictionary = {
   "qualityProfile.videoCodecBlocklist": "비디오 코덱 차단 목록",
   "qualityProfile.audioCodecAllowlist": "오디오 코덱",
   "qualityProfile.audioCodecBlocklist": "오디오 코덱 차단 목록",
-  "qualityProfile.sourceAllowlistDefault":
-    "기본적으로 모든 소스가 허용됩니다.",
+  "qualityProfile.sourceAllowlistDefault": "기본적으로 모든 소스가 허용됩니다.",
   "qualityProfile.sourceAllowlistInfo":
     "선택한 소스 값과 일치하는 릴리스만 허용합니다 (예: WEB-DL, HDTV).",
   "qualityProfile.sourceBlocklistDefault":
@@ -1001,6 +1193,8 @@ const ko: LocaleDictionary = {
   "qualityProfile.scoringPersona": "스코어링 페르소나",
   "qualityProfile.scoringPersonaInfo":
     "다양한 릴리스 품질을 우선시하는 스코어링 가중치 프리셋입니다. 대부분의 사용자에게 Balanced가 권장됩니다.",
+  "qualityProfile.scoringPersonaMovedInfo":
+    "점수 부여 페르소나는 이제 저장된 품질 프로필 내부가 아닌 품질 설정에 있습니다. 프로필 점수 재정의는 현재 페르소나 위에 계속 적용됩니다.",
   "qualityProfile.personaBalanced": "밸런스",
   "qualityProfile.personaAudiophile": "오디오파일",
   "qualityProfile.personaEfficient": "효율",
@@ -1012,8 +1206,7 @@ const ko: LocaleDictionary = {
   "qualityProfile.overrideAllowX265Non4k": "비4K에서 x265 허용",
   "qualityProfile.overrideAllowX265Non4kInfo":
     "4K 미만 해상도에서 x265/HEVC 인코딩된 릴리스를 허용합니다. 일부 장치는 낮은 해상도에서 x265를 처리하지 못합니다.",
-  "qualityProfile.overrideBlockDvNoFallback":
-    "대체 없는 DV 차단",
+  "qualityProfile.overrideBlockDvNoFallback": "대체 없는 DV 차단",
   "qualityProfile.overrideBlockDvNoFallbackInfo":
     "HDR10 대체 레이어가 없는 Dolby Vision 릴리스를 차단합니다. 비DV 디스플레이에서 녹색/보라색으로 표시될 수 있습니다.",
   "qualityProfile.overridePreferCompact": "작은 인코드 선호",
@@ -1033,14 +1226,24 @@ const ko: LocaleDictionary = {
   "qualityProfile.minScoreToGrabInfo":
     "이 임계값 이상의 점수를 가진 릴리스만 다운로드합니다. 최소값이 없으면 비워두세요.",
   "qualityProfile.minScorePlaceholder": "최소값 없음",
-
+  "qualityProfile.confirmDeleteTitle": "품질 프로필 삭제",
+  "qualityProfile.confirmDeleteDescription":
+    '"{{name}}" 품질 프로필을 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.',
+  "qualityProfile.deleteDisabledInUse":
+    "이 프로필은 사용 중입니다. 삭제하기 전에 모든 제목과 카테고리 기본값에서 제거하세요.",
   "episode.details": "상세 정보",
   "episode.search": "검색",
+  "episode.blocklist": "차단 목록",
   "episode.overview": "개요",
   "episode.fileOnDisk": "디스크의 파일",
+  "episode.airDate": "방영일",
+  "episode.numberLabel": "에피소드",
   "episode.quality": "품질",
-  "episode.missing": "누락",
+  "episode.missing": "누락됨",
   "episode.noFile": "이 에피소드는 아직 다운로드되지 않았습니다.",
+  "episode.noBlockedReleases":
+    "이 에피소드에 기록된 차단된 릴리스가 없습니다.",
+  "episode.untitledRelease": "제목 없는 릴리스",
   "episode.filler": "필러",
   "episode.recap": "총집편",
   "episode.absoluteNumber": "절대 #{{number}}",
@@ -1049,7 +1252,6 @@ const ko: LocaleDictionary = {
   "episode.ona": "ONA",
   "episode.alternate": "대체",
   "episode.multiAudio": "듀얼 오디오",
-
   "mediaFile.pendingScan": "스캔 대기 중",
   "mediaFile.scanFailed": "스캔 실패",
   "mediaFile.score": "점수 {{score}}",
@@ -1059,7 +1261,29 @@ const ko: LocaleDictionary = {
   "mediaFile.subtitles": "자막",
   "mediaFile.subtitleCount": "{{count}}개 자막",
   "mediaFile.delete": "파일 삭제",
-
+  "mediaFile.pathNotRecorded": "기록되지 않은 경로",
+  "subtitle.search": "자막 검색",
+  "subtitle.searching": "검색 중...",
+  "subtitle.download": "다운로드",
+  "subtitle.downloading": "다운로드 중...",
+  "subtitle.noResults": "자막을 찾을 수 없습니다",
+  "subtitle.score": "점수: {{score}}",
+  "subtitle.hashMatch": "해시 일치",
+  "subtitle.hearingImpaired": "청각 장애",
+  "subtitle.forced": "강제",
+  "subtitle.aiTranslated": "AI 번역",
+  "subtitle.machineTranslated": "기계 번역",
+  "subtitle.subtitles": "자막",
+  "subtitle.embedded": "내장",
+  "subtitle.external": "외부",
+  "subtitle.manualSearch": "수동 검색",
+  "subtitle.blacklist": "블랙리스트",
+  "subtitle.blacklisted": "자막이 블랙리스트에 올랐습니다.",
+  "subtitle.releaseInfo": "출시",
+  "subtitle.provider": "공급자",
+  "subtitle.language": "언어",
+  "subtitle.downloadCount": "다운로드",
+  "subtitle.selectLanguage": "언어 선택",
   "anime.malLink": "MyAnimeList",
   "anime.anilistLink": "AniList",
   "anime.anidbLink": "AniDB",
@@ -1071,7 +1295,6 @@ const ko: LocaleDictionary = {
   "anime.fillerSummary":
     "{{totalCount}}개 에피소드 중 {{fillerCount}}개가 필러 ({{percent}}%)",
   "anime.noFiller": "필러 에피소드 없음",
-
   "settings.fillerPolicyLabel": "필러 에피소드 정책",
   "settings.fillerPolicyDownloadAll": "모든 에피소드 다운로드",
   "settings.fillerPolicySkipFiller": "필러 에피소드 건너뛰기",
@@ -1084,6 +1307,9 @@ const ko: LocaleDictionary = {
   "settings.interSeasonMoviesLabel": "시즌 간 극장판",
   "settings.interSeasonMoviesDescription":
     "시즌 사이의 정식 극장판에 대한 서사 항목을 생성합니다",
+  "settings.monitorFillerMoviesLabel": "필러 영화 모니터링",
+  "settings.monitorFillerMoviesDescription":
+    "다운로드 대기열에 필러로 분류된 영화 포함",
   "settings.nfoWriteOnImportLabel": "가져오기 시 NFO 작성",
   "settings.nfoWriteOnImportDescription":
     "가져온 미디어와 함께 Kodi/Jellyfin/Emby 호환 .nfo 메타데이터 파일을 작성합니다",
@@ -1094,14 +1320,12 @@ const ko: LocaleDictionary = {
   "settings.minAvailability.announced": "공개됨",
   "settings.minAvailability.in_cinemas": "극장 상영 중",
   "settings.minAvailability.released": "출시됨",
-
   "status.titleRequired": "타이틀은 필수입니다.",
   "status.facetRequired": "유형은 필수입니다.",
   "status.catalogAddSuccess": "{{name}}을(를) 카탈로그에 추가했습니다.",
   "status.catalogAddSuccessAutoSearch":
     "{{name}}을(를) 카탈로그에 추가했습니다. 자동 검색이 대기열에 추가되었습니다.",
-  "status.selectedTvdb":
-    "TVDB 매치 선택됨: {{name}}. NZBGeek 검색을 누르세요.",
+  "status.selectedTvdb": "TVDB 매치 선택됨: {{name}}. NZBGeek 검색을 누르세요.",
   "status.noReleaseSource": "릴리스에 대기열에 추가할 소스가 없습니다.",
   "status.queueSuccess": "{{name}} 대기열에 추가됨",
   "status.noSource": "{{name}}에 대한 대기열 소스 없음",
@@ -1109,6 +1333,10 @@ const ko: LocaleDictionary = {
   "status.queuedLatest": "{{name}}의 최신 릴리스를 대기열에 추가했습니다",
   "status.queuedForTitle": "{{name}} 릴리스 대기열에 추가됨.",
   "status.nothingFound": "결과를 찾을 수 없습니다.",
+  "status.searchingByQuery": '"{{query}}"을(를) 검색 중입니다.',
+  "status.searchingNzb": 'NZB에서 "{{query}}"{{category}}을(를) 검색 중입니다.',
+  "status.searchingTvdb":
+    '"{{query}}"에 대한 TVDB 메타데이터를 검색하는 중입니다.',
   "status.foundTvdb": "{{count}}개 TVDB 결과를 찾았습니다.",
   "status.foundNzb": "{{count}}개 NZBGeek 결과를 찾았습니다.",
   "status.renamePreviewGenerated":
@@ -1121,26 +1349,22 @@ const ko: LocaleDictionary = {
   "status.deleteCatalogConfirm":
     "카탈로그에서 {{name}}을(를) 제거하시겠습니까? 아래 옵션으로 로컬 파일도 삭제할 수 있습니다.",
   "status.titleDeleted": "카탈로그에서 {{name}}이(가) 제거되었습니다.",
+  "status.titleMatchUpdated": "{{name}}에 대한 일치 항목이 업데이트되었습니다.",
   "status.qualityProfileBlocked":
     "건너뜀: 품질 프로필에 의해 차단됨 ({{reason}})",
   "status.tvdbRequiredImdb":
     "선택한 영화 매치에 사용 가능한 IMDb ID가 없습니다.",
-  "status.tvdbNoValidId":
-    "선택한 TVDB 매치에 유효한 TVDB ID가 없습니다.",
-  "status.tvdbNeedsTitle":
-    "선택한 TVDB 매치에 검색 가능한 제목이 없습니다.",
+  "status.tvdbNoValidId": "선택한 TVDB 매치에 유효한 TVDB ID가 없습니다.",
+  "status.tvdbNeedsTitle": "선택한 TVDB 매치에 검색 가능한 제목이 없습니다.",
   "status.tvdbQueueTip": "계속하려면 TVDB 매치를 선택하세요.",
-  "status.nzbQueueTip":
-    "NZB 결과가 없습니다. 다른 제목으로 검색해 보세요.",
+  "status.nzbQueueTip": "NZB 결과가 없습니다. 다른 제목으로 검색해 보세요.",
   "status.languageChanged":
     "인터페이스 언어가 {{language}}(으)로 변경되었습니다.",
   "status.editingUser": "사용자 {{name}} 편집 중",
   "status.editingIndexer": "인덱서 {{name}} 편집 중",
-  "status.editingDownloadClient":
-    "다운로드 클라이언트 {{name}} 편집 중",
+  "status.editingDownloadClient": "다운로드 클라이언트 {{name}} 편집 중",
   "status.deletingUser": "사용자 {{name}}을(를) 삭제하시겠습니까?",
-  "status.deletingIndexer":
-    "인덱서 {{name}}을(를) 삭제하시겠습니까?",
+  "status.deletingIndexer": "인덱서 {{name}}을(를) 삭제하시겠습니까?",
   "status.deletingDownloadClient":
     "다운로드 클라이언트 {{name}}을(를) 삭제하시겠습니까?",
   "status.showingActivityStream": "활동 스트림 표시",
@@ -1155,29 +1379,23 @@ const ko: LocaleDictionary = {
   "status.indexerUpdated": "인덱서가 업데이트되었습니다.",
   "status.searchMonitoredQueued":
     "{{count}}개 모니터링 항목이 백그라운드 검색 대기열에 추가되었습니다.",
-  "status.searchMonitoredEmpty":
-    "현재 검색 가능한 모니터링 항목이 없습니다.",
+  "status.searchMonitoredEmpty": "현재 검색 가능한 모니터링 항목이 없습니다.",
   "status.titleScanSuccess":
     "스캔 완료. {{imported}}개 가져옴, {{skipped}}개 건너뜀, {{unmatched}}개 매칭 안됨.",
   "status.titleMonitoringEnabled": "타이틀 모니터링이 활성화되었습니다.",
-  "status.titleMonitoringDisabled":
-    "타이틀 모니터링이 비활성화되었습니다.",
+  "status.titleMonitoringDisabled": "타이틀 모니터링이 비활성화되었습니다.",
   "status.indexerDeleted": "인덱서 {{name}}이(가) 삭제되었습니다.",
   "status.testingIndexerConnection": "연결 테스트 중…",
-  "status.indexerConnectionTestPassed":
-    "인덱서 연결 테스트를 통과했습니다.",
-  "status.indexerConnectionTestFailed":
-    "인덱서 연결 테스트에 실패했습니다.",
+  "status.indexerConnectionTestPassed": "인덱서 연결 테스트를 통과했습니다.",
+  "status.indexerConnectionTestFailed": "인덱서 연결 테스트에 실패했습니다.",
   "status.ruleCreated": "규칙이 저장되었습니다.",
   "status.ruleUpdated": "규칙이 업데이트되었습니다.",
   "status.ruleDeleted": "규칙 {{name}}이(가) 삭제되었습니다.",
   "status.ruleToggled": "규칙 {{name}}이(가) {{state}}되었습니다.",
   "status.editingRule": "규칙 {{name}} 편집 중",
   "status.deletingRule": "규칙 {{name}}을(를) 삭제하시겠습니까?",
-  "status.downloadClientCreated":
-    "다운로드 클라이언트가 저장되었습니다.",
-  "status.downloadClientUpdated":
-    "다운로드 클라이언트가 업데이트되었습니다.",
+  "status.downloadClientCreated": "다운로드 클라이언트가 저장되었습니다.",
+  "status.downloadClientUpdated": "다운로드 클라이언트가 업데이트되었습니다.",
   "status.downloadClientDeleted":
     "다운로드 클라이언트 {{name}}이(가) 삭제되었습니다.",
   "status.downloadClientOrderSaved":
@@ -1190,16 +1408,11 @@ const ko: LocaleDictionary = {
   "status.queueFailed": "대기열 작업에 실패했습니다.",
   "status.apiError": "요청 실패",
   "status.generic": "{{message}}",
-
   "system.notReadyTemplate": "시스템이 준비되지 않았습니다.",
   "system.recentEventsLabel": "최근 이벤트 샘플",
-
   "user.created": "사용자 {{name}}이(가) 생성되었습니다.",
-  "user.entitlementsUpdated":
-    "{{name}}의 권한이 업데이트되었습니다.",
-  "user.passwordUpdated":
-    "{{name}}의 비밀번호가 업데이트되었습니다.",
-
+  "user.entitlementsUpdated": "{{name}}의 권한이 업데이트되었습니다.",
+  "user.passwordUpdated": "{{name}}의 비밀번호가 업데이트되었습니다.",
   "profile.accountInfo": "계정",
   "profile.changePassword": "비밀번호 변경",
   "profile.currentPassword": "현재 비밀번호",
@@ -1210,7 +1423,6 @@ const ko: LocaleDictionary = {
   "profile.externalConnections": "외부 연결",
   "profile.externalConnectionsPlaceholder":
     "Plex, 패스키 및 기타 외부 연결이 여기에서 제공될 예정입니다.",
-
   "auth.loginTitle": "로그인",
   "auth.usernamePlaceholder": "사용자명",
   "auth.passwordPlaceholder": "비밀번호",
@@ -1219,8 +1431,7 @@ const ko: LocaleDictionary = {
   "auth.loginFailed": "사용자명 또는 비밀번호가 올바르지 않습니다.",
   "auth.logoutButton": "로그아웃",
   "auth.sessionExpired": "세션이 만료되었습니다. 다시 로그인하세요.",
-
-  "nav.wanted": "원하는 항목",
+  "nav.wanted": "찾는 항목",
   "wanted.title": "원하는 항목",
   "wanted.refreshing": "새로고침 중…",
   "wanted.filterStatus": "상태",
@@ -1239,11 +1450,22 @@ const ko: LocaleDictionary = {
   "wanted.pause": "일시 중지",
   "wanted.resume": "재개",
   "wanted.reset": "초기화",
-  "wanted.searchTriggered":
-    "검색이 트리거되었습니다. 폴러가 곧 처리합니다.",
+  "wanted.searchTriggered": "검색이 트리거되었습니다. 폴러가 곧 처리합니다.",
+  "wanted.status.wanted": "대기 중",
+  "wanted.status.grabbed": "가져옴",
+  "wanted.status.completed": "완료됨",
+  "wanted.status.paused": "일시 중지됨",
+  "wanted.phase.primary": "1차",
+  "wanted.phase.preRelease": "사전 공개",
+  "wanted.phase.preAir": "방영 전",
+  "wanted.phase.secondary": "2차",
   "wanted.loadingDecisions": "릴리스 결정 로딩 중…",
   "wanted.noDecisions": "아직 기록된 릴리스 결정이 없습니다.",
   "wanted.noItems": "원하는 항목을 찾을 수 없습니다.",
+  "wanted.context.movie": "영화 원하는 아이템",
+  "wanted.context.episode": "에피소드 수배 아이템",
+  "wanted.context.seasonEpisode": "시즌 {{seasonNumber}} 에피소드 수배 아이템",
+  "wanted.context.franchiseMovie": "프랜차이즈 영화 원하는 아이템",
   "wanted.prev": "이전",
   "wanted.next": "다음",
   "wanted.decRelease": "릴리스",
@@ -1255,7 +1477,6 @@ const ko: LocaleDictionary = {
   "wanted.tabWanted": "원하는 항목",
   "wanted.tabCutoff": "컷오프 미충족",
   "wanted.tabCalendar": "캘린더",
-
   "cutoff.title": "컷오프 미충족",
   "cutoff.searchAll": "전체 검색",
   "cutoff.searching": "검색 중…",
@@ -1264,19 +1485,16 @@ const ko: LocaleDictionary = {
   "cutoff.colFacet": "유형",
   "cutoff.colCurrentQuality": "현재 품질",
   "cutoff.colTargetQuality": "목표 품질",
-  "cutoff.noItems":
-    "모든 모니터링 타이틀이 품질 프로필 컷오프를 충족합니다.",
+  "cutoff.noItems": "모든 모니터링 타이틀이 품질 프로필 컷오프를 충족합니다.",
   "cutoff.totalCount": "컷오프 미달 {{count}}개 타이틀",
   "cutoff.filterFacet": "유형",
   "cutoff.allFacets": "모든 유형",
-  "cutoff.searchTriggered": "{{name}}에 대한 업그레이드 검색이 트리거되었습니다",
-  "cutoff.bulkComplete":
-    "일괄 검색 완료: {{total}}개 중 {{searched}}개 검색됨",
-
+  "cutoff.searchTriggered":
+    "{{name}}에 대한 업그레이드 검색이 트리거되었습니다",
+  "cutoff.bulkComplete": "일괄 검색 완료: {{total}}개 중 {{searched}}개 검색됨",
   "narrative.movie": "영화",
   "narrative.canonMovieInstallment":
     "정식 극장판. 서사 시청 순서에 맞게 배치되었습니다.",
-
   "settings.notifications": "알림",
   "settings.notificationsSection": "알림 채널 및 구독 관리",
   "settings.notificationChannels": "채널",
@@ -1285,12 +1503,16 @@ const ko: LocaleDictionary = {
   "settings.notificationChannelUpdate": "채널 업데이트",
   "settings.notificationSubscriptionCreate": "구독 추가",
   "settings.notificationSubscriptionUpdate": "구독 업데이트",
-  "settings.notificationNoChannels":
-    "알림 채널이 설정되지 않았습니다.",
-  "settings.notificationNoSubscriptions":
-    "알림 구독이 설정되지 않았습니다.",
+  "settings.notificationNoChannels": "알림 채널이 설정되지 않았습니다.",
+  "settings.notificationNoSubscriptions": "알림 구독이 설정되지 않았습니다.",
   "settings.notificationEventType": "이벤트 유형",
   "settings.notificationScope": "범위",
+  "settings.notificationScope.global": "글로벌",
+  "settings.notificationScope.facet": "한 면",
+  "settings.notificationScope.title": "제목",
+  "settings.notificationScopeId": "범위 ID",
+  "settings.notificationScopeIdPlaceholderFacet": "영화, 시리즈, 애니메이션",
+  "settings.notificationScopeIdPlaceholderTitle": "타이틀 ID",
   "settings.notificationChannel": "채널",
   "settings.notificationTest": "테스트",
   "settings.notificationTesting": "테스트 중…",
@@ -1299,23 +1521,37 @@ const ko: LocaleDictionary = {
   "settings.notificationProviderType": "제공자 유형",
   "settings.notificationNoProviders":
     "알림 플러그인이 설치되지 않았습니다. 먼저 플러그인 페이지에서 알림 플러그인을 설치하세요.",
-
+  "settings.notificationEvent.grab": "릴리스 가져옴",
+  "settings.notificationEvent.download": "다운로드 실패함",
+  "settings.notificationEvent.upgrade": "업그레이드 가져옴",
+  "settings.notificationEvent.importComplete": "가져오기 완료",
+  "settings.notificationEvent.importRejected": "가져오기가 차단되었습니다.",
+  "settings.notificationEvent.rename": "파일 이름이 변경됨",
+  "settings.notificationEvent.titleAdded": "제목이 추가되었습니다",
+  "settings.notificationEvent.titleDeleted": "제목이 삭제되었습니다.",
+  "settings.notificationEvent.fileDeleted": "파일이 삭제되었습니다",
+  "settings.notificationEvent.fileDeletedForUpgrade":
+    "업그레이드를 위해 파일이 삭제되었습니다.",
+  "settings.notificationEvent.postProcessingCompleted": "후처리 완료",
+  "settings.notificationEvent.subtitleDownloaded": "자막 다운로드됨",
+  "settings.notificationEvent.subtitleSearchFailed": "자막 검색 실패",
+  "settings.notificationEvent.healthIssue": "건강 문제",
+  "settings.notificationEvent.healthRestored": "건강이 회복되었습니다",
+  "settings.notificationEvent.applicationUpdate": "애플리케이션 업데이트",
+  "settings.notificationEvent.manualInteractionRequired": "수동 상호작용 필요",
+  "settings.notificationEvent.test": "테스트 알림",
   "status.notificationChannelCreated": "알림 채널이 저장되었습니다.",
   "status.notificationChannelUpdated": "알림 채널이 업데이트되었습니다.",
   "status.notificationChannelDeleted":
     "알림 채널 {{name}}이(가) 삭제되었습니다.",
   "status.notificationSubscriptionCreated": "알림 구독이 저장되었습니다.",
-  "status.notificationSubscriptionUpdated":
-    "알림 구독이 업데이트되었습니다.",
-  "status.notificationSubscriptionDeleted":
-    "알림 구독이 삭제되었습니다.",
+  "status.notificationSubscriptionUpdated": "알림 구독이 업데이트되었습니다.",
+  "status.notificationSubscriptionDeleted": "알림 구독이 삭제되었습니다.",
   "status.editingNotificationChannel": "채널 {{name}} 편집 중",
   "status.deletingNotificationChannel":
     "알림 채널 {{name}}을(를) 삭제하시겠습니까?",
   "status.editingNotificationSubscription": "구독 편집 중",
-  "status.deletingNotificationSubscription":
-    "이 알림 구독을 삭제하시겠습니까?",
-
+  "status.deletingNotificationSubscription": "이 알림 구독을 삭제하시겠습니까?",
   "wanted.tabPending": "대기 중",
   "pending.title": "대기 중인 릴리스",
   "pending.noItems": "대기 중인 릴리스가 없습니다.",
@@ -1330,22 +1566,18 @@ const ko: LocaleDictionary = {
   "pending.grabbed": "릴리스가 다운로드되었습니다.",
   "pending.dismissed": "릴리스가 해제되었습니다.",
   "pending.timeRemaining": "{{time}} 남음",
-
   "system.rssSync": "RSS 동기화",
   "system.rssSyncTrigger": "RSS 동기화 실행",
   "system.rssSyncing": "동기화 중…",
   "system.rssSyncComplete":
     "RSS 동기화: {{fetched}}개 가져옴, {{matched}}개 매칭, {{grabbed}}개 다운로드, {{held}}개 보류.",
-
   "setup.welcomeTitle": "Scryer에 오신 것을 환영합니다",
-  "setup.welcomeDescription":
-    "시작하기 위한 기본 설정을 구성하겠습니다.",
+  "setup.welcomeDescription": "시작하기 위한 기본 설정을 구성하겠습니다.",
   "setup.freshSetup": "처음부터 설정",
   "setup.freshSetupDescription":
     "미디어 경로를 설정하고, qBittorrent 같은 제공자를 설치하고, 클라이언트와 인덱서를 단계별로 추가합니다.",
   "setup.importSetup": "Sonarr / Radarr에서 가져오기",
-  "setup.importSetupDescription":
-    "기존 설정을 Scryer로 가져옵니다.",
+  "setup.importSetupDescription": "기존 설정을 Scryer로 가져옵니다.",
   "setup.stepPersona": "페르소나",
   "setup.stepMediaPaths": "미디어 경로",
   "setup.stepPlugins": "플러그인",
@@ -1383,8 +1615,7 @@ const ko: LocaleDictionary = {
   "setup.pluginsAvailable": "사용 가능한 플러그인",
   "setup.pluginsNoneFound":
     "플러그인을 찾을 수 없습니다. 레지스트리를 새로고침하거나 내장 제공자로 계속하세요.",
-  "setup.pluginsNoneAvailable":
-    "레지스트리의 모든 항목이 이미 설치되었습니다.",
+  "setup.pluginsNoneAvailable": "레지스트리의 모든 항목이 이미 설치되었습니다.",
   "setup.mediaPathsTitle": "미디어는 어디에 저장되어 있나요?",
   "setup.mediaPathsDescription":
     "Scryer가 영화와 시리즈를 정리할 루트 폴더를 설정하세요.",
@@ -1399,7 +1630,7 @@ const ko: LocaleDictionary = {
   "setup.indexerTitle": "인덱서 추가",
   "setup.indexerDescription":
     "인덱서는 Scryer가 검색하는 릴리스 데이터베이스를 제공합니다.",
-  "setup.summaryTitle": "모든 설정이 완료되었습니다",
+  "setup.summaryTitle": "모든 준비가 완료되었습니다",
   "setup.summaryDescription":
     "설정한 내용입니다. 나중에 설정에서 변경할 수 있습니다.",
   "setup.summaryPersona": "페르소나",
@@ -1410,6 +1641,8 @@ const ko: LocaleDictionary = {
   "setup.next": "다음",
   "setup.back": "뒤로",
   "setup.finish": "설정 완료",
+  "setup.importOnly": "가져오기만",
+  "setup.importAndScan": "가져오기 및 스캔",
   "setup.connectionSuccess": "연결 성공",
   "setup.connectionFailed": "연결 실패",
   "setup.saved": "저장됨",
@@ -1427,12 +1660,10 @@ const ko: LocaleDictionary = {
   "setup.findApiKey": "API 키 찾기",
   "setup.connectAndScan": "연결 및 스캔",
   "setup.connectError": "연결 실패",
-  "setup.atLeastOneRequired":
-    "Sonarr 또는 Radarr 중 최소 하나를 입력하세요.",
+  "setup.atLeastOneRequired": "Sonarr 또는 Radarr 중 최소 하나를 입력하세요.",
   "setup.urlPlaceholder": "http://localhost:8989",
   "setup.reviewTitle": "검토 및 가져오기",
-  "setup.reviewDescription":
-    "Scryer로 가져올 설정을 선택하세요.",
+  "setup.reviewDescription": "Scryer로 가져올 설정을 선택하세요.",
   "setup.connected": "연결됨",
   "setup.mediaPathsSection": "미디어 경로",
   "setup.moviesPathFrom": "영화 경로 (Radarr에서)",
@@ -1457,15 +1688,6 @@ const ko: LocaleDictionary = {
   "setup.apiKeyPlaceholder": "API 키 붙여넣기…",
   "setup.apiKeyHelpLink": "SABnzbd > Config > General에서 찾기",
   "settings.runSetupWizard": "설정 마법사 실행",
-
-  "settings.sub.minScoreSeries": "시리즈 최소 매칭 점수",
-  "settings.sub.minScoreMovie": "영화 최소 매칭 점수",
-  "settings.sub.minScoreHelp":
-    "이 점수 미만의 자막은 건너뜁니다. 시리즈는 에피소드 단위 매칭이 정확해야 하므로 더 높은 임계값이 필요합니다.",
-  "settings.sub.syncEnabled": "자막 타이밍 자동 보정",
-  "settings.sub.syncEnabledHelp":
-    "오디오 분석을 사용하여 다운로드한 자막의 타이밍 오차를 보정합니다.",
-
   "history.title": "기록",
   "history.empty": "기록 이벤트가 없습니다",
   "history.event": "이벤트",
@@ -1485,11 +1707,32 @@ const ko: LocaleDictionary = {
   "history.downloadIgnored": "무시됨",
   "history.noMore": "더 이상 이벤트가 없습니다",
   "history.loadMore": "더 보기",
-
   "convenience.title": "편의 규칙",
   "convenience.requiredAudioLabel": "필수 오디오 언어",
   "convenience.requiredAudioHelp":
     "이 오디오 언어가 없는 릴리스는 차단됩니다. 설정 > 규칙에 표시되는 관리 규칙을 생성합니다.",
+  "settings.recycleBin": "휴지통",
+  "settings.recycleBinSection": "재활용 미디어 파일 관리",
+  "settings.recycleBinEmpty": "휴지통이 비어 있습니다.",
+  "settings.recycleBinRestore": "복원",
+  "settings.recycleBinDelete": "삭제",
+  "settings.recycleBinEmptyAll": "휴지통 비우기",
+  "settings.recycleBinEmptyConfirm":
+    "휴지통에 있는 모든 {count} 항목을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
+  "settings.recycleBinDeleteConfirm":
+    "이 파일을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
+  "status.recycleBinRestored": "{path}에 파일이 복원되었습니다.",
+  "status.recycleBinDeleted": "파일이 영구적으로 삭제되었습니다.",
+  "status.recycleBinEmptied": "휴지통을 비웠습니다({count}개 항목이 제거됨).",
+  "settings.pp.animeScript": "애니메이션 스크립트",
+  "settings.pp.envVarsDescription":
+    "스크립트에서 다음 변수를 사용할 수 있습니다:",
+  "settings.pp.envVarsHeading": "환경 변수",
+  "settings.pp.intro":
+    "각 파일을 가져온 후 커스텀 스크립트를 실행합니다. 비활성화하려면 비워두세요. 작업 디렉토리는 가져온 파일이 있는 폴더로 설정됩니다.",
+  "settings.pp.movieScript": "영화 스크립트",
+  "settings.pp.seriesScript": "시리즈 스크립트",
+  "settings.pp.timeoutSecs": "스크립트 제한시간 (초)",
 };
 
 export default ko;

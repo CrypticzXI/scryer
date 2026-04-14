@@ -46,7 +46,7 @@ impl MediaFacet {
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "movie" => Some(Self::Movie),
-            "series" | "tv" => Some(Self::Series),
+            "series" => Some(Self::Series),
             "anime" => Some(Self::Anime),
             _ => None,
         }
@@ -652,7 +652,7 @@ impl ImportStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ImportType {
     MovieDownload,
-    TvDownload,
+    SeriesDownload,
     RenamePreview,
     RenameApplyTitle,
     RenameApplyFacet,
@@ -666,7 +666,7 @@ impl ImportType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MovieDownload => "movie_download",
-            Self::TvDownload => "tv_download",
+            Self::SeriesDownload => "series_download",
             Self::RenamePreview => "rename_preview",
             Self::RenameApplyTitle => "rename_apply_title",
             Self::RenameApplyFacet => "rename_apply_facet",
@@ -680,7 +680,7 @@ impl ImportType {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "movie_download" => Some(Self::MovieDownload),
-            "tv_download" => Some(Self::TvDownload),
+            "series_download" => Some(Self::SeriesDownload),
             "rename_preview" => Some(Self::RenamePreview),
             "rename_apply_title" => Some(Self::RenameApplyTitle),
             "rename_apply_facet" => Some(Self::RenameApplyFacet),
@@ -1492,6 +1492,8 @@ pub struct LibraryScanProgressedEventData {
     pub titles_total: Option<i64>,
     pub files_completed: i64,
     pub files_total: Option<i64>,
+    #[serde(default)]
+    pub warning_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1518,6 +1520,8 @@ pub struct LibraryScanCompletedEventData {
     pub files_total: Option<i64>,
     #[serde(default)]
     pub summary: Option<LibraryScanSummaryEventData>,
+    #[serde(default)]
+    pub warning_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2393,8 +2397,8 @@ mod tests {
     #[test]
     fn tags_normalize() {
         assert_eq!(
-            normalize_tags(&["Anime".into(), "anime".into(), " tv ".into()]),
-            vec!["anime".to_string(), "tv".to_string()]
+            normalize_tags(&["Anime".into(), "anime".into(), " series ".into()]),
+            vec!["anime".to_string(), "series".to_string()]
         );
     }
 

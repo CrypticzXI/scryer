@@ -117,6 +117,7 @@ pub struct AppIntegrationServices {
 #[derive(Clone)]
 pub struct AppWorkflowServices {
     pub(crate) imports: Arc<dyn ImportRepository>,
+    pub(crate) external_import_monitor_snapshots: Arc<dyn ExternalImportMonitorSnapshotRepository>,
     pub(crate) workflow_operations: Arc<dyn WorkflowOperationRepository>,
     pub(crate) file_importer: Arc<dyn FileImporter>,
     pub(crate) import_artifacts: Arc<dyn ImportArtifactRepository>,
@@ -301,6 +302,9 @@ impl AppServices {
             },
             workflow: AppWorkflowServices {
                 imports: Arc::new(NullImportRepository),
+                external_import_monitor_snapshots: Arc::new(
+                    null_repositories::NullExternalImportMonitorSnapshotRepository,
+                ),
                 workflow_operations: Arc::new(NullWorkflowOperationRepository),
                 file_importer: Arc::new(NullFileImporter),
                 import_artifacts: Arc::new(null_repositories::NullImportArtifactRepository),
@@ -593,6 +597,11 @@ impl AppServicesBuilder {
         workflow.imports,
         imports,
         Arc<dyn ImportRepository>
+    );
+    app_services_builder_setter!(
+        with_external_import_monitor_snapshots,
+        workflow.external_import_monitor_snapshots,
+        Arc<dyn ExternalImportMonitorSnapshotRepository>
     );
     app_services_builder_required_setter!(
         with_workflow_operations,
@@ -1013,12 +1022,13 @@ impl AppUseCase {
         &self,
         actor: &User,
         queries: &[MetadataSearchQuery],
+        language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services
             .library
             .metadata_gateway
-            .search_tvdb_batch(queries)
+            .search_tvdb_batch(queries, language)
             .await
     }
 

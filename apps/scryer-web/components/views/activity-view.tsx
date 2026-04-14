@@ -28,12 +28,18 @@ import {
 import type { DownloadQueueItem } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import {
+  buildQueueStatusDetail,
+  deriveDownloadQueueDisplayState,
+  normalizeQueueState,
+} from "@/lib/utils/download-queue";
 
 type TranslateFn = ReturnType<typeof useTranslate>;
 
 type QueueMode = "scryer" | "all" | "history";
 
 type ActivityViewState = {
+  manualImportRequiredItems: DownloadQueueItem[];
   queueItems: DownloadQueueItem[];
   queueLoading: boolean;
   queueError: string | null;
@@ -100,74 +106,6 @@ type QueueRowPresentation = {
   canDirectManualImport: boolean;
 };
 
-function normalizeQueueState(state: string | null | undefined): string {
-  return (state ?? "").trim().toLowerCase();
-}
-
-function buildStatusDetail(queueItem: DownloadQueueItem): string {
-  const messages = [
-    ...(queueItem.trackedStatusMessages ?? []),
-    queueItem.attentionReason,
-    queueItem.importErrorMessage,
-  ]
-    .map((value) => value?.trim())
-    .filter((value): value is string => Boolean(value));
-
-  return Array.from(new Set(messages)).join("\n");
-}
-
-function isPostProcessingReason(reason: string | null | undefined): boolean {
-  if (!reason) return false;
-  const normalized = reason.toUpperCase();
-  return (
-    normalized.includes("PP_QUEUED") ||
-    normalized.includes("POSTPROCESSING") ||
-    normalized.includes("UNPACKING") ||
-    normalized.includes("REPAIRING") ||
-    normalized.includes("VERIFYING") ||
-    normalized.includes("RENAMING") ||
-    normalized.includes("MOVING") ||
-    normalized.includes("EXECUTING_SCRIPT")
-  );
-}
-
-function deriveDisplayState(
-  queueItem: DownloadQueueItem,
-  stateKey: string,
-  trackedStateKey: string,
-  failureReason: string,
-): string {
-  if (trackedStateKey === "import_blocked" || trackedStateKey === "import_pending") {
-    return trackedStateKey;
-  }
-
-  const importStatusKey = normalizeQueueState(queueItem.importStatus);
-  const canDeriveBlockedState =
-    trackedStateKey.length === 0 &&
-    failureReason.length > 0 &&
-    (stateKey === "completed" || stateKey === "import_pending" || stateKey === "failed") &&
-    (importStatusKey === "skipped" || importStatusKey === "failed");
-  if (canDeriveBlockedState) {
-    return "import_blocked";
-  }
-
-  const stateKeyValue = stateKey;
-  if (
-    stateKeyValue === "extracting" ||
-    stateKeyValue === "verifying" ||
-    stateKeyValue === "repairing"
-  ) {
-    return "post_processing";
-  }
-  if (
-    stateKeyValue === "downloading" &&
-    isPostProcessingReason(queueItem.attentionReason)
-  ) {
-    return "post_processing";
-  }
-  return stateKeyValue;
-}
-
 function deriveQueueRowPresentation(
   queueItem: DownloadQueueItem,
   t: TranslateFn,
@@ -175,13 +113,8 @@ function deriveQueueRowPresentation(
   const stateKey = normalizeQueueState(queueItem.state);
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
-  const failureReason = buildStatusDetail(queueItem);
-  const displayStateKey = deriveDisplayState(
-    queueItem,
-    stateKey,
-    trackedStateKey,
-    failureReason,
-  );
+  const failureReason = buildQueueStatusDetail(queueItem);
+  const displayStateKey = deriveDownloadQueueDisplayState(queueItem);
   const percent = formatProgress(queueItem.progressPercent);
   const remainingLabel = formatRemainingDuration(queueItem.remainingSeconds);
   const needsManualImport =
@@ -204,7 +137,7 @@ function deriveQueueRowPresentation(
   const canIgnore = trackedStateKey === "import_blocked";
   const canInteractiveManualImport =
     Boolean(queueItem.titleId) &&
-    (queueItem.facet === "tv" || queueItem.facet === "anime") &&
+    (queueItem.facet === "series" || queueItem.facet === "anime") &&
     trackedStateKey === "import_blocked";
   const canDirectManualImport =
     Boolean(queueItem.titleId) &&
@@ -387,11 +320,22 @@ function getProgressBarColor(stateKey: string): string {
   }
 }
 
+function ActivityTableLoadingMask({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center py-16">
+      <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/90 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-sm">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
 
 export function ActivityView({ state }: { state: ActivityViewState }) {
   const t = useTranslate();
   const isMobile = useIsMobile();
   const {
+    manualImportRequiredItems,
     queueItems,
     queueLoading,
     queueError,
@@ -483,6 +427,557 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     [historyHasMore, historyLoadingMore, queueLoading, queueMode, requestMoreHistory],
   );
 
+  const hasManualImportRequiredSection =
+    queueMode !== "history" && manualImportRequiredItems.length > 0;
+
+  const renderMobileQueueCards = (
+    items: DownloadQueueItem[],
+    showHistorySpinner = false,
+  ) => (
+    <div className="space-y-3">
+      {items.map((queueItem) => {
+        const row = deriveQueueRowPresentation(queueItem, t);
+        const manualImportPending = manualImportingId === queueItem.id;
+        const isActionLoading = actionLoadingId === queueItem.id;
+        const isRowBusy =
+          rowActionBusy[queueItem.id] ?? rowActionBusyRef.current[queueItem.id] ?? false;
+        const isRowBlocked = isRowBusy || manualImportPending || isActionLoading;
+        const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
+        const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
+        const isExpanded = Boolean(expandedItemIds[queueItem.id]);
+        const detailId = `activity-queue-details-${queueItem.id}`;
+        const rowActionVisualClass = isRowFullyBusy
+          ? "pointer-events-none opacity-45 grayscale"
+          : "";
+
+        return (
+          <div key={queueItem.id} className="rounded-xl border border-border bg-card/40 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-sm font-medium text-foreground">
+                  {queueItem.titleName || "\u2014"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
+                </p>
+              </div>
+              <div className="shrink-0">
+                <ActivityQueueStatusBadge
+                  stateKey={row.displayStateKey}
+                  statusLabel={row.statusLabel}
+                  isExpandable={row.hasExpandableDetails}
+                  isExpanded={isExpanded}
+                  detailId={detailId}
+                  expandLabel={t(
+                    isExpanded ? "queue.hideDetails" : "queue.showDetails",
+                  )}
+                  onToggle={() => toggleExpandedDetails(queueItem.id)}
+                />
+              </div>
+            </div>
+            {queueItem.importErrorMessage && !row.hasStatusDetails ? (
+              <p className="mt-2 break-words text-xs text-rose-400">
+                {queueItem.importErrorMessage}
+              </p>
+            ) : null}
+            {row.hasExpandableDetails && isExpanded ? (
+              <div className="mt-3">
+                <ActivityQueueDetailsPanel
+                  detailId={detailId}
+                  releaseTitle={row.releaseTitle}
+                  failureReason={row.failureReason}
+                  t={t}
+                />
+              </div>
+            ) : null}
+            <div className="mt-3">
+              <ActivityProgressBar
+                percent={row.percent}
+                remainingLabel={row.remainingLabel}
+                colorClass={getProgressBarColor(row.displayStateKey)}
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+              <span>{formatBytes(queueItem.sizeBytes)}</span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {row.canPause && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (
+                      rowActionBusyRef.current[queueItem.id] ||
+                      isActionLoading ||
+                      isRowBlocked
+                    ) {
+                      return;
+                    }
+                    setActionLoadingId(queueItem.id);
+                    setRowBusy(queueItem.id, true);
+                    void requestPause(queueItem).finally(() => {
+                      setRowBusy(queueItem.id, false);
+                      setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                    });
+                  }}
+                >
+                  <Pause className="h-4 w-4" />
+                  <span>{t("queue.pause")}</span>
+                </Button>
+              )}
+              {row.canResume && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (
+                      rowActionBusyRef.current[queueItem.id] ||
+                      isActionLoading ||
+                      isRowBlocked
+                    ) {
+                      return;
+                    }
+                    setActionLoadingId(queueItem.id);
+                    setRowBusy(queueItem.id, true);
+                    void requestResume(queueItem).finally(() => {
+                      setRowBusy(queueItem.id, false);
+                      setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                    });
+                  }}
+                >
+                  <Play className="h-4 w-4" />
+                  <span>{t("queue.resume")}</span>
+                </Button>
+              )}
+              {(row.canInteractiveManualImport || row.canDirectManualImport) && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (
+                      rowActionBusyRef.current[queueItem.id] ||
+                      isActionLoading ||
+                      isRowBlocked
+                    ) {
+                      return;
+                    }
+                    if (manualImportPending) return;
+                    setManualImportingId(queueItem.id);
+                    setRowBusy(queueItem.id, true);
+                    void requestManualImport(queueItem).finally(() => {
+                      setRowBusy(queueItem.id, false);
+                      setManualImportingId((current) =>
+                        current === queueItem.id ? null : current,
+                      );
+                    });
+                  }}
+                >
+                  {manualImportPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowDownToLine className="h-4 w-4" />
+                  )}
+                  <span>
+                    {manualImportPending
+                      ? t("queue.manualImporting")
+                      : t("queue.manualImportTooltip")}
+                  </span>
+                </Button>
+              )}
+              {row.canAssignTitle && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (
+                      rowActionBusyRef.current[queueItem.id] ||
+                      isActionLoading ||
+                      isRowBlocked
+                    ) {
+                      return;
+                    }
+                    setActionLoadingId(queueItem.id);
+                    setRowBusy(queueItem.id, true);
+                    void requestAssignTitle(queueItem).finally(() => {
+                      setRowBusy(queueItem.id, false);
+                      setActionLoadingId((current) =>
+                        current === queueItem.id ? null : current,
+                      );
+                    });
+                  }}
+                >
+                  <Link2 className="h-4 w-4" />
+                  <span>
+                    {row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
+                      ? t("queue.assignTitle")
+                      : t("queue.reassignTitle")}
+                  </span>
+                </Button>
+              )}
+              {row.canIgnore && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (
+                      rowActionBusyRef.current[queueItem.id] ||
+                      isActionLoading ||
+                      isRowBlocked
+                    ) {
+                      return;
+                    }
+                    setActionLoadingId(queueItem.id);
+                    setRowBusy(queueItem.id, true);
+                    void requestIgnore(queueItem).finally(() => {
+                      setRowBusy(queueItem.id, false);
+                      setActionLoadingId((current) =>
+                        current === queueItem.id ? null : current,
+                      );
+                    });
+                  }}
+                >
+                  <CircleOff className="h-4 w-4" />
+                  <span>{t("queue.ignore")}</span>
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                className={`flex-1 ${rowActionVisualClass}`}
+                disabled={isRowFullyBusy}
+                onClick={() => {
+                  if (
+                    rowActionBusyRef.current[queueItem.id] ||
+                    isActionLoading ||
+                    isRowBlocked
+                  ) {
+                    return;
+                  }
+                  setRowBusy(queueItem.id, true);
+                  setDeleteConfirmItem(queueItem);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>{t("label.delete")}</span>
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+      {showHistorySpinner ? (
+        <div className="flex items-center justify-center py-3 text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t("label.loading")}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const renderDesktopQueueRows = (
+    items: DownloadQueueItem[],
+    showHistorySpinner = false,
+  ) => (
+    <>
+      {items.map((queueItem) => {
+        const row = deriveQueueRowPresentation(queueItem, t);
+        const manualImportPending = manualImportingId === queueItem.id;
+        const isActionLoading = actionLoadingId === queueItem.id;
+        const isRowBusy =
+          rowActionBusy[queueItem.id] ??
+          rowActionBusyRef.current[queueItem.id] ??
+          false;
+        const isRowBlocked = isRowBusy || manualImportPending || isActionLoading;
+        const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
+        const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
+        const rowActionVisualClass = isRowFullyBusy
+          ? "pointer-events-none opacity-45 grayscale"
+          : "";
+        const isExpanded = Boolean(expandedItemIds[queueItem.id]);
+        const detailId = `activity-queue-details-${queueItem.id}`;
+
+        return (
+          <Fragment key={queueItem.id}>
+            <TableRow>
+              <TableCell className="min-w-0">
+                <p className="break-words whitespace-normal text-sm">
+                  {queueItem.titleName || "\u2014"}
+                </p>
+              </TableCell>
+              <TableCell className="min-w-0 align-middle">
+                <p className="break-words whitespace-normal text-sm">
+                  {queueItem.clientName || queueItem.clientType}
+                </p>
+                <p className="text-xs text-muted-foreground">{queueItem.clientType}</p>
+              </TableCell>
+              <TableCell className="min-w-0 align-middle">
+                <ActivityQueueStatusBadge
+                  stateKey={row.displayStateKey}
+                  statusLabel={row.statusLabel}
+                  isExpandable={row.hasExpandableDetails}
+                  isExpanded={isExpanded}
+                  detailId={detailId}
+                  expandLabel={t(
+                    isExpanded ? "queue.hideDetails" : "queue.showDetails",
+                  )}
+                  onToggle={() => toggleExpandedDetails(queueItem.id)}
+                />
+                {queueItem.importErrorMessage && !row.hasStatusDetails && (
+                  <p
+                    className="mt-1 max-w-full break-words whitespace-normal text-xs text-rose-400"
+                    title={queueItem.importErrorMessage}
+                  >
+                    {queueItem.importErrorMessage}
+                  </p>
+                )}
+              </TableCell>
+              <TableCell className="w-52 min-w-52 align-middle">
+                <ActivityProgressBar
+                  percent={row.percent}
+                  remainingLabel={row.remainingLabel}
+                  colorClass={getProgressBarColor(row.displayStateKey)}
+                />
+              </TableCell>
+              <TableCell className="w-24 min-w-24 align-middle">
+                {formatBytes(queueItem.sizeBytes)}
+              </TableCell>
+              <TableCell className="w-44 min-w-44 align-middle text-right">
+                <div className="flex items-center justify-end gap-2">
+                  {row.canPause && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={t("queue.pause")}
+                      aria-label={t("queue.pause")}
+                      onClick={() => {
+                        if (
+                          rowActionBusyRef.current[queueItem.id] ||
+                          isActionLoading ||
+                          isRowBlocked
+                        ) {
+                          return;
+                        }
+                        setActionLoadingId(queueItem.id);
+                        setRowBusy(queueItem.id, true);
+                        void requestPause(queueItem).finally(() => {
+                          setRowBusy(queueItem.id, false);
+                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                        });
+                      }}
+                    >
+                      <Pause className="h-6 w-6" />
+                    </Button>
+                  )}
+                  {row.canResume && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={t("queue.resume")}
+                      aria-label={t("queue.resume")}
+                      onClick={() => {
+                        if (
+                          rowActionBusyRef.current[queueItem.id] ||
+                          isActionLoading ||
+                          isRowBlocked
+                        ) {
+                          return;
+                        }
+                        setActionLoadingId(queueItem.id);
+                        setRowBusy(queueItem.id, true);
+                        void requestResume(queueItem).finally(() => {
+                          setRowBusy(queueItem.id, false);
+                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                        });
+                      }}
+                    >
+                      <Play className="h-6 w-6" />
+                    </Button>
+                  )}
+                  {(row.canInteractiveManualImport || row.canDirectManualImport) && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-emerald-500/60 dark:border-emerald-500/50 bg-emerald-600/20 dark:bg-emerald-600/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-600/30 dark:hover:bg-emerald-600/25 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={
+                        manualImportPending
+                          ? t("queue.manualImporting")
+                          : t("queue.manualImportTooltip")
+                      }
+                      aria-label={
+                        manualImportPending
+                          ? t("queue.manualImporting")
+                          : t("queue.manualImportTooltip")
+                      }
+                      onClick={() => {
+                        if (
+                          rowActionBusyRef.current[queueItem.id] ||
+                          isActionLoading ||
+                          isRowBlocked
+                        ) {
+                          return;
+                        }
+                        if (manualImportPending) return;
+                        setManualImportingId(queueItem.id);
+                        setRowBusy(queueItem.id, true);
+                        void requestManualImport(queueItem).finally(() => {
+                          setRowBusy(queueItem.id, false);
+                          setManualImportingId((current) =>
+                            current === queueItem.id ? null : current,
+                          );
+                        });
+                      }}
+                    >
+                      {manualImportPending ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <ArrowDownToLine className="h-5 w-5" />
+                      )}
+                    </Button>
+                  )}
+                  {row.canAssignTitle && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-amber-500/60 bg-amber-600/15 text-amber-200 hover:bg-amber-600/25 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={
+                        row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
+                          ? t("queue.assignTitle")
+                          : t("queue.reassignTitle")
+                      }
+                      aria-label={
+                        row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
+                          ? t("queue.assignTitle")
+                          : t("queue.reassignTitle")
+                      }
+                      onClick={() => {
+                        if (
+                          rowActionBusyRef.current[queueItem.id] ||
+                          isActionLoading ||
+                          isRowBlocked
+                        ) {
+                          return;
+                        }
+                        setActionLoadingId(queueItem.id);
+                        setRowBusy(queueItem.id, true);
+                        void requestAssignTitle(queueItem).finally(() => {
+                          setRowBusy(queueItem.id, false);
+                          setActionLoadingId((current) =>
+                            current === queueItem.id ? null : current,
+                          );
+                        });
+                      }}
+                    >
+                      <Link2 className="h-5 w-5" />
+                    </Button>
+                  )}
+                  {row.canIgnore && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={t("queue.ignore")}
+                      aria-label={t("queue.ignore")}
+                      onClick={() => {
+                        if (
+                          rowActionBusyRef.current[queueItem.id] ||
+                          isActionLoading ||
+                          isRowBlocked
+                        ) {
+                          return;
+                        }
+                        setActionLoadingId(queueItem.id);
+                        setRowBusy(queueItem.id, true);
+                        void requestIgnore(queueItem).finally(() => {
+                          setRowBusy(queueItem.id, false);
+                          setActionLoadingId((current) =>
+                            current === queueItem.id ? null : current,
+                          );
+                        });
+                      }}
+                    >
+                      <CircleOff className="h-5 w-5" />
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-300 hover:bg-rose-600/25 ${rowActionVisualClass}`}
+                    disabled={isRowFullyBusy}
+                    title={t("label.delete")}
+                    aria-label={t("label.delete")}
+                    onClick={() => {
+                      if (
+                        rowActionBusyRef.current[queueItem.id] ||
+                        isActionLoading ||
+                        isRowBlocked
+                      ) {
+                        return;
+                      }
+                      setRowBusy(queueItem.id, true);
+                      setDeleteConfirmItem(queueItem);
+                    }}
+                  >
+                    <Trash2 className="h-6 w-6" />
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+            {row.hasExpandableDetails && isExpanded ? (
+              <TableRow>
+                <TableCell colSpan={6} className="bg-muted/10 p-3">
+                  <ActivityQueueDetailsPanel
+                    detailId={detailId}
+                    releaseTitle={row.releaseTitle}
+                    failureReason={row.failureReason}
+                    t={t}
+                  />
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </Fragment>
+        );
+      })}
+      {showHistorySpinner ? (
+        <TableRow>
+          <TableCell colSpan={6} className="py-4 text-center text-sm text-muted-foreground">
+            <span className="inline-flex items-center">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {t("label.loading")}
+            </span>
+          </TableCell>
+        </TableRow>
+      ) : null}
+    </>
+  );
+
   return (
     <>
       <ConfirmDialog
@@ -549,518 +1044,118 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-
-          {queueLoading && queueItems.length === 0 ? <p>{t("label.loading")}</p> : null}
           {queueError ? (
             <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
               {queueError}
             </p>
           ) : null}
 
+          {hasManualImportRequiredSection ? (
+            <section className="space-y-4 rounded-xl border border-primary/20 bg-primary/5 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold text-foreground">
+                    {t("activity.manualImportRequired")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    {t("activity.manualImportRequiredDescription")}
+                  </p>
+                </div>
+                <span className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-md bg-primary px-2 text-sm font-semibold text-primary-foreground">
+                  {manualImportRequiredItems.length}
+                </span>
+              </div>
+
+              {isMobile ? (
+                renderMobileQueueCards(manualImportRequiredItems)
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-border/60 bg-card/30">
+                  <div className="overflow-x-auto">
+                    <Table className="table-fixed min-w-[820px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[34%] min-w-0">{t("queue.title")}</TableHead>
+                          <TableHead className="w-32 min-w-0">{t("queue.client")}</TableHead>
+                          <TableHead className="w-44 min-w-0">{t("queue.status")}</TableHead>
+                          <TableHead className="w-52 min-w-52">{t("queue.progress")}</TableHead>
+                          <TableHead className="w-24 min-w-24">{t("queue.size")}</TableHead>
+                          <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>{renderDesktopQueueRows(manualImportRequiredItems)}</TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </section>
+          ) : null}
+
           {isMobile ? (
-            queueItems.length === 0 && !queueLoading ? (
+            queueItems.length === 0 && !queueLoading && !hasManualImportRequiredSection ? (
               <p className="text-sm text-muted-foreground">{t("queue.empty")}</p>
+            ) : queueItems.length === 0 ? (
+              <div className={`${scrollHeightClass} overflow-y-auto pr-1`}>
+                <div className="rounded-xl border border-border/60 bg-card/30">
+                  <ActivityTableLoadingMask label={t("label.loading")} />
+                </div>
+              </div>
             ) : (
               <div
                 onScroll={handleResultsScroll}
                 className={`${scrollHeightClass} overflow-y-auto pr-1`}
               >
-                <div className="space-y-3">
-                  {queueItems.map((queueItem) => {
-                    const row = deriveQueueRowPresentation(queueItem, t);
-                    const manualImportPending = manualImportingId === queueItem.id;
-                    const isActionLoading = actionLoadingId === queueItem.id;
-                    const isRowBusy = rowActionBusy[queueItem.id] ?? rowActionBusyRef.current[queueItem.id] ?? false;
-                    const isRowBlocked = isRowBusy || manualImportPending || isActionLoading;
-                    const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
-                    const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
-                    const isExpanded = Boolean(expandedItemIds[queueItem.id]);
-                    const detailId = `activity-queue-details-${queueItem.id}`;
-                    const rowActionVisualClass = isRowFullyBusy
-                      ? "pointer-events-none opacity-45 grayscale"
-                      : "";
-
-                    return (
-                      <div key={queueItem.id} className="rounded-xl border border-border bg-card/40 p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <p className="break-words text-sm font-medium text-foreground">
-                              {queueItem.titleName || "\u2014"}
-                            </p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
-                            </p>
-                          </div>
-                          <div className="shrink-0">
-                            <ActivityQueueStatusBadge
-                              stateKey={row.displayStateKey}
-                              statusLabel={row.statusLabel}
-                              isExpandable={row.hasExpandableDetails}
-                              isExpanded={isExpanded}
-                              detailId={detailId}
-                              expandLabel={t(
-                                isExpanded ? "queue.hideDetails" : "queue.showDetails",
-                              )}
-                              onToggle={() => toggleExpandedDetails(queueItem.id)}
-                            />
-                          </div>
-                        </div>
-                        {queueItem.importErrorMessage && !row.hasStatusDetails ? (
-                          <p className="mt-2 break-words text-xs text-rose-400">{queueItem.importErrorMessage}</p>
-                        ) : null}
-                        {row.hasExpandableDetails && isExpanded ? (
-                          <div className="mt-3">
-                            <ActivityQueueDetailsPanel
-                              detailId={detailId}
-                              releaseTitle={row.releaseTitle}
-                              failureReason={row.failureReason}
-                              t={t}
-                            />
-                          </div>
-                        ) : null}
-                        <div className="mt-3">
-                          <ActivityProgressBar
-                            percent={row.percent}
-                            remainingLabel={row.remainingLabel}
-                            colorClass={getProgressBarColor(row.displayStateKey)}
-                          />
-                        </div>
-                        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{formatBytes(queueItem.sizeBytes)}</span>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {row.canPause && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className={`flex-1 ${rowActionVisualClass}`}
-                              disabled={isRowFullyBusy}
-                              onClick={() => {
-                                if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                  return;
-                                }
-                                setActionLoadingId(queueItem.id);
-                                setRowBusy(queueItem.id, true);
-                                void requestPause(queueItem).finally(() => {
-                                  setRowBusy(queueItem.id, false);
-                                  setActionLoadingId((c) => (c === queueItem.id ? null : c));
-                                });
-                              }}
-                            >
-                              <Pause className="h-4 w-4" />
-                              <span>{t("queue.pause")}</span>
-                            </Button>
-                          )}
-                          {row.canResume && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className={`flex-1 ${rowActionVisualClass}`}
-                              disabled={isRowFullyBusy}
-                              onClick={() => {
-                                if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                  return;
-                                }
-                                setActionLoadingId(queueItem.id);
-                                setRowBusy(queueItem.id, true);
-                                void requestResume(queueItem).finally(() => {
-                                  setRowBusy(queueItem.id, false);
-                                  setActionLoadingId((c) => (c === queueItem.id ? null : c));
-                                });
-                              }}
-                            >
-                              <Play className="h-4 w-4" />
-                              <span>{t("queue.resume")}</span>
-                            </Button>
-                          )}
-                          {(row.canInteractiveManualImport || row.canDirectManualImport) && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className={`flex-1 ${rowActionVisualClass}`}
-                              disabled={isRowFullyBusy}
-                              onClick={() => {
-                                if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                  return;
-                                }
-                                if (manualImportPending) return;
-                                setManualImportingId(queueItem.id);
-                                setRowBusy(queueItem.id, true);
-                                void requestManualImport(queueItem).finally(() => {
-                                  setRowBusy(queueItem.id, false);
-                                  setManualImportingId((current) =>
-                                    current === queueItem.id ? null : current,
-                                  );
-                                });
-                              }}
-                            >
-                              {manualImportPending ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <ArrowDownToLine className="h-4 w-4" />
-                              )}
-                              <span>{manualImportPending ? t("queue.manualImporting") : t("queue.manualImportTooltip")}</span>
-                            </Button>
-                          )}
-                          {row.canAssignTitle && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className={`flex-1 ${rowActionVisualClass}`}
-                              disabled={isRowFullyBusy}
-                              onClick={() => {
-                                if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                  return;
-                                }
-                                setActionLoadingId(queueItem.id);
-                                setRowBusy(queueItem.id, true);
-                                void requestAssignTitle(queueItem).finally(() => {
-                                  setRowBusy(queueItem.id, false);
-                                  setActionLoadingId((current) => (current === queueItem.id ? null : current));
-                                });
-                              }}
-                            >
-                              <Link2 className="h-4 w-4" />
-                              <span>
-                                {row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
-                                  ? t("queue.assignTitle")
-                                  : t("queue.reassignTitle")}
-                              </span>
-                            </Button>
-                          )}
-                          {row.canIgnore && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className={`flex-1 ${rowActionVisualClass}`}
-                              disabled={isRowFullyBusy}
-                              onClick={() => {
-                                if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                  return;
-                                }
-                                setActionLoadingId(queueItem.id);
-                                setRowBusy(queueItem.id, true);
-                                void requestIgnore(queueItem).finally(() => {
-                                  setRowBusy(queueItem.id, false);
-                                  setActionLoadingId((current) => (current === queueItem.id ? null : current));
-                                });
-                              }}
-                            >
-                              <CircleOff className="h-4 w-4" />
-                              <span>{t("queue.ignore")}</span>
-                            </Button>
-                          )}
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="destructive"
-                            className={`flex-1 ${rowActionVisualClass}`}
-                            disabled={isRowFullyBusy}
-                            onClick={() => {
-                              if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                return;
-                              }
-                              setRowBusy(queueItem.id, true);
-                              setDeleteConfirmItem(queueItem);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            <span>{t("label.delete")}</span>
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {queueMode === "history" && historyLoadingMore ? (
-                    <div className="flex items-center justify-center py-3 text-sm text-muted-foreground">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      {t("label.loading")}
-                    </div>
-                  ) : null}
-                </div>
+                {renderMobileQueueCards(
+                  queueItems,
+                  queueMode === "history" && historyLoadingMore,
+                )}
               </div>
             )
           ) : (
-            <div
-              onScroll={handleResultsScroll}
-              className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
-            >
-              <div className="overflow-x-auto">
-                <Table className="table-fixed min-w-[820px]">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[34%] min-w-0">{t("queue.title")}</TableHead>
-                      <TableHead className="w-32 min-w-0">{t("queue.client")}</TableHead>
-                      <TableHead className="w-44 min-w-0">{t("queue.status")}</TableHead>
-                      <TableHead className="w-52 min-w-52">{t("queue.progress")}</TableHead>
-                      <TableHead className="w-24 min-w-24">{t("queue.size")}</TableHead>
-                      <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {queueItems.length === 0 && !queueLoading ? (
+            queueItems.length === 0 && !queueLoading && hasManualImportRequiredSection ? null : (
+              <div
+                onScroll={handleResultsScroll}
+                className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
+              >
+                <div className="overflow-x-auto">
+                  <Table className="table-fixed min-w-[820px]">
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={6} className="text-sm text-muted-foreground">
-                          {t("queue.empty")}
-                        </TableCell>
+                        <TableHead className="w-[34%] min-w-0">{t("queue.title")}</TableHead>
+                        <TableHead className="w-32 min-w-0">{t("queue.client")}</TableHead>
+                        <TableHead className="w-44 min-w-0">{t("queue.status")}</TableHead>
+                        <TableHead className="w-52 min-w-52">{t("queue.progress")}</TableHead>
+                        <TableHead className="w-24 min-w-24">{t("queue.size")}</TableHead>
+                        <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
                       </TableRow>
-                    ) : (
-                      queueItems.map((queueItem) => {
-                        const row = deriveQueueRowPresentation(queueItem, t);
-                        const manualImportPending = manualImportingId === queueItem.id;
-                        const isActionLoading = actionLoadingId === queueItem.id;
-                        const isRowBusy =
-                          rowActionBusy[queueItem.id] ??
-                          rowActionBusyRef.current[queueItem.id] ??
-                          false;
-                        const isRowBlocked =
-                          isRowBusy || manualImportPending || isActionLoading;
-                        const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
-                        const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
-                        const rowActionVisualClass = isRowFullyBusy
-                          ? "pointer-events-none opacity-45 grayscale"
-                          : "";
-                        const isExpanded = Boolean(expandedItemIds[queueItem.id]);
-                        const detailId = `activity-queue-details-${queueItem.id}`;
-
-                        return (
-                          <Fragment key={queueItem.id}>
-                            <TableRow>
-                              <TableCell className="min-w-0">
-                                <p className="break-words whitespace-normal text-sm">
-                                  {queueItem.titleName || "\u2014"}
-                                </p>
-                              </TableCell>
-                              <TableCell className="min-w-0 align-middle">
-                                <p className="break-words whitespace-normal text-sm">
-                                  {queueItem.clientName || queueItem.clientType}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  {queueItem.clientType}
-                                </p>
-                              </TableCell>
-                              <TableCell className="min-w-0 align-middle">
-                                <ActivityQueueStatusBadge
-                                  stateKey={row.displayStateKey}
-                                  statusLabel={row.statusLabel}
-                                  isExpandable={row.hasExpandableDetails}
-                                  isExpanded={isExpanded}
-                                  detailId={detailId}
-                                  expandLabel={t(
-                                    isExpanded
-                                      ? "queue.hideDetails"
-                                      : "queue.showDetails",
-                                  )}
-                                  onToggle={() => toggleExpandedDetails(queueItem.id)}
-                                />
-                                {queueItem.importErrorMessage && !row.hasStatusDetails && (
-                                  <p
-                                    className="mt-1 max-w-full break-words whitespace-normal text-xs text-rose-400"
-                                    title={queueItem.importErrorMessage}
-                                  >
-                                    {queueItem.importErrorMessage}
-                                  </p>
-                                )}
-                              </TableCell>
-                              <TableCell className="w-52 min-w-52 align-middle">
-                                <ActivityProgressBar
-                                  percent={row.percent}
-                                  remainingLabel={row.remainingLabel}
-                                  colorClass={getProgressBarColor(row.displayStateKey)}
-                                />
-                              </TableCell>
-                              <TableCell className="w-24 min-w-24 align-middle">
-                                {formatBytes(queueItem.sizeBytes)}
-                              </TableCell>
-                              <TableCell className="w-44 min-w-44 align-middle text-right">
-                                <div className="flex items-center justify-end gap-2">
-                                  {row.canPause && (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                                      disabled={isRowFullyBusy}
-                                      title={t("queue.pause")}
-                                      aria-label={t("queue.pause")}
-                                      onClick={() => {
-                                        if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                          return;
-                                        }
-                                        setActionLoadingId(queueItem.id);
-                                        setRowBusy(queueItem.id, true);
-                                        void requestPause(queueItem).finally(() => {
-                                          setRowBusy(queueItem.id, false);
-                                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
-                                        });
-                                      }}
-                                    >
-                                      <Pause className="h-6 w-6" />
-                                    </Button>
-                                  )}
-                                  {row.canResume && (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                                      disabled={isRowFullyBusy}
-                                      title={t("queue.resume")}
-                                      aria-label={t("queue.resume")}
-                                      onClick={() => {
-                                        if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                          return;
-                                        }
-                                        setActionLoadingId(queueItem.id);
-                                        setRowBusy(queueItem.id, true);
-                                        void requestResume(queueItem).finally(() => {
-                                          setRowBusy(queueItem.id, false);
-                                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
-                                        });
-                                      }}
-                                    >
-                                      <Play className="h-6 w-6" />
-                                    </Button>
-                                  )}
-                                  {(row.canInteractiveManualImport || row.canDirectManualImport) && (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className={`h-10 w-10 border border-emerald-500/60 dark:border-emerald-500/50 bg-emerald-600/20 dark:bg-emerald-600/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-600/30 dark:hover:bg-emerald-600/25 ${rowActionVisualClass}`}
-                                      disabled={isRowFullyBusy}
-                                      title={manualImportPending ? t("queue.manualImporting") : t("queue.manualImportTooltip")}
-                                      aria-label={manualImportPending ? t("queue.manualImporting") : t("queue.manualImportTooltip")}
-                                      onClick={() => {
-                                        if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                          return;
-                                        }
-                                        if (manualImportPending) return;
-                                        setManualImportingId(queueItem.id);
-                                        setRowBusy(queueItem.id, true);
-                                        void requestManualImport(queueItem).finally(() => {
-                                          setRowBusy(queueItem.id, false);
-                                          setManualImportingId((current) =>
-                                            current === queueItem.id ? null : current,
-                                          );
-                                        });
-                                      }}
-                                    >
-                                      {manualImportPending ? (
-                                        <Loader2 className="h-5 w-5 animate-spin" />
-                                      ) : (
-                                        <ArrowDownToLine className="h-5 w-5" />
-                                      )}
-                                    </Button>
-                                  )}
-                                  {row.canAssignTitle && (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className={`h-10 w-10 border border-amber-500/60 bg-amber-600/15 text-amber-200 hover:bg-amber-600/25 ${rowActionVisualClass}`}
-                                      disabled={isRowFullyBusy}
-                                      title={row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId ? t("queue.assignTitle") : t("queue.reassignTitle")}
-                                      aria-label={row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId ? t("queue.assignTitle") : t("queue.reassignTitle")}
-                                      onClick={() => {
-                                        if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                          return;
-                                        }
-                                        setActionLoadingId(queueItem.id);
-                                        setRowBusy(queueItem.id, true);
-                                        void requestAssignTitle(queueItem).finally(() => {
-                                          setRowBusy(queueItem.id, false);
-                                          setActionLoadingId((current) => (current === queueItem.id ? null : current));
-                                        });
-                                      }}
-                                    >
-                                      <Link2 className="h-5 w-5" />
-                                    </Button>
-                                  )}
-                                  {row.canIgnore && (
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                                      disabled={isRowFullyBusy}
-                                      title={t("queue.ignore")}
-                                      aria-label={t("queue.ignore")}
-                                      onClick={() => {
-                                        if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                          return;
-                                        }
-                                        setActionLoadingId(queueItem.id);
-                                        setRowBusy(queueItem.id, true);
-                                        void requestIgnore(queueItem).finally(() => {
-                                          setRowBusy(queueItem.id, false);
-                                          setActionLoadingId((current) => (current === queueItem.id ? null : current));
-                                        });
-                                      }}
-                                    >
-                                      <CircleOff className="h-5 w-5" />
-                                    </Button>
-                                  )}
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="secondary"
-                                    className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-300 hover:bg-rose-600/25 ${rowActionVisualClass}`}
-                                    disabled={isRowFullyBusy}
-                                    title={t("label.delete")}
-                                    aria-label={t("label.delete")}
-                                    onClick={() => {
-                                      if (rowActionBusyRef.current[queueItem.id] || isActionLoading || isRowBlocked) {
-                                        return;
-                                      }
-                                      setRowBusy(queueItem.id, true);
-                                      setDeleteConfirmItem(queueItem);
-                                    }}
-                                  >
-                                    <Trash2 className="h-6 w-6" />
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                            {row.hasExpandableDetails && isExpanded ? (
-                              <TableRow>
-                                <TableCell colSpan={6} className="bg-muted/10 p-3">
-                                  <ActivityQueueDetailsPanel
-                                    detailId={detailId}
-                                    releaseTitle={row.releaseTitle}
-                                    failureReason={row.failureReason}
-                                    t={t}
-                                  />
-                                </TableCell>
-                              </TableRow>
-                            ) : null}
-                          </Fragment>
-                        );
-                      })
-                    )}
-                    {queueMode === "history" && historyLoadingMore ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="py-4 text-center text-sm text-muted-foreground">
-                          <span className="inline-flex items-center">
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            {t("label.loading")}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {queueItems.length === 0 ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={6}
+                            className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
+                          >
+                            {queueLoading ? (
+                              <ActivityTableLoadingMask label={t("label.loading")} />
+                            ) : (
+                              t("queue.empty")
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        renderDesktopQueueRows(
+                          queueItems,
+                          queueMode === "history" && historyLoadingMore,
+                        )
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
-            </div>
+            )
           )}
         </CardContent>
       </Card>
-
     </>
   );
 }

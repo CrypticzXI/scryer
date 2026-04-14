@@ -34,7 +34,7 @@ const EBML_ID_SEEK: u32 = 0x4DBB;
 const EBML_ID_SEEK_ID: u32 = 0x53AB;
 const EBML_ID_SEEK_POSITION: u32 = 0x53AC;
 const EBML_ID_INFO: u32 = 0x1549_A966;
-const EBML_ID_TIMESTAMP_SCALE: u32 = 0x2AD7_B1;
+const EBML_ID_TIMESTAMP_SCALE: u32 = 0x002A_D7B1;
 const EBML_ID_DURATION: u32 = 0x4489;
 const EBML_ID_TRACKS: u32 = 0x1654_AE6B;
 const EBML_ID_TRACK_ENTRY: u32 = 0xAE;
@@ -42,10 +42,10 @@ const EBML_ID_TRACK_NUMBER: u32 = 0xD7;
 const EBML_ID_TRACK_TYPE: u32 = 0x83;
 const EBML_ID_FLAG_DEFAULT: u32 = 0x88;
 const EBML_ID_FLAG_FORCED: u32 = 0x55AA;
-const EBML_ID_DEFAULT_DURATION: u32 = 0x23E3_83;
+const EBML_ID_DEFAULT_DURATION: u32 = 0x0023_E383;
 const EBML_ID_NAME: u32 = 0x536E;
-const EBML_ID_LANGUAGE: u32 = 0x22B5_9C;
-const EBML_ID_LANGUAGE_BCP47: u32 = 0x22B5_9D;
+const EBML_ID_LANGUAGE: u32 = 0x0022_B59C;
+const EBML_ID_LANGUAGE_BCP47: u32 = 0x0022_B59D;
 const EBML_ID_CODEC_ID: u32 = 0x86;
 const EBML_ID_CODEC_PRIVATE: u32 = 0x63A2;
 const EBML_ID_VIDEO: u32 = 0xE0;
@@ -2184,7 +2184,7 @@ fn parse_first_laced_frame_from_reader<R: Read>(
             )))
         }
         2 => {
-            if remaining_payload % lace_count != 0 {
+            if !remaining_payload.is_multiple_of(lace_count) {
                 return Ok(None);
             }
             Ok(Some((header_size, remaining_payload / lace_count)))

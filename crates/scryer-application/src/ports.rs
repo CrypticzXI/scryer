@@ -459,6 +459,21 @@ pub trait ImportRepository: Send + Sync {
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
 }
 
+#[async_trait]
+pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        snapshot: &crate::ExternalImportMonitorSnapshot,
+    ) -> AppResult<()>;
+
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>>;
+
+    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()>;
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkflowOperationInfo {
     pub id: String,

@@ -2,18 +2,15 @@ import type { LocaleDictionary } from "../types";
 
 const zh_CN: LocaleDictionary = {
   brand: "scryer",
-
   "label.ready": "就绪",
   "label.search": "搜索",
   "label.interactiveSearch": "手动搜索",
   "label.searching": "搜索中",
-  "help.autoSearchTooltip":
-    "自动搜索并将此项目的最新匹配版本加入队列。",
+  "help.autoSearchTooltip": "自动搜索并将此项目的最新匹配版本加入队列。",
   "help.interactiveSearchTooltip":
     "立即搜索此项目并打开版本选择器来选择要加入队列的内容。",
   "series.searchSeason": "搜索季度合集",
-  "help.seasonSearchTooltip":
-    "在索引器中搜索此季度的合集版本。",
+  "help.seasonSearchTooltip": "在索引器中搜索此季度的合集版本。",
   "label.searchingWithQuery": "正在搜索 {{query}}",
   "label.refresh": "刷新",
   "label.refreshing": "刷新中…",
@@ -47,9 +44,11 @@ const zh_CN: LocaleDictionary = {
   "label.disable": "禁用",
   "label.version": "版本",
   "label.type": "类型",
+  "label.title": "标题",
   "label.status": "状态",
   "label.testConnection": "测试连接",
   "label.activityStream": "活动流",
+  "external.openOn": "在 {{site}} 打开",
   "label.unknown": "未知",
   "label.deleting": "删除中…",
   "label.configured": "已配置",
@@ -60,23 +59,23 @@ const zh_CN: LocaleDictionary = {
   "label.yearUnknown": "年份未知",
   "label.noArt": "无封面",
   "label.emptyEntitlements": "无权限",
-
   "nav.movies": "电影",
   "nav.series": "剧集",
   "nav.anime": "动漫",
   "nav.activity": "活动",
+  "nav.calendar": "日历",
   "nav.history": "历史记录",
   "nav.settings": "设置",
   "nav.library": "媒体库",
+  "nav.import": "导入",
   "nav.system": "系统",
   "nav.group": "导航",
-
   "command.paletteTitle": "跳转到",
   "command.paletteDescription": "搜索页面和设置项",
   "command.palettePlaceholder": "输入页面名称",
   "command.paletteNoResults": "没有匹配的目标",
   "command.paletteGroup": "导航",
-
+  settings: "设置",
   "settings.profile": "配置",
   "settings.general": "通用",
   "settings.users": "用户",
@@ -88,7 +87,6 @@ const zh_CN: LocaleDictionary = {
   "settings.seriesSettings": "剧集设置",
   "settings.animeSettings": "动漫设置",
   "settings.mediaSettings": "媒体设置",
-
   "facetSettings.general": "通用",
   "facetSettings.quality": "质量",
   "facetSettings.renaming": "重命名",
@@ -103,7 +101,6 @@ const zh_CN: LocaleDictionary = {
   "facetSettings.effectiveScoringOverrides": "评分覆盖",
   "facetSettings.effectiveScoringOverridesHint":
     "在人格之上的可切换标志。编辑质量配置以更改这些设置。",
-
   "persona.trait.balanced.source": "来源：标准偏好（BluRay > WEB-DL > WeRip）",
   "persona.trait.balanced.audio": "音频：均衡编码器权重",
   "persona.trait.balanced.x265": "x265：4K 以下扣分",
@@ -118,25 +115,21 @@ const zh_CN: LocaleDictionary = {
   "persona.trait.audiophile.remux": "Remux：非常高的加分",
   "persona.trait.audiophile.hdr": "HDR：Dolby Vision 高度加分",
   "persona.trait.efficient.source": "来源：偏好 WEB-DL 和 WEB-Rip",
-  "persona.trait.efficient.audio":
-    "音频：有损编码器可接受（偏好 DDP）",
+  "persona.trait.efficient.audio": "音频：有损编码器可接受（偏好 DDP）",
   "persona.trait.efficient.x265": "x265：所有分辨率加分",
   "persona.trait.efficient.size": "文件大小：偏好紧凑编码",
   "persona.trait.efficient.remux": "Remux：不优先",
   "persona.trait.efficient.hdr": "HDR：标准",
   "persona.trait.compatible.source": "来源：偏好 WEB-DL",
-  "persona.trait.compatible.audio":
-    "音频：DDP 和 AAC 优先，支持广泛设备",
+  "persona.trait.compatible.audio": "音频：DDP 和 AAC 优先，支持广泛设备",
   "persona.trait.compatible.x265": "x265：H.264 优于 H.265",
   "persona.trait.compatible.size": "文件大小：标准偏好",
   "persona.trait.compatible.remux": "Remux：不优先",
   "persona.trait.compatible.hdr": "HDR：Dolby Vision 扣分（兼容性风险）",
-
   "settings.moviesLibrarySettings": "电影媒体设置",
   "settings.seriesLibrarySettings": "剧集媒体设置",
   "settings.rootFoldersLabel": "根文件夹",
-  "settings.rootFoldersEmpty":
-    "未配置根文件夹。请至少添加一个路径。",
+  "settings.rootFoldersEmpty": "未配置根文件夹。请至少添加一个路径。",
   "settings.rootFoldersHelp":
     "根文件夹是存储媒体的顶级目录。标星的文件夹是新标题的默认文件夹。",
   "settings.rootFolderAdd": "添加根文件夹",
@@ -144,8 +137,7 @@ const zh_CN: LocaleDictionary = {
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "设为默认",
   "settings.libraryScanTitle": "媒体库扫描",
-  "settings.libraryScanHelp":
-    "扫描电影文件夹并导入缺失的标题。",
+  "settings.libraryScanHelp": "扫描电影文件夹并导入缺失的标题。",
   "settings.libraryScanButton": "扫描媒体库",
   "settings.libraryScanRunning": "正在扫描媒体库…",
   "settings.libraryScanSummary":
@@ -153,6 +145,11 @@ const zh_CN: LocaleDictionary = {
   "settings.libraryScanSuccess":
     "媒体库扫描完成。已导入 {{imported}} 个，跳过 {{skipped}} 个，未匹配 {{unmatched}} 个。",
   "settings.libraryScanFailed": "媒体库扫描失败。",
+  "settings.libraryScanCancel": "取消",
+  "settings.libraryScanCancelFailed": "无法取消库扫描。",
+  "settings.libraryScanCanceled": "图书馆扫描已取消。",
+  "settings.libraryScanCanceledSummary":
+    "图书馆扫描已取消。 {{imported}} 已导入，{{skipped}} 已跳过，{{unmatched}} 不匹配。",
   "settings.libraryScanToastTitle": "{{facet}} 媒体库扫描",
   "settings.libraryScanFoundTitles": "已发现 {{count}} 个标题",
   "settings.libraryScanDiscovering": "正在发现标题…",
@@ -164,18 +161,73 @@ const zh_CN: LocaleDictionary = {
   "settings.libraryScanNoTitleMatchNeeded": "无需标题匹配",
   "settings.libraryScanNoMetadataNeeded": "无需获取元数据",
   "settings.libraryScanNoFilesToScan": "无需进行媒体分析",
+  "settings.libraryScanAlreadyRunning": "{{facet}} 库扫描已在运行。",
   "settings.libraryScanProgressCount": "{{current}} / {{total}}",
   "settings.libraryScanCompleted": "媒体库扫描完成。",
+  "settings.libraryScanCompletedWithWarnings":
+    "媒体库扫描已完成，但有警告。",
+  "jobs.title": "工作机会",
+  "jobs.activeRuns": "运行中的任务",
+  "jobs.primary": "主要任务",
+  "jobs.maintenance": "维护",
+  "jobs.schedule": "计划",
+  "jobs.never": "永不",
+  "jobs.completed": "已完成",
+  "jobs.running": "运行中",
+  "jobs.runSummaryCompleted": "已完成",
+  "jobs.runSummaryRunning": "运行中",
+  "jobs.recentRuns": "最近执行",
+  "jobs.loadingRecentRuns": "正在加载最近的运行...",
+  "jobs.noRunsYet": "尚无运行记录。",
+  "jobs.healthCheckIssues": "健康检查问题",
+  "jobs.nextRunPrefix": "下次运行：{{value}}",
+  "jobs.startedAt": "开始于 {{value}}",
+  "jobs.completedAt": "完成于 {{value}}",
+  "jobs.failedToTrigger": "触发任务失败",
+  "jobs.column.name": "名称",
+  "jobs.column.category": "分类",
+  "jobs.column.schedule": "计划",
+  "jobs.column.nextRun": "下次运行",
+  "jobs.column.lastRun": "上次运行",
+  "jobs.column.status": "状态",
+  "jobs.column.trigger": "扳机",
+  "jobs.action.run": "运行",
+  "jobs.action.runNow": "立即运行",
+  "jobs.action.running": "运行中…",
+  "jobs.status.idle": "空闲",
+  "jobs.status.queued": "队列中",
+  "jobs.status.discovering": "发现中",
+  "jobs.status.running": "运行中",
+  "jobs.status.completed": "已完成",
+  "jobs.status.warning": "警告",
+  "jobs.status.failed": "失败",
+  "jobs.category.library": "图书馆",
+  "jobs.category.acquisition": "获取",
+  "jobs.category.maintenance": "维护",
+  "jobs.category.subtitles": "字幕",
+  "jobs.category.system": "系统",
+  "jobs.triggerSource.manual": "手动",
+  "jobs.triggerSource.scheduledStartup": "计划启动",
+  "jobs.triggerSource.scheduledInterval": "计划间隔",
+  "jobs.triggerSource.systemInternal": "系统内部",
+  "deletePreview.counting": "正在计算要删除的文件...",
+  "deletePreview.error": "无法准备删除预览。",
+  "deletePreview.files": "文件",
+  "deletePreview.media": "媒体",
+  "deletePreview.subtitles": "字幕",
+  "deletePreview.images": "图像",
+  "deletePreview.other": "其他",
+  "deletePreview.folders": "文件夹",
+  "deletePreview.samplePaths": "示例路径",
+  "deletePreview.confirmPrompt": "键入 DELETE 以确认此删除。",
   "settings.saveButton": "保存",
   "settings.comingSoon": "此部分将在后续版本中提供。",
   "settings.moviesPathLabel": "电影文件夹路径",
-  "settings.moviesPathHelp":
-    "用作所选电影版本的目标文件夹。",
+  "settings.moviesPathHelp": "用作所选电影版本的目标文件夹。",
   "settings.moviesPathPlaceholder": "/data/movies",
   "settings.moviesPathRequired": "电影文件夹路径为必填项。",
   "settings.seriesPathLabel": "剧集文件夹路径",
-  "settings.seriesPathHelp":
-    "用作所选剧集和动漫版本的目标文件夹。",
+  "settings.seriesPathHelp": "用作所选剧集和动漫版本的目标文件夹。",
   "settings.seriesPathPlaceholder": "/data/series",
   "settings.seriesPathRequired": "剧集文件夹路径为必填项。",
   "settings.movieSettingsSaved": "电影设置已保存。",
@@ -186,22 +238,21 @@ const zh_CN: LocaleDictionary = {
     "使用 JSON 定义配置行为。保存时请确保 JSON 有效且包含具有唯一 `id` 值的配置列表。",
   "settings.qualityProfileGlobalLabel": "默认质量配置（全局）",
   "settings.qualityProfileNameRequired": "质量配置名称为必填项。",
-  "settings.qualityProfileGlobalHelp":
-    "当分类未单独指定时使用。",
+  "settings.qualityProfileGlobalHelp": "当分类未单独指定时使用。",
   "settings.qualityProfileOverrideLabel": "{{category}} 质量覆盖",
   "settings.qualityProfileOverridesLabel": "分类质量配置覆盖",
   "settings.qualityProfileOverrideHelp":
     "使用继承以回退到此内容类别的全局默认值。",
   "settings.qualityProfileInheritLabel": "从全局继承",
-  "settings.qualityProfileCatalogInvalid":
-    "质量配置目录不是有效的 JSON。",
+  "settings.qualityProfileCatalogInvalid": "质量配置目录不是有效的 JSON。",
+  "settings.qualityProfileUnknown": "未知的质量配置文件 ID“{{id}}”。",
   "settings.qualitySettingsSaved": "质量设置已保存。",
-  "settings.downloadClientRoutingSaved":
-    "下载客户端路由已保存。",
+  "settings.downloadClientRoutingSaved": "下载客户端路由已保存。",
+  "settings.downloadClientRoutingSavedFor":
+    "下载为“{{name}}”保存的客户端路由。",
   "settings.delayProfiles": "延迟配置",
   "settings.delayProfileExisting": "现有延迟配置",
-  "settings.delayProfileNone":
-    "未配置延迟配置。版本将被立即抓取。",
+  "settings.delayProfileNone": "未配置延迟配置。版本将被立即抓取。",
   "settings.delayProfileCreate": "创建配置",
   "settings.delayProfileEdit": "编辑配置",
   "settings.delayProfileNameLabel": "名称",
@@ -228,8 +279,7 @@ const zh_CN: LocaleDictionary = {
     "此配置适用的内容类型。全部取消选中则适用于所有类型。",
   "settings.delayProfileAllFacets": "全部",
   "settings.delayProfileTagsLabel": "标签",
-  "settings.delayProfileTagsPlaceholder":
-    "逗号分隔的标签（留空 = 默认通用）",
+  "settings.delayProfileTagsPlaceholder": "逗号分隔的标签（留空 = 默认通用）",
   "settings.delayProfileTagsHelp":
     "通过标签匹配标题。留空表示此配置为默认通用配置。",
   "settings.delayProfilePriorityLabel": "优先级",
@@ -257,8 +307,7 @@ const zh_CN: LocaleDictionary = {
   "settings.downloadClientPriority": "优先级",
   "settings.downloadClientRemoveCompleted": "移除已完成",
   "settings.downloadClientRemoveFailed": "移除失败项",
-  "settings.downloadClientUseSslInfo":
-    "连接此下载客户端时使用 SSL/TLS。",
+  "settings.downloadClientUseSslInfo": "连接此下载客户端时使用 SSL/TLS。",
   "settings.downloadClientRemoveCompletedInfo":
     "从下载客户端历史中移除已完成的下载。",
   "settings.downloadClientRemoveFailedInfo":
@@ -270,11 +319,10 @@ const zh_CN: LocaleDictionary = {
   "settings.downloadClientUrlBasePlaceholder": "例如 api",
   "settings.downloadClientPortPlaceholder": "8080",
   "settings.downloadClientPriorityPlaceholder": "默认",
-  "settings.downloadClientCategoryPlaceholder": "tv",
+  "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "状态",
   "settings.existingDownloadClients": "现有下载客户端",
-  "settings.downloadClientRoutingScope":
-    "{{scope}} 的下载客户端元数据",
+  "settings.downloadClientRoutingScope": "{{scope}} 的下载客户端元数据",
   "settings.downloadClientRoutingGloballyEnabled": "全局启用",
   "settings.downloadClientRoutingEnabled": "启用",
   "settings.downloadClientRoutingNoNzbClients":
@@ -288,7 +336,7 @@ const zh_CN: LocaleDictionary = {
   "settings.indexerRoutingNoCategories": "未选择分类。",
   "settings.indexerRoutingCategoriesPlaceholder": "选择分类",
   "settings.indexerRoutingNoIndexers": "未找到索引器。",
-  "settings.indexerCategoryTv": "TV",
+  "settings.indexerCategorySeries": "Series",
   "settings.indexerCategoryMovies": "电影",
   "settings.indexerCategoryOther": "其他",
   "settings.indexerCategoryForeign": "外语",
@@ -303,8 +351,7 @@ const zh_CN: LocaleDictionary = {
   "settings.indexerCategoryMisc": "杂项",
   "indexerCategory.labelCategory": "分类",
   "settings.downloadClientValidation": "名称和主机为必填项。",
-  "settings.downloadClientBaseUrlRequired":
-    "需要有效的主机和端口。",
+  "settings.downloadClientBaseUrlRequired": "需要有效的主机和端口。",
   "settings.qualitySource": "来源",
   "settings.renameSection": "重命名",
   "settings.renameTemplateLabel": "重命名模板",
@@ -314,13 +361,12 @@ const zh_CN: LocaleDictionary = {
   "settings.renameTemplateRequired": "重命名模板为必填项。",
   "settings.renameCollisionPolicyLabel": "冲突策略",
   "settings.renameCollisionPolicySkip": "跳过",
-  "settings.renameCollisionPolicyError": "报错",
+  "settings.renameCollisionPolicyError": "错误",
   "settings.renameCollisionPolicyReplaceIfBetter": "更好时替换",
   "settings.renameMissingMetadataPolicyLabel": "元数据缺失策略",
   "settings.renameMissingMetadataPolicyFallbackTitle": "回退到标题",
   "settings.renameMissingMetadataPolicySkip": "跳过",
-  "settings.renamePolicyHelp":
-    "这些设置按媒体分类范围保存。",
+  "settings.renamePolicyHelp": "这些设置按媒体分类范围保存。",
   "settings.renameSectionTitle": "文件重命名",
   "settings.renameAvailableTokens": "可用标记",
   "settings.renameTokenTitle": "标题名称",
@@ -344,38 +390,36 @@ const zh_CN: LocaleDictionary = {
   "settings.renameValidationEmpty": "重命名模板不能为空",
   "settings.renameComingSoon": "重命名规则即将推出。",
   "settings.mediaSettingsSaved": "媒体设置已保存。",
-
   "rename.previewButton": "预览重命名",
   "rename.previewing": "预览中…",
   "rename.applyButton": "应用重命名",
   "rename.applying": "应用中…",
+  "rename.currentPath": "当前的",
+  "rename.proposedPath": "建议的",
   "rename.planSummary":
     "{{total}} 项，{{renamable}} 可重命名，{{noop}} 无变化，{{conflicts}} 冲突，{{errors}} 错误",
-
   "settings.title": "设置",
   "settings.sectionTitle": "设置 • {{section}}",
   "settings.generalText": "通用应用程序设置。",
-  "settings.generalPlaceholder":
-    "配置语言和其他全局偏好设置。",
+  "settings.generalPlaceholder": "配置语言和其他全局偏好设置。",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS 证书路径",
-  "settings.tlsCertPathHelp":
-    "PEM 编码证书文件的绝对路径。需要重启才能生效。",
+  "settings.tlsCertPathHelp": "PEM 编码证书文件的绝对路径。需要重启才能生效。",
   "settings.tlsCertPathPlaceholder": "/etc/scryer/cert.pem",
   "settings.tlsKeyPathLabel": "TLS 私钥路径",
-  "settings.tlsKeyPathHelp":
-    "PEM 编码私钥文件的绝对路径。需要重启才能生效。",
+  "settings.tlsKeyPathHelp": "PEM 编码私钥文件的绝对路径。需要重启才能生效。",
   "settings.tlsKeyPathPlaceholder": "/etc/scryer/key.pem",
-  "settings.tlsSaved":
-    "TLS 设置已保存。请重启服务使更改生效。",
-  "settings.tlsRestartNote":
-    "TLS 设置更改需要重启服务。",
-
+  "settings.tlsSaved": "TLS 设置已保存。请重启服务使更改生效。",
+  "settings.languageChangeTitle": "更改语言",
+  "settings.languageChangeWarning":
+    "更改为 {{language}} 将以新语言重新下载库中所有标题的元数据（名称、描述、排序标题）。这可能需要几分钟的时间，具体取决于您的库大小。界面将立即改变。",
+  "settings.languageChangeConfirm": "更改语言",
+  "settings.metadataRehydrationStarted": "元数据补充开始。标题将在后台更新。",
+  "settings.tlsRestartNote": "TLS 设置更改需要重启服务。",
   "search.globalPlaceholder": "搜索精彩内容！（按 / 键）",
   "search.catalog": "目录",
   "search.noCatalogMatches": "暂无已管理的目录匹配。",
-  "search.noMetadataMatches":
-    "此部分暂无元数据匹配。",
+  "search.noMetadataMatches": "此部分暂无元数据匹配。",
   "search.alreadyCataloged": "已在目录中",
   "search.configureAdd": "配置添加选项",
   "search.addConfigQualityProfile": "质量配置",
@@ -386,7 +430,7 @@ const zh_CN: LocaleDictionary = {
   "search.addConfigNoQualityProfiles": "未配置质量配置。",
   "search.seasonFolder.enabled": "启用",
   "search.seasonFolder.disabled": "禁用",
-  "search.monitorType.monitored": "监控",
+  "search.monitorType.monitored": "已监控",
   "search.monitorType.unmonitored": "未监控",
   "search.monitorType.futureEpisodes": "未来集数",
   "search.monitorType.missingAndFutureEpisodes": "缺失 + 未来集数",
@@ -394,15 +438,14 @@ const zh_CN: LocaleDictionary = {
   "search.monitorType.none": "无",
   "search.adding": "添加中…",
   "search.facetMovie": "电影",
-  "search.facetTv": "TV",
+  "search.facetSeries": "Series",
   "search.facetAnime": "动漫",
   "search.metadataSearch": "元数据搜索",
-
   "label.back": "返回",
   "label.dismiss": "关闭",
   "pwa.offline": "您处于离线状态。部分功能可能不可用。",
   "pwa.installApp": "安装 Scryer",
-
+  "pwa.iosInstallHint": "点击共享按钮并选择“添加到主屏幕”进行安装。",
   "title.addAndQueue": "添加标题并加入队列",
   "title.addToCatalog": "添加到目录",
   "title.name": "标题名称",
@@ -411,19 +454,29 @@ const zh_CN: LocaleDictionary = {
   "title.manageMovies": "管理电影",
   "title.manageSeries": "管理剧集",
   "title.manageAnime": "管理动漫",
-  "title.monitored": "监控中",
+  "title.monitored": "已监控",
+  "title.ended": "已完结",
+  "title.continuing": "仍在继续",
+  "title.upcoming": "即将播出",
+  "title.backToFacet": "返回 {{facet}}",
+  "title.notFound": "未找到该标题。",
+  "title.noPoster": "无海报",
+  "title.addedAt": "添加于 {{date}}",
   "title.monitorAction": "监控",
   "title.unmonitorAction": "取消监控",
   "title.markWantedAction": "标记为想要",
+  "title.searchMonitoredAction": "搜索已监控项",
+  "title.refreshAndScanAction": "刷新并扫描",
   "title.filterPlaceholder": "过滤管理的标题",
   "title.loading": "未加载数据",
   "title.noManaged": "此部分没有标题。",
   "title.statusTemplate": "已加载 {{count}} 个标题。",
   "title.table.facet": "类型",
-  "title.table.monitored": "监控",
+  "title.table.monitored": "已监控",
   "title.table.poster": "海报",
   "title.table.qualityTier": "质量",
   "title.table.episodes": "剧集",
+  "title.table.status": "状态",
   "title.table.size": "大小",
   "title.viewModeToggle": "视图模式",
   "title.viewModeTable": "表格视图",
@@ -432,20 +485,89 @@ const zh_CN: LocaleDictionary = {
   "title.seasonMonitored": "季度监控中",
   "title.episodeMonitored": "集监控中",
   "title.deleteFilesOnDisk": "删除磁盘上的文件",
+  "title.seasonsAndEpisodes": "季与剧集",
+  "title.noTrackedSeasons": "此作品尚未跟踪任何季度。",
+  "title.fetchingData": "正在获取数据",
+  "title.filesOnDisk": "磁盘上的文件",
+  "title.noFilesTracked": "没有已跟踪的文件。",
+  "title.noFilesTrackedHint":
+    "运行一次资料库扫描以检测磁盘上的文件。",
+  "title.descriptionUnavailable": "暂无简介。",
+  "title.canon": "正传",
+  "title.mixed": "混合",
+  "title.specials": "特别篇",
+  "title.seasonNumber": "第 {{number}} 季",
+  "title.episodeRange": "第 {{start}} 集 - 第 {{end}} 集",
+  "title.episodeCountOne": "{{count}} 集",
+  "title.episodeCountOther": "{{count}} 集",
+  "title.specialCountOne": "{{count}} 个特别篇",
+  "title.specialCountOther": "{{count}} 个特别篇",
+  "title.movieCountOne": "{{count}} 部电影",
+  "title.movieCountOther": "{{count}} 部电影",
+  "title.movieDetails": "电影详情",
+  "title.searchingReleases": "正在索引站中搜索发布资源…",
+  "title.noReleasesFound": "未找到 {{name}} 的发布资源。",
+  "title.interactiveSearchHint":
+    "使用交互式搜索可在已配置的索引站中查询 {{name}} 的发布资源。",
+  "title.blockedReleases": "已阻止的发布资源",
+  "title.noBlockedReleases": "此电影没有记录任何已阻止的发布资源。",
   "title.settings": "标题设置",
   "title.qualityProfile": "质量配置",
-  "title.rootFolder": "根文件夹",
+  "title.rootFolder": "根目录",
   "title.defaultRootFolder": "默认（{{path}}）",
   "title.inheritDefault": "继承默认",
   "title.monitoredSection": "监控中的 {{facet}}",
   "title.noWantedItem": "没有活动的想要项目。",
   "title.queueLatest": "加入最新队列",
   "title.requiredAudioLanguages": "必需音频语言",
+  "title.requiredAudioLanguagesFacetInfo":
+    "这些语言是在该方面的发布选择和导入验证期间强制执行的。",
   "title.requiredAudioInherited": "继承自 {{facet}} 设置",
   "title.requiredAudioResetInherit": "重置为继承",
-
+  "title.fixMatchHeading": "修复元数据匹配",
+  "title.fixMatchAction": "修复匹配",
+  "title.fixMatchDescriptionMovie":
+    "修复该电影的 TVDB 匹配，同时保持本地标题和文件夹名称不变。",
+  "title.fixMatchDescriptionSeries":
+    "修复该标题的 TVDB 匹配。本地标题和文件夹命名保持不变。",
+  "title.fixMatchDialogTitle": "修复匹配",
+  "title.fixMatchDialogDescription":
+    "修复 {{name}} 的 TVDB 匹配。本地标题和文件夹名称保持不变。系列和动画将在内部重建季节和剧集。",
+  "title.fixMatchUnnamed": "这个标题",
+  "title.fixMatchSearchPlaceholder": "搜寻 TVDB 节目",
+  "title.fixMatchCurrentTvdbId": "当前 TVDB ID",
+  "title.fixMatchCurrentTvdbNone": "没有任何",
+  "title.fixMatchSearching": "正在搜索元数据...",
+  "title.fixMatchNoResults": "未找到元数据匹配。",
+  "title.fixMatchSelected": "已选择",
+  "title.fixMatchChoose": "选择",
+  "title.fixMatchApplying": "修复匹配...",
+  "title.fixMatchApply": "应用匹配",
+  "title.fixMatchSearchFailed": "无法搜索元数据。",
+  "title.fixMatchApplyFailed": "无法修复标题匹配。",
+  "pendingImports.title": "待处理的进口",
+  "pendingImports.description":
+    "通过选择正确的元数据匹配来解决 {{facet}} 不匹配的磁盘项目。",
+  "pendingImports.loading": "正在加载等待导入...",
+  "pendingImports.loadFailed": "无法加载待处理的导入。",
+  "pendingImports.empty": "此方面没有待处理的导入。",
+  "pendingImports.path": "路径",
+  "pendingImports.folderPath": "文件夹",
+  "pendingImports.searchPlaceholder": "搜索元数据标题",
+  "pendingImports.searching": "正在搜索元数据...",
+  "pendingImports.searchFailed": "无法搜索元数据。",
+  "pendingImports.noSearchResults": "未找到元数据匹配。",
+  "pendingImports.searchAction": "搜索与匹配",
+  "pendingImports.match": "匹配",
+  "pendingImports.resolving": "解决...",
+  "pendingImports.resolveSuccess": "解决了 {{name}} 的待导入问题。",
+  "pendingImports.resolveFailed": "无法解决待处理的导入。",
+  "pendingImports.prev": "以前的",
+  "pendingImports.next": "下一个",
+  "pendingImports.pageRange": "{{start}}–{{end}} / {{total}}",
   "tvdb.searchResults": "TVDB 搜索结果",
   "tvdb.searchPrompt": "在上方输入标题以搜索 TVDB。",
+  "tvdb.searching": "在 TVDB 元数据中搜索“{{query}}”",
   "tvdb.foundMatches": "找到 {{count}} 个 TVDB 匹配。",
   "tvdb.noMatches": "未找到 TVDB 匹配。",
   "tvdb.selectPrompt": "选择一个 TVDB 匹配以继续。",
@@ -453,7 +575,6 @@ const zh_CN: LocaleDictionary = {
   "tvdb.searchButton": "使用选定的 TVDB 标题搜索 NZBGeek",
   "tvdb.select": "选择",
   "tvdb.popularity": "热度",
-
   "nzb.searchResults": "NZBGeek 搜索结果",
   "nzb.searchResultsFor": "{{name}} 的 NZB 结果",
   "nzb.selectTvdbFirst": "选择一个 TVDB 匹配以搜索 NZBGeek。",
@@ -467,9 +588,7 @@ const zh_CN: LocaleDictionary = {
   "nzb.hideScoringLog": "隐藏评分日志",
   "nzb.scoringLog": "评分日志",
   "nzb.total": "总计",
-
   "media.posterAlt": "{{name}} 海报",
-
   "activity.title": "活动",
   "activity.loading": "正在加载活动…",
   "activity.noActivity": "没有已加载的活动。",
@@ -484,7 +603,6 @@ const zh_CN: LocaleDictionary = {
   "activity.scryerOnly": "仅 Scryer",
   "activity.allActivity": "所有活动",
   "activity.history": "历史记录",
-
   "queue.title": "标题",
   "queue.client": "客户端",
   "queue.status": "状态",
@@ -496,6 +614,7 @@ const zh_CN: LocaleDictionary = {
   "queue.state.paused": "已暂停",
   "queue.state.completed": "已完成",
   "queue.state.importPending": "待导入",
+  "queue.state.importBlocked": "进口受阻",
   "queue.state.failed": "失败",
   "queue.state.unknown": "未知",
   "queue.empty": "没有活动或待处理的下载。",
@@ -505,15 +624,28 @@ const zh_CN: LocaleDictionary = {
   "queue.summary":
     "{{downloading}} 个下载中，{{waiting}} 个待导入，{{attention}} 个需关注",
   "queue.manualImport": "手动导入",
-  "queue.manualImporting": "加入队列中…",
+  "queue.manualImporting": "正在加入队列…",
   "queue.manualImportQueued": "手动导入已加入队列。",
   "queue.manualImportFailed": "手动导入加入队列失败。",
-  "queue.manualImportTooltip":
-    "手动导入可用于需要关注的队列项。",
-  "queue.releaseTitle": "发布项",
+  "queue.manualImportTooltip": "手动导入可用于需要关注的队列项。",
+  "queue.releaseTitle": "发布资源",
   "queue.blockReason": "阻止原因",
   "queue.showDetails": "显示详情",
   "queue.hideDetails": "隐藏详情",
+  "queue.assignTitle": "指定标题",
+  "queue.reassignTitle": "更改标题",
+  "queue.assignTitleTitle": "指定下载标题",
+  "queue.assignTitleDescription":
+    "选择此被阻止的下载所属的库标题。 Scryer 将在分配后重新检查导入。",
+  "queue.assignTitlePlaceholder": "搜索标题…",
+  "queue.assignTitleResults": "匹配的标题",
+  "queue.assignTitleEmpty": "未找到匹配的标题。",
+  "queue.assignTitleQueued": "已分配标题。进口将被重新评估。",
+  "queue.assignTitleFailed": "分配标题失败。",
+  "queue.assignTitleBeforeImport": "在开始手动导入之前指定标题。",
+  "queue.ignore": "忽略",
+  "queue.ignoreSuccess": "下载被忽略。",
+  "queue.ignoreFailed": "无法忽略下载。",
   "queue.pause": "暂停",
   "queue.pausing": "暂停中…",
   "queue.pauseSuccess": "下载已暂停。",
@@ -528,7 +660,6 @@ const zh_CN: LocaleDictionary = {
   "queue.deleteConfirmTitle": "移除下载",
   "queue.deleteConfirmDescription":
     "确定要从队列中移除此下载吗？此操作无法撤销。",
-
   "importHistory.title": "导入历史",
   "importHistory.empty": "未找到导入记录。",
   "importHistory.status": "状态",
@@ -542,8 +673,8 @@ const zh_CN: LocaleDictionary = {
   "importHistory.passwordRequired": "需要密码",
   "importHistory.passwordPlaceholder": "压缩包密码",
   "importHistory.retrySuccess": "已开始重新导入",
-
   "system.title": "系统健康",
+  "system.jobsTitle": "工作机会",
   "system.notLoaded": "系统健康状态未加载。",
   "system.refreshing": "刷新中",
   "system.loaded": "系统状态已加载。",
@@ -566,23 +697,18 @@ const zh_CN: LocaleDictionary = {
   "system.sourcesSupport":
     "如果这些服务为您的媒体库提供了帮助，请考虑捐赠支持。",
   "system.sourceTvdbName": "TheTVDB",
-  "system.sourceTvdbDescription":
-    "TV 剧集和集元数据的主要来源。",
+  "system.sourceTvdbDescription": "TV 剧集和集元数据的主要来源。",
   "system.sourceTmdbName": "The Movie Database (TMDB)",
-  "system.sourceTmdbDescription":
-    "电影和剧集元数据的补充来源。",
+  "system.sourceTmdbDescription": "电影和剧集元数据的补充来源。",
   "system.sourceJikanName": "Jikan API",
   "system.sourceJikanDescription":
     "用于基于 MAL 的填充集和回顾集元数据同步的动漫 API。",
   "system.sourceMalName": "MyAnimeList",
-  "system.sourceMalDescription":
-    "通过 Jikan 提供的动漫数据集。",
+  "system.sourceMalDescription": "通过 Jikan 提供的动漫数据集。",
   "system.sourceAniBridgeName": "AniBridge",
   "system.sourceAniBridgeDescription":
     "用于对齐跨源 ID 和集映射的动漫映射数据集。",
-
-  "settings.description":
-    "索引器、客户端和通知的设置部分占位符。",
+  "settings.description": "索引器、客户端和通知的设置部分占位符。",
   "settings.description2":
     "此框架已准备好用于附加设置表单，可以在不更改导航的情况下扩展。",
   "settings.knownUsers": "已知用户",
@@ -613,8 +739,7 @@ const zh_CN: LocaleDictionary = {
   "settings.noIndexersFound": "未找到索引器。",
   "settings.indexerConfig": "插件配置",
   "settings.downloadClientsSection": "下载客户端",
-  "settings.downloadClientFilterPlaceholder":
-    "按客户端名称或类型过滤",
+  "settings.downloadClientFilterPlaceholder": "按客户端名称或类型过滤",
   "settings.newPassword": "新密码",
   "settings.save": "保存",
   "settings.noEntitlements": "无权限",
@@ -639,8 +764,7 @@ const zh_CN: LocaleDictionary = {
   "settings.ruleRegoSource": "Rego 源码",
   "settings.rulePriority": "优先级",
   "settings.ruleAppliedFacets": "适用类型",
-  "settings.ruleAppliedFacetsHelp":
-    "留空则适用于所有媒体类型。",
+  "settings.ruleAppliedFacetsHelp": "留空则适用于所有媒体类型。",
   "settings.ruleValidate": "验证",
   "settings.ruleValidating": "验证中…",
   "settings.ruleValid": "规则有效。",
@@ -649,13 +773,14 @@ const zh_CN: LocaleDictionary = {
   "settings.ruleLibraryDescription":
     "预置规则，一键即可添加。选择模板以填充编辑器。",
   "settings.ruleLibraryAll": "全部",
+  "settings.ruleLibraryCommunityEmpty":
+    "没有可用的社区规则包。刷新插件注册表以检查新包。",
   "settings.rulesFacetSection": "{{facet}} 的自定义规则",
   "settings.ruleGlobal": "全局",
   "settings.ruleNoFacetRules":
     "没有可用的自定义规则。请在设置 > 自定义规则中创建规则。",
   "settings.refTitle": "输入上下文参考",
-  "settings.refSubtitle":
-    "点击展开 Rego 规则可用的完整字段参考。",
+  "settings.refSubtitle": "点击展开 Rego 规则可用的完整字段参考。",
   "settings.refIntro":
     "每个规则都会收到一个包含五个顶级文档的 input 对象。您的 Rego 代码通过 input.release、input.profile、input.context、input.builtin_score 和 input.file 访问。input.file 在下载前评分时为 null，仅在下载后导入评估时填充。",
   "settings.refColField": "字段",
@@ -665,42 +790,29 @@ const zh_CN: LocaleDictionary = {
   "settings.refColReturns": "返回值",
   "settings.refSectionRelease": "— 解析的版本元数据",
   "settings.refReleaseRawTitle": "索引器中未解析的原始版本标题",
-  "settings.refReleaseQuality":
-    "检测到的质量级别（例如 2160P、1080P、720P）",
-  "settings.refReleaseSource":
-    "媒体来源（例如 WEB-DL、BLURAY、HDTV）",
+  "settings.refReleaseQuality": "检测到的质量级别（例如 2160P、1080P、720P）",
+  "settings.refReleaseSource": "媒体来源（例如 WEB-DL、BLURAY、HDTV）",
   "settings.refReleaseVideoCodec": "视频编码器（例如 H.265、H.264、AV1）",
-  "settings.refReleaseAudio":
-    "主音频编码器（例如 DDP、AAC、TrueHD）",
+  "settings.refReleaseAudio": "主音频编码器（例如 DDP、AAC、TrueHD）",
   "settings.refReleaseAudioCodecs": "所有检测到的音频编码器数组",
-  "settings.refReleaseAudioChannels":
-    "音频声道配置（例如 5.1、7.1、2.0）",
-  "settings.refReleaseLangsAudio":
-    "ISO 639-3 音频语言代码（例如 eng、jpn）",
+  "settings.refReleaseAudioChannels": "音频声道配置（例如 5.1、7.1、2.0）",
+  "settings.refReleaseLangsAudio": "ISO 639-3 音频语言代码（例如 eng、jpn）",
   "settings.refReleaseLangsSub": "ISO 639-3 字幕语言代码",
   "settings.refReleaseIsDualAudio": "检测到多音轨时为 true",
   "settings.refReleaseIsAtmos": "存在 Dolby Atmos 音频时为 true",
-  "settings.refReleaseIsDV":
-    "检测到 Dolby Vision 元数据时为 true",
+  "settings.refReleaseIsDV": "检测到 Dolby Vision 元数据时为 true",
   "settings.refReleaseDetectedHdr": "检测到 HDR 时为 true（非 DV）",
   "settings.refReleaseIsRemux": "完整 Remux 时为 true（无转码）",
   "settings.refReleaseIsBdDisk": "蓝光光盘来源时为 true",
   "settings.refReleaseIsProper": "标记为 Proper 时为 true",
   "settings.refReleaseIsRepack": "标记为 Repack 时为 true",
-  "settings.refReleaseIsAiEnhanced":
-    "解析器检测到 AI 增强编码标记时为 true",
-  "settings.refReleaseIsHardcodedSubs":
-    "在版本名称中检测到硬编码字幕时为 true",
-  "settings.refReleaseIsHdr10Plus":
-    "从版本元数据检测到 HDR10+ 时为 true",
-  "settings.refReleaseIsHlg":
-    "从版本元数据检测到 HLG 时为 true",
-  "settings.refReleaseStreamingService":
-    "检测到的流媒体服务标签（如有）",
-  "settings.refReleaseEdition":
-    "版本标签，如 extended、IMAX 或 criterion",
-  "settings.refReleaseAnimeVersion":
-    "动漫版本号，如 v2 或 v3（如有）",
+  "settings.refReleaseIsAiEnhanced": "解析器检测到 AI 增强编码标记时为 true",
+  "settings.refReleaseIsHardcodedSubs": "在版本名称中检测到硬编码字幕时为 true",
+  "settings.refReleaseIsHdr10Plus": "从版本元数据检测到 HDR10+ 时为 true",
+  "settings.refReleaseIsHlg": "从版本元数据检测到 HLG 时为 true",
+  "settings.refReleaseStreamingService": "检测到的流媒体服务标签（如有）",
+  "settings.refReleaseEdition": "版本标签，如 extended、IMAX 或 criterion",
+  "settings.refReleaseAnimeVersion": "动漫版本号，如 v2 或 v3（如有）",
   "settings.refReleaseGroup": "发布组或上传者名称",
   "settings.refReleaseYear": "发行年份",
   "settings.refReleaseParseConf": "解析置信度分数（0.0 到 1.0）",
@@ -717,46 +829,34 @@ const zh_CN: LocaleDictionary = {
   "settings.refProfileQualityTiers": "可接受质量级别的有序列表",
   "settings.refProfileArchivalQuality": "被视为存档的最高质量级别",
   "settings.refProfileAllowUnknown": "是否接受无法识别的质量",
-  "settings.refProfileSourceAllow":
-    "允许的来源（为空表示全部允许）",
+  "settings.refProfileSourceAllow": "允许的来源（为空表示全部允许）",
   "settings.refProfileSourceBlock": "阻止的来源",
-  "settings.refProfileVCodecAllow":
-    "允许的视频编码器（为空表示全部允许）",
+  "settings.refProfileVCodecAllow": "允许的视频编码器（为空表示全部允许）",
   "settings.refProfileVCodecBlock": "阻止的视频编码器",
-  "settings.refProfileACodecAllow":
-    "允许的音频编码器（为空表示全部允许）",
+  "settings.refProfileACodecAllow": "允许的音频编码器（为空表示全部允许）",
   "settings.refProfileACodecBlock": "阻止的音频编码器",
   "settings.refProfileDVAllowed": "接受 Dolby Vision 版本",
   "settings.refProfileHdrAllowed": "接受 HDR 版本",
   "settings.refProfilePreferRemux": "配置偏好完整 Remux 版本",
   "settings.refProfileAllowBdDisk": "接受蓝光光盘来源",
   "settings.refProfileAllowUpgrades": "允许升级现有文件",
-  "settings.refProfileRequiredLangs":
-    "必需的音频语言（ISO 639-3 代码）",
+  "settings.refProfileRequiredLangs": "必需的音频语言（ISO 639-3 代码）",
   "settings.refSectionContext": "— 标题和搜索上下文",
-  "settings.refCtxTitleId":
-    "当具体标题已知时的内部 Scryer 标题 ID",
-  "settings.refCtxMediaType":
-    "正在评估的媒体类型，通常为 movie、tv 或 anime",
-  "settings.refCtxCategory":
-    "用于评分和规则评估的分类提示",
+  "settings.refCtxTitleId": "当具体标题已知时的内部 Scryer 标题 ID",
+  "settings.refCtxMediaType": "正在评估的媒体类型，通常为 movie、series 或 anime",
+  "settings.refCtxCategory": "用于评分和规则评估的分类提示",
   "settings.refCtxTags": "标题上的用户自定义标签",
-  "settings.refCtxHasExisting":
-    "当此标题已存在文件时为 true",
+  "settings.refCtxHasExisting": "当此标题已存在文件时为 true",
   "settings.refCtxExistingScore": "现有文件的内置分数（如有）",
-  "settings.refCtxSearchMode":
-    "评估模式。当前值为 auto 和 post_download",
+  "settings.refCtxSearchMode": "评估模式。当前值为 auto 和 post_download",
   "settings.refCtxRuntimeMin": "内容时长（分钟）",
-  "settings.refCtxIsAnime":
-    "当标题被分类为动漫时为 true",
+  "settings.refCtxIsAnime": "当标题被分类为动漫时为 true",
   "settings.refCtxIsFiller": "当集被标记为填充集时为 true",
   "settings.refSectionBuiltinScore": "— 内置评分引擎结果",
   "settings.refBuiltinTotal": "内置评分引擎的总分",
   "settings.refBuiltinBlocked": "内置规则阻止此版本时为 true",
-  "settings.refBuiltinCodes":
-    "已应用的评分代码列表（例如 quality_tier_0）",
-  "settings.refSectionFile":
-    "— 实际分析的文件元数据（下载前为 null）",
+  "settings.refBuiltinCodes": "已应用的评分代码列表（例如 quality_tier_0）",
+  "settings.refSectionFile": "— 实际分析的文件元数据（下载前为 null）",
   "settings.refFileVideoCodec": "通过媒体分析验证的视频编码器",
   "settings.refFileVideoWidth": "验证的视频宽度（像素）",
   "settings.refFileVideoHeight": "验证的视频高度（像素）",
@@ -764,54 +864,48 @@ const zh_CN: LocaleDictionary = {
   "settings.refFileVideoBitDepth": "验证的视频位深度",
   "settings.refFileVideoHdrFormat":
     "验证的 HDR 格式，如 Dolby Vision、HDR10、HDR10+ 或 HLG",
-  "settings.refFileDoviProfile":
-    "Dolby Vision 配置文件编号（如有）",
-  "settings.refFileDoviBlCompatId":
-    "Dolby Vision 基础层兼容性 ID（如有）",
+  "settings.refFileDoviProfile": "Dolby Vision 配置文件编号（如有）",
+  "settings.refFileDoviBlCompatId": "Dolby Vision 基础层兼容性 ID（如有）",
   "settings.refFileVideoFrameRate": "通过媒体分析验证的帧率",
-  "settings.refFileVideoProfile":
-    "验证的编码器配置文件，如 Main 10 或 High",
+  "settings.refFileVideoProfile": "验证的编码器配置文件，如 Main 10 或 High",
   "settings.refFileAudioCodec": "验证的主音频编码器",
+  "settings.refFileAudioProfile":
+    "主要经过验证的音频配置文件或扩展标签，例如 LC、Dolby TrueHD + Dolby Atmos 或 DTS-HD MA + DTS:X IMAX",
   "settings.refFileAudioChannels": "验证的主音频声道数",
   "settings.refFileAudioBitrateKbps": "验证的主音频比特率（kbps）",
-  "settings.refFileAudioLanguages":
-    "从实际文件检测到的所有音频语言",
+  "settings.refFileAudioLanguages": "从实际文件检测到的所有音频语言",
   "settings.refFileAudioStreams":
     "每个音频流的详细信息；参见 input.file.audio_streams[]",
-  "settings.refFileSubtitleLanguages":
-    "从实际文件检测到的所有字幕语言",
-  "settings.refFileSubtitleCodecs":
-    "从实际文件检测到的所有字幕编码器",
+  "settings.refFileSubtitleLanguages": "从实际文件检测到的所有字幕语言",
+  "settings.refFileSubtitleCodecs": "从实际文件检测到的所有字幕编码器",
   "settings.refFileSubtitleStreams":
     "每个字幕流的详细信息；参见 input.file.subtitle_streams[]",
-  "settings.refFileHasMultiAudio":
-    "实际文件中存在多个音频流时为 true",
+  "settings.refFileHasMultiAudio": "实际文件中存在多个音频流时为 true",
   "settings.refFileDurationSeconds": "验证的时长（秒）",
-  "settings.refFileNumChapters":
-    "当容器公开章节时验证的章节数",
-  "settings.refFileContainerFormat":
-    "验证的容器格式，如 matroska 或 mp4",
+  "settings.refFileNumChapters": "当容器公开章节时验证的章节数",
+  "settings.refFileContainerFormat": "验证的容器格式，如 matroska 或 mp4",
   "settings.refSectionAudioStreams": "— 嵌套音频流条目",
   "settings.refAudioStreamCodec": "每个流的音频编码器",
+  "settings.refAudioStreamProfile": "每个流验证的音频配置文件或扩展标签",
   "settings.refAudioStreamChannels": "每个流的声道数",
   "settings.refAudioStreamLanguage": "每个流的语言代码",
   "settings.refAudioStreamBitrateKbps": "每个流的比特率（kbps）",
   "settings.refSectionSubtitleStreams": "— 嵌套字幕流条目",
   "settings.refSubtitleStreamCodec": "每个流的字幕编码器",
   "settings.refSubtitleStreamLanguage": "每个流的语言代码",
-  "settings.refSubtitleStreamName":
-    "每个流的字幕轨道标题（如有）",
-  "settings.refSubtitleStreamForced":
-    "字幕流标记为强制时为 true",
-  "settings.refSubtitleStreamDefault":
-    "字幕流标记为默认时为 true",
+  "settings.refSubtitleStreamName": "每个流的字幕轨道标题（如有）",
+  "settings.refSubtitleStreamForced": "字幕流标记为强制时为 true",
+  "settings.refSubtitleStreamDefault": "字幕流标记为默认时为 true",
   "settings.refSectionBuiltins": "自定义 Scryer 函数",
   "settings.refBuiltinsIntro":
     "除所有标准 OPA 内置函数外，这些辅助函数也可在您的 Rego 规则中使用。",
-  "settings.refFnBlockScore":
-    "返回 -10000，用于完全阻止版本的常量",
+  "settings.refFnBlockScore": "返回 -10000，用于完全阻止版本的常量",
   "settings.refFnSizeGib":
     "将字节转换为 GiB（例如 scryer.size_gib(input.release.size_bytes) > 50）",
+  "settings.refFnLangMatches":
+    '将 ISO 639-3 代码与别名进行匹配（例如 scryer.lang_matches("jpn", "ja") 为 true）',
+  "settings.refFnNormalizeSource": "规范化源名称（例如“webdl”变为“WEB-DL”）",
+  "settings.refFnNormalizeCodec": "标准化编解码器名称（例如“h264”变为“H.264”）",
   "settings.refSectionSandbox": "沙盒与限制",
   "settings.refSandboxIntro":
     "所有用户规则在具有以下限制的沙盒 Rego 评估器中运行：",
@@ -832,19 +926,78 @@ const zh_CN: LocaleDictionary = {
   "settings.refSectionOutput": "规则输出格式",
   "settings.refOutputIntro":
     "规则必须定义一个 score_entry 规则，返回字符串键（分数代码）到整数值（分数增量）的映射。正值提升版本，负值惩罚版本，scryer.block_score() 完全阻止版本。基于文件的规则在下载前自然无操作，因为 input.file 在下载后评估前为 null。",
-
+  "settings.subtitles": "字幕",
+  "settings.subtitlesSaved": "已保存字幕设置。",
+  "settings.sub.enabled": "启用字幕管理",
+  "settings.sub.credentials": "OpenSubtitles 凭证",
+  "settings.sub.username": "用户名",
+  "settings.sub.password": "密码",
+  "settings.sub.apiKey": "API 密钥",
+  "settings.sub.languages": "字幕语言",
+  "settings.sub.languagesHelp":
+    "ISO 639-2 代码，以逗号分隔（例如 eng、spa、fre、deu、jpn）",
+  "settings.sub.languagePickerAriaLabel": "选择字幕语言",
+  "settings.sub.languagePickerSelect": "选择语言...",
+  "settings.sub.languagePickerSearch": "搜索语言...",
+  "settings.sub.languagePickerEmpty": "未找到语言",
+  "settings.sub.languagePickerRemove": "删除{{language}}",
+  "settings.sub.hiPreference": "听力障碍人士",
+  "settings.sub.forcedOnly": "仅强制字幕",
+  "settings.sub.minScoreSeries": "剧集最低匹配分数",
+  "settings.sub.minScoreMovie": "电影最低匹配分数",
+  "settings.sub.minScoreHelp":
+    "低于此分数的字幕将被跳过。剧集需要更高的阈值，因为剧集级别的匹配必须精确。",
+  "settings.sub.searchInterval": "搜索间隔（小时）",
+  "settings.sub.autoDownload": "导入时自动下载",
+  "settings.sub.excludeAi": "排除 AI 翻译的字幕",
+  "settings.sub.excludeMachine": "排除机器翻译的字幕",
+  "settings.sub.syncEnabled": "自动校正字幕时间轴",
+  "settings.sub.syncEnabledHelp": "使用音频分析来修正已下载字幕的时间偏移。",
+  "settings.sub.syncThresholdSeries": "自动更正低于此分数（系列）",
+  "settings.sub.syncThresholdMovie": "自动更正低于此分数（电影）",
+  "settings.sub.syncThresholdHelp":
+    "低分字幕更有可能出现时间问题。高于此分数的字幕被认为是适时的。",
+  "settings.sub.syncMaxOffset": "最大校正（秒）",
+  "settings.sub.syncMaxOffsetHelp":
+    "跳过大于此值的时间变化，以避免损坏可能已经足够接近的字幕。",
   "settings.postProcessing": "后处理",
   "settings.postProcessingSaved": "后处理设置已保存。",
-  "settings.pp.intro":
-    "每个文件导入后运行自定义脚本。留空以禁用。工作目录设置为包含导入文件的文件夹。",
-  "settings.pp.movieScript": "电影脚本",
-  "settings.pp.seriesScript": "剧集脚本",
-  "settings.pp.animeScript": "动漫脚本",
-  "settings.pp.timeoutSecs": "脚本超时（秒）",
-  "settings.pp.envVarsHeading": "环境变量",
-  "settings.pp.envVarsDescription":
-    "以下变量可在脚本中使用：",
-
+  "settings.pp.title": "后处理脚本",
+  "settings.pp.description":
+    "导入媒体后脚本会自动运行。阻塞脚本按优先顺序执行。即发即忘脚本并行运行，不会延迟导入管道。",
+  "settings.pp.noScripts": "未配置后处理脚本。",
+  "settings.pp.name": "脚本名称",
+  "settings.pp.namePlaceholder": "例如通知丛",
+  "settings.pp.descriptionLabel": "描述",
+  "settings.pp.descriptionPlaceholder": "这个脚本有什么作用？",
+  "settings.pp.scriptType": "脚本类型",
+  "settings.pp.inline": "排队",
+  "settings.pp.filePath": "文件路径",
+  "settings.pp.inlineHelp": "输入要执行的 shell 命令。",
+  "settings.pp.filePathHelp": "服务器上可执行脚本的路径。",
+  "settings.pp.blocking": "阻塞",
+  "settings.pp.fireAndForget": "发射即忘",
+  "settings.pp.blockingHelp": "按优先顺序运行。下一个脚本等待此脚本完成。",
+  "settings.pp.fireAndForgetHelp": "在后台运行，不会阻止导入。",
+  "settings.pp.executionMode": "执行模式",
+  "settings.pp.timeout": "超时（秒）",
+  "settings.pp.priority": "优先级",
+  "settings.pp.priorityHelp": "数字较小的先运行。",
+  "settings.pp.facets": "适用于",
+  "settings.pp.debug": "捕获脚本输出",
+  "settings.pp.debugHelp":
+    "启用后，每次运行都会保存 stdout 和 stderr。对于故障排除很有用。",
+  "settings.pp.runHistory": "运行历史",
+  "settings.pp.noRuns": "尚未执行死刑。",
+  "settings.pp.outputNotCaptured":
+    "未捕获输出。对此脚本启用调试模式以查看输出。",
+  "settings.pp.envHeading": "环境变量",
+  "settings.pp.envDescription":
+    "脚本在 SCRYER_METADATA 环境变量中接收 JSON 有效负载，其中包含标题、剧集、版本和媒体信息元数据。 SCRYER_FILE_PATH 包含导入的文件路径。",
+  "settings.pp.created": "脚本已创建。",
+  "settings.pp.updated": "脚本已更新。",
+  "settings.pp.deleted": "脚本已删除。",
+  "settings.pp.toggled": "脚本{{state}}。",
   "settings.plugins": "插件",
   "settings.pluginsSection": "管理插件",
   "settings.pluginsRefresh": "刷新注册表",
@@ -855,8 +1008,7 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginsAvailable": "可用",
   "settings.pluginsNoInstalled": "没有已安装的插件。",
   "settings.pluginsNoAvailable": "没有匹配当前过滤条件的插件。",
-  "settings.pluginsNoPlugins":
-    "未找到插件。刷新注册表以检查可用插件。",
+  "settings.pluginsNoPlugins": "未找到插件。刷新注册表以检查可用插件。",
   "settings.pluginAllCategories": "所有分类",
   "settings.pluginCategoryIndexer": "索引器",
   "settings.pluginCategoryDownloadClient": "下载客户端",
@@ -874,14 +1026,11 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新：v{{version}}",
   "settings.pluginUpgrade": "升级到 v{{version}}",
-
   "status.pluginInstalled": "插件'{{name}}'已安装。",
   "status.pluginUninstalled": "插件'{{name}}'已卸载。",
-  "status.pluginUpgraded":
-    "插件'{{name}}'已升级到 v{{version}}。",
+  "status.pluginUpgraded": "插件'{{name}}'已升级到 v{{version}}。",
   "status.pluginToggled": "插件'{{name}}'已{{state}}。",
   "status.registryRefreshed": "插件注册表已刷新。",
-
   "form.namePlaceholder": "名称",
   "form.indexerNamePlaceholder": "我的 Newznab 索引器",
   "form.providerTypePlaceholder": "提供者类型",
@@ -897,33 +1046,27 @@ const zh_CN: LocaleDictionary = {
   "form.usernamePlaceholder": "用户名",
   "form.passwordPlaceholder": "密码",
   "form.newPasswordPlaceholder": "新密码",
-  "form.indexerValidation":
-    "名称、提供者类型和基础 URL 为必填项。",
+  "form.indexerValidation": "名称、提供者类型和基础 URL 为必填项。",
   "form.indexerApiKeyRequired": "此索引器需要 API 密钥。",
-  "form.indexerRateLimitValidation":
-    "速率限制值必须为数字。",
+  "form.indexerRateLimitValidation": "速率限制值必须为数字。",
   "form.rateLimitPlaceholder": "服务默认值",
   "form.enabled": "启用",
-
   "qualityProfile.existingProfiles": "现有质量配置",
   "qualityProfile.noProfilesFound": "未找到配置。",
   "qualityProfile.createProfile": "创建质量配置",
   "qualityProfile.defaultProfileName": "默认",
-  "qualityProfile.idGeneratedDescription":
-    "配置 ID 将从名称生成。",
+  "qualityProfile.idGeneratedDescription": "配置 ID 将从名称生成。",
   "qualityProfile.createProfileDescription":
     "配置名称可在创建后编辑；ID 自动生成且必须保持唯一。",
   "qualityProfile.editProfile": "编辑质量配置",
   "qualityProfile.profileNameLabel": "配置名称",
   "qualityProfile.qualityTiersAndArchival": "质量级别与存档质量",
   "qualityProfile.allowedQualityTiers": "允许的质量级别（已选）",
-  "qualityProfile.noQualityTiersSelected":
-    "未选择质量级别。",
+  "qualityProfile.noQualityTiersSelected": "未选择质量级别。",
   "qualityProfile.removeQualityTier": "移除 {{value}} 质量级别",
   "qualityProfile.addQualityTier": "将 {{value}} 添加到选择",
   "qualityProfile.availableQualityTiers": "可用质量级别",
-  "qualityProfile.allQualityTiersSelected":
-    "已选择所有已知质量级别。",
+  "qualityProfile.allQualityTiersSelected": "已选择所有已知质量级别。",
   "qualityProfile.archivalQuality": "存档质量",
   "qualityProfile.archivalQualityInfo":
     "用于长期保存的质量级别。Scryer 可能会在没有存档质量时先下载更高质量，然后在找到存档质量版本时替换。",
@@ -955,28 +1098,21 @@ const zh_CN: LocaleDictionary = {
   "qualityProfile.videoCodecBlocklist": "视频编码器阻止列表",
   "qualityProfile.audioCodecAllowlist": "音频编码器",
   "qualityProfile.audioCodecBlocklist": "音频编码器阻止列表",
-  "qualityProfile.sourceAllowlistDefault":
-    "默认情况下允许所有来源。",
+  "qualityProfile.sourceAllowlistDefault": "默认情况下允许所有来源。",
   "qualityProfile.sourceAllowlistInfo":
     "仅允许匹配所选来源值的版本（例如 WEB-DL、HDTV）。",
-  "qualityProfile.sourceBlocklistDefault":
-    "默认不应用来源阻止。",
+  "qualityProfile.sourceBlocklistDefault": "默认不应用来源阻止。",
   "qualityProfile.sourceBlocklistInfo":
     "即使匹配其他条件，也明确阻止来自这些来源的版本。",
-  "qualityProfile.videoCodecAllowlistDefault":
-    "默认情况下允许所有视频编码器。",
+  "qualityProfile.videoCodecAllowlistDefault": "默认情况下允许所有视频编码器。",
   "qualityProfile.videoCodecAllowlistInfo":
     "仅允许使用这些视频编码器编码的版本。",
-  "qualityProfile.videoCodecBlocklistDefault":
-    "默认没有阻止的视频编码器。",
+  "qualityProfile.videoCodecBlocklistDefault": "默认没有阻止的视频编码器。",
   "qualityProfile.videoCodecBlocklistInfo":
     "始终拒绝使用这些视频编码器的版本。",
-  "qualityProfile.audioCodecAllowlistDefault":
-    "默认情况下允许所有音频编码器。",
-  "qualityProfile.audioCodecAllowlistInfo":
-    "仅允许匹配音频编码器的版本。",
-  "qualityProfile.audioCodecBlocklistDefault":
-    "默认没有阻止的音频编码器。",
+  "qualityProfile.audioCodecAllowlistDefault": "默认情况下允许所有音频编码器。",
+  "qualityProfile.audioCodecAllowlistInfo": "仅允许匹配音频编码器的版本。",
+  "qualityProfile.audioCodecBlocklistDefault": "默认没有阻止的音频编码器。",
   "qualityProfile.audioCodecBlocklistInfo":
     "拒绝包含此处列出的阻止音频编码器的版本。",
   "qualityProfile.selectedItemsLabel": "已选",
@@ -1001,6 +1137,8 @@ const zh_CN: LocaleDictionary = {
   "qualityProfile.scoringPersona": "评分人格",
   "qualityProfile.scoringPersonaInfo":
     "优先考虑不同版本质量的预设评分权重。大多数用户推荐使用 Balanced。",
+  "qualityProfile.scoringPersonaMovedInfo":
+    "角色评分现在位于质量设置中，而不是保存在已保存的质量配置文件中。个人资料评分覆盖仍然适用于当前角色。",
   "qualityProfile.personaBalanced": "均衡",
   "qualityProfile.personaAudiophile": "发烧友",
   "qualityProfile.personaEfficient": "高效",
@@ -1012,8 +1150,7 @@ const zh_CN: LocaleDictionary = {
   "qualityProfile.overrideAllowX265Non4k": "非 4K 允许 x265",
   "qualityProfile.overrideAllowX265Non4kInfo":
     "允许 4K 以下分辨率的 x265/HEVC 编码版本。某些设备在较低分辨率下难以处理 x265。",
-  "qualityProfile.overrideBlockDvNoFallback":
-    "阻止无回退的 DV",
+  "qualityProfile.overrideBlockDvNoFallback": "阻止无回退的 DV",
   "qualityProfile.overrideBlockDvNoFallbackInfo":
     "阻止缺少 HDR10 回退层的 Dolby Vision 版本，这些版本在非 DV 显示器上可能显示绿色/紫色。",
   "qualityProfile.overridePreferCompact": "偏好紧凑编码",
@@ -1033,14 +1170,23 @@ const zh_CN: LocaleDictionary = {
   "qualityProfile.minScoreToGrabInfo":
     "仅抓取达到或超过此阈值分数的版本。留空表示无最低要求。",
   "qualityProfile.minScorePlaceholder": "无最低要求",
-
+  "qualityProfile.confirmDeleteTitle": "删除质量配置",
+  "qualityProfile.confirmDeleteDescription":
+    "您确定要删除质量配置文件“{{name}}”吗？此操作无法撤消。",
+  "qualityProfile.deleteDisabledInUse":
+    "该配置文件正在使用中。删除之前，将其从所有标题和类别默认值中删除。",
   "episode.details": "详情",
   "episode.search": "搜索",
+  "episode.blocklist": "阻止列表",
   "episode.overview": "概览",
   "episode.fileOnDisk": "磁盘文件",
+  "episode.airDate": "播出日期",
+  "episode.numberLabel": "集数",
   "episode.quality": "质量",
   "episode.missing": "缺失",
   "episode.noFile": "此集尚未下载。",
+  "episode.noBlockedReleases": "此剧集没有记录任何已阻止的发布资源。",
+  "episode.untitledRelease": "未命名发布",
   "episode.filler": "填充集",
   "episode.recap": "回顾集",
   "episode.absoluteNumber": "绝对 #{{number}}",
@@ -1049,7 +1195,6 @@ const zh_CN: LocaleDictionary = {
   "episode.ona": "ONA",
   "episode.alternate": "替代",
   "episode.multiAudio": "双音轨",
-
   "mediaFile.pendingScan": "待扫描",
   "mediaFile.scanFailed": "扫描失败",
   "mediaFile.score": "评分 {{score}}",
@@ -1059,7 +1204,29 @@ const zh_CN: LocaleDictionary = {
   "mediaFile.subtitles": "字幕",
   "mediaFile.subtitleCount": "{{count}} 个字幕",
   "mediaFile.delete": "删除文件",
-
+  "mediaFile.pathNotRecorded": "路径未记录",
+  "subtitle.search": "搜索字幕",
+  "subtitle.searching": "搜索中...",
+  "subtitle.download": "下载",
+  "subtitle.downloading": "正在下载...",
+  "subtitle.noResults": "没有找到字幕",
+  "subtitle.score": "得分：{{score}}",
+  "subtitle.hashMatch": "哈希匹配",
+  "subtitle.hearingImpaired": "听障",
+  "subtitle.forced": "强制",
+  "subtitle.aiTranslated": "AI 翻译",
+  "subtitle.machineTranslated": "机器翻译",
+  "subtitle.subtitles": "字幕",
+  "subtitle.embedded": "内嵌",
+  "subtitle.external": "外部",
+  "subtitle.manualSearch": "手动搜索",
+  "subtitle.blacklist": "黑名单",
+  "subtitle.blacklisted": "字幕已列入黑名单",
+  "subtitle.releaseInfo": "发布资源",
+  "subtitle.provider": "提供商",
+  "subtitle.language": "语言",
+  "subtitle.downloadCount": "下载",
+  "subtitle.selectLanguage": "选择语言",
   "anime.malLink": "MyAnimeList",
   "anime.anilistLink": "AniList",
   "anime.anidbLink": "AniDB",
@@ -1071,7 +1238,6 @@ const zh_CN: LocaleDictionary = {
   "anime.fillerSummary":
     "{{totalCount}} 集中有 {{fillerCount}} 集为填充集（{{percent}}%）",
   "anime.noFiller": "无填充集",
-
   "settings.fillerPolicyLabel": "填充集策略",
   "settings.fillerPolicyDownloadAll": "下载所有集数",
   "settings.fillerPolicySkipFiller": "跳过填充集",
@@ -1079,11 +1245,12 @@ const zh_CN: LocaleDictionary = {
   "settings.recapPolicyDownloadAll": "下载所有集数",
   "settings.recapPolicySkipRecap": "跳过回顾集",
   "settings.monitorSpecialsLabel": "监控特别篇和 OVA",
-  "settings.monitorSpecialsDescription":
-    "添加动漫时自动监控特别篇和 OVA",
+  "settings.monitorSpecialsDescription": "添加动漫时自动监控特别篇和 OVA",
   "settings.interSeasonMoviesLabel": "季间剧场版",
-  "settings.interSeasonMoviesDescription":
-    "为季间的正典剧场版创建叙事条目",
+  "settings.interSeasonMoviesDescription": "为季间的正典剧场版创建叙事条目",
+  "settings.monitorFillerMoviesLabel": "监控填充电影",
+  "settings.monitorFillerMoviesDescription":
+    "将分类为填充内容的电影包含在下载队列中",
   "settings.nfoWriteOnImportLabel": "导入时写入 NFO",
   "settings.nfoWriteOnImportDescription":
     "在导入的媒体旁写入 Kodi/Jellyfin/Emby 兼容的 .nfo 元数据文件",
@@ -1094,14 +1261,12 @@ const zh_CN: LocaleDictionary = {
   "settings.minAvailability.announced": "已公布",
   "settings.minAvailability.in_cinemas": "院线上映中",
   "settings.minAvailability.released": "已发行",
-
   "status.titleRequired": "标题为必填项。",
   "status.facetRequired": "类型为必填项。",
   "status.catalogAddSuccess": "已将 {{name}} 添加到目录。",
   "status.catalogAddSuccessAutoSearch":
     "已将 {{name}} 添加到目录。自动搜索已加入队列。",
-  "status.selectedTvdb":
-    "已选择 TVDB 匹配：{{name}}。请按搜索 NZBGeek。",
+  "status.selectedTvdb": "已选择 TVDB 匹配：{{name}}。请按搜索 NZBGeek。",
   "status.noReleaseSource": "版本不包含可加入队列的来源。",
   "status.queueSuccess": "已将 {{name}} 加入队列",
   "status.noSource": "{{name}} 没有可加入队列的来源",
@@ -1109,39 +1274,34 @@ const zh_CN: LocaleDictionary = {
   "status.queuedLatest": "已将 {{name}} 的最新版本加入队列",
   "status.queuedForTitle": "已将 {{name}} 的版本加入队列。",
   "status.nothingFound": "未找到结果。",
+  "status.searchingByQuery": "正在搜索“{{query}}”。",
+  "status.searchingNzb": "在 NZB 中搜索“{{query}}”{{category}}。",
+  "status.searchingTvdb": "正在 TVDB 元数据中搜索“{{query}}”。",
   "status.foundTvdb": "找到 {{count}} 个 TVDB 结果。",
   "status.foundNzb": "找到 {{count}} 个 NZBGeek 结果。",
   "status.renamePreviewGenerated":
     "重命名预览就绪：{{total}} 个文件中 {{renamable}} 个可重命名。",
   "status.renameApplied":
     "重命名应用完成：{{applied}} 个已应用，{{skipped}} 个已跳过，{{failed}} 个失败。",
-  "status.nzbFoundForTitle":
-    "为 {{name}}{{source}} 找到 {{count}} 个 NZB 项。",
+  "status.nzbFoundForTitle": "为 {{name}}{{source}} 找到 {{count}} 个 NZB 项。",
   "status.noNzbFound": "未找到 NZB 结果。",
   "status.deleteCatalogConfirm":
     "从目录中移除 {{name}}？使用下方选项可同时删除本地文件。",
   "status.titleDeleted": "{{name}} 已从目录中移除。",
-  "status.qualityProfileBlocked":
-    "已跳过：被质量配置阻止（{{reason}}）",
-  "status.tvdbRequiredImdb":
-    "所选电影匹配没有可用的 IMDb ID。",
-  "status.tvdbNoValidId":
-    "所选 TVDB 匹配没有有效的 TVDB ID。",
-  "status.tvdbNeedsTitle":
-    "所选 TVDB 匹配没有可搜索的标题。",
+  "status.titleMatchUpdated": "更新了 {{name}} 的匹配。",
+  "status.qualityProfileBlocked": "已跳过：被质量配置阻止（{{reason}}）",
+  "status.tvdbRequiredImdb": "所选电影匹配没有可用的 IMDb ID。",
+  "status.tvdbNoValidId": "所选 TVDB 匹配没有有效的 TVDB ID。",
+  "status.tvdbNeedsTitle": "所选 TVDB 匹配没有可搜索的标题。",
   "status.tvdbQueueTip": "选择一个 TVDB 匹配以继续。",
-  "status.nzbQueueTip":
-    "没有 NZB 结果。请尝试使用其他标题搜索。",
-  "status.languageChanged":
-    "界面语言已设置为 {{language}}。",
+  "status.nzbQueueTip": "没有 NZB 结果。请尝试使用其他标题搜索。",
+  "status.languageChanged": "界面语言已设置为 {{language}}。",
   "status.editingUser": "正在编辑用户 {{name}}",
   "status.editingIndexer": "正在编辑索引器 {{name}}",
-  "status.editingDownloadClient":
-    "正在编辑下载客户端 {{name}}",
+  "status.editingDownloadClient": "正在编辑下载客户端 {{name}}",
   "status.deletingUser": "删除用户 {{name}}？",
   "status.deletingIndexer": "删除索引器 {{name}}？",
-  "status.deletingDownloadClient":
-    "删除下载客户端 {{name}}？",
+  "status.deletingDownloadClient": "删除下载客户端 {{name}}？",
   "status.showingActivityStream": "显示活动流",
   "status.hidingActivityStream": "隐藏活动流",
   "status.userRequired": "用户名和密码为必填项。",
@@ -1152,20 +1312,16 @@ const zh_CN: LocaleDictionary = {
   "status.failedToUpdate": "更新项目失败。",
   "status.indexerCreated": "索引器已保存。",
   "status.indexerUpdated": "索引器已更新。",
-  "status.searchMonitoredQueued":
-    "已将 {{count}} 个监控项加入后台搜索队列。",
-  "status.searchMonitoredEmpty":
-    "当前没有符合搜索条件的监控项。",
+  "status.searchMonitoredQueued": "已将 {{count}} 个监控项加入后台搜索队列。",
+  "status.searchMonitoredEmpty": "当前没有符合搜索条件的监控项。",
   "status.titleScanSuccess":
     "扫描完成。已导入 {{imported}} 个，跳过 {{skipped}} 个，未匹配 {{unmatched}} 个。",
   "status.titleMonitoringEnabled": "标题监控已启用。",
   "status.titleMonitoringDisabled": "标题监控已禁用。",
   "status.indexerDeleted": "已删除索引器 {{name}}。",
   "status.testingIndexerConnection": "正在测试连接…",
-  "status.indexerConnectionTestPassed":
-    "索引器连接测试通过。",
-  "status.indexerConnectionTestFailed":
-    "索引器连接测试失败。",
+  "status.indexerConnectionTestPassed": "索引器连接测试通过。",
+  "status.indexerConnectionTestFailed": "索引器连接测试失败。",
   "status.ruleCreated": "规则已保存。",
   "status.ruleUpdated": "规则已更新。",
   "status.ruleDeleted": "已删除规则 {{name}}。",
@@ -1174,28 +1330,19 @@ const zh_CN: LocaleDictionary = {
   "status.deletingRule": "删除规则 {{name}}？",
   "status.downloadClientCreated": "下载客户端已保存。",
   "status.downloadClientUpdated": "下载客户端已更新。",
-  "status.downloadClientDeleted":
-    "已删除下载客户端 {{name}}。",
-  "status.downloadClientOrderSaved":
-    "下载客户端优先级顺序已保存。",
+  "status.downloadClientDeleted": "已删除下载客户端 {{name}}。",
+  "status.downloadClientOrderSaved": "下载客户端优先级顺序已保存。",
   "status.testingDownloadClient": "正在测试 {{client}} 连接…",
-  "status.downloadClientConnectionTestPassed":
-    "{{client}} 连接测试通过。",
-  "status.downloadClientConnectionTestFailed":
-    "{{client}} 连接测试失败。",
+  "status.downloadClientConnectionTestPassed": "{{client}} 连接测试通过。",
+  "status.downloadClientConnectionTestFailed": "{{client}} 连接测试失败。",
   "status.queueFailed": "队列操作失败。",
   "status.apiError": "请求失败",
   "status.generic": "{{message}}",
-
   "system.notReadyTemplate": "系统未就绪。",
   "system.recentEventsLabel": "近期事件样本",
-
   "user.created": "已创建用户 {{name}}。",
-  "user.entitlementsUpdated":
-    "已更新 {{name}} 的权限。",
-  "user.passwordUpdated":
-    "已更新 {{name}} 的密码。",
-
+  "user.entitlementsUpdated": "已更新 {{name}} 的权限。",
+  "user.passwordUpdated": "已更新 {{name}} 的密码。",
   "profile.accountInfo": "账户",
   "profile.changePassword": "修改密码",
   "profile.currentPassword": "当前密码",
@@ -1206,7 +1353,6 @@ const zh_CN: LocaleDictionary = {
   "profile.externalConnections": "外部连接",
   "profile.externalConnectionsPlaceholder":
     "Plex、通行密钥和其他外部连接将在此处提供。",
-
   "auth.loginTitle": "登录",
   "auth.usernamePlaceholder": "用户名",
   "auth.passwordPlaceholder": "密码",
@@ -1215,8 +1361,7 @@ const zh_CN: LocaleDictionary = {
   "auth.loginFailed": "用户名或密码无效。",
   "auth.logoutButton": "退出登录",
   "auth.sessionExpired": "会话已过期。请重新登录。",
-
-  "nav.wanted": "想要",
+  "nav.wanted": "待寻",
   "wanted.title": "想要的项目",
   "wanted.refreshing": "刷新中…",
   "wanted.filterStatus": "状态",
@@ -1235,14 +1380,25 @@ const zh_CN: LocaleDictionary = {
   "wanted.pause": "暂停",
   "wanted.resume": "恢复",
   "wanted.reset": "重置",
-  "wanted.searchTriggered":
-    "搜索已触发——轮询器将很快处理。",
+  "wanted.searchTriggered": "搜索已触发——轮询器将很快处理。",
+  "wanted.status.wanted": "想要",
+  "wanted.status.grabbed": "已抓取",
+  "wanted.status.completed": "已完成",
+  "wanted.status.paused": "已暂停",
+  "wanted.phase.primary": "主搜索",
+  "wanted.phase.preRelease": "预发布",
+  "wanted.phase.preAir": "预播出",
+  "wanted.phase.secondary": "次搜索",
   "wanted.loadingDecisions": "正在加载版本决定…",
   "wanted.noDecisions": "尚无版本决定记录。",
   "wanted.noItems": "未找到想要的项目。",
+  "wanted.context.movie": "电影通缉物品",
+  "wanted.context.episode": "剧集想要的物品",
+  "wanted.context.seasonEpisode": "季 {{seasonNumber}} 剧集想要的物品",
+  "wanted.context.franchiseMovie": "特许经营电影想要的物品",
   "wanted.prev": "上一页",
   "wanted.next": "下一页",
-  "wanted.decRelease": "版本",
+  "wanted.decRelease": "发布资源",
   "wanted.decDecision": "决定",
   "wanted.decScore": "分数",
   "wanted.decDelta": "差值",
@@ -1251,7 +1407,6 @@ const zh_CN: LocaleDictionary = {
   "wanted.tabWanted": "想要的项目",
   "wanted.tabCutoff": "未达阈值",
   "wanted.tabCalendar": "日历",
-
   "cutoff.title": "未达阈值",
   "cutoff.searchAll": "全部搜索",
   "cutoff.searching": "搜索中…",
@@ -1260,19 +1415,14 @@ const zh_CN: LocaleDictionary = {
   "cutoff.colFacet": "类型",
   "cutoff.colCurrentQuality": "当前质量",
   "cutoff.colTargetQuality": "目标质量",
-  "cutoff.noItems":
-    "所有监控标题均已满足质量配置阈值。",
+  "cutoff.noItems": "所有监控标题均已满足质量配置阈值。",
   "cutoff.totalCount": "{{count}} 个标题低于阈值",
   "cutoff.filterFacet": "类型",
   "cutoff.allFacets": "所有类型",
   "cutoff.searchTriggered": "已触发 {{name}} 的升级搜索",
-  "cutoff.bulkComplete":
-    "批量搜索完成：{{total}} 个中已搜索 {{searched}} 个",
-
+  "cutoff.bulkComplete": "批量搜索完成：{{total}} 个中已搜索 {{searched}} 个",
   "narrative.movie": "电影",
-  "narrative.canonMovieInstallment":
-    "正典剧场版。按叙事观看顺序排列。",
-
+  "narrative.canonMovieInstallment": "正典剧场版。按叙事观看顺序排列。",
   "settings.notifications": "通知",
   "settings.notificationsSection": "管理通知渠道和订阅",
   "settings.notificationChannels": "渠道",
@@ -1281,12 +1431,16 @@ const zh_CN: LocaleDictionary = {
   "settings.notificationChannelUpdate": "更新渠道",
   "settings.notificationSubscriptionCreate": "添加订阅",
   "settings.notificationSubscriptionUpdate": "更新订阅",
-  "settings.notificationNoChannels":
-    "未配置通知渠道。",
-  "settings.notificationNoSubscriptions":
-    "未配置通知订阅。",
+  "settings.notificationNoChannels": "未配置通知渠道。",
+  "settings.notificationNoSubscriptions": "未配置通知订阅。",
   "settings.notificationEventType": "事件类型",
   "settings.notificationScope": "范围",
+  "settings.notificationScope.global": "全局",
+  "settings.notificationScope.facet": "刻面",
+  "settings.notificationScope.title": "标题",
+  "settings.notificationScopeId": "范围 ID",
+  "settings.notificationScopeIdPlaceholderFacet": "电影、连续剧、动漫",
+  "settings.notificationScopeIdPlaceholderTitle": "标题 ID",
   "settings.notificationChannel": "渠道",
   "settings.notificationTest": "测试",
   "settings.notificationTesting": "测试中…",
@@ -1295,27 +1449,38 @@ const zh_CN: LocaleDictionary = {
   "settings.notificationProviderType": "提供者类型",
   "settings.notificationNoProviders":
     "未安装通知插件。请先在插件页面安装通知插件。",
-
+  "settings.notificationEvent.grab": "已抓取发布",
+  "settings.notificationEvent.download": "下载失败",
+  "settings.notificationEvent.upgrade": "升级进口",
+  "settings.notificationEvent.importComplete": "导入完成",
+  "settings.notificationEvent.importRejected": "进口受阻",
+  "settings.notificationEvent.rename": "文件已重命名",
+  "settings.notificationEvent.titleAdded": "标题已添加",
+  "settings.notificationEvent.titleDeleted": "标题已删除",
+  "settings.notificationEvent.fileDeleted": "文件已删除",
+  "settings.notificationEvent.fileDeletedForUpgrade": "升级时删除文件",
+  "settings.notificationEvent.postProcessingCompleted": "后处理完成",
+  "settings.notificationEvent.subtitleDownloaded": "字幕已下载",
+  "settings.notificationEvent.subtitleSearchFailed": "字幕搜索失败",
+  "settings.notificationEvent.healthIssue": "健康问题",
+  "settings.notificationEvent.healthRestored": "健康恢复",
+  "settings.notificationEvent.applicationUpdate": "应用程序更新",
+  "settings.notificationEvent.manualInteractionRequired": "需要手动交互",
+  "settings.notificationEvent.test": "测试通知",
   "status.notificationChannelCreated": "通知渠道已保存。",
   "status.notificationChannelUpdated": "通知渠道已更新。",
-  "status.notificationChannelDeleted":
-    "已删除通知渠道 {{name}}。",
+  "status.notificationChannelDeleted": "已删除通知渠道 {{name}}。",
   "status.notificationSubscriptionCreated": "通知订阅已保存。",
-  "status.notificationSubscriptionUpdated":
-    "通知订阅已更新。",
-  "status.notificationSubscriptionDeleted":
-    "通知订阅已删除。",
+  "status.notificationSubscriptionUpdated": "通知订阅已更新。",
+  "status.notificationSubscriptionDeleted": "通知订阅已删除。",
   "status.editingNotificationChannel": "正在编辑渠道 {{name}}",
-  "status.deletingNotificationChannel":
-    "删除通知渠道 {{name}}？",
+  "status.deletingNotificationChannel": "删除通知渠道 {{name}}？",
   "status.editingNotificationSubscription": "正在编辑订阅",
-  "status.deletingNotificationSubscription":
-    "删除此通知订阅？",
-
+  "status.deletingNotificationSubscription": "删除此通知订阅？",
   "wanted.tabPending": "待处理",
   "pending.title": "待处理版本",
   "pending.noItems": "没有待处理的版本。",
-  "pending.colRelease": "版本",
+  "pending.colRelease": "发布资源",
   "pending.colScore": "分数",
   "pending.colSize": "大小",
   "pending.colIndexer": "索引器",
@@ -1326,22 +1491,18 @@ const zh_CN: LocaleDictionary = {
   "pending.grabbed": "版本已抓取。",
   "pending.dismissed": "版本已取消。",
   "pending.timeRemaining": "剩余 {{time}}",
-
   "system.rssSync": "RSS 同步",
   "system.rssSyncTrigger": "运行 RSS 同步",
   "system.rssSyncing": "同步中…",
   "system.rssSyncComplete":
     "RSS 同步：获取 {{fetched}} 个，匹配 {{matched}} 个，抓取 {{grabbed}} 个，保留 {{held}} 个。",
-
   "setup.welcomeTitle": "欢迎使用 Scryer",
-  "setup.welcomeDescription":
-    "让我们配置基本设置以开始使用。",
+  "setup.welcomeDescription": "让我们配置基本设置以开始使用。",
   "setup.freshSetup": "从头开始设置",
   "setup.freshSetupDescription":
     "配置媒体路径，安装 qBittorrent 等提供者，逐步添加客户端和索引器。",
   "setup.importSetup": "从 Sonarr / Radarr 导入",
-  "setup.importSetupDescription":
-    "将现有配置导入 Scryer。",
+  "setup.importSetupDescription": "将现有配置导入 Scryer。",
   "setup.stepPersona": "人格",
   "setup.stepMediaPaths": "媒体路径",
   "setup.stepPlugins": "插件",
@@ -1351,8 +1512,7 @@ const zh_CN: LocaleDictionary = {
   "setup.stepConnect": "连接",
   "setup.stepReview": "审查",
   "setup.personaTitle": "质量偏好",
-  "setup.personaDescription":
-    "为每种内容类型选择质量目标和评分重点。",
+  "setup.personaDescription": "为每种内容类型选择质量目标和评分重点。",
   "setup.facetMovies": "电影",
   "setup.facetSeries": "剧集",
   "setup.facetAnime": "动漫",
@@ -1362,28 +1522,23 @@ const zh_CN: LocaleDictionary = {
     "适合大多数配置的合理默认值。良好质量而不追求 Remux。",
   "setup.personaAudiophileDesc":
     "最高保真度。优先 BluRay、Remux、无损音频、HDR 和大文件。",
-  "setup.personaEfficientDesc":
-    "每 GB 最佳质量。偏好 x265、WEB-DL、紧凑编码。",
+  "setup.personaEfficientDesc": "每 GB 最佳质量。偏好 x265、WEB-DL、紧凑编码。",
   "setup.personaCompatibleDesc":
     "在所有设备上播放。H.264 优于 H.265，避免 Dolby Vision，广泛设备支持。",
   "setup.pluginsTitle": "安装您要使用的提供者",
   "setup.pluginsDescription":
     "某些服务（如 qBittorrent）需要先作为插件添加，然后才能在 Scryer 中配置。",
   "setup.pluginsBuiltInTitle": "已内置",
-  "setup.pluginsBuiltInDescription":
-    "NZBGet 和 SABnzbd 无需额外安装即可配置。",
+  "setup.pluginsBuiltInDescription": "NZBGet 和 SABnzbd 无需额外安装即可配置。",
   "setup.pluginsAvailableHeading": "官方插件",
   "setup.pluginsAvailableHint":
     "安装您计划在此主机上使用的官方插件。稍后可在设置中更改。",
   "setup.pluginsInstalledHeading": "此主机已安装",
   "setup.pluginsAvailable": "可用插件",
-  "setup.pluginsNoneFound":
-    "未找到插件。请刷新注册表或使用内置提供者继续。",
-  "setup.pluginsNoneAvailable":
-    "注册表中的所有内容已安装。",
+  "setup.pluginsNoneFound": "未找到插件。请刷新注册表或使用内置提供者继续。",
+  "setup.pluginsNoneAvailable": "注册表中的所有内容已安装。",
   "setup.mediaPathsTitle": "您的媒体存储在哪里？",
-  "setup.mediaPathsDescription":
-    "设置 Scryer 整理电影和剧集的根文件夹。",
+  "setup.mediaPathsDescription": "设置 Scryer 整理电影和剧集的根文件夹。",
   "setup.moviesPath": "电影路径",
   "setup.seriesPath": "剧集路径",
   "setup.animePath": "动漫路径",
@@ -1393,11 +1548,9 @@ const zh_CN: LocaleDictionary = {
   "setup.downloadClientDescription":
     "Scryer 将下载发送到您首选的客户端。上一步安装的插件将显示在此处。",
   "setup.indexerTitle": "添加索引器",
-  "setup.indexerDescription":
-    "索引器提供 Scryer 搜索的版本数据库。",
+  "setup.indexerDescription": "索引器提供 Scryer 搜索的版本数据库。",
   "setup.summaryTitle": "一切就绪",
-  "setup.summaryDescription":
-    "以下是您的配置。稍后可在设置中更改。",
+  "setup.summaryDescription": "以下是您的配置。稍后可在设置中更改。",
   "setup.summaryPersona": "人格",
   "setup.summaryMediaPaths": "媒体路径",
   "setup.summaryDownloadClient": "下载客户端",
@@ -1406,6 +1559,8 @@ const zh_CN: LocaleDictionary = {
   "setup.next": "下一步",
   "setup.back": "上一步",
   "setup.finish": "完成设置",
+  "setup.importOnly": "仅导入",
+  "setup.importAndScan": "导入并扫描",
   "setup.connectionSuccess": "连接成功",
   "setup.connectionFailed": "连接失败",
   "setup.saved": "已保存",
@@ -1423,12 +1578,10 @@ const zh_CN: LocaleDictionary = {
   "setup.findApiKey": "查找您的 API 密钥",
   "setup.connectAndScan": "连接并扫描",
   "setup.connectError": "连接失败",
-  "setup.atLeastOneRequired":
-    "请至少输入 Sonarr 或 Radarr 之一。",
+  "setup.atLeastOneRequired": "请至少输入 Sonarr 或 Radarr 之一。",
   "setup.urlPlaceholder": "http://localhost:8989",
   "setup.reviewTitle": "审查并导入",
-  "setup.reviewDescription":
-    "选择要导入到 Scryer 的配置。",
+  "setup.reviewDescription": "选择要导入到 Scryer 的配置。",
   "setup.connected": "已连接",
   "setup.mediaPathsSection": "媒体路径",
   "setup.moviesPathFrom": "电影路径（来自 Radarr）",
@@ -1453,15 +1606,6 @@ const zh_CN: LocaleDictionary = {
   "setup.apiKeyPlaceholder": "粘贴 API 密钥…",
   "setup.apiKeyHelpLink": "在 SABnzbd > 配置 > 通用 中查找",
   "settings.runSetupWizard": "运行设置向导",
-
-  "settings.sub.minScoreSeries": "剧集最低匹配分数",
-  "settings.sub.minScoreMovie": "电影最低匹配分数",
-  "settings.sub.minScoreHelp":
-    "低于此分数的字幕将被跳过。剧集需要更高的阈值，因为剧集级别的匹配必须精确。",
-  "settings.sub.syncEnabled": "自动校正字幕时间轴",
-  "settings.sub.syncEnabledHelp":
-    "使用音频分析来修正已下载字幕的时间偏移。",
-
   "history.title": "历史记录",
   "history.empty": "暂无历史事件",
   "history.event": "事件",
@@ -1481,11 +1625,30 @@ const zh_CN: LocaleDictionary = {
   "history.downloadIgnored": "已忽略",
   "history.noMore": "没有更多事件",
   "history.loadMore": "加载更多",
-
   "convenience.title": "便捷规则",
   "convenience.requiredAudioLabel": "必需音频语言",
   "convenience.requiredAudioHelp":
     "不包含这些音频语言的发布将被屏蔽。会创建一条托管规则，可在设置 > 规则中查看。",
+  "settings.recycleBin": "回收站",
+  "settings.recycleBinSection": "管理回收的媒体文件",
+  "settings.recycleBinEmpty": "回收站是空的。",
+  "settings.recycleBinRestore": "恢复",
+  "settings.recycleBinDelete": "删除",
+  "settings.recycleBinEmptyAll": "清空回收站",
+  "settings.recycleBinEmptyConfirm":
+    "永久删除回收站中的所有 {count} 项目？此操作无法撤消。",
+  "settings.recycleBinDeleteConfirm": "永久删除该文件？此操作无法撤消。",
+  "status.recycleBinRestored": "文件恢复到{path}。",
+  "status.recycleBinDeleted": "文件永久删除。",
+  "status.recycleBinEmptied": "回收站已清空（{count} 项目已删除）。",
+  "settings.pp.animeScript": "动漫脚本",
+  "settings.pp.envVarsDescription": "以下变量可在脚本中使用：",
+  "settings.pp.envVarsHeading": "环境变量",
+  "settings.pp.intro":
+    "每个文件导入后运行自定义脚本。留空以禁用。工作目录设置为包含导入文件的文件夹。",
+  "settings.pp.movieScript": "电影脚本",
+  "settings.pp.seriesScript": "剧集脚本",
+  "settings.pp.timeoutSecs": "脚本超时（秒）",
 };
 
 export default zh_CN;
