@@ -526,6 +526,55 @@ async fn migration_bootstrap_rejects_unknown_or_newer_schema_history() {
 }
 
 #[tokio::test]
+async fn migration_bootstrap_accepts_known_legacy_prod_checksums() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_legacy_checksum_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let _ = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pool should open");
+
+    sqlx::query(
+        "UPDATE _sqlx_migrations
+            SET checksum = ?
+          WHERE version = ?",
+    )
+    .bind(hex_to_bytes(
+        "c9866f8bfd780ddb1213bd5101afbf9335a223755152c45a2aeb29998489ee6604105481161751e1213024c56116087a",
+    ))
+    .bind(51i64)
+    .execute(&pool)
+    .await
+    .expect("set legacy checksum for migration 51");
+
+    sqlx::query(
+        "UPDATE _sqlx_migrations
+            SET checksum = ?
+          WHERE version = ?",
+    )
+    .bind(hex_to_bytes(
+        "ffbf3f5a3b3207a257887c63bda5465216703964ac8544e7cf0fcd2064e155b269c0ff24a0b587de480c3e23264d038f",
+    ))
+    .bind(63i64)
+    .execute(&pool)
+    .await
+    .expect("set legacy checksum for migration 63");
+
+    let _ = SqliteServices::new_with_mode(db.to_string_lossy(), MigrationMode::ValidateOnly)
+        .await
+        .expect("legacy prod checksums should remain upgrade-compatible");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn specials_convergence_migration_repoints_legacy_season_zero_references() {
     let db = std::env::temp_dir().join(format!(
         "scryer_specials_convergence_{}.db",
@@ -697,6 +746,19 @@ async fn migrations_apply_then_validate_is_idempotent() {
         .expect("applied DB should pass validate mode");
 
     let _ = std::fs::remove_file(db);
+}
+
+fn hex_to_bytes(input: &str) -> Vec<u8> {
+    assert_eq!(input.len() % 2, 0, "hex input must have even length");
+
+    input
+        .as_bytes()
+        .chunks(2)
+        .map(|chunk| {
+            let pair = std::str::from_utf8(chunk).expect("hex bytes should be utf8");
+            u8::from_str_radix(pair, 16).expect("hex pair should decode")
+        })
+        .collect()
 }
 
 #[tokio::test]
