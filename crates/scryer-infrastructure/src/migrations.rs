@@ -32,8 +32,7 @@ fn allowed_legacy_checksums(key: &str) -> &'static [&'static str] {
 }
 
 fn checksum_matches_expected(key: &str, row_checksum: &str, expected_checksum: &str) -> bool {
-    row_checksum == expected_checksum
-        || allowed_legacy_checksums(key).contains(&row_checksum)
+    row_checksum == expected_checksum || allowed_legacy_checksums(key).contains(&row_checksum)
 }
 
 pub fn list_embedded_migrations() -> AppResult<Vec<EmbeddedMigrationDescriptor>> {
