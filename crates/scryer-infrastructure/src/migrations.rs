@@ -16,25 +16,6 @@ fn hex_checksum(raw: &[u8]) -> String {
         .collect::<String>()
 }
 
-fn allowed_legacy_checksums(key: &str) -> &'static [&'static str] {
-    match key {
-        // These historical migrations were edited after release only in comments/text,
-        // which changed sqlx's checksum without changing the effective schema/data move.
-        // Accept the previously shipped checksums so older production databases can upgrade.
-        "0051_post_processing_scripts" => &[
-            "c9866f8bfd780ddb1213bd5101afbf9335a223755152c45a2aeb29998489ee6604105481161751e1213024c56116087a",
-        ],
-        "0063_facet_tv_to_series" => &[
-            "ffbf3f5a3b3207a257887c63bda5465216703964ac8544e7cf0fcd2064e155b269c0ff24a0b587de480c3e23264d038f",
-        ],
-        _ => &[],
-    }
-}
-
-fn checksum_matches_expected(key: &str, row_checksum: &str, expected_checksum: &str) -> bool {
-    row_checksum == expected_checksum || allowed_legacy_checksums(key).contains(&row_checksum)
-}
-
 pub fn list_embedded_migrations() -> AppResult<Vec<EmbeddedMigrationDescriptor>> {
     let mut migrations = Vec::new();
 
@@ -166,7 +147,7 @@ async fn validate_known_migrations(pool: &SqlitePool) -> AppResult<()> {
             .find(|migration| migration.version == version)
         {
             let expected_checksum = hex_checksum(&migration.checksum);
-            if !checksum_matches_expected(&key, &row_checksum, &expected_checksum) {
+            if row_checksum != expected_checksum {
                 invalid_checksum.push(key);
             }
             continue;

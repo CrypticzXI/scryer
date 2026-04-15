@@ -4,7 +4,7 @@ CREATE TABLE post_processing_scripts (
     description TEXT DEFAULT '',
     script_type TEXT NOT NULL DEFAULT 'inline',   -- 'inline' | 'file'
     script_content TEXT NOT NULL DEFAULT '',       -- shell command (inline) or file path
-    applied_facets TEXT NOT NULL DEFAULT '[]',     -- JSON: ["movie","series","anime"]
+    applied_facets TEXT NOT NULL DEFAULT '[]',     -- JSON: ["movie","tv","anime"]
     execution_mode TEXT NOT NULL DEFAULT 'blocking', -- 'blocking' | 'fire_and_forget'
     timeout_secs INTEGER DEFAULT 300,
     priority INTEGER NOT NULL DEFAULT 0,          -- lower = runs first
