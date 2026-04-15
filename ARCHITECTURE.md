@@ -311,6 +311,8 @@ Startup, migrations, key bootstrap, backup and restore, job execution, health re
 
 They are part of the product and must remain legible in the architecture.
 
+Historical database migrations are immutable. Once a migration ships in any release, that file must never be edited in place, even for comments, examples, or formatting. If behavior, data shape, or documentation needs to change after release, add a new migration or update non-migration documentation instead.
+
 ### Plugin Lifecycle Is Part of the Core Product
 
 The plugin runtime is not enough by itself.
@@ -529,6 +531,7 @@ Persistence rules:
 - SQL is parameterized and explicit
 - dynamic SQL goes through `QueryBuilder`
 - migrations are embedded and applied at startup
+- embedded migration files are append-only and immutable after release; never edit a historical migration in place
 
 ### `scryer-interface`
 
