@@ -1,11 +1,12 @@
 use super::*;
 use crate::domain_events::new_download_queue_domain_event;
-use crate::event_views::{
-    apply_download_queue_projection_event, replay_download_queue_state, sorted_download_queue_items,
+use crate::event_views::{apply_download_queue_projection_event, sorted_download_queue_items};
+use crate::tracked_downloads::{
+    TrackedDownload, TrackedDownloadQueueMetadata, tracked_download_id,
 };
 use scryer_domain::{
     DomainEventFilter, DomainEventPayload, DomainEventType, DownloadQueueItemRemovedEventData,
-    DownloadQueueItemUpsertedEventData,
+    DownloadQueueItemUpsertedEventData, ImportType,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -22,6 +23,108 @@ fn extract_url_origin(raw: &str) -> Option<String> {
     }
 
     Some(format!("{scheme}://{authority}"))
+}
+
+fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+    item.import_status = Some(record.status);
+    item.imported_at = record
+        .finished_at
+        .clone()
+        .or(Some(record.updated_at.clone()));
+
+    if let Some(result_json) = record.result_json.as_deref()
+        && let Ok(result) = serde_json::from_str::<scryer_domain::ImportResult>(result_json)
+        && let Some(error_msg) = result.error_message
+    {
+        item.import_error_message = Some(error_msg.clone());
+        item.attention_reason = Some(error_msg);
+    }
+}
+
+fn apply_manual_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+    item.import_status = Some(record.status);
+    item.imported_at = record
+        .finished_at
+        .clone()
+        .or(Some(record.updated_at.clone()));
+
+    if let Some(result_json) = record.result_json.as_deref()
+        && let Ok(result) = serde_json::from_str::<crate::ManualImportExecutionResult>(result_json)
+    {
+        item.import_error_code = result.error_code;
+        item.import_error_message = result.error_message.clone();
+        if let Some(message) = result.error_message {
+            item.attention_reason = Some(message);
+        }
+    }
+}
+
+fn queue_item_import_state_eligible(item: &DownloadQueueItem) -> bool {
+    matches!(
+        item.state,
+        DownloadQueueState::Completed
+            | DownloadQueueState::Failed
+            | DownloadQueueState::ImportPending
+    )
+}
+
+async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [DownloadQueueItem]) {
+    let sources = items
+        .iter()
+        .filter(|item| queue_item_import_state_eligible(item))
+        .map(|item| {
+            (
+                item.client_type.clone(),
+                item.download_client_item_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if sources.is_empty() {
+        return;
+    }
+
+    let records = match app
+        .services
+        .workflow
+        .imports
+        .list_imports_for_sources(&sources)
+        .await
+    {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to batch-load import state for queue items");
+            return;
+        }
+    };
+
+    let mut manual_records = HashMap::new();
+    let mut fallback_records = HashMap::new();
+    for record in records {
+        let key = (record.source_system.clone(), record.source_ref.clone());
+        if record.import_type == ImportType::ManualImport {
+            manual_records.entry(key).or_insert(record);
+        } else {
+            fallback_records.entry(key).or_insert(record);
+        }
+    }
+
+    for item in items
+        .iter_mut()
+        .filter(|item| queue_item_import_state_eligible(item))
+    {
+        let key = (
+            item.client_type.clone(),
+            item.download_client_item_id.clone(),
+        );
+        if let Some(record) = manual_records.get(&key) {
+            apply_manual_import_record_to_queue_item(item, record);
+            continue;
+        }
+        if let Some(record) = fallback_records.get(&key) {
+            apply_import_record_to_queue_item(item, record);
+        }
+    }
 }
 
 fn derive_indexer_base_url_from_config_json(config_json: Option<&str>) -> Option<String> {
@@ -59,6 +162,27 @@ pub(crate) fn resolve_indexer_base_url(
 
 fn download_queue_projection_key(item: &DownloadQueueItem) -> String {
     format!("{}::{}", item.client_type, item.download_client_item_id)
+}
+
+fn apply_tracked_download_queue_metadata(
+    item: &mut DownloadQueueItem,
+    tracked: &TrackedDownloadQueueMetadata,
+) {
+    item.tracked_state = Some(tracked.state);
+    item.tracked_status = Some(tracked.status);
+    item.tracked_status_messages
+        .clone_from(&tracked.status_messages);
+    item.tracked_match_type = Some(tracked.match_type);
+    if item.title_id.is_none() && tracked.title_id.is_some() {
+        item.title_id.clone_from(&tracked.title_id);
+    }
+    if item.facet.is_none() && tracked.facet.is_some() {
+        item.facet.clone_from(&tracked.facet);
+    }
+}
+
+fn tracked_download_queue_snapshot(item: &TrackedDownload) -> TrackedDownloadQueueMetadata {
+    TrackedDownloadQueueMetadata::from(item)
 }
 
 pub async fn publish_download_queue_snapshot_events(
@@ -355,6 +479,7 @@ impl AppUseCase {
         &self,
         include_all_activity: bool,
         include_history_only: bool,
+        use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
         let mut enabled_clients = self
             .services
@@ -416,6 +541,30 @@ impl AppUseCase {
                 item.is_scryer_origin = true;
                 item.title_id = Some(submission.title_id);
                 item.facet = Some(submission.facet);
+            }
+        }
+
+        if use_tracked_runtime_snapshot
+            && let Some(handle) = self.runtime.tracked_download_handle.as_ref()
+        {
+            let tracked_ids = items
+                .iter()
+                .map(|item| tracked_download_id(&item.client_type, &item.download_client_item_id))
+                .collect::<Vec<_>>();
+
+            match handle.snapshot(tracked_ids).await {
+                Ok(snapshot) => {
+                    for item in &mut items {
+                        let tracked_id =
+                            tracked_download_id(&item.client_type, &item.download_client_item_id);
+                        if let Some(metadata) = snapshot.get(&tracked_id) {
+                            apply_tracked_download_queue_metadata(item, metadata);
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to load tracked download queue snapshot");
+                }
             }
         }
 
@@ -496,34 +645,7 @@ impl AppUseCase {
         }
 
         // Enrich completed/failed items with import status from the imports table
-        for item in &mut merged {
-            if !matches!(
-                item.state,
-                DownloadQueueState::Completed
-                    | DownloadQueueState::Failed
-                    | DownloadQueueState::ImportPending
-            ) {
-                continue;
-            }
-            if let Ok(Some(record)) = self
-                .services
-                .workflow
-                .imports
-                .get_import_by_source_ref(&item.client_type, &item.download_client_item_id)
-                .await
-            {
-                item.import_status = Some(record.status);
-                // Extract error_message from result_json for visibility
-                if let Some(ref result_json) = record.result_json
-                    && let Ok(result) =
-                        serde_json::from_str::<scryer_domain::ImportResult>(result_json)
-                    && let Some(ref error_msg) = result.error_message
-                {
-                    item.import_error_message = Some(error_msg.clone());
-                    item.attention_reason = Some(error_msg.clone());
-                }
-            }
-        }
+        enrich_queue_item_import_states(self, &mut merged).await;
 
         Ok(merged)
     }
@@ -535,7 +657,7 @@ impl AppUseCase {
         include_history_only: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
         require(actor, &Entitlement::ManageConfig)?;
-        self.collect_download_queue_items(include_all_activity, include_history_only)
+        self.collect_download_queue_items(include_all_activity, include_history_only, true)
             .await
     }
 
@@ -595,6 +717,28 @@ impl AppUseCase {
             }
         }
 
+        if let Some(handle) = self.runtime.tracked_download_handle.as_ref() {
+            let tracked_ids = items
+                .iter()
+                .map(|item| tracked_download_id(&item.client_type, &item.download_client_item_id))
+                .collect::<Vec<_>>();
+
+            match handle.snapshot(tracked_ids).await {
+                Ok(snapshot) => {
+                    for item in &mut items {
+                        let tracked_id =
+                            tracked_download_id(&item.client_type, &item.download_client_item_id);
+                        if let Some(metadata) = snapshot.get(&tracked_id) {
+                            apply_tracked_download_queue_metadata(item, metadata);
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to load tracked download history snapshot");
+                }
+            }
+        }
+
         let mut items = dedupe_download_queue_items(items)
             .into_iter()
             .filter(|item| is_history_download_state(&item.state))
@@ -630,37 +774,7 @@ impl AppUseCase {
             })
             .collect::<Vec<_>>();
 
-        for item in &mut items {
-            if !matches!(
-                item.state,
-                DownloadQueueState::Completed
-                    | DownloadQueueState::Failed
-                    | DownloadQueueState::ImportPending
-            ) {
-                continue;
-            }
-            if let Ok(Some(record)) = self
-                .services
-                .workflow
-                .imports
-                .get_import_by_source_ref(&item.client_type, &item.download_client_item_id)
-                .await
-            {
-                item.import_status = Some(record.status);
-                item.imported_at = record
-                    .finished_at
-                    .clone()
-                    .or(Some(record.updated_at.clone()));
-                if let Some(ref result_json) = record.result_json
-                    && let Ok(result) =
-                        serde_json::from_str::<scryer_domain::ImportResult>(result_json)
-                    && let Some(ref error_msg) = result.error_message
-                {
-                    item.import_error_message = Some(error_msg.clone());
-                    item.attention_reason = Some(error_msg.clone());
-                }
-            }
-        }
+        enrich_queue_item_import_states(self, &mut items).await;
 
         let has_more = items.len() > limit;
         items.truncate(limit);
@@ -687,7 +801,7 @@ impl AppUseCase {
             .map(|value| value.trim().to_lowercase())
             .filter(|value| !value.is_empty());
 
-        let items = self.collect_download_queue_items(true, false).await?;
+        let items = self.collect_download_queue_items(true, false, true).await?;
         Ok(items.into_iter().find(|item| {
             item.download_client_item_id == target_download_client_item_id
                 && normalized_client_type
@@ -703,14 +817,45 @@ impl AppUseCase {
         require(actor, &Entitlement::ManageConfig)?;
         let (tx, rx) = broadcast::channel(32);
         let app = self.clone();
+        let actor = actor.clone();
         tokio::spawn(async move {
             let event_types = vec![
                 DomainEventType::DownloadQueueItemUpserted,
                 DomainEventType::DownloadQueueItemRemoved,
             ];
             let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
-            let mut events = Vec::new();
-            let mut after_sequence = 0_i64;
+            let mut cursor = match app
+                .services
+                .events
+                .domain_events
+                .list(&DomainEventFilter {
+                    event_types: Some(event_types.clone()),
+                    limit: 1,
+                    ..DomainEventFilter::default()
+                })
+                .await
+            {
+                Ok(events) => events.first().map(|event| event.sequence).unwrap_or(0),
+                Err(error) => {
+                    tracing::warn!(
+                        "download queue subscription initial cursor load failed: {error}"
+                    );
+                    return;
+                }
+            };
+
+            let initial_items = match app.list_download_queue(&actor, true, false).await {
+                Ok(items) => items,
+                Err(error) => {
+                    tracing::warn!("download queue subscription initial load failed: {error}");
+                    return;
+                }
+            };
+
+            let mut items = initial_items
+                .into_iter()
+                .map(|item| (download_queue_projection_key(&item), item))
+                .collect::<HashMap<_, _>>();
 
             loop {
                 let batch = match app
@@ -719,36 +864,34 @@ impl AppUseCase {
                     .domain_events
                     .list(&DomainEventFilter {
                         event_types: Some(event_types.clone()),
-                        after_sequence: Some(after_sequence),
-                        limit: 500,
+                        after_sequence: Some(cursor),
+                        limit: 100,
                         ..DomainEventFilter::default()
                     })
                     .await
                 {
                     Ok(batch) => batch,
                     Err(error) => {
-                        tracing::warn!("download queue subscription initial load failed: {error}");
+                        tracing::warn!("download queue subscription catch-up failed: {error}");
                         return;
                     }
                 };
                 if batch.is_empty() {
                     break;
                 }
-                after_sequence = batch
-                    .last()
-                    .map(|event| event.sequence)
-                    .unwrap_or(after_sequence);
+
                 let count = batch.len();
-                events.extend(batch);
-                if count < 500 {
+                for event in batch {
+                    cursor = event.sequence;
+                    apply_download_queue_projection_event(&mut items, &event);
+                }
+                if count < 100 {
                     break;
                 }
             }
 
-            let mut cursor = events.last().map(|event| event.sequence).unwrap_or(0);
-            let mut items = replay_download_queue_state(&events);
             let initial = sorted_download_queue_items(&items);
-            if !initial.is_empty() && tx.send(initial).is_err() {
+            if tx.send(initial).is_err() {
                 return;
             }
 
@@ -805,8 +948,9 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: Option<String>,
-        client_type: Option<String>,
+        client_type: String,
         download_client_item_id: String,
+        files: Option<Vec<crate::ManualImportFileMapping>>,
     ) -> AppResult<String> {
         require(actor, &Entitlement::TriggerActions)?;
 
@@ -817,19 +961,42 @@ impl AppUseCase {
             ));
         }
 
-        let normalized_client_type = client_type
-            .map(|value| value.trim().to_lowercase())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "download_client".to_string());
+        let normalized_client_type = client_type.trim().to_lowercase();
+        if normalized_client_type.is_empty() {
+            return Err(AppError::Validation("client type is required".to_string()));
+        }
 
-        let payload_json = serde_json::json!({
-            "requested_by_user_id": actor.id.clone(),
-            "title_id": title_id.clone(),
-            "download_client_item_id": source_ref.clone(),
-            "client_type": normalized_client_type.clone(),
-            "requested_at": Utc::now().to_rfc3339(),
+        let files = files.unwrap_or_default();
+        if !files.is_empty() && title_id.is_none() {
+            return Err(AppError::Validation(
+                "title id is required for mapped manual import".to_string(),
+            ));
+        }
+
+        if let Some(existing) = self
+            .services
+            .workflow
+            .imports
+            .get_import_by_source_ref_and_type(
+                &normalized_client_type,
+                &source_ref,
+                ImportType::ManualImport,
+            )
+            .await?
+            && existing.status.is_active()
+        {
+            return Ok(existing.id);
+        }
+
+        let payload_json = serde_json::to_string(&crate::ManualImportRequestPayload {
+            requested_by_user_id: Some(actor.id.clone()),
+            title_id: title_id.clone(),
+            download_client_item_id: source_ref.clone(),
+            client_type: normalized_client_type.clone(),
+            files,
+            requested_at: Utc::now().to_rfc3339(),
         })
-        .to_string();
+        .map_err(|error| AppError::Repository(error.to_string()))?;
 
         let import_id = self
             .services
@@ -838,7 +1005,7 @@ impl AppUseCase {
             .queue_import_request(
                 normalized_client_type.clone(),
                 source_ref.clone(),
-                "manual".to_string(),
+                ImportType::ManualImport.as_str().to_string(),
                 payload_json,
             )
             .await?;
@@ -1264,9 +1431,15 @@ pub async fn start_download_queue_poller(
                 }
             }
             _ = interval.tick() => {
-                match app.list_download_queue(&actor, true, false).await {
+                match app.collect_download_queue_items(true, false, false).await {
                     Ok(mut items) => {
                         let mut seen_ids = HashSet::new();
+                        let completed_download_lookup =
+                            crate::completed_download_handler::load_completed_download_lookup_for_items(
+                                &app,
+                                &items,
+                            )
+                            .await;
 
                         // Phase 1: Refresh — track each item and run checks.
                         for item in items.iter() {
@@ -1296,7 +1469,12 @@ pub async fn start_download_queue_poller(
                             {
                                 let state_before = td.state;
                                 crate::failed_download_handler::check(td);
-                                crate::completed_download_handler::check(&app, td).await;
+                                crate::completed_download_handler::check_with_lookup(
+                                    &app,
+                                    td,
+                                    completed_download_lookup.as_ref(),
+                                )
+                                .await;
                                 if td.state != state_before {
                                     tracing::info!(
                                         id = %id,
@@ -1352,13 +1530,8 @@ pub async fn start_download_queue_poller(
                         for item in &mut items {
                             let id = tracked_download_id(&item.client_type, &item.download_client_item_id);
                             if let Some(td) = tracker.find(&id) {
-                                item.tracked_state = Some(td.state);
-                                item.tracked_status = Some(td.status);
-                                item.tracked_status_messages.clone_from(&td.status_messages);
-                                item.tracked_match_type = Some(td.match_type);
-                                if item.title_id.is_none() && td.title_id.is_some() {
-                                    item.title_id.clone_from(&td.title_id);
-                                }
+                                let metadata = tracked_download_queue_snapshot(td);
+                                apply_tracked_download_queue_metadata(item, &metadata);
                             }
                         }
 
@@ -1405,9 +1578,27 @@ async fn handle_tracked_download_command(
     command: crate::tracked_downloads::TrackedDownloadCommand,
 ) {
     use crate::tracked_downloads::TrackedDownloadCommand;
-    use scryer_domain::{TitleMatchType, TrackedDownloadState, TrackedDownloadStatus};
+    use scryer_domain::{TrackedDownloadState, TrackedDownloadStatus};
 
     match command {
+        TrackedDownloadCommand::MarkImported { id, reply } => {
+            let result = if let Some(td) = tracker.find_mut(&id) {
+                td.state = TrackedDownloadState::Imported;
+                td.status = TrackedDownloadStatus::Ok;
+                td.status_messages.clear();
+                tracker
+                    .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
+                    .await;
+                if let Some(td) = tracker.find(&id) {
+                    try_remove_from_client(app, td, TrackedDownloadState::Imported).await;
+                }
+                tracker.stop_tracking(&id);
+                Ok(())
+            } else {
+                Err(AppError::NotFound(format!("tracked download {id}")))
+            };
+            let _ = reply.send(result);
+        }
         TrackedDownloadCommand::Ignore { id, reply } => {
             let result = if let Some(td) = tracker.find_mut(&id) {
                 td.state = TrackedDownloadState::Ignored;
@@ -1449,6 +1640,7 @@ async fn handle_tracked_download_command(
                 td.status = TrackedDownloadStatus::Ok;
                 td.status_messages.clear();
                 td.import_attempted = false;
+                td.path_missing_since = None;
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!("tracked download {id}")))
@@ -1473,20 +1665,23 @@ async fn handle_tracked_download_command(
             };
 
             let result = if let Some(td) = tracker.find_mut(&id) {
-                td.title_id = Some(title.id.clone());
-                td.facet = Some(title.facet.as_str().to_string());
-                td.match_type = TitleMatchType::Submission;
-                td.status = TrackedDownloadStatus::Ok;
-                td.status_messages.clear();
-                td.import_attempted = false;
-                td.state = TrackedDownloadState::Downloading;
-                crate::failed_download_handler::check(td);
-                crate::completed_download_handler::check(app, td).await;
+                crate::tracked_downloads::assign_title_to_tracked_download(app, td, &title).await;
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!("tracked download {id}")))
             };
             let _ = reply.send(result);
+        }
+        TrackedDownloadCommand::Snapshot { ids, reply } => {
+            let snapshot = ids
+                .into_iter()
+                .filter_map(|id| {
+                    tracker
+                        .find(&id)
+                        .map(|tracked| (id, tracked_download_queue_snapshot(tracked)))
+                })
+                .collect();
+            let _ = reply.send(snapshot);
         }
     }
 }
@@ -1717,9 +1912,15 @@ fn queue_state_sort_rank(state: &DownloadQueueState) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::dedupe_download_queue_items;
+    use super::{
+        apply_tracked_download_queue_metadata, dedupe_download_queue_items,
+        tracked_download_queue_snapshot,
+    };
     use chrono::Utc;
-    use scryer_domain::{DownloadQueueItem, DownloadQueueState};
+    use scryer_domain::{
+        DownloadQueueItem, DownloadQueueState, TitleMatchType, TrackedDownloadState,
+        TrackedDownloadStatus,
+    };
 
     fn item(id: &str, state: DownloadQueueState) -> DownloadQueueItem {
         DownloadQueueItem {
@@ -1740,6 +1941,7 @@ mod tests {
             attention_reason: None,
             download_client_item_id: id.to_string(),
             import_status: None,
+            import_error_code: None,
             import_error_message: None,
             imported_at: None,
             is_scryer_origin: true,
@@ -1769,6 +1971,48 @@ mod tests {
         assert_eq!(
             deduped[0].import_error_message.as_deref(),
             Some("failed to import")
+        );
+    }
+
+    #[test]
+    fn apply_tracked_download_queue_metadata_backfills_missing_facet() {
+        let mut queue_item = item("job-1", DownloadQueueState::Completed);
+        let tracked = crate::tracked_downloads::TrackedDownload {
+            id: "nzbget:job-1".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "nzbget".to_string(),
+            client_item: queue_item.clone(),
+            state: TrackedDownloadState::ImportBlocked,
+            status: TrackedDownloadStatus::Warning,
+            status_messages: vec!["needs manual import".to_string()],
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::TitleParse,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+        };
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        apply_tracked_download_queue_metadata(&mut queue_item, &metadata);
+
+        assert_eq!(queue_item.title_id.as_deref(), Some("title-1"));
+        assert_eq!(queue_item.facet.as_deref(), Some("series"));
+        assert_eq!(
+            queue_item.tracked_state,
+            Some(TrackedDownloadState::ImportBlocked)
+        );
+        assert_eq!(
+            queue_item.tracked_status,
+            Some(TrackedDownloadStatus::Warning)
+        );
+        assert_eq!(
+            queue_item.tracked_match_type,
+            Some(TitleMatchType::TitleParse)
         );
     }
 }

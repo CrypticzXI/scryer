@@ -9,13 +9,18 @@ use scryer_application::{
     TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
     WantedItemRepository,
 };
-use scryer_domain::{BlocklistEntry, MediaFacet, TitleHistoryEventType, TitleHistoryRecord};
+use scryer_domain::{
+    BlocklistEntry, DomainEventType, MediaFacet, TitleHistoryEventType, TitleHistoryRecord,
+};
 
 use crate::SqliteServices;
 use crate::queries::housekeeping::{
-    delete_dispatched_event_outboxes_older_than_query, delete_domain_events_older_than_query,
-    delete_history_events_older_than_query, delete_media_files_by_ids_query,
-    delete_release_attempts_older_than_query, delete_release_decisions_older_than_query,
+    delete_dispatched_event_outboxes_older_than_query,
+    delete_domain_events_older_than_for_types_query,
+    delete_download_import_artifacts_older_than_query, delete_history_events_older_than_query,
+    delete_media_files_by_ids_query, delete_release_attempts_older_than_query,
+    delete_release_decisions_older_than_query, delete_rule_set_history_older_than_query,
+    delete_terminal_imports_older_than_query, delete_title_history_older_than_query,
     list_all_media_file_paths_query,
 };
 use crate::queries::library_scan_unmatched::{
@@ -353,8 +358,28 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
         delete_history_events_older_than_query(self.db.pool(), days).await
     }
 
-    async fn delete_domain_events_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_domain_events_older_than_query(self.db.pool(), days).await
+    async fn delete_domain_events_older_than_for_types(
+        &self,
+        days: i64,
+        event_types: &[DomainEventType],
+    ) -> AppResult<u32> {
+        delete_domain_events_older_than_for_types_query(self.db.pool(), days, event_types).await
+    }
+
+    async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32> {
+        delete_title_history_older_than_query(self.db.pool(), days).await
+    }
+
+    async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32> {
+        delete_download_import_artifacts_older_than_query(self.db.pool(), days).await
+    }
+
+    async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32> {
+        delete_terminal_imports_older_than_query(self.db.pool(), days).await
+    }
+
+    async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32> {
+        delete_rule_set_history_older_than_query(self.db.pool(), days).await
     }
 
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {

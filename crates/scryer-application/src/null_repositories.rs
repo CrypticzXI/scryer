@@ -2,7 +2,10 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use scryer_domain::ImportFileResult;
-use scryer_domain::{DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, NewDomainEvent};
+use scryer_domain::{
+    DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus, ImportType,
+    NewDomainEvent,
+};
 
 use scryer_domain::RuleSet;
 
@@ -51,6 +54,14 @@ impl ImportRepository for NullImportRepository {
     async fn get_import_by_source_ref(&self, _: &str, _: &str) -> AppResult<Option<ImportRecord>> {
         Ok(None)
     }
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        _: &str,
+        _: &str,
+        _: ImportType,
+    ) -> AppResult<Option<ImportRecord>> {
+        Ok(None)
+    }
     async fn update_import_status(
         &self,
         _: &str,
@@ -62,7 +73,23 @@ impl ImportRepository for NullImportRepository {
     async fn recover_stale_processing_imports(&self, _stale_seconds: i64) -> AppResult<u64> {
         Ok(0)
     }
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        _: ImportType,
+        _: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
     async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
+        Ok(vec![])
+    }
+    async fn list_pending_imports_for_type(&self, _: ImportType) -> AppResult<Vec<ImportRecord>> {
+        Ok(vec![])
+    }
+    async fn list_imports_for_sources(
+        &self,
+        _: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
     async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
@@ -697,7 +724,23 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     async fn delete_history_events_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
-    async fn delete_domain_events_older_than(&self, _days: i64) -> AppResult<u32> {
+    async fn delete_domain_events_older_than_for_types(
+        &self,
+        _days: i64,
+        _event_types: &[DomainEventType],
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_title_history_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_download_import_artifacts_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_terminal_imports_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_rule_set_history_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
@@ -1126,6 +1169,13 @@ pub mod test_nulls {
     #[async_trait]
     impl TitleRepository for NullTitleRepository {
         async fn list(&self, _: Option<MediaFacet>, _: Option<String>) -> AppResult<Vec<Title>> {
+            Ok(vec![])
+        }
+        async fn list_for_matching(
+            &self,
+            _: Option<MediaFacet>,
+            _: Option<String>,
+        ) -> AppResult<Vec<Title>> {
             Ok(vec![])
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<Title>> {

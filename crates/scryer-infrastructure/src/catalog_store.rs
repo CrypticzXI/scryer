@@ -32,6 +32,14 @@ impl TitleRepository for SqliteCatalogStore {
         title::list_titles_query(&self.pool, facet, query).await
     }
 
+    async fn list_for_matching(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        title::list_titles_for_matching_query(&self.pool, facet, query).await
+    }
+
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
         title::get_title_by_id_query(&self.pool, id).await
     }

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Cursor;
 
 use async_trait::async_trait;
@@ -11,7 +10,6 @@ use scryer_application::{
     AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
 };
-use scryer_domain::Title;
 use sqlx::{Row, SqlitePool};
 use tracing::warn;
 use uuid::Uuid;
@@ -240,48 +238,41 @@ impl TitleImageProcessor for SqliteTitleImageProcessor {
     }
 }
 
-pub(crate) async fn apply_local_poster_urls(
-    pool: &SqlitePool,
-    titles: &mut [Title],
-) -> AppResult<()> {
-    apply_local_image_urls(pool, TitleImageKind::Poster, "w500", titles).await
+fn preferred_variant_for_kind(kind: TitleImageKind) -> &'static str {
+    match kind {
+        TitleImageKind::Poster => "w500",
+        TitleImageKind::Banner | TitleImageKind::Fanart => "master",
+    }
 }
 
-pub(crate) async fn apply_local_image_urls(
-    pool: &SqlitePool,
+pub(crate) fn materialize_local_title_image_path(
+    title_id: &str,
     kind: TitleImageKind,
-    preferred_variant: &str,
-    titles: &mut [Title],
-) -> AppResult<()> {
-    if titles.is_empty() {
-        return Ok(());
-    }
-
-    let title_ids = titles
+    storage_mode: TitleImageStorageMode,
+    master_sha256: &str,
+    variants: &[TitleImageVariantRecord],
+) -> String {
+    let preferred_variant = preferred_variant_for_kind(kind);
+    let (variant_key, version_hash) = if storage_mode == TitleImageStorageMode::Original {
+        ("original", master_sha256)
+    } else if let Some(variant) = variants
         .iter()
-        .map(|title| title.id.clone())
-        .collect::<Vec<_>>();
-    let local_urls = load_local_image_url_map(pool, kind, preferred_variant, &title_ids).await?;
-    for title in titles {
-        if let Some(url) = local_urls.get(&title.id) {
-            match kind {
-                TitleImageKind::Poster => {
-                    title.poster_source_url = title.poster_url.take();
-                    title.poster_url = Some(url.clone());
-                }
-                TitleImageKind::Banner => {
-                    title.banner_source_url = title.banner_url.take();
-                    title.banner_url = Some(url.clone());
-                }
-                TitleImageKind::Fanart => {
-                    title.background_source_url = title.background_url.take();
-                    title.background_url = Some(url.clone());
-                }
-            }
-        }
-    }
+        .find(|variant| variant.variant_key == preferred_variant)
+    {
+        (preferred_variant, variant.sha256.as_str())
+    } else {
+        ("original", master_sha256)
+    };
 
-    Ok(())
+    synthesize_local_title_image_url("", title_id, kind, variant_key, version_hash)
+}
+
+pub(crate) fn prefix_local_title_image_path(base_path: &str, local_path: &str) -> String {
+    if base_path.is_empty() {
+        local_path.to_string()
+    } else {
+        format!("{base_path}{local_path}")
+    }
 }
 
 pub(crate) async fn list_titles_requiring_image_refresh_query(
@@ -460,6 +451,26 @@ pub(crate) async fn replace_title_image_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
     }
 
+    let local_path = materialize_local_title_image_path(
+        title_id,
+        replacement.kind,
+        replacement.storage_mode,
+        &replacement.master_sha256,
+        &replacement.variants,
+    );
+    let local_path_column = match replacement.kind {
+        TitleImageKind::Poster => "poster_local_path",
+        TitleImageKind::Banner => "banner_local_path",
+        TitleImageKind::Fanart => "background_local_path",
+    };
+    let update_title_sql = format!("UPDATE titles SET {local_path_column} = ? WHERE id = ?");
+    sqlx::query(&update_title_sql)
+        .bind(&local_path)
+        .bind(title_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
     tx.commit()
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -510,66 +521,6 @@ pub(crate) async fn get_title_image_blob_query(
         etag: row.get("sha256"),
         bytes: row.get("bytes"),
     }))
-}
-
-async fn load_local_image_url_map(
-    pool: &SqlitePool,
-    kind: TitleImageKind,
-    preferred_variant: &str,
-    title_ids: &[String],
-) -> AppResult<HashMap<String, String>> {
-    if title_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let placeholders = title_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT ti.title_id, ti.storage_mode, ti.master_sha256, pv.sha256 AS pv_sha256
-         FROM title_images ti
-         LEFT JOIN title_image_variants pv
-           ON pv.title_image_id = ti.id
-          AND pv.variant_key = '{preferred_variant}'
-         WHERE ti.kind = '{kind_str}' AND ti.title_id IN ({placeholders})",
-        kind_str = kind.as_str(),
-    );
-
-    let mut query = sqlx::query(&sql);
-    for title_id in title_ids {
-        query = query.bind(title_id);
-    }
-
-    let rows = query
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let base_path = normalized_base_path_from_env();
-    let mut out = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let title_id: String = row.get("title_id");
-        let storage_mode = row.get::<String, _>("storage_mode");
-        let master_sha256: String = row.get("master_sha256");
-        let pv_sha256: Option<String> = row.try_get("pv_sha256").unwrap_or(None);
-        let (variant, version_hash) = if storage_mode == TitleImageStorageMode::Original.as_str() {
-            ("original", master_sha256)
-        } else if let Some(pv_sha256) = pv_sha256 {
-            (preferred_variant, pv_sha256)
-        } else {
-            warn!(
-                title_id = %title_id,
-                kind = kind.as_str(),
-                storage_mode,
-                "image cache missing preferred variant; serving original master until refresh repairs it"
-            );
-            ("original", master_sha256)
-        };
-        out.insert(
-            title_id.clone(),
-            synthesize_local_title_image_url(&base_path, &title_id, kind, variant, &version_hash),
-        );
-    }
-
-    Ok(out)
 }
 
 fn build_image_variants(
@@ -707,7 +658,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hash.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn normalized_base_path_from_env() -> String {
+pub(crate) fn normalized_base_path_from_env() -> String {
     let Some(raw) = std::env::var("SCRYER_BASE_PATH").ok() else {
         return String::new();
     };
@@ -782,6 +733,7 @@ impl SupportedImageFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn test_image() -> RgbaImage {
         let mut image = RgbaImage::new(800, 1200);

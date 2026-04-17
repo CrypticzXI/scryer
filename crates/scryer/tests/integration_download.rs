@@ -545,6 +545,43 @@ async fn nzbget_list_completed_downloads() {
     assert!(items[0].dest_dir.contains("Completed"));
 }
 
+#[tokio::test]
+async fn nzbget_list_completed_downloads_includes_non_scryer_entries() {
+    let ctx = TestContext::new().await;
+    let now = chrono::Utc::now().timestamp();
+    let history = load_fixture("nzbget/history.json")
+        .replace("1706832000", &now.to_string())
+        .replace("1706745600", &(now - 3600).to_string())
+        .replace(
+            r#"        {"Name": "*scryer_title_id", "Value": "test-title-id"},"#,
+            "",
+        );
+
+    Mock::given(method("POST"))
+        .and(path("/jsonrpc"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(history))
+        .mount(&ctx.nzbget_server)
+        .await;
+
+    let items = new_nzbget_client(&ctx.nzbget_server.uri())
+        .list_completed_downloads()
+        .await
+        .expect("list_completed_downloads should succeed");
+
+    assert_eq!(
+        items.len(),
+        1,
+        "completed NZBGet entries should not require Scryer metadata"
+    );
+    assert_eq!(items[0].download_client_item_id, "999");
+    assert!(
+        !items[0]
+            .parameters
+            .iter()
+            .any(|(key, _)| key == "*scryer_title_id")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // submit_to_download_queue
 // ---------------------------------------------------------------------------

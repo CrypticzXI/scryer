@@ -421,6 +421,10 @@ fn graphql_async_mutation_status(request: &mut async_graphql::Request) -> Option
         return Some(StatusCode::ACCEPTED);
     }
 
+    if field_names.contains(&"queueManualImport") {
+        return Some(StatusCode::ACCEPTED);
+    }
+
     if field_names.contains(&"scanLibrary") {
         return Some(StatusCode::CREATED);
     }
@@ -534,6 +538,23 @@ mod tests {
     fn rehydrate_all_metadata_mutation_returns_accepted_status() {
         let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
             "mutation RehydrateAllMetadata { rehydrateAllMetadata(language: \"jpn\") }",
+        ));
+
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn queue_manual_import_mutation_returns_accepted_status() {
+        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
+            r#"mutation QueueManualImport {
+                queueManualImport(input: {
+                    titleId: "title-1"
+                    clientType: "nzbget"
+                    downloadClientItemId: "download-1"
+                }) {
+                    importId
+                }
+            }"#,
         ));
 
         assert_eq!(graphql_response_status(&mut batch), StatusCode::ACCEPTED);

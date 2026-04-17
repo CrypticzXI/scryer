@@ -92,13 +92,23 @@ impl DownloadMutations {
                 input.title_id,
                 client_type.clone(),
                 download_client_item_id.clone(),
+                input.files.map(|files| {
+                    files
+                        .into_iter()
+                        .map(|file| scryer_application::ManualImportFileMapping {
+                            file_path: file.file_path,
+                            episode_id: file.episode_id,
+                            quality: file.quality,
+                        })
+                        .collect()
+                }),
             )
             .await
             .map_err(to_gql_error)?;
         let queue_item = queue_item_payload_for_action(
             &app,
             &actor,
-            client_type.as_deref(),
+            Some(client_type.as_str()),
             &download_client_item_id,
         )
         .await?;
@@ -106,44 +116,11 @@ impl DownloadMutations {
         Ok(download_queue_action_payload(
             DownloadQueueActionKindValue::QueuedManualImport,
             download_client_item_id,
-            client_type,
+            Some(client_type),
             Some(import_id),
             false,
             queue_item,
         ))
-    }
-
-    async fn trigger_import(
-        &self,
-        ctx: &Context<'_>,
-        input: TriggerImportInput,
-    ) -> GqlResult<ImportResultPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-
-        let completed = app
-            .get_completed_download(&actor, &input.download_client_item_id)
-            .await
-            .map_err(to_gql_error)?;
-
-        let import_result = app
-            .trigger_manual_import(&actor, &completed, input.title_id.as_deref())
-            .await
-            .map_err(to_gql_error)?;
-
-        Ok(ImportResultPayload {
-            import_id: import_result.import_id,
-            decision: ImportDecisionValue::from_domain(import_result.decision),
-            skip_reason: import_result
-                .skip_reason
-                .map(ImportSkipReasonValue::from_domain),
-            title_id: import_result.title_id,
-            source_path: import_result.source_path,
-            dest_path: import_result.dest_path,
-            file_size_bytes: import_result.file_size_bytes.map(|v| v.to_string()),
-            link_type: import_result.link_type.map(|s| s.as_str().to_string()),
-            error_message: import_result.error_message,
-        })
     }
 
     /// Retry a previously failed import, optionally with an archive password.
@@ -308,41 +285,6 @@ impl DownloadMutations {
             false,
             queue_item,
         ))
-    }
-
-    async fn execute_manual_import(
-        &self,
-        ctx: &Context<'_>,
-        input: ExecuteManualImportInput,
-    ) -> GqlResult<Vec<ManualImportFileResultPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-
-        let mappings = input
-            .files
-            .into_iter()
-            .map(|f| scryer_application::ManualImportFileMapping {
-                file_path: f.file_path,
-                episode_id: f.episode_id,
-                quality: f.quality,
-            })
-            .collect();
-
-        let results =
-            scryer_application::execute_manual_import(&app, &actor, &input.title_id, mappings)
-                .await
-                .map_err(to_gql_error)?;
-
-        Ok(results
-            .into_iter()
-            .map(|r| ManualImportFileResultPayload {
-                file_path: r.file_path,
-                episode_id: r.episode_id,
-                success: r.success,
-                dest_path: r.dest_path,
-                error_message: r.error_message,
-            })
-            .collect())
     }
 
     async fn pause_download(

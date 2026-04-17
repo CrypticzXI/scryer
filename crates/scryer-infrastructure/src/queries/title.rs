@@ -11,13 +11,19 @@ use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
 
 use super::common::parse_utc_datetime;
-use crate::title_images::{apply_local_image_urls, apply_local_poster_urls};
-use scryer_application::TitleImageKind;
+use crate::title_images::{normalized_base_path_from_env, prefix_local_title_image_path};
 
 const TITLE_COLUMNS: &str = "id, name, facet, monitored, tags, external_ids, created_by, created_at, \
-    year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id, runtime_minutes, genres, \
+    year, overview, poster_url, poster_local_path, banner_url, banner_local_path, background_url, background_local_path, \
+    sort_title, slug, imdb_id, runtime_minutes, genres, \
     content_status, language, first_aired, network, studio, country, aliases, \
     metadata_language, metadata_fetched_at, min_availability, digital_release_date, folder_path, tagged_aliases_json";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TitleReadMode {
+    Presentation,
+    Matching,
+}
 
 fn parse_facet(raw: &str) -> MediaFacet {
     MediaFacet::parse(raw).unwrap_or_default()
@@ -27,6 +33,23 @@ pub(crate) async fn list_titles_query(
     pool: &SqlitePool,
     facet: Option<MediaFacet>,
     query: Option<String>,
+) -> AppResult<Vec<Title>> {
+    list_titles_query_with_mode(pool, facet, query, TitleReadMode::Presentation).await
+}
+
+pub(crate) async fn list_titles_for_matching_query(
+    pool: &SqlitePool,
+    facet: Option<MediaFacet>,
+    query: Option<String>,
+) -> AppResult<Vec<Title>> {
+    list_titles_query_with_mode(pool, facet, query, TitleReadMode::Matching).await
+}
+
+async fn list_titles_query_with_mode(
+    pool: &SqlitePool,
+    facet: Option<MediaFacet>,
+    query: Option<String>,
+    mode: TitleReadMode,
 ) -> AppResult<Vec<Title>> {
     let mut sql = format!("SELECT {} FROM titles", TITLE_COLUMNS);
 
@@ -58,13 +81,11 @@ pub(crate) async fn list_titles_query(
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
+    let base_path = normalized_base_path_from_env();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(row_to_title(&row)?);
+        out.push(row_to_title(&row, mode, &base_path)?);
     }
-    apply_local_poster_urls(pool, &mut out).await?;
-    apply_local_image_urls(pool, TitleImageKind::Banner, "master", &mut out).await?;
-    apply_local_image_urls(pool, TitleImageKind::Fanart, "master", &mut out).await?;
     Ok(out)
 }
 
@@ -87,13 +108,11 @@ pub(crate) async fn get_title_by_id_query(pool: &SqlitePool, id: &str) -> AppRes
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
-        Some(row) => {
-            let mut titles = vec![row_to_title(&row)?];
-            apply_local_poster_urls(pool, &mut titles).await?;
-            apply_local_image_urls(pool, TitleImageKind::Banner, "master", &mut titles).await?;
-            apply_local_image_urls(pool, TitleImageKind::Fanart, "master", &mut titles).await?;
-            Ok(titles.into_iter().next())
-        }
+        Some(row) => Ok(Some(row_to_title(
+            &row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
         None => Ok(None),
     }
 }
@@ -124,18 +143,20 @@ pub(crate) async fn get_title_by_external_id_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
-        Some(row) => {
-            let mut titles = vec![row_to_title(&row)?];
-            apply_local_poster_urls(pool, &mut titles).await?;
-            apply_local_image_urls(pool, TitleImageKind::Banner, "master", &mut titles).await?;
-            apply_local_image_urls(pool, TitleImageKind::Fanart, "master", &mut titles).await?;
-            Ok(titles.into_iter().next())
-        }
+        Some(row) => Ok(Some(row_to_title(
+            &row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
         None => Ok(None),
     }
 }
 
-fn row_to_title(row: &sqlx::sqlite::SqliteRow) -> AppResult<Title> {
+fn row_to_title(
+    row: &sqlx::sqlite::SqliteRow,
+    mode: TitleReadMode,
+    base_path: &str,
+) -> AppResult<Title> {
     let id: String = row
         .try_get("id")
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -170,9 +191,13 @@ fn row_to_title(row: &sqlx::sqlite::SqliteRow) -> AppResult<Title> {
     // metadata fields
     let year: Option<i32> = row.try_get("year").unwrap_or(None);
     let overview: Option<String> = row.try_get("overview").unwrap_or(None);
-    let poster_url: Option<String> = row.try_get("poster_url").unwrap_or(None);
-    let banner_url: Option<String> = row.try_get("banner_url").unwrap_or(None);
-    let background_url: Option<String> = row.try_get("background_url").unwrap_or(None);
+    let poster_url_source: Option<String> = row.try_get("poster_url").unwrap_or(None);
+    let poster_local_path: Option<String> = row.try_get("poster_local_path").unwrap_or(None);
+    let banner_url_source: Option<String> = row.try_get("banner_url").unwrap_or(None);
+    let banner_local_path: Option<String> = row.try_get("banner_local_path").unwrap_or(None);
+    let background_url_source: Option<String> = row.try_get("background_url").unwrap_or(None);
+    let background_local_path: Option<String> =
+        row.try_get("background_local_path").unwrap_or(None);
     let sort_title: Option<String> = row.try_get("sort_title").unwrap_or(None);
     let slug: Option<String> = row.try_get("slug").unwrap_or(None);
     let imdb_id: Option<String> = row.try_get("imdb_id").unwrap_or(None);
@@ -201,7 +226,7 @@ fn row_to_title(row: &sqlx::sqlite::SqliteRow) -> AppResult<Title> {
         None => None,
     };
 
-    Ok(Title {
+    let mut title = Title {
         id,
         name,
         facet: parse_facet(&facet),
@@ -212,11 +237,11 @@ fn row_to_title(row: &sqlx::sqlite::SqliteRow) -> AppResult<Title> {
         created_at,
         year,
         overview,
-        poster_url,
+        poster_url: poster_url_source,
         poster_source_url: None,
-        banner_url,
+        banner_url: banner_url_source,
         banner_source_url: None,
-        background_url,
+        background_url: background_url_source,
         background_source_url: None,
         sort_title,
         slug,
@@ -241,7 +266,24 @@ fn row_to_title(row: &sqlx::sqlite::SqliteRow) -> AppResult<Title> {
         min_availability,
         digital_release_date,
         folder_path,
-    })
+    };
+
+    if mode == TitleReadMode::Presentation {
+        if let Some(local_path) = poster_local_path.as_deref() {
+            title.poster_source_url = title.poster_url.take();
+            title.poster_url = Some(prefix_local_title_image_path(base_path, local_path));
+        }
+        if let Some(local_path) = banner_local_path.as_deref() {
+            title.banner_source_url = title.banner_url.take();
+            title.banner_url = Some(prefix_local_title_image_path(base_path, local_path));
+        }
+        if let Some(local_path) = background_local_path.as_deref() {
+            title.background_source_url = title.background_url.take();
+            title.background_url = Some(prefix_local_title_image_path(base_path, local_path));
+        }
+    }
+
+    Ok(title)
 }
 
 pub(crate) async fn list_collections_for_title_query(

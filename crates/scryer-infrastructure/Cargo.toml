@@ -46,3 +46,4 @@ keyring = { workspace = true }
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }
 tempfile = "3"
+wiremock = { workspace = true }

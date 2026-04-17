@@ -163,12 +163,19 @@ impl LibraryScanSession {
 struct LibraryScanRuntimeState {
     sessions: HashMap<String, LibraryScanSession>,
     facet_sessions: HashMap<MediaFacet, String>,
+    next_sequence: u64,
+}
+
+#[derive(Clone)]
+struct LibraryScanTrackerEvent {
+    sequence: u64,
+    session: LibraryScanSession,
 }
 
 #[derive(Clone)]
 pub struct LibraryScanTracker {
     state: Arc<Mutex<LibraryScanRuntimeState>>,
-    broadcast: broadcast::Sender<LibraryScanSession>,
+    broadcast: broadcast::Sender<LibraryScanTrackerEvent>,
     job_run_tracker: Arc<Mutex<Option<JobRunTracker>>>,
 }
 
@@ -193,8 +200,10 @@ impl LibraryScanTracker {
         *slot = Some(tracker);
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<LibraryScanSession> {
-        let mut source = self.broadcast.subscribe();
+    fn spawn_subscription(
+        mut source: broadcast::Receiver<LibraryScanTrackerEvent>,
+        min_sequence_exclusive: Option<u64>,
+    ) -> broadcast::Receiver<LibraryScanSession> {
         let (tx, rx) = broadcast::channel(256);
 
         tokio::spawn(async move {
@@ -206,7 +215,13 @@ impl LibraryScanTracker {
                     tokio::select! {
                         recv_result = source.recv() => {
                             match recv_result {
-                                Ok(session) => {
+                                Ok(event) => {
+                                    if min_sequence_exclusive
+                                        .is_some_and(|minimum| event.sequence <= minimum)
+                                    {
+                                        continue;
+                                    }
+                                    let session = event.session;
                                     if session.status.is_terminal() {
                                         pending = None;
                                         flush_timer = None;
@@ -245,7 +260,11 @@ impl LibraryScanTracker {
                 }
 
                 match source.recv().await {
-                    Ok(session) => {
+                    Ok(event) => {
+                        if min_sequence_exclusive.is_some_and(|minimum| event.sequence <= minimum) {
+                            continue;
+                        }
+                        let session = event.session;
                         if session.status.is_terminal() {
                             if tx.send(session).is_err() {
                                 break;
@@ -268,6 +287,27 @@ impl LibraryScanTracker {
         });
 
         rx
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<LibraryScanSession> {
+        Self::spawn_subscription(self.broadcast.subscribe(), None)
+    }
+
+    pub async fn subscribe_with_initial_snapshot(
+        &self,
+    ) -> (
+        Vec<LibraryScanSession>,
+        broadcast::Receiver<LibraryScanSession>,
+    ) {
+        let source = self.broadcast.subscribe();
+        let (initial_sessions, initial_sequence) = {
+            let state = self.state.lock().await;
+            let mut sessions = state.sessions.values().cloned().collect::<Vec<_>>();
+            sessions.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+            (sessions, state.next_sequence)
+        };
+        let receiver = Self::spawn_subscription(source, Some(initial_sequence));
+        (initial_sessions, receiver)
     }
 
     pub async fn list_active(&self) -> Vec<LibraryScanSession> {
@@ -337,7 +377,7 @@ impl LibraryScanTracker {
         facet: MediaFacet,
         mode: LibraryScanMode,
     ) -> AppResult<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             if state.facet_sessions.contains_key(&facet) {
                 return Err(AppError::Validation(format!(
@@ -353,10 +393,14 @@ impl LibraryScanTracker {
             state
                 .sessions
                 .insert(snapshot.session_id.clone(), snapshot.clone());
-            snapshot
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session: snapshot,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Ok(snapshot)
+        self.notify_event(event.clone()).await;
+        Ok(event.session)
     }
 
     pub(crate) async fn apply_delta(
@@ -364,15 +408,20 @@ impl LibraryScanTracker {
         session_id: &str,
         delta: &LibraryScanDeltaRecordedEventData,
     ) -> Option<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             let session = state.sessions.get_mut(session_id)?;
             apply_library_scan_delta_fields(session, delta);
             session.updated_at = Utc::now();
-            session.clone()
+            let snapshot = session.clone();
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session: snapshot,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Some(snapshot)
+        self.notify_event(event.clone()).await;
+        Some(event.session)
     }
 
     #[cfg(test)]
@@ -616,7 +665,7 @@ impl LibraryScanTracker {
         &self,
         session_id: &str,
     ) -> Option<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             let session = state.sessions.get(session_id)?;
             if session.summary.is_none()
@@ -642,14 +691,18 @@ impl LibraryScanTracker {
                 LibraryScanStatus::Completed
             };
             state.facet_sessions.remove(&session.facet);
-            session
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Some(snapshot)
+        self.notify_event(event.clone()).await;
+        Some(event.session)
     }
 
     pub(crate) async fn fail_session(&self, session_id: &str) -> Option<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             let mut session = state.sessions.remove(session_id)?;
             session.updated_at = Utc::now();
@@ -658,14 +711,18 @@ impl LibraryScanTracker {
             session.file_total_known = true;
             session.status = LibraryScanStatus::Failed;
             state.facet_sessions.remove(&session.facet);
-            session
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Some(snapshot)
+        self.notify_event(event.clone()).await;
+        Some(event.session)
     }
 
     pub(crate) async fn cancel_session(&self, session_id: &str) -> Option<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             let mut session = state.sessions.remove(session_id)?;
             session.updated_at = Utc::now();
@@ -674,10 +731,14 @@ impl LibraryScanTracker {
             session.file_total_known = true;
             session.status = LibraryScanStatus::Canceled;
             state.facet_sessions.remove(&session.facet);
-            session
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Some(snapshot)
+        self.notify_event(event.clone()).await;
+        Some(event.session)
     }
 
     pub(crate) async fn get_session(&self, session_id: &str) -> Option<LibraryScanSession> {
@@ -690,21 +751,26 @@ impl LibraryScanTracker {
         session_id: &str,
         mutator: impl FnOnce(&mut LibraryScanSession),
     ) -> Option<LibraryScanSession> {
-        let snapshot = {
+        let event = {
             let mut state = self.state.lock().await;
             let session = state.sessions.get_mut(session_id)?;
             mutator(session);
             session.updated_at = Utc::now();
-            session.clone()
+            let snapshot = session.clone();
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            LibraryScanTrackerEvent {
+                sequence: state.next_sequence,
+                session: snapshot,
+            }
         };
-        self.notify_snapshot(snapshot.clone()).await;
-        Some(snapshot)
+        self.notify_event(event.clone()).await;
+        Some(event.session)
     }
 
-    async fn notify_snapshot(&self, snapshot: LibraryScanSession) {
-        let _ = self.broadcast.send(snapshot.clone());
+    async fn notify_event(&self, event: LibraryScanTrackerEvent) {
+        let _ = self.broadcast.send(event.clone());
         if let Some(tracker) = self.job_run_tracker.lock().await.clone() {
-            tracker.merge_library_scan_progress(snapshot).await;
+            tracker.merge_library_scan_progress(event.session).await;
         }
     }
 }
@@ -1385,6 +1451,24 @@ mod tests {
             .expect("mark metadata total known");
 
         assert!(snapshot.metadata_total_known);
+    }
+
+    #[tokio::test]
+    async fn subscribe_with_initial_snapshot_filters_preexisting_buffered_events() {
+        let tracker = LibraryScanTracker::new();
+        let session = tracker
+            .start_session(MediaFacet::Movie)
+            .await
+            .expect("start session");
+
+        let (initial_sessions, mut receiver) = tracker.subscribe_with_initial_snapshot().await;
+
+        assert_eq!(initial_sessions.len(), 1);
+        assert_eq!(initial_sessions[0].session_id, session.session_id);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]

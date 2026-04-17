@@ -47,7 +47,6 @@ ENV SCRYER_SMG_REGISTRATION_SECRET=${SCRYER_SMG_REGISTRATION_SECRET}
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/checkouts,sharing=locked \
-    --mount=type=cache,target=/workspace/target,sharing=locked \
     cargo build -p scryer --release --locked \
  && install -Dm755 /workspace/target/release/scryer /tmp/scryer
 

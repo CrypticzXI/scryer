@@ -300,6 +300,13 @@ export const updateAcquisitionSettingsMutation = `mutation UpdateAcquisitionSett
   }
 }`;
 
+export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+  updateGeneralSettings(input: $input) {
+    keepHistoryForever
+    historyRetentionDays
+  }
+}`;
+
 export const upsertDelayProfileMutation = `mutation UpsertDelayProfile($input: DelayProfileInput!) {
   upsertDelayProfile(input: $input) {
     id
@@ -471,6 +478,10 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
       clientType
       downloadClientItemId
       state
+      importStatus
+      importErrorCode
+      importErrorMessage
+      trackedState
     }
   }
 }`;
@@ -587,30 +598,6 @@ export const fixTitleMatchMutation = `mutation FixTitleMatch($input: FixTitleMat
       slug
       metadataFetchedAt
     }
-  }
-}`;
-
-export const triggerImportMutation = `mutation TriggerImport($input: TriggerImportInput!) {
-  triggerImport(input: $input) {
-    importId
-    decision
-    skipReason
-    titleId
-    sourcePath
-    destPath
-    fileSizeBytes
-    linkType
-    errorMessage
-  }
-}`;
-
-export const executeManualImportMutation = `mutation ExecuteManualImport($input: ExecuteManualImportInput!) {
-  executeManualImport(input: $input) {
-    filePath
-    episodeId
-    success
-    destPath
-    errorMessage
   }
 }`;
 

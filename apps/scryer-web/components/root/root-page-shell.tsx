@@ -50,12 +50,9 @@ import {
   manualImportRequiredCountQuery,
   pendingImportCountsQuery,
 } from "@/lib/graphql/queries";
-import type { PendingImportCounts } from "@/lib/types";
+import type { DownloadQueueItem, PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
-import {
-  isManualImportRequiredQueueItem,
-  type DownloadQueueDisplayStateInput,
-} from "@/lib/utils/download-queue";
+import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -352,7 +349,7 @@ function AuthenticatedHomePage({
 
   const refreshSidebarCounts = useCallback(async () => {
     try {
-      const [pendingImportsResult, manualImportResult] = await Promise.all([
+      const [pendingImportsResult, manualImportCountResult] = await Promise.all([
         backendClient.query(pendingImportCountsQuery, {}).toPromise(),
         backendClient.query(manualImportRequiredCountQuery, {}).toPromise(),
       ]);
@@ -360,8 +357,9 @@ function AuthenticatedHomePage({
       if (pendingImportsResult.error) {
         throw pendingImportsResult.error;
       }
-      if (manualImportResult.error) {
-        throw manualImportResult.error;
+
+      if (manualImportCountResult.error) {
+        throw manualImportCountResult.error;
       }
 
       if (pendingImportsResult.data?.pendingImportCounts) {
@@ -370,11 +368,9 @@ function AuthenticatedHomePage({
         setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
       }
 
-      const manualImportItems = (
-        manualImportResult.data?.downloadQueue ?? []
-      ) as DownloadQueueDisplayStateInput[];
+      const queueItems = (manualImportCountResult.data?.downloadQueue ?? []) as DownloadQueueItem[];
       setManualImportRequiredCount(
-        manualImportItems.filter((item) => isManualImportRequiredQueueItem(item)).length,
+        queueItems.filter((item) => isManualImportRequiredQueueItem(item)).length,
       );
     } catch {
       setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
@@ -391,13 +387,11 @@ function AuthenticatedHomePage({
       void refreshSidebarCounts();
     };
     window.addEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
-    window.addEventListener("scryer:activityQueueRefresh", handleSidebarCountsRefresh);
     const intervalId = window.setInterval(() => {
       void refreshSidebarCounts();
     }, 30_000);
     return () => {
       window.removeEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
-      window.removeEventListener("scryer:activityQueueRefresh", handleSidebarCountsRefresh);
       window.clearInterval(intervalId);
     };
   }, [refreshSidebarCounts]);

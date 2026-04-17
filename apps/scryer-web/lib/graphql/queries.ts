@@ -200,6 +200,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     attentionReason
     downloadClientItemId
     importStatus
+    importErrorCode
     importErrorMessage
     importedAt
     trackedState
@@ -1016,6 +1017,7 @@ export const manualImportRequiredCountQuery = `query ManualImportRequiredCount {
     state
     attentionReason
     importStatus
+    importErrorCode
     importErrorMessage
     trackedState
     trackedStatusMessages
@@ -1248,6 +1250,13 @@ export const acquisitionSettingsQuery = `query AcquisitionSettings {
     pollIntervalSeconds
     syncIntervalSeconds
     batchSize
+  }
+}`;
+
+export const generalSettingsQuery = `query GeneralSettings {
+  generalSettings {
+    keepHistoryForever
+    historyRetentionDays
   }
 }`;
 

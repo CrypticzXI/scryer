@@ -1,13 +1,14 @@
 use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_ROOT_FOLDERS_KEY,
-    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
-    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
-    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
-    QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile,
-    QualityProfileRepository, RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MOVIES_ROOT_FOLDERS_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
+    NZBGET_RECENT_PRIORITY_SETTING_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
+    POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
+    POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
+    QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileRepository,
+    RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
     RENAME_TEMPLATE_ANIME_GLOBAL_KEY, RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
@@ -29,6 +30,7 @@ pub(crate) const SETTINGS_CATEGORY_MEDIA: &str = "media";
 pub(crate) const SETTINGS_CATEGORY_ACQUISITION: &str = "acquisition";
 pub(crate) const SETTINGS_CATEGORY_POST_PROCESSING: &str = "post_processing";
 pub(crate) const SETTINGS_CATEGORY_SUBTITLES: &str = "subtitles";
+pub(crate) const SETTINGS_CATEGORY_GENERAL: &str = "general";
 
 #[derive(Debug)]
 pub(crate) struct ServiceSettingSeed {
@@ -128,6 +130,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: METADATA_LANGUAGE_KEY,
             data_type: "string",
             default_value_json: "\"eng\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: HISTORY_KEEP_FOREVER_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: HISTORY_RETENTION_DAYS_KEY,
+            data_type: "number",
+            default_value_json: "180",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -813,6 +831,22 @@ mod tests {
                 && seed.key_name == METADATA_LANGUAGE_KEY
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"eng\""
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_history_retention_defaults() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == HISTORY_KEEP_FOREVER_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == HISTORY_RETENTION_DAYS_KEY
+                && seed.data_type == "number"
+                && seed.default_value_json == "180"
         }));
     }
 }

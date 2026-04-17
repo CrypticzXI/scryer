@@ -34,6 +34,11 @@ export type AcquisitionSettings = {
   batchSize: number;
 };
 
+export type GeneralSettings = {
+  keepHistoryForever: boolean;
+  historyRetentionDays: number;
+};
+
 export type MediaSettings = {
   scope: "movie" | "series" | "anime";
   libraryPath: string;

@@ -463,6 +463,9 @@ pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueue
         attention_reason: item.attention_reason,
         download_client_item_id: item.download_client_item_id,
         import_status: item.import_status.map(ImportStatusValue::from_domain),
+        import_error_code: item
+            .import_error_code
+            .map(ImportErrorCodeValue::from_domain),
         import_error_message: item.import_error_message,
         imported_at: item.imported_at,
     }
@@ -1354,6 +1357,7 @@ pub(crate) fn from_housekeeping_report(report: HousekeepingReport) -> Housekeepi
         stale_release_attempts: report.stale_release_attempts as i32,
         expired_event_outboxes: report.expired_event_outboxes as i32,
         stale_history_events: report.stale_history_events as i32,
+        stale_history_records: report.stale_history_records as i32,
         staged_nzb_artifacts_pruned: report.staged_nzb_artifacts_pruned as i32,
         recycled_purged: report.recycled_purged as i32,
         ran_at: report.ran_at,

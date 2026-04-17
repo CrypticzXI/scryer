@@ -10,8 +10,9 @@ use scryer_application::{
     WantedStatus as AppWantedStatus,
 };
 use scryer_domain::{
-    DomainEventType, DownloadQueueState, ImportDecision, ImportSkipReason, ImportStatus,
-    ImportType, MediaFacet, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
+    DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason,
+    ImportStatus, ImportType, MediaFacet, TitleMatchType, TrackedDownloadState,
+    TrackedDownloadStatus,
 };
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -456,6 +457,7 @@ impl ImportStatusValue {
 pub enum ImportTypeValue {
     MovieDownload,
     SeriesDownload,
+    ManualImport,
     RenamePreview,
     RenameApplyTitle,
     RenameApplyFacet,
@@ -470,6 +472,7 @@ impl ImportTypeValue {
         match value {
             ImportType::MovieDownload => Self::MovieDownload,
             ImportType::SeriesDownload => Self::SeriesDownload,
+            ImportType::ManualImport => Self::ManualImport,
             ImportType::RenamePreview => Self::RenamePreview,
             ImportType::RenameApplyTitle => Self::RenameApplyTitle,
             ImportType::RenameApplyFacet => Self::RenameApplyFacet,
@@ -477,6 +480,32 @@ impl ImportTypeValue {
             ImportType::RenameIoFailed => Self::RenameIoFailed,
             ImportType::RenameMove => Self::RenameMove,
             ImportType::RenameStalePlan => Self::RenameStalePlan,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ImportErrorCodeValue {
+    FileNotFound,
+    EpisodeNotFound,
+    EpisodeLookupFailed,
+    IoFailed,
+    PermissionDenied,
+    DiskFull,
+    Unknown,
+}
+
+impl ImportErrorCodeValue {
+    pub fn from_domain(value: ImportErrorCode) -> Self {
+        match value {
+            ImportErrorCode::FileNotFound => Self::FileNotFound,
+            ImportErrorCode::EpisodeNotFound => Self::EpisodeNotFound,
+            ImportErrorCode::EpisodeLookupFailed => Self::EpisodeLookupFailed,
+            ImportErrorCode::IoFailed => Self::IoFailed,
+            ImportErrorCode::PermissionDenied => Self::PermissionDenied,
+            ImportErrorCode::DiskFull => Self::DiskFull,
+            ImportErrorCode::Unknown => Self::Unknown,
         }
     }
 }
@@ -1459,6 +1488,7 @@ pub struct DownloadQueueItemPayload {
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
     pub import_status: Option<ImportStatusValue>,
+    pub import_error_code: Option<ImportErrorCodeValue>,
     pub import_error_message: Option<String>,
     pub imported_at: Option<String>,
     pub tracked_state: Option<TrackedDownloadStateValue>,
@@ -1503,12 +1533,6 @@ pub struct ImportRecordPayload {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
-}
-
-#[derive(InputObject)]
-pub struct TriggerImportInput {
-    pub download_client_item_id: String,
-    pub title_id: Option<String>,
 }
 
 #[derive(InputObject)]
@@ -1728,6 +1752,12 @@ pub struct AcquisitionSettingsPayload {
     pub poll_interval_seconds: i32,
     pub sync_interval_seconds: i32,
     pub batch_size: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GeneralSettingsPayload {
+    pub keep_history_forever: bool,
+    pub history_retention_days: i32,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1990,8 +2020,9 @@ pub struct DownloadQueueActionPayload {
 #[derive(InputObject)]
 pub struct QueueManualImportInput {
     pub title_id: Option<String>,
-    pub client_type: Option<String>,
+    pub client_type: String,
     pub download_client_item_id: String,
+    pub files: Option<Vec<ManualImportFileMappingInput>>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2073,6 +2104,12 @@ pub struct UpdateLibraryPathsInput {
 pub struct UpdateServiceSettingsInput {
     pub tls_cert_path: String,
     pub tls_key_path: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateGeneralSettingsInput {
+    pub keep_history_forever: bool,
+    pub history_retention_days: i32,
 }
 
 #[derive(InputObject, Clone)]
@@ -2497,21 +2534,6 @@ pub struct ManualImportFileMappingInput {
     pub file_path: String,
     pub episode_id: String,
     pub quality: Option<String>,
-}
-
-#[derive(InputObject)]
-pub struct ExecuteManualImportInput {
-    pub title_id: String,
-    pub files: Vec<ManualImportFileMappingInput>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct ManualImportFileResultPayload {
-    pub file_path: String,
-    pub episode_id: String,
-    pub success: bool,
-    pub dest_path: Option<String>,
-    pub error_message: Option<String>,
 }
 
 // --- Wanted Items / Acquisition ---
@@ -2969,6 +2991,7 @@ pub struct HousekeepingReportPayload {
     pub stale_release_attempts: i32,
     pub expired_event_outboxes: i32,
     pub stale_history_events: i32,
+    pub stale_history_records: i32,
     pub staged_nzb_artifacts_pruned: i32,
     pub recycled_purged: i32,
     pub ran_at: String,

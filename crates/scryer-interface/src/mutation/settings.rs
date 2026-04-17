@@ -2,6 +2,7 @@ use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
+    UpdateGeneralSettings as AppUpdateGeneralSettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 use scryer_domain::Entitlement;
@@ -59,6 +60,13 @@ fn from_acquisition_settings(
         poll_interval_seconds: settings.poll_interval_seconds,
         sync_interval_seconds: settings.sync_interval_seconds,
         batch_size: settings.batch_size,
+    }
+}
+
+fn from_general_settings(settings: scryer_application::GeneralSettings) -> GeneralSettingsPayload {
+    GeneralSettingsPayload {
+        keep_history_forever: settings.keep_history_forever,
+        history_retention_days: settings.history_retention_days,
     }
 }
 
@@ -274,6 +282,28 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_acquisition_settings(settings))
+    }
+
+    async fn update_general_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateGeneralSettingsInput,
+    ) -> GqlResult<GeneralSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let settings = app
+            .update_general_settings(
+                &actor,
+                AppUpdateGeneralSettings {
+                    keep_history_forever: input.keep_history_forever,
+                    history_retention_days: input.history_retention_days,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_general_settings(settings))
     }
 
     async fn upsert_delay_profile(

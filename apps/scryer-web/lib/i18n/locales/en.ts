@@ -424,6 +424,16 @@ const en: LocaleDictionary = {
   "settings.generalText": "General application settings.",
   "settings.generalPlaceholder":
     "Configure language and other global preferences.",
+  "settings.historyRetentionTitle": "History retention",
+  "settings.historyRetentionHelp":
+    "This preserves Scryer’s user-facing history and audit trail. Changes take effect on the next housekeeping run.",
+  "settings.historyRetentionExternalHelp":
+    "Operational cleanup for acquisition scratch data still runs, and this does not control history retained by SABnzbd, NZBGet, or Weaver.",
+  "settings.keepHistoryForever": "Keep history forever",
+  "settings.historyRetentionDaysLabel": "Retain history for N days",
+  "settings.historyRetentionSaved": "History retention settings saved.",
+  "settings.historyRetentionValidation":
+    "History retention days must be at least 1 unless history is kept forever.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS certificate path",
   "settings.tlsCertPathHelp":
@@ -671,6 +681,7 @@ const en: LocaleDictionary = {
     "Manual import is available for attention-required queue items.",
   "queue.releaseTitle": "Release",
   "queue.blockReason": "Block Reason",
+  "queue.errorCode": "Error Code",
   "queue.showDetails": "Show details",
   "queue.hideDetails": "Hide details",
   "queue.assignTitle": "Assign Title",

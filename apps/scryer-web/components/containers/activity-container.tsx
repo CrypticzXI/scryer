@@ -10,13 +10,14 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import {
   assignTrackedDownloadTitleMutation,
   ignoreTrackedDownloadMutation,
-  triggerImportMutation,
+  queueManualImportMutation,
   pauseDownloadMutation,
   resumeDownloadMutation,
   deleteDownloadMutation,
 } from "@/lib/graphql/mutations";
 import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
+import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
 import type { DownloadQueueItem } from "@/lib/types";
 import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
 
@@ -26,7 +27,7 @@ type QueueMode = "scryer" | "all" | "history";
 export const ActivityContainer = memo(function ActivityContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
-  const [, executeTriggerImport] = useMutation(triggerImportMutation);
+  const [, executeQueueManualImport] = useMutation(queueManualImportMutation);
   const [, executeAssignTrackedDownloadTitle] = useMutation(assignTrackedDownloadTitleMutation);
   const [, executeIgnoreTrackedDownload] = useMutation(ignoreTrackedDownloadMutation);
   const [, executePauseDownload] = useMutation(pauseDownloadMutation);
@@ -93,6 +94,10 @@ export const ActivityContainer = memo(function ActivityContainer() {
     window.dispatchEvent(new CustomEvent("scryer:activityQueueRefresh"));
   }, [refreshAllActivityQueue, refreshHistory, refreshQueue]);
 
+  useImportHistorySubscription(() => {
+    void refreshActivityViews();
+  });
+
   const requestManualImport = useCallback(
     async (item: DownloadQueueItem) => {
       if (!item.titleId) {
@@ -105,10 +110,11 @@ export const ActivityContainer = memo(function ActivityContainer() {
         return;
       }
 
-      const result = await executeTriggerImport({
+      const result = await executeQueueManualImport({
         input: {
           downloadClientItemId: item.downloadClientItemId,
           titleId: item.titleId,
+          clientType: item.clientType,
         },
       });
       if (result.error) {
@@ -119,7 +125,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
       setGlobalStatus(t("queue.manualImportQueued"));
       await refreshActivityViews();
     },
-    [executeTriggerImport, refreshActivityViews, setGlobalStatus, t],
+    [executeQueueManualImport, refreshActivityViews, setGlobalStatus, t],
   );
 
   const requestAssignTitle = useCallback(
@@ -248,6 +254,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
           }}
           titleId={manualImportItem.titleId}
           titleName={manualImportItem.titleName}
+          clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
           onImportComplete={() => void refreshActivityViews()}
         />

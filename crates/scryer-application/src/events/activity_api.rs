@@ -4,10 +4,10 @@ use crate::domain_events::{
     title_context_snapshot,
 };
 use crate::event_views::{
-    activity_event_from_domain_event, apply_library_scan_projection_event,
-    history_event_from_domain_event, replay_library_scan_state,
+    activity_event_from_domain_event, history_event_from_domain_event,
     title_history_records_from_domain_event,
 };
+use crate::events::retention::user_facing_domain_event_types;
 use scryer_domain::{
     AcquisitionCandidateRejectedEventData, AcquisitionSearchCompletedEventData,
     ConfigurationChangeAction, ConfigurationChangedEventData, DiscoverySearchCompletedEventData,
@@ -17,37 +17,6 @@ use scryer_domain::{
     PostProcessingResult, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
     TitleUpdatedEventData,
 };
-use std::collections::HashMap;
-
-async fn load_all_domain_events(
-    app: &AppUseCase,
-    mut filter: DomainEventFilter,
-) -> AppResult<Vec<DomainEvent>> {
-    let mut events = Vec::new();
-    let mut after_sequence = 0i64;
-
-    loop {
-        filter.after_sequence = Some(after_sequence);
-        filter.limit = 500;
-        let batch = app.services.events.domain_events.list(&filter).await?;
-        if batch.is_empty() {
-            break;
-        }
-
-        after_sequence = batch
-            .last()
-            .map(|event| event.sequence)
-            .unwrap_or(after_sequence);
-        let count = batch.len();
-        events.extend(batch);
-        if count < 500 {
-            break;
-        }
-    }
-
-    Ok(events)
-}
-
 async fn load_recent_projected_domain_events<T, F>(
     app: &AppUseCase,
     mut filter: DomainEventFilter,
@@ -90,58 +59,6 @@ where
     }
 
     Ok(projected)
-}
-
-const LIBRARY_SCAN_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
-    DomainEventType::LibraryScanStarted,
-    DomainEventType::LibraryScanTitleDiscovered,
-    DomainEventType::LibraryScanProgressed,
-    DomainEventType::LibraryScanCompleted,
-    DomainEventType::LibraryScanCanceled,
-    DomainEventType::LibraryScanFailed,
-];
-
-async fn load_active_library_scan_projection_state(
-    app: &AppUseCase,
-) -> AppResult<(HashMap<String, LibraryScanSession>, i64)> {
-    let events = load_all_domain_events(
-        app,
-        DomainEventFilter {
-            event_types: Some(LIBRARY_SCAN_DOMAIN_EVENT_TYPES.to_vec()),
-            ..DomainEventFilter::default()
-        },
-    )
-    .await?;
-    let cursor = events
-        .last()
-        .map(|event| event.sequence)
-        .unwrap_or_default();
-    Ok((replay_library_scan_state(&events), cursor))
-}
-
-async fn load_active_library_scan_projection(
-    app: &AppUseCase,
-) -> AppResult<Vec<LibraryScanSession>> {
-    let (sessions, _) = load_active_library_scan_projection_state(app).await?;
-    let mut sessions = sessions.into_values().collect::<Vec<_>>();
-    sessions.sort_by(|left, right| left.started_at.cmp(&right.started_at));
-    Ok(sessions)
-}
-
-async fn load_library_scan_projection_events_after(
-    app: &AppUseCase,
-    after_sequence: i64,
-) -> AppResult<Vec<DomainEvent>> {
-    app.services
-        .events
-        .domain_events
-        .list(&DomainEventFilter {
-            event_types: Some(LIBRARY_SCAN_DOMAIN_EVENT_TYPES.to_vec()),
-            after_sequence: Some(after_sequence),
-            limit: 100,
-            ..DomainEventFilter::default()
-        })
-        .await
 }
 
 const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
@@ -631,10 +548,12 @@ impl AppUseCase {
         require(actor, &Entitlement::ViewHistory)?;
         let offset = offset.max(0) as usize;
         let limit = limit.max(1) as usize;
+        let user_facing_event_types = user_facing_domain_event_types();
         let history = load_recent_projected_domain_events(
             self,
             DomainEventFilter {
                 title_id,
+                event_types: Some(user_facing_event_types),
                 ..DomainEventFilter::default()
             },
             offset.saturating_add(limit),
@@ -653,9 +572,13 @@ impl AppUseCase {
         require(actor, &Entitlement::ViewHistory)?;
         let offset = offset.max(0) as usize;
         let limit = limit.max(1) as usize;
+        let user_facing_event_types = user_facing_domain_event_types();
         let activities = load_recent_projected_domain_events(
             self,
-            DomainEventFilter::default(),
+            DomainEventFilter {
+                event_types: Some(user_facing_event_types),
+                ..DomainEventFilter::default()
+            },
             offset.saturating_add(limit),
             activity_event_from_domain_event,
         )
@@ -679,11 +602,13 @@ impl AppUseCase {
         limit: usize,
     ) -> AppResult<Vec<(i64, ActivityEvent)>> {
         require(actor, &Entitlement::ViewHistory)?;
+        let user_facing_event_types = user_facing_domain_event_types();
         let events = self
             .services
             .events
             .domain_events
             .list(&DomainEventFilter {
+                event_types: Some(user_facing_event_types),
                 after_sequence: Some(after_sequence),
                 limit: limit.max(1),
                 ..DomainEventFilter::default()
@@ -761,7 +686,7 @@ impl AppUseCase {
 
     pub async fn active_library_scans(&self, actor: &User) -> AppResult<Vec<LibraryScanSession>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        load_active_library_scan_projection(self).await
+        Ok(self.runtime.library_scan_tracker.list_active().await)
     }
 
     pub fn subscribe_library_scan_progress(
@@ -772,18 +697,11 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
-            let (mut sessions, mut cursor) =
-                match load_active_library_scan_projection_state(&app).await {
-                    Ok(state) => state,
-                    Err(error) => {
-                        tracing::warn!("library scan subscription initial load failed: {error}");
-                        return;
-                    }
-                };
-
-            let mut initial_sessions = sessions.values().cloned().collect::<Vec<_>>();
-            initial_sessions.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+            let (initial_sessions, mut receiver) = app
+                .runtime
+                .library_scan_tracker
+                .subscribe_with_initial_snapshot()
+                .await;
             for session in initial_sessions {
                 if tx.send(session).is_err() {
                     return;
@@ -791,30 +709,14 @@ impl AppUseCase {
             }
 
             loop {
-                match load_library_scan_projection_events_after(&app, cursor).await {
-                    Ok(events) if !events.is_empty() => {
-                        for event in events {
-                            cursor = event.sequence;
-                            if let Some(session) =
-                                apply_library_scan_projection_event(&mut sessions, &event)
-                                && tx.send(session).is_err()
-                            {
-                                return;
-                            }
+                match receiver.recv().await {
+                    Ok(session) => {
+                        if tx.send(session).is_err() {
+                            return;
                         }
-                        continue;
                     }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!("library scan subscription replay failed: {error}");
-                        break;
-                    }
-                }
-
-                match wake_rx.recv().await {
-                    Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!("library scan subscription lagged, skipped {n} wakeups");
+                        tracing::debug!("library scan subscription lagged, skipped {n} updates");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

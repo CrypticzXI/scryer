@@ -434,6 +434,17 @@ const de: LocaleDictionary = {
   "settings.generalText": "Allgemeine Anwendungseinstellungen.",
   "settings.generalPlaceholder":
     "Sprache und andere globale Einstellungen konfigurieren.",
+  "settings.historyRetentionTitle": "Aufbewahrung des Verlaufs",
+  "settings.historyRetentionHelp":
+    "Dadurch bleiben der benutzerseitige Verlauf und die Audit-Spur von Scryer erhalten. Änderungen werden beim nächsten Housekeeping-Lauf wirksam.",
+  "settings.historyRetentionExternalHelp":
+    "Die betriebliche Bereinigung für temporäre Akquisitionsdaten läuft weiterhin, und dies steuert nicht den Verlauf, der von SABnzbd, NZBGet oder Weaver aufbewahrt wird.",
+  "settings.keepHistoryForever": "Verlauf dauerhaft aufbewahren",
+  "settings.historyRetentionDaysLabel": "Verlauf N Tage aufbewahren",
+  "settings.historyRetentionSaved":
+    "Einstellungen zur Verlaufsaufbewahrung gespeichert.",
+  "settings.historyRetentionValidation":
+    "Die Anzahl der Tage für die Verlaufsaufbewahrung muss mindestens 1 sein, sofern der Verlauf nicht dauerhaft aufbewahrt wird.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS-Zertifikatspfad",
   "settings.tlsCertPathHelp":
@@ -679,6 +690,7 @@ const de: LocaleDictionary = {
     "Manueller Import ist für Warteschlangenelemente verfügbar, die Aufmerksamkeit erfordern.",
   "queue.releaseTitle": "Veröffentlichung",
   "queue.blockReason": "Sperrgrund",
+  "queue.errorCode": "Fehlercode",
   "queue.showDetails": "Details anzeigen",
   "queue.hideDetails": "Details ausblenden",
   "queue.assignTitle": "Titel zuweisen",

@@ -6,7 +6,9 @@ use scryer_application::{
     ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
     SuccessfulGrabCommit, WorkflowOperationInfo, WorkflowOperationRepository,
 };
-use scryer_domain::{DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, NewDomainEvent};
+use scryer_domain::{
+    DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, ImportType, NewDomainEvent,
+};
 
 use crate::SqliteServices;
 
@@ -330,6 +332,21 @@ impl ImportRepository for SqliteWorkflowStore {
         .await
     }
 
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        import_type: ImportType,
+    ) -> AppResult<Option<ImportRecord>> {
+        crate::queries::workflow::get_import_by_source_ref_and_type_query(
+            &self.pool,
+            source_system,
+            source_ref,
+            import_type,
+        )
+        .await
+    }
+
     async fn update_import_status(
         &self,
         import_id: &str,
@@ -350,24 +367,52 @@ impl ImportRepository for SqliteWorkflowStore {
             .await
     }
 
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        import_type: ImportType,
+        stale_seconds: i64,
+    ) -> AppResult<u64> {
+        crate::queries::workflow::recover_stale_processing_imports_for_type_query(
+            &self.pool,
+            import_type,
+            stale_seconds,
+        )
+        .await
+    }
+
     async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
         crate::queries::workflow::list_pending_imports_query(&self.pool).await
     }
 
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>> {
+        crate::queries::workflow::list_pending_imports_for_type_query(&self.pool, import_type).await
+    }
+
+    async fn list_imports_for_sources(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>> {
+        crate::queries::workflow::list_imports_for_sources_query(&self.pool, sources).await
+    }
+
     async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
-        match crate::queries::workflow::get_import_by_source_ref_query(
-            &self.pool,
-            source_system,
-            source_ref,
+        let rows_affected = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(1)
+             FROM imports
+             WHERE source_system = ?
+               AND source_ref = ?
+               AND status IN ('completed', 'skipped')",
         )
-        .await?
-        {
-            Some(record) => Ok(matches!(
-                record.status,
-                ImportStatus::Completed | ImportStatus::Skipped
-            )),
-            None => Ok(false),
-        }
+        .bind(source_system)
+        .bind(source_ref)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        Ok(rows_affected > 0)
     }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {

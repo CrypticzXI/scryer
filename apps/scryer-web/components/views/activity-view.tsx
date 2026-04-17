@@ -63,8 +63,10 @@ const queueStateClasses: Record<string, string> = {
   post_processing: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
   paused: "border-purple-500/40 bg-purple-500/10 text-purple-200",
   completed: "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  importing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
   import_pending: "border-indigo-500/40 bg-indigo-500/10 text-indigo-200",
   import_blocked: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  import_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
   failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
 };
 
@@ -74,15 +76,19 @@ const queueStateLabels: Record<string, string> = {
   post_processing: "queue.state.postProcessing",
   paused: "queue.state.paused",
   completed: "queue.state.completed",
+  importing: "queue.manualImporting",
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
+  import_failed: "queue.manualImportFailed",
   failed: "queue.state.failed",
 };
 
 const queueStateAttention: Record<string, boolean> = {
   failed: true,
+  importing: true,
   import_pending: true,
   import_blocked: true,
+  import_failed: true,
 };
 
 type QueueRowPresentation = {
@@ -130,23 +136,29 @@ function deriveQueueRowPresentation(
       ? stageLabel
       : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
   const hasStatusDetails =
-    (stateKey === "failed" || displayStateKey === "import_blocked") &&
+    (stateKey === "failed" ||
+      displayStateKey === "import_blocked" ||
+      displayStateKey === "import_failed") &&
     failureReason.length > 0;
   const isCompleted = stateKey === "completed" || stateKey === "import_pending";
-  const canAssignTitle = trackedStateKey === "import_blocked";
-  const canIgnore = trackedStateKey === "import_blocked";
+  const canRetryManualImport =
+    displayStateKey === "import_blocked" || displayStateKey === "import_failed";
+  const canAssignTitle =
+    trackedStateKey === "import_blocked" && displayStateKey !== "importing";
+  const canIgnore = trackedStateKey === "import_blocked" && displayStateKey !== "importing";
   const canInteractiveManualImport =
     Boolean(queueItem.titleId) &&
     (queueItem.facet === "series" || queueItem.facet === "anime") &&
-    trackedStateKey === "import_blocked";
+    canRetryManualImport;
   const canDirectManualImport =
     Boolean(queueItem.titleId) &&
+    displayStateKey !== "importing" &&
     ((isCompleted && needsManualImport) ||
-      (trackedStateKey === "import_blocked" && queueItem.facet === "movie"));
+      (canRetryManualImport && queueItem.facet === "movie"));
   const releaseTitle =
     queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "\u2014";
   const hasExpandableDetails =
-    displayStateKey === "import_blocked" &&
+    (displayStateKey === "import_blocked" || displayStateKey === "import_failed") &&
     (failureReason.length > 0 || releaseTitle !== "\u2014");
 
   return {
@@ -216,11 +228,13 @@ function ActivityQueueStatusBadge({
 function ActivityQueueDetailsPanel({
   detailId,
   releaseTitle,
+  errorCode,
   failureReason,
   t,
 }: {
   detailId: string;
   releaseTitle: string;
+  errorCode?: string | null;
   failureReason: string;
   t: TranslateFn;
 }) {
@@ -236,6 +250,18 @@ function ActivityQueueDetailsPanel({
           </p>
           <p className="mt-1 break-words text-sm text-foreground">{releaseTitle}</p>
         </div>
+        <div>
+          {errorCode ? (
+            <>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                {t("queue.errorCode")}
+              </p>
+              <p className="mt-1 break-words text-sm font-mono text-foreground">{errorCode}</p>
+            </>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-4">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
             {t("queue.blockReason")}
@@ -351,7 +377,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     historyLoadingMore,
     requestMoreHistory,
   } = state;
-  const [manualImportingId, setManualImportingId] = useState<string | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<DownloadQueueItem | null>(null);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
@@ -437,11 +462,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     <div className="space-y-3">
       {items.map((queueItem) => {
         const row = deriveQueueRowPresentation(queueItem, t);
-        const manualImportPending = manualImportingId === queueItem.id;
         const isActionLoading = actionLoadingId === queueItem.id;
         const isRowBusy =
           rowActionBusy[queueItem.id] ?? rowActionBusyRef.current[queueItem.id] ?? false;
-        const isRowBlocked = isRowBusy || manualImportPending || isActionLoading;
+        const isManualImportPending = row.displayStateKey === "importing";
+        const isRowBlocked = isRowBusy || isManualImportPending || isActionLoading;
         const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
         const isExpanded = Boolean(expandedItemIds[queueItem.id]);
@@ -485,6 +510,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 <ActivityQueueDetailsPanel
                   detailId={detailId}
                   releaseTitle={row.releaseTitle}
+                  errorCode={queueItem.importErrorCode}
                   failureReason={row.failureReason}
                   t={t}
                 />
@@ -570,24 +596,19 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     ) {
                       return;
                     }
-                    if (manualImportPending) return;
-                    setManualImportingId(queueItem.id);
                     setRowBusy(queueItem.id, true);
                     void requestManualImport(queueItem).finally(() => {
                       setRowBusy(queueItem.id, false);
-                      setManualImportingId((current) =>
-                        current === queueItem.id ? null : current,
-                      );
                     });
                   }}
                 >
-                  {manualImportPending ? (
+                  {isManualImportPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     <ArrowDownToLine className="h-4 w-4" />
                   )}
                   <span>
-                    {manualImportPending
+                    {isManualImportPending
                       ? t("queue.manualImporting")
                       : t("queue.manualImportTooltip")}
                   </span>
@@ -696,13 +717,13 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     <>
       {items.map((queueItem) => {
         const row = deriveQueueRowPresentation(queueItem, t);
-        const manualImportPending = manualImportingId === queueItem.id;
         const isActionLoading = actionLoadingId === queueItem.id;
         const isRowBusy =
           rowActionBusy[queueItem.id] ??
           rowActionBusyRef.current[queueItem.id] ??
           false;
-        const isRowBlocked = isRowBusy || manualImportPending || isActionLoading;
+        const isManualImportPending = row.displayStateKey === "importing";
+        const isRowBlocked = isRowBusy || isManualImportPending || isActionLoading;
         const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
         const rowActionVisualClass = isRowFullyBusy
@@ -822,12 +843,12 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       className={`h-10 w-10 border border-emerald-500/60 dark:border-emerald-500/50 bg-emerald-600/20 dark:bg-emerald-600/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-600/30 dark:hover:bg-emerald-600/25 ${rowActionVisualClass}`}
                       disabled={isRowFullyBusy}
                       title={
-                        manualImportPending
+                        isManualImportPending
                           ? t("queue.manualImporting")
                           : t("queue.manualImportTooltip")
                       }
                       aria-label={
-                        manualImportPending
+                        isManualImportPending
                           ? t("queue.manualImporting")
                           : t("queue.manualImportTooltip")
                       }
@@ -839,18 +860,13 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                         ) {
                           return;
                         }
-                        if (manualImportPending) return;
-                        setManualImportingId(queueItem.id);
                         setRowBusy(queueItem.id, true);
                         void requestManualImport(queueItem).finally(() => {
                           setRowBusy(queueItem.id, false);
-                          setManualImportingId((current) =>
-                            current === queueItem.id ? null : current,
-                          );
                         });
                       }}
                     >
-                      {manualImportPending ? (
+                      {isManualImportPending ? (
                         <Loader2 className="h-5 w-5 animate-spin" />
                       ) : (
                         <ArrowDownToLine className="h-5 w-5" />
@@ -956,6 +972,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   <ActivityQueueDetailsPanel
                     detailId={detailId}
                     releaseTitle={row.releaseTitle}
+                    errorCode={queueItem.importErrorCode}
                     failureReason={row.failureReason}
                     t={t}
                   />

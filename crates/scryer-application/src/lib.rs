@@ -143,9 +143,10 @@ pub use event_views::{
 };
 pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, ActivitySeverity};
 pub use import_workflow::{
-    ManualImportFileMapping, ManualImportFilePreview, ManualImportFileResult, ManualImportPreview,
-    execute_manual_import, import_completed_download, preview_manual_import, retry_failed_import,
-    try_import_completed_downloads,
+    ManualImportExecutionResult, ManualImportFileMapping, ManualImportFilePreview,
+    ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
+    execute_queued_manual_import, import_completed_download, preview_manual_import,
+    retry_failed_import, start_background_manual_import_poller, try_import_completed_downloads,
 };
 pub use jobs::jobs::start_background_library_refresh_loop;
 pub use library::rename::{
@@ -161,10 +162,12 @@ pub use plugins::plugins::{RegistryPlugin, RulePackRegistryEntry, RulePackTempla
 pub use security::backup::BackupService;
 pub use settings::settings::{
     AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,
-    FacetScoringPersonaSelection, IndexerRoutingSettingsEntry, LibraryPathsSettings, MediaSettings,
-    QualityProfileSelection, QualityProfileSettings, SaveQualityProfileSettings, ServiceSettings,
-    SubtitleSettings, UpdateFacetScoringPersonaSelection, UpdateLibraryPaths, UpdateMediaSettings,
-    UpdateQualityProfileSelection, UpdateServiceSettings, UpdateSubtitleSettings,
+    FacetScoringPersonaSelection, GeneralSettings, IndexerRoutingSettingsEntry,
+    LibraryPathsSettings, MediaSettings, QualityProfileSelection, QualityProfileSettings,
+    SaveQualityProfileSettings, ServiceSettings, SubtitleSettings,
+    UpdateFacetScoringPersonaSelection, UpdateGeneralSettings, UpdateLibraryPaths,
+    UpdateMediaSettings, UpdateQualityProfileSelection, UpdateServiceSettings,
+    UpdateSubtitleSettings,
 };
 pub use subtitles::orchestration::{
     spawn_subtitle_search_for_file, start_background_subtitle_poller,
@@ -249,18 +252,19 @@ pub use settings::keys::{
     DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
     DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY,
-    MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
-    NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
-    NZBGET_RECENT_PRIORITY_SETTING_KEY, PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
-    PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
-    POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
-    POST_PROCESSING_TIMEOUT_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
-    RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
-    RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
-    RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
-    RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY,
+    NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
+    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY,
+    RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY, RENAME_COLLISION_POLICY_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_KEY, RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
+    RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,

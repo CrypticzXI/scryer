@@ -49,12 +49,30 @@ export function deriveDownloadQueueDisplayState(
   const stateKey = normalizeQueueState(queueItem.state);
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const failureReason = buildQueueStatusDetail(queueItem);
+  const importStatusKey = normalizeQueueState(queueItem.importStatus);
+
+  if (
+    importStatusKey === "pending" ||
+    importStatusKey === "running" ||
+    importStatusKey === "processing"
+  ) {
+    return "importing";
+  }
+
+  if (
+    (importStatusKey === "failed" || importStatusKey === "skipped") &&
+    (trackedStateKey === "import_blocked" ||
+      stateKey === "completed" ||
+      stateKey === "import_pending" ||
+      stateKey === "failed")
+  ) {
+    return "import_failed";
+  }
 
   if (trackedStateKey === "import_blocked" || trackedStateKey === "import_pending") {
     return trackedStateKey;
   }
 
-  const importStatusKey = normalizeQueueState(queueItem.importStatus);
   const canDeriveBlockedState =
     trackedStateKey.length === 0 &&
     failureReason.length > 0 &&
@@ -85,5 +103,6 @@ export function deriveDownloadQueueDisplayState(
 export function isManualImportRequiredQueueItem(
   queueItem: DownloadQueueDisplayStateInput,
 ): boolean {
-  return deriveDownloadQueueDisplayState(queueItem) === "import_blocked";
+  const state = deriveDownloadQueueDisplayState(queueItem);
+  return state === "import_blocked" || state === "importing" || state === "import_failed";
 }

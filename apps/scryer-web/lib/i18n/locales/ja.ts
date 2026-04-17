@@ -427,6 +427,16 @@ const ja: LocaleDictionary = {
   "settings.sectionTitle": "設定 • {{section}}",
   "settings.generalText": "一般アプリケーション設定。",
   "settings.generalPlaceholder": "言語やその他のグローバル設定を構成します。",
+  "settings.historyRetentionTitle": "履歴の保持",
+  "settings.historyRetentionHelp":
+    "これは Scryer のユーザー向け履歴と監査証跡を保持します。変更は次回のハウスキーピング実行時に反映されます。",
+  "settings.historyRetentionExternalHelp":
+    "取得処理用の一時データに対する運用上のクリーンアップは引き続き実行され、この設定は SABnzbd、NZBGet、Weaver が保持する履歴には適用されません。",
+  "settings.keepHistoryForever": "履歴を無期限に保持",
+  "settings.historyRetentionDaysLabel": "履歴を N 日間保持",
+  "settings.historyRetentionSaved": "履歴保持設定を保存しました。",
+  "settings.historyRetentionValidation":
+    "履歴保持日数は、履歴を無期限に保持する場合を除き、1 以上である必要があります。",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS証明書パス",
   "settings.tlsCertPathHelp":
@@ -666,6 +676,7 @@ const ja: LocaleDictionary = {
     "手動インポートは対応が必要なキューアイテムで利用できます。",
   "queue.releaseTitle": "リリース",
   "queue.blockReason": "ブロック理由",
+  "queue.errorCode": "エラーコード",
   "queue.showDetails": "詳細を表示",
   "queue.hideDetails": "詳細を隠す",
   "queue.assignTitle": "タイトルの割り当て",

@@ -165,7 +165,12 @@ impl AppUseCase {
         info!("starting RSS sync cycle");
 
         // Load all monitored titles for matching
-        let titles = self.services.catalog.titles.list(None, None).await?;
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_matching(None, None)
+            .await?;
         let lookup = build_title_lookup(&titles);
 
         if lookup.is_empty() {

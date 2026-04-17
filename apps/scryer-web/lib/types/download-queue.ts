@@ -17,6 +17,15 @@ export type ImportStatus =
   | "failed"
   | "skipped";
 
+export type ImportErrorCode =
+  | "file_not_found"
+  | "episode_not_found"
+  | "episode_lookup_failed"
+  | "io_failed"
+  | "permission_denied"
+  | "disk_full"
+  | "unknown";
+
 export type TrackedDownloadState =
   | "downloading"
   | "import_pending"
@@ -55,6 +64,7 @@ export type DownloadQueueItem = {
   attentionReason: string | null;
   downloadClientItemId: string;
   importStatus: ImportStatus | null;
+  importErrorCode: ImportErrorCode | null;
   importErrorMessage: string | null;
   importedAt: string | null;
   trackedState: TrackedDownloadState | null;

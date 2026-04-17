@@ -1,10 +1,16 @@
 use super::*;
 use async_trait::async_trait;
+use scryer_domain::ImportType;
 
 #[async_trait]
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_for_matching(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>>;
     async fn create(&self, title: Title) -> AppResult<Title>;
@@ -216,7 +222,15 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32>;
-    async fn delete_domain_events_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_domain_events_older_than_for_types(
+        &self,
+        days: i64,
+        event_types: &[DomainEventType],
+    ) -> AppResult<u32>;
+    async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
 }
@@ -443,6 +457,13 @@ pub trait ImportRepository: Send + Sync {
         source_ref: &str,
     ) -> AppResult<Option<ImportRecord>>;
 
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        import_type: ImportType,
+    ) -> AppResult<Option<ImportRecord>>;
+
     async fn update_import_status(
         &self,
         import_id: &str,
@@ -452,7 +473,23 @@ pub trait ImportRepository: Send + Sync {
 
     async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64>;
 
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        import_type: ImportType,
+        stale_seconds: i64,
+    ) -> AppResult<u64>;
+
     async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>>;
+
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>>;
+
+    async fn list_imports_for_sources(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>>;
 
     async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
 

@@ -5,6 +5,8 @@ pub struct AppRuntimeState {
     pub domain_event_broadcast: broadcast::Sender<i64>,
     pub import_history_broadcast: broadcast::Sender<()>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
+    pub(crate) monitored_title_matcher:
+        Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub library_scan_tracker: LibraryScanTracker,
     pub library_scan_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
@@ -29,6 +31,9 @@ impl Default for AppRuntimeState {
             domain_event_broadcast: domain_event_tx,
             import_history_broadcast: import_history_tx,
             settings_changed_broadcast: settings_changed_tx,
+            monitored_title_matcher: Arc::new(RwLock::new(
+                crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
+            )),
             library_scan_tracker: LibraryScanTracker::new(),
             library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
             job_run_tracker: JobRunTracker::new(),
@@ -821,6 +826,43 @@ pub struct AppUseCase {
 }
 
 impl AppUseCase {
+    async fn invalidate_monitored_title_matcher(&self) {
+        let mut state = self.runtime.monitored_title_matcher.write().await;
+        state.dirty = true;
+    }
+
+    pub(crate) async fn monitored_title_matcher(
+        &self,
+    ) -> AppResult<Arc<crate::import_title_resolution::MonitoredTitleMatcher>> {
+        {
+            let state = self.runtime.monitored_title_matcher.read().await;
+            if !state.dirty
+                && let Some(matcher) = state.matcher.clone()
+            {
+                return Ok(matcher);
+            }
+        }
+
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_matching(None, None)
+            .await?;
+        let matcher = Arc::new(crate::import_title_resolution::MonitoredTitleMatcher::new(
+            titles,
+        ));
+
+        let mut state = self.runtime.monitored_title_matcher.write().await;
+        if state.dirty || state.matcher.is_none() {
+            state.matcher = Some(matcher.clone());
+            state.dirty = false;
+            return Ok(matcher);
+        }
+
+        Ok(state.matcher.clone().unwrap_or(matcher))
+    }
+
     /// Test-only escape hatch for selectively overriding already-assembled services.
     ///
     /// Production assembly should go through `AppServices::builder(...).build()`.
@@ -848,6 +890,9 @@ impl AppUseCase {
 
     pub async fn append_domain_event(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
         let stored = self.services.events.domain_events.append(event).await?;
+        if should_invalidate_monitored_title_matcher(&stored.payload) {
+            self.invalidate_monitored_title_matcher().await;
+        }
         let _ = self.runtime.domain_event_broadcast.send(stored.sequence);
         Ok(stored)
     }
@@ -862,6 +907,12 @@ impl AppUseCase {
             .domain_events
             .append_many(events)
             .await?;
+        if stored
+            .iter()
+            .any(|event| should_invalidate_monitored_title_matcher(&event.payload))
+        {
+            self.invalidate_monitored_title_matcher().await;
+        }
         if let Some(last) = stored.last() {
             let _ = self.runtime.domain_event_broadcast.send(last.sequence);
         }
@@ -1212,6 +1263,15 @@ impl AppUseCase {
             .unwrap()
             .clone()
     }
+}
+
+fn should_invalidate_monitored_title_matcher(payload: &scryer_domain::DomainEventPayload) -> bool {
+    matches!(
+        payload,
+        scryer_domain::DomainEventPayload::TitleAdded(_)
+            | scryer_domain::DomainEventPayload::TitleUpdated(_)
+            | scryer_domain::DomainEventPayload::TitleDeleted(_)
+    )
 }
 
 #[cfg(test)]

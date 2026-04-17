@@ -1,15 +1,15 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate, InsertMediaFileInput,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate, ImportRepository,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, ShowRepository, TitleImageBlob,
     TitleImageKind, TitleImageReplacement, TitleImageRepository, TitleImageStorageMode,
     TitleImageVariantRecord, TitleRepository, UserRepository,
 };
 use scryer_domain::{
-    Collection, CollectionType, Entitlement, Episode, ExternalId, InterstitialMovieMetadata,
-    MediaFacet, Title,
+    Collection, CollectionType, Entitlement, Episode, ExternalId, ImportType,
+    InterstitialMovieMetadata, MediaFacet, Title,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 
@@ -25,6 +25,49 @@ async fn sqlite_can_initialize() {
         .expect("query should return users after initialization");
 
     assert!(!users.is_empty());
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_imports_for_sources_handles_multiple_pairs() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_import_sources_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = SqliteWorkflowStore::new(&services);
+
+    workflow
+        .queue_import_request(
+            "weaver".to_string(),
+            "10000".to_string(),
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("first import should queue");
+    workflow
+        .queue_import_request(
+            "weaver".to_string(),
+            "10001".to_string(),
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("second import should queue");
+
+    let records = workflow
+        .list_imports_for_sources(&[
+            ("weaver".to_string(), "10000".to_string()),
+            ("weaver".to_string(), "10001".to_string()),
+        ])
+        .await
+        .expect("batch lookup should succeed");
+
+    assert_eq!(records.len(), 2);
+
     let _ = std::fs::remove_file(db);
 }
 
@@ -151,6 +194,19 @@ async fn title_queries_prefer_local_cached_poster_url() {
         after_cache.poster_url.as_deref(),
         Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
     );
+    assert_eq!(
+        after_cache.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster.jpg")
+    );
+
+    let listed = TitleRepository::list(&catalog, None, None)
+        .await
+        .expect("title list should succeed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].poster_url.as_deref(),
+        Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
+    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -228,6 +284,10 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
         updated.poster_url.as_deref(),
         Some("/images/titles/title-2/poster/w500?v=2222222222222222")
     );
+    assert_eq!(
+        updated.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-b.jpg")
+    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -242,8 +302,12 @@ async fn title_queries_find_by_external_id() {
         .await
         .expect("db should initialize");
     let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
 
-    let mut title = make_test_title("title-external-id", None);
+    let mut title = make_test_title(
+        "title-external-id",
+        Some("https://tvdb.example/poster-external.jpg"),
+    );
     title.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
         value: "123456".to_string(),
@@ -251,6 +315,35 @@ async fn title_queries_find_by_external_id() {
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster-external.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![1, 1, 1],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w500".to_string(),
+                    format: "avif".to_string(),
+                    width: 500,
+                    height: 750,
+                    bytes: vec![2, 2, 2],
+                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("title image should insert");
 
     let found = catalog
         .find_by_external_id("tvdb", "123456")
@@ -259,6 +352,80 @@ async fn title_queries_find_by_external_id() {
         .expect("title should exist");
 
     assert_eq!(found.id, title.id);
+    assert_eq!(
+        found.poster_url.as_deref(),
+        Some("/images/titles/title-external-id/poster/w500?v=ffffffffffffffff")
+    );
+    assert_eq!(
+        found.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-external.jpg")
+    );
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_list_for_matching_keeps_source_image_urls() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_list_for_matching_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
+
+    let title = make_test_title(
+        "title-list-matching",
+        Some("https://tvdb.example/poster.jpg"),
+    );
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "abababababababababababababababab".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![1, 2, 3],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w500".to_string(),
+                    format: "avif".to_string(),
+                    width: 500,
+                    height: 750,
+                    bytes: vec![4, 5, 6],
+                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("title image should insert");
+
+    let titles = TitleRepository::list_for_matching(&catalog, None, None)
+        .await
+        .expect("matching list should succeed");
+    let listed = titles
+        .into_iter()
+        .find(|candidate| candidate.id == title.id)
+        .expect("title should be listed");
+
+    assert_eq!(
+        listed.poster_url.as_deref(),
+        Some("https://tvdb.example/poster.jpg")
+    );
+    assert!(listed.poster_source_url.is_none());
+
     let _ = std::fs::remove_file(db);
 }
 
@@ -445,6 +612,127 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
     assert!(
         pending.iter().any(|task| task.title_id == title.id),
         "incomplete AVIF cache rows should be re-queued for repair"
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_local_path_backfill_matches_legacy_served_path() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_backfill_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = catalog_store(&services);
+
+    let title = make_test_title(
+        "title-backfill",
+        Some("https://tvdb.example/poster-backfill.jpg"),
+    );
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query(
+        "INSERT INTO title_images (
+            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
+            source_last_modified, source_format, source_width, source_height, storage_mode,
+            master_path, master_format, master_sha256, master_width, master_height, bytes,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("img-backfill")
+    .bind(&title.id)
+    .bind("tvdb")
+    .bind(Option::<String>::None)
+    .bind("poster")
+    .bind("https://tvdb.example/poster-backfill.jpg")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind("jpeg")
+    .bind(1000i32)
+    .bind(1500i32)
+    .bind("avif_master")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind("12121212121212121212121212121212")
+    .bind(1000i32)
+    .bind(1500i32)
+    .bind(vec![1_u8, 2, 3])
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("legacy title image row should insert");
+
+    sqlx::query(
+        "INSERT INTO title_image_variants (
+            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("variant-backfill")
+    .bind("img-backfill")
+    .bind("w500")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind(500i32)
+    .bind(750i32)
+    .bind(vec![4_u8, 5, 6])
+    .bind("34343434343434343434343434343434")
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("legacy title image variant row should insert");
+
+    sqlx::query("UPDATE titles SET poster_local_path = NULL WHERE id = ?")
+        .bind(&title.id)
+        .execute(&services.pool)
+        .await
+        .expect("local path should be cleared to simulate legacy state");
+
+    for statement in
+        include_str!("../../scryer/src/db/migrations/0075_title_image_local_paths.sql").split(";\n")
+    {
+        let statement = statement.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        if statement.starts_with("ALTER TABLE titles ADD COLUMN") {
+            let _ = sqlx::query(statement).execute(&services.pool).await;
+            continue;
+        }
+        sqlx::query(statement)
+            .execute(&services.pool)
+            .await
+            .expect("backfill statement should succeed");
+    }
+
+    let materialized_path: Option<String> =
+        sqlx::query_scalar("SELECT poster_local_path FROM titles WHERE id = ?")
+            .bind(&title.id)
+            .fetch_one(&services.pool)
+            .await
+            .expect("materialized local path should exist");
+    assert_eq!(
+        materialized_path.as_deref(),
+        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
+    );
+
+    let hydrated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        hydrated.poster_url.as_deref(),
+        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
+    );
+    assert_eq!(
+        hydrated.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-backfill.jpg")
     );
 
     let _ = std::fs::remove_file(db);

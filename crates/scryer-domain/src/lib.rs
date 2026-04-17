@@ -529,6 +529,7 @@ pub struct DownloadQueueItem {
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
     pub import_status: Option<ImportStatus>,
+    pub import_error_code: Option<ImportErrorCode>,
     pub import_error_message: Option<String>,
     pub imported_at: Option<String>,
     pub is_scryer_origin: bool,
@@ -646,6 +647,10 @@ impl ImportStatus {
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Skipped)
     }
+
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Pending | Self::Running | Self::Processing)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -653,6 +658,7 @@ impl ImportStatus {
 pub enum ImportType {
     MovieDownload,
     SeriesDownload,
+    ManualImport,
     RenamePreview,
     RenameApplyTitle,
     RenameApplyFacet,
@@ -667,6 +673,7 @@ impl ImportType {
         match self {
             Self::MovieDownload => "movie_download",
             Self::SeriesDownload => "series_download",
+            Self::ManualImport => "manual_import",
             Self::RenamePreview => "rename_preview",
             Self::RenameApplyTitle => "rename_apply_title",
             Self::RenameApplyFacet => "rename_apply_facet",
@@ -681,6 +688,7 @@ impl ImportType {
         match value {
             "movie_download" => Some(Self::MovieDownload),
             "series_download" => Some(Self::SeriesDownload),
+            "manual_import" => Some(Self::ManualImport),
             "rename_preview" => Some(Self::RenamePreview),
             "rename_apply_title" => Some(Self::RenameApplyTitle),
             "rename_apply_facet" => Some(Self::RenameApplyFacet),
@@ -703,6 +711,45 @@ impl ImportType {
                 | Self::RenameMove
                 | Self::RenameStalePlan
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportErrorCode {
+    FileNotFound,
+    EpisodeNotFound,
+    EpisodeLookupFailed,
+    IoFailed,
+    PermissionDenied,
+    DiskFull,
+    Unknown,
+}
+
+impl ImportErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FileNotFound => "file_not_found",
+            Self::EpisodeNotFound => "episode_not_found",
+            Self::EpisodeLookupFailed => "episode_lookup_failed",
+            Self::IoFailed => "io_failed",
+            Self::PermissionDenied => "permission_denied",
+            Self::DiskFull => "disk_full",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "file_not_found" => Some(Self::FileNotFound),
+            "episode_not_found" => Some(Self::EpisodeNotFound),
+            "episode_lookup_failed" => Some(Self::EpisodeLookupFailed),
+            "io_failed" => Some(Self::IoFailed),
+            "permission_denied" => Some(Self::PermissionDenied),
+            "disk_full" => Some(Self::DiskFull),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
     }
 }
 
@@ -1008,6 +1055,7 @@ pub enum EventType {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+#[derive(strum::EnumIter)]
 pub enum DomainEventType {
     TitleAdded,
     TitleUpdated,
@@ -1131,44 +1179,8 @@ impl DomainEventType {
         }
     }
 
-    pub fn all() -> &'static [DomainEventType] {
-        &[
-            Self::TitleAdded,
-            Self::TitleUpdated,
-            Self::TitleDeleted,
-            Self::ConfigurationChanged,
-            Self::DiscoverySearchCompleted,
-            Self::MetadataHydrationUpdated,
-            Self::ReleaseGrabbed,
-            Self::DownloadFailed,
-            Self::ImportCompleted,
-            Self::ImportRejected,
-            Self::MediaFileImported,
-            Self::MediaFileRenamed,
-            Self::MediaFileDeleted,
-            Self::MediaFileUpgraded,
-            Self::AcquisitionSearchCompleted,
-            Self::AcquisitionCandidateRejected,
-            Self::ImportRequested,
-            Self::ImportRecoveryCompleted,
-            Self::DownloadQueueItemCommandIssued,
-            Self::PostProcessingCompleted,
-            Self::SubtitleDownloaded,
-            Self::SubtitleSearchFailed,
-            Self::LibraryScanStarted,
-            Self::LibraryScanTitleDiscovered,
-            Self::LibraryScanDeltaRecorded,
-            Self::LibraryScanProgressed,
-            Self::LibraryScanCompleted,
-            Self::LibraryScanCanceled,
-            Self::LibraryScanFailed,
-            Self::JobRunStarted,
-            Self::JobRunCompleted,
-            Self::JobRunFailed,
-            Self::JobNextRunUpdated,
-            Self::DownloadQueueItemUpserted,
-            Self::DownloadQueueItemRemoved,
-        ]
+    pub fn variants() -> impl Iterator<Item = Self> {
+        <Self as strum::IntoEnumIterator>::iter()
     }
 }
 

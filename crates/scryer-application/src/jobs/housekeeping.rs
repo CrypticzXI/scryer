@@ -1,4 +1,8 @@
 use super::*;
+use crate::events::retention::{
+    OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS, operational_domain_event_types,
+    user_facing_domain_event_types,
+};
 use tracing::info;
 
 const MEDIA_ROOT_KEYS: [(&str, &str); 3] = [
@@ -6,6 +10,8 @@ const MEDIA_ROOT_KEYS: [(&str, &str); 3] = [
     ("anime.path", "/data/anime"),
     ("movies.path", "/data/movies"),
 ];
+const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
+const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
 
 impl AppUseCase {
     /// Resolve media root paths and their recycle configs.
@@ -28,6 +34,10 @@ impl AppUseCase {
 
     pub async fn run_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
+        let general_settings = self.general_settings().await?;
+        let history_retention_days = general_settings.history_retention_days as i64;
+        let user_facing_domain_event_types = user_facing_domain_event_types();
+        let operational_domain_event_types = operational_domain_event_types();
 
         // 1. Orphaned media files (file_path no longer exists on disk)
         let all_files = self
@@ -51,23 +61,86 @@ impl AppUseCase {
             0
         };
 
-        // 2. Stale release decisions (> 30 days)
         let stale_release_decisions = self
             .services
             .workflow
             .housekeeping
-            .delete_release_decisions_older_than(30)
+            .delete_release_decisions_older_than(RELEASE_DECISION_RETENTION_DAYS)
             .await?;
-
-        // 3. Stale release attempts (> 90 days, non-pending)
         let stale_release_attempts = self
             .services
             .workflow
             .housekeeping
-            .delete_release_attempts_older_than(90)
+            .delete_release_attempts_older_than(RELEASE_ATTEMPT_RETENTION_DAYS)
             .await?;
 
-        // 4. Expired event outboxes (dispatched > 7 days ago)
+        let (
+            stale_history_events,
+            stale_domain_events,
+            stale_title_history,
+            stale_download_import_artifacts,
+            stale_import_history,
+            stale_rule_set_history,
+        ) = if general_settings.keep_history_forever {
+            (0, 0, 0, 0, 0, 0)
+        } else {
+            (
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_history_events_older_than(history_retention_days)
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_domain_events_older_than_for_types(
+                        history_retention_days,
+                        &user_facing_domain_event_types,
+                    )
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_title_history_older_than(history_retention_days)
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_download_import_artifacts_older_than(history_retention_days)
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_terminal_imports_older_than(history_retention_days)
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_rule_set_history_older_than(history_retention_days)
+                    .await?,
+            )
+        };
+        let stale_operational_domain_events = self
+            .services
+            .workflow
+            .housekeeping
+            .delete_domain_events_older_than_for_types(
+                OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS,
+                &operational_domain_event_types,
+            )
+            .await?;
+
+        let stale_history_records = stale_release_decisions
+            + stale_release_attempts
+            + stale_operational_domain_events
+            + stale_history_events
+            + stale_domain_events
+            + stale_title_history
+            + stale_download_import_artifacts
+            + stale_import_history
+            + stale_rule_set_history;
+
+        // 3. Expired event outboxes (dispatched > 7 days ago)
         let expired_event_outboxes = self
             .services
             .workflow
@@ -75,21 +148,7 @@ impl AppUseCase {
             .delete_dispatched_event_outboxes_older_than(7)
             .await?;
 
-        // 5. Stale history events (> 365 days)
-        let stale_history_events = self
-            .services
-            .workflow
-            .housekeeping
-            .delete_history_events_older_than(365)
-            .await?;
-        let stale_domain_events = self
-            .services
-            .workflow
-            .housekeeping
-            .delete_domain_events_older_than(365)
-            .await?;
-
-        // 6. Stale staged NZB artifacts (> 1 hour old)
+        // 4. Stale staged NZB artifacts (> 1 hour old)
         let staged_nzb_artifacts_pruned = self
             .services
             .workflow
@@ -97,7 +156,7 @@ impl AppUseCase {
             .prune_staged_nzbs_older_than(chrono::Utc::now() - chrono::Duration::hours(1))
             .await?;
 
-        // 7. Purge expired recycle bin entries (per media root)
+        // 5. Purge expired recycle bin entries (per media root)
         let mut recycled_purged = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {
             match crate::recycle_bin::purge_expired(&config).await {
@@ -112,6 +171,7 @@ impl AppUseCase {
             stale_release_attempts,
             expired_event_outboxes,
             stale_history_events,
+            stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
             ran_at: chrono::Utc::now().to_rfc3339(),
@@ -123,7 +183,13 @@ impl AppUseCase {
             stale_release_attempts,
             expired_event_outboxes,
             stale_history_events,
+            stale_operational_domain_events,
             stale_domain_events,
+            stale_title_history,
+            stale_download_import_artifacts,
+            stale_import_history,
+            stale_rule_set_history,
+            stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
             "housekeeping completed"

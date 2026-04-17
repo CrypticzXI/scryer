@@ -74,6 +74,7 @@ struct HousekeepingRunSummary {
     stale_release_attempts: u32,
     expired_event_outboxes: u32,
     stale_history_events: u32,
+    stale_history_records: u32,
     staged_nzb_artifacts_pruned: u32,
     recycled_purged: u32,
 }
@@ -530,6 +531,7 @@ impl AppUseCase {
                         stale_release_attempts: report.stale_release_attempts,
                         expired_event_outboxes: report.expired_event_outboxes,
                         stale_history_events: report.stale_history_events,
+                        stale_history_records: report.stale_history_records,
                         staged_nzb_artifacts_pruned: report.staged_nzb_artifacts_pruned,
                         recycled_purged: report.recycled_purged,
                     })

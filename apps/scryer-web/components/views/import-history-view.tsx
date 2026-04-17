@@ -69,7 +69,8 @@ type StatusFilter = "all" | ImportRecordStatus;
 
 const importTypeLabels: Record<ImportType, string> = {
   movie_download: "Movie Download",
-  series_download: "TV Download",
+  series_download: "Series Download",
+  manual_import: "Manual Import",
   rename_preview: "Rename Preview",
   rename_apply_title: "Rename Apply Title",
   rename_apply_facet: "Rename Apply Facet",

@@ -564,6 +564,7 @@ impl NzbgetDownloadClient {
                     },
                     download_client_item_id: nzb_id.to_string(),
                     import_status: None,
+                    import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     is_scryer_origin: is_scryer,
@@ -709,6 +710,7 @@ impl NzbgetDownloadClient {
                     },
                     download_client_item_id: id.clone(),
                     import_status: None,
+                    import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     is_scryer_origin: is_scryer,
@@ -816,6 +818,7 @@ impl NzbgetDownloadClient {
                     attention_reason,
                     download_client_item_id: nzb_id.to_string(),
                     import_status: None,
+                    import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     is_scryer_origin: is_scryer,
@@ -1126,13 +1129,6 @@ impl DownloadClient for NzbgetDownloadClient {
 
                 let completed_at =
                     history_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
-
-                // Only return entries submitted by scryer (have *scryer_title_id parameter).
-                // Non-scryer downloads are not importable and just create log noise.
-                let is_scryer = parameters.iter().any(|(k, _)| k == "*scryer_title_id");
-                if !is_scryer {
-                    return None;
-                }
 
                 Some(scryer_domain::CompletedDownload {
                     client_type: "nzbget".to_string(),

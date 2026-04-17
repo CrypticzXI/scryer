@@ -434,6 +434,17 @@ const it: LocaleDictionary = {
   "settings.sectionTitle": "Impostazioni • {{section}}",
   "settings.generalText": "Impostazioni generali dell'applicazione.",
   "settings.generalPlaceholder": "Configura lingua e altre preferenze globali.",
+  "settings.historyRetentionTitle": "Conservazione cronologia",
+  "settings.historyRetentionHelp":
+    "Questo conserva la cronologia visibile all’utente e il registro di controllo di Scryer. Le modifiche avranno effetto alla prossima esecuzione della manutenzione.",
+  "settings.historyRetentionExternalHelp":
+    "La pulizia operativa dei dati temporanei di acquisizione continua comunque e questa impostazione non controlla la cronologia conservata da SABnzbd, NZBGet o Weaver.",
+  "settings.keepHistoryForever": "Conserva la cronologia per sempre",
+  "settings.historyRetentionDaysLabel": "Conserva la cronologia per N giorni",
+  "settings.historyRetentionSaved":
+    "Impostazioni di conservazione della cronologia salvate.",
+  "settings.historyRetentionValidation":
+    "I giorni di conservazione della cronologia devono essere almeno 1, a meno che la cronologia non venga conservata per sempre.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "Percorso certificato TLS",
   "settings.tlsCertPathHelp":
@@ -680,6 +691,7 @@ const it: LocaleDictionary = {
     "L'importazione manuale è disponibile per gli elementi in coda che richiedono attenzione.",
   "queue.releaseTitle": "Release",
   "queue.blockReason": "Motivo del blocco",
+  "queue.errorCode": "Codice errore",
   "queue.showDetails": "Mostra dettagli",
   "queue.hideDetails": "Nascondi dettagli",
   "queue.assignTitle": "Assegna titolo",

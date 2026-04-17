@@ -23,18 +23,27 @@ const STANDBY_RETENTION_HOURS: i64 = 24;
 
 fn candidate_matches_title(candidate: &IndexerSearchResult, title: &Title) -> bool {
     if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
-        return crate::app_usecase_rss::parsed_release_matches_title(parsed, title);
+        return parsed_candidate_matches_title(parsed, title);
     }
 
     let parsed = crate::parse_release_metadata(&candidate.title);
-    crate::app_usecase_rss::parsed_release_matches_title(&parsed, title)
+    parsed_candidate_matches_title(&parsed, title)
+}
+
+fn parsed_candidate_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
+    crate::app_usecase_rss::parsed_release_matches_title(parsed, title)
 }
 
 impl AppUseCase {
     /// Sync the wanted_items table with current monitored state.
     /// Creates entries for monitored media without files, removes stale entries.
     pub(crate) async fn sync_wanted_state(&self) -> AppResult<()> {
-        let titles = self.services.catalog.titles.list(None, None).await?;
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_matching(None, None)
+            .await?;
         let now = Utc::now();
 
         for title in &titles {
@@ -301,7 +310,12 @@ impl AppUseCase {
                 // Skip if the movie already exists as a separate Movie facet title
                 // (prevents downloading the same movie twice)
                 if (!movie.imdb_id.is_empty() || movie.movie_tmdb_id.is_some())
-                    && let Ok(all_titles) = self.services.catalog.titles.list(None, None).await
+                    && let Ok(all_titles) = self
+                        .services
+                        .catalog
+                        .titles
+                        .list_for_matching(None, None)
+                        .await
                 {
                     let already_exists = all_titles.iter().any(|t| {
                         t.facet == scryer_domain::MediaFacet::Movie
@@ -609,6 +623,8 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         "check_grabbed_for_failures: checking grabbed wanted items against download client"
     );
 
+    let mut submissions_by_title = HashMap::new();
+
     for item in &grabbed_items {
         // Extract the grabbed release title from the stored JSON (for logging/blocklist)
         let release_title = item
@@ -621,21 +637,40 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         // Look up the download submission to find the download client job ID.
         // Match by job ID (works across all clients) instead of title name
         // (which gets sanitized differently by each client).
-        let submissions = app
-            .services
-            .workflow
-            .download_submissions
-            .list_for_title(&item.title_id)
-            .await
-            .unwrap_or_default();
+        let submissions = if let Some(cached) = submissions_by_title.get(&item.title_id) {
+            cached
+        } else {
+            let fetched = match app
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&item.title_id)
+                .await
+            {
+                Ok(submissions) => submissions,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        title_id = item.title_id.as_str(),
+                        "failed to list submissions for grabbed wanted item title"
+                    );
+                    Vec::new()
+                }
+            };
 
-        info!(
-            title_id = item.title_id.as_str(),
-            release = release_title.as_str(),
-            submission_count = submissions.len(),
-            submission_ids = ?submissions.iter().map(|s| s.download_client_item_id.as_str()).collect::<Vec<_>>(),
-            "check_grabbed_for_failures: looking up submissions for grabbed item"
-        );
+            info!(
+                title_id = item.title_id.as_str(),
+                release = release_title.as_str(),
+                submission_count = fetched.len(),
+                submission_ids = ?fetched.iter().map(|s| s.download_client_item_id.as_str()).collect::<Vec<_>>(),
+                "check_grabbed_for_failures: looking up submissions for grabbed title"
+            );
+
+            submissions_by_title.insert(item.title_id.clone(), fetched);
+            submissions_by_title
+                .get(&item.title_id)
+                .expect("title submissions cache entry should exist")
+        };
 
         let failed = submissions.iter().find_map(|sub| {
             dl_snapshot
@@ -1379,7 +1414,7 @@ async fn process_single_wanted_item(
                     .map(|d| d.allowed)
                     .unwrap_or(false)
                     && is_pack
-                    && candidate_matches_title(r, &title)
+                    && parsed_candidate_matches_title(parsed, &title)
             }) {
                 // ── Season pack upgrade guard ───────────────────────────────
                 // Check whether grabbing this pack benefits at least 1 episode.
@@ -3135,7 +3170,7 @@ pub async fn start_background_acquisition_poller(
     )
     .await;
 
-    let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(
+    let mut poll_interval = new_skip_interval(std::time::Duration::from_secs(
         settings.poll_interval_seconds.max(1) as u64,
     ));
     let mut sync_interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -3315,6 +3350,12 @@ pub async fn start_background_acquisition_poller(
             }
         }
     }
+}
+
+fn new_skip_interval(period: std::time::Duration) -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
 }
 
 /// Determine whether a movie has reached its configured availability threshold.

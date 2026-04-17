@@ -10,8 +10,9 @@ use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL,
+    SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 const ACQUISITION_ENABLED_KEY: &str = "acquisition.enabled";
@@ -125,6 +126,18 @@ pub struct ExternalImportLibraryPathsSelection {
 pub struct ServiceSettings {
     pub tls_cert_path: String,
     pub tls_key_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneralSettings {
+    pub keep_history_forever: bool,
+    pub history_retention_days: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateGeneralSettings {
+    pub keep_history_forever: bool,
+    pub history_retention_days: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1234,12 +1247,33 @@ impl AppUseCase {
         })
     }
 
+    async fn load_general_settings(&self) -> AppResult<GeneralSettings> {
+        let keep_history_forever = self
+            .read_setting_bool_value(HISTORY_KEEP_FOREVER_KEY, None)
+            .await?
+            .unwrap_or(false);
+        let history_retention_days = self
+            .read_setting_i64_value(HISTORY_RETENTION_DAYS_KEY, None)
+            .await?
+            .map(|value| value.max(1) as i32)
+            .unwrap_or(180);
+
+        Ok(GeneralSettings {
+            keep_history_forever,
+            history_retention_days,
+        })
+    }
+
     pub(crate) async fn subtitle_settings(&self) -> AppResult<SubtitleSettings> {
         self.load_subtitle_settings().await
     }
 
     pub(crate) async fn acquisition_settings(&self) -> AppResult<AcquisitionSettings> {
         self.load_acquisition_settings().await
+    }
+
+    pub(crate) async fn general_settings(&self) -> AppResult<GeneralSettings> {
+        self.load_general_settings().await
     }
 
     pub(crate) async fn delay_profiles(&self) -> AppResult<Vec<crate::DelayProfile>> {
@@ -1267,6 +1301,11 @@ impl AppUseCase {
     pub async fn get_acquisition_settings(&self, actor: &User) -> AppResult<AcquisitionSettings> {
         require(actor, &Entitlement::ManageConfig)?;
         self.load_acquisition_settings().await
+    }
+
+    pub async fn get_general_settings(&self, actor: &User) -> AppResult<GeneralSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+        self.load_general_settings().await
     }
 
     pub async fn setup_complete(&self) -> AppResult<bool> {
@@ -2198,6 +2237,57 @@ impl AppUseCase {
                 .read_setting_string_value(TLS_KEY_PATH_KEY, None)
                 .await?
                 .unwrap_or_default(),
+        })
+    }
+
+    pub async fn update_general_settings(
+        &self,
+        actor: &User,
+        input: UpdateGeneralSettings,
+    ) -> AppResult<GeneralSettings> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let current = self.load_general_settings().await?;
+        let history_retention_days =
+            if input.keep_history_forever && input.history_retention_days < 1 {
+                current.history_retention_days
+            } else {
+                input.history_retention_days
+            };
+
+        if history_retention_days < 1 {
+            return Err(AppError::Validation(
+                "history retention days must be at least 1".to_string(),
+            ));
+        }
+
+        self.upsert_system_setting_json(
+            HISTORY_KEEP_FOREVER_KEY,
+            &input.keep_history_forever,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            HISTORY_RETENTION_DAYS_KEY,
+            &history_retention_days,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "general_settings",
+            None,
+            vec![
+                HISTORY_KEEP_FOREVER_KEY.to_string(),
+                HISTORY_RETENTION_DAYS_KEY.to_string(),
+            ],
+        )
+        .await;
+
+        Ok(GeneralSettings {
+            keep_history_forever: input.keep_history_forever,
+            history_retention_days,
         })
     }
 

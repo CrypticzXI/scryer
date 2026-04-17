@@ -417,6 +417,16 @@ const ko: LocaleDictionary = {
   "settings.sectionTitle": "설정 • {{section}}",
   "settings.generalText": "일반 애플리케이션 설정.",
   "settings.generalPlaceholder": "언어 및 기타 글로벌 환경 설정을 구성합니다.",
+  "settings.historyRetentionTitle": "기록 보존",
+  "settings.historyRetentionHelp":
+    "이 설정은 Scryer의 사용자 표시 기록과 감사 추적을 보존합니다. 변경 사항은 다음 하우스키핑 실행 시 적용됩니다.",
+  "settings.historyRetentionExternalHelp":
+    "수집 임시 데이터에 대한 운영 정리는 계속 실행되며, 이 설정은 SABnzbd, NZBGet, Weaver가 보존하는 기록에는 적용되지 않습니다.",
+  "settings.keepHistoryForever": "기록을 영구히 보존",
+  "settings.historyRetentionDaysLabel": "기록을 N일 동안 보존",
+  "settings.historyRetentionSaved": "기록 보존 설정이 저장되었습니다.",
+  "settings.historyRetentionValidation":
+    "기록을 영구히 보존하지 않는 경우 기록 보존 일수는 최소 1이어야 합니다.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS 인증서 경로",
   "settings.tlsCertPathHelp":
@@ -654,6 +664,7 @@ const ko: LocaleDictionary = {
     "수동 가져오기는 주의가 필요한 대기열 항목에서 사용할 수 있습니다.",
   "queue.releaseTitle": "릴리스",
   "queue.blockReason": "차단 사유",
+  "queue.errorCode": "오류 코드",
   "queue.showDetails": "세부 정보 표시",
   "queue.hideDetails": "세부 정보 숨기기",
   "queue.assignTitle": "제목 지정",

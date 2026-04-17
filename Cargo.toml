@@ -47,6 +47,7 @@ security-framework = "3"
 security-framework-sys = "2"
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 wiremock = "0.6"
+strum = { version = "0.27", features = ["derive"] }
 
 [profile.release]
 lto = "fat"

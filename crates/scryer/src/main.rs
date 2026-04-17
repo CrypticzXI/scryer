@@ -17,12 +17,14 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
-    MovieFacetHandler, PluginInstallationRepository, SeriesFacetHandler, TitleImageKind,
-    TitleImageRepository, start_background_acquisition_poller, start_background_banner_loop,
+    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
+    HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
+    PluginInstallationRepository, SeriesFacetHandler, TitleImageKind, TitleImageRepository,
+    start_background_acquisition_poller, start_background_banner_loop,
     start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_poster_loop, start_background_subtitle_poller, start_download_queue_poller,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    start_background_manual_import_poller, start_background_poster_loop,
+    start_background_subtitle_poller, start_download_queue_poller, start_notification_dispatcher,
+    tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
@@ -65,6 +67,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 struct AuthModeConfig {
     auth_enabled: bool,
     used_legacy_dev_auto_login: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionLifecycle {
+    FirstRun,
+    Unchanged,
+    Upgraded,
 }
 
 #[tokio::main]
@@ -314,7 +323,9 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    check_version_upgrade(&bootstrap_settings_store).await;
+    let version_lifecycle = check_version_upgrade(&bootstrap_settings_store).await;
+    preserve_history_retention_defaults_for_upgrades(&bootstrap_settings_store, version_lifecycle)
+        .await;
 
     let t = std::time::Instant::now();
     if let Err(error) = seed_service_settings_from_environment(&bootstrap_settings_store).await {
@@ -681,6 +692,10 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     tokio::spawn(start_background_subtitle_poller(
+        app_use_case.clone(),
+        shutdown_token.child_token(),
+    ));
+    tokio::spawn(start_background_manual_import_poller(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
@@ -1058,7 +1073,7 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn check_version_upgrade(settings_store: &SqliteSettingsStore) {
+async fn check_version_upgrade(settings_store: &SqliteSettingsStore) -> VersionLifecycle {
     const SCOPE: &str = "system";
     const KEY: &str = "last_run_version";
 
@@ -1070,9 +1085,10 @@ async fn check_version_upgrade(settings_store: &SqliteSettingsStore) {
         .and_then(|r| r.value_json)
         .and_then(|v| serde_json::from_str::<String>(&v).ok());
 
-    match previous.as_deref() {
+    let lifecycle = match previous.as_deref() {
         Some(prev) if prev == VERSION => {
             tracing::debug!(version = VERSION, "version unchanged");
+            VersionLifecycle::Unchanged
         }
         Some(prev) => {
             tracing::info!(
@@ -1080,11 +1096,13 @@ async fn check_version_upgrade(settings_store: &SqliteSettingsStore) {
                 current_version = VERSION,
                 "upgraded from {prev} to {VERSION}"
             );
+            VersionLifecycle::Upgraded
         }
         None => {
             tracing::info!(version = VERSION, "first run — recording version");
+            VersionLifecycle::FirstRun
         }
-    }
+    };
 
     let version_json = serde_json::to_string(VERSION).unwrap();
     if let Err(error) = settings_store
@@ -1092,6 +1110,55 @@ async fn check_version_upgrade(settings_store: &SqliteSettingsStore) {
         .await
     {
         tracing::warn!(error = %error, "failed to persist last_run_version");
+    }
+
+    lifecycle
+}
+
+async fn preserve_history_retention_defaults_for_upgrades(
+    settings_store: &SqliteSettingsStore,
+    lifecycle: VersionLifecycle,
+) {
+    if lifecycle != VersionLifecycle::Upgraded {
+        return;
+    }
+
+    let keep_forever = settings_store
+        .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
+        .await
+        .ok()
+        .flatten();
+    let retention_days = settings_store
+        .get_setting_with_defaults("system", HISTORY_RETENTION_DAYS_KEY, None)
+        .await
+        .ok()
+        .flatten();
+
+    if keep_forever
+        .as_ref()
+        .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
+        || retention_days
+            .as_ref()
+            .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
+    {
+        return;
+    }
+
+    if let Err(error) = settings_store
+        .upsert_setting_value(
+            "system",
+            HISTORY_KEEP_FOREVER_KEY,
+            None,
+            "true",
+            "migration",
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to preserve history retention defaults for upgraded install"
+        );
     }
 }
 
@@ -1185,10 +1252,15 @@ async fn seed_builtin_plugin_installations(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthModeConfig, resolve_auth_mode, title_image_handler};
+    use super::{
+        AuthModeConfig, VersionLifecycle, check_version_upgrade,
+        preserve_history_retention_defaults_for_upgrades, resolve_auth_mode,
+        seed_service_setting_definitions, title_image_handler,
+    };
     use std::sync::Arc;
 
     use crate::base_path::{BasePath, mount_router};
+    use crate::{HISTORY_KEEP_FOREVER_KEY, settings_bootstrap::SETTINGS_SCOPE_SYSTEM};
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -1197,6 +1269,8 @@ mod tests {
         AppResult, TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
         TitleImageSyncTask,
     };
+    use scryer_infrastructure::{MigrationMode, SqliteServices, SqliteSettingsStore};
+    use tempfile::tempdir;
     use tower::ServiceExt;
 
     #[derive(Default)]
@@ -1405,5 +1479,92 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn bootstrap_settings_store() -> (tempfile::TempDir, SqliteSettingsStore) {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("scryer.db");
+        let services = SqliteServices::new_with_mode(
+            db_path.to_string_lossy().to_string(),
+            MigrationMode::Apply,
+        )
+        .await
+        .expect("sqlite services");
+        let store = SqliteSettingsStore::new(&services);
+        seed_service_setting_definitions(&store)
+            .await
+            .expect("seed setting definitions");
+        (temp, store)
+    }
+
+    #[tokio::test]
+    async fn upgraded_install_without_history_overrides_preserves_history_forever() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                "last_run_version",
+                None,
+                "\"0.10.0\"",
+                "test",
+                None,
+            )
+            .await
+            .expect("seed previous version");
+
+        let lifecycle = check_version_upgrade(&store).await;
+        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
+
+        preserve_history_retention_defaults_for_upgrades(&store, lifecycle).await;
+
+        let keep_forever = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
+            .await
+            .expect("load keep forever")
+            .expect("setting exists");
+        assert_eq!(keep_forever.effective_value_json, "true");
+        assert_eq!(keep_forever.value_json.as_deref(), Some("true"));
+        assert_eq!(keep_forever.source.as_deref(), Some("migration"));
+    }
+
+    #[tokio::test]
+    async fn upgraded_install_respects_existing_history_retention_choice() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                "last_run_version",
+                None,
+                "\"0.10.0\"",
+                "test",
+                None,
+            )
+            .await
+            .expect("seed previous version");
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                HISTORY_KEEP_FOREVER_KEY,
+                None,
+                "false",
+                "ui",
+                Some("user-1".to_string()),
+            )
+            .await
+            .expect("seed explicit history setting");
+
+        let lifecycle = check_version_upgrade(&store).await;
+        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
+
+        preserve_history_retention_defaults_for_upgrades(&store, lifecycle).await;
+
+        let keep_forever = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
+            .await
+            .expect("load keep forever")
+            .expect("setting exists");
+        assert_eq!(keep_forever.effective_value_json, "false");
+        assert_eq!(keep_forever.value_json.as_deref(), Some("false"));
+        assert_eq!(keep_forever.source.as_deref(), Some("ui"));
     }
 }

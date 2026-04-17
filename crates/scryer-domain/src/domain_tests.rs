@@ -88,6 +88,11 @@ fn not_image_file_subtitle() {
     assert!(!is_image_file(Path::new("movie.eng.srt")));
 }
 
+#[test]
+fn domain_event_type_all_includes_title_rematched() {
+    assert!(DomainEventType::variants().any(|value| value == DomainEventType::TitleRematched));
+}
+
 // ── match_fuzzy ───────────────────────────────────────────────────────────
 
 #[test]
@@ -257,6 +262,10 @@ fn import_status_as_str() {
     assert_eq!(ImportStatus::Completed.as_str(), "completed");
     assert_eq!(ImportStatus::Failed.as_str(), "failed");
     assert_eq!(ImportStatus::Skipped.as_str(), "skipped");
+    assert!(ImportStatus::Pending.is_active());
+    assert!(ImportStatus::Running.is_active());
+    assert!(ImportStatus::Processing.is_active());
+    assert!(!ImportStatus::Completed.is_active());
 }
 
 #[test]
@@ -267,6 +276,28 @@ fn import_decision_as_str() {
     assert_eq!(ImportDecision::Conflict.as_str(), "conflict");
     assert_eq!(ImportDecision::Unmatched.as_str(), "unmatched");
     assert_eq!(ImportDecision::Failed.as_str(), "failed");
+}
+
+#[test]
+fn import_type_parse_includes_manual_import() {
+    assert_eq!(ImportType::ManualImport.as_str(), "manual_import");
+    assert_eq!(
+        ImportType::parse("manual_import"),
+        Some(ImportType::ManualImport)
+    );
+}
+
+#[test]
+fn import_error_code_round_trips() {
+    assert_eq!(ImportErrorCode::FileNotFound.as_str(), "file_not_found");
+    assert_eq!(
+        ImportErrorCode::parse("episode_lookup_failed"),
+        Some(ImportErrorCode::EpisodeLookupFailed)
+    );
+    assert_eq!(
+        ImportErrorCode::parse("unknown"),
+        Some(ImportErrorCode::Unknown)
+    );
 }
 
 #[test]

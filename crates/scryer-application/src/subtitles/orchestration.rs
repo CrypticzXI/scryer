@@ -683,7 +683,12 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
     }
 
     // Get all monitored titles with media files
-    let titles = app.services.catalog.titles.list(None, None).await?;
+    let titles = app
+        .services
+        .catalog
+        .titles
+        .list_for_matching(None, None)
+        .await?;
     let mut searched = 0u32;
     let mut downloaded = 0u32;
 

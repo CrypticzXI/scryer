@@ -402,6 +402,16 @@ const zh_CN: LocaleDictionary = {
   "settings.sectionTitle": "设置 • {{section}}",
   "settings.generalText": "通用应用程序设置。",
   "settings.generalPlaceholder": "配置语言和其他全局偏好设置。",
+  "settings.historyRetentionTitle": "历史保留",
+  "settings.historyRetentionHelp":
+    "这会保留 Scryer 面向用户的历史记录和审计轨迹。更改将在下一次清理运行时生效。",
+  "settings.historyRetentionExternalHelp":
+    "采集临时数据的运行级清理仍会继续执行，并且此设置不控制 SABnzbd、NZBGet 或 Weaver 保留的历史记录。",
+  "settings.keepHistoryForever": "永久保留历史记录",
+  "settings.historyRetentionDaysLabel": "将历史记录保留 N 天",
+  "settings.historyRetentionSaved": "历史保留设置已保存。",
+  "settings.historyRetentionValidation":
+    "除非永久保留历史记录，否则历史保留天数必须至少为 1。",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS 证书路径",
   "settings.tlsCertPathHelp": "PEM 编码证书文件的绝对路径。需要重启才能生效。",
@@ -630,6 +640,7 @@ const zh_CN: LocaleDictionary = {
   "queue.manualImportTooltip": "手动导入可用于需要关注的队列项。",
   "queue.releaseTitle": "发布资源",
   "queue.blockReason": "阻止原因",
+  "queue.errorCode": "错误代码",
   "queue.showDetails": "显示详情",
   "queue.hideDetails": "隐藏详情",
   "queue.assignTitle": "指定标题",

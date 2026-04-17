@@ -17,6 +17,7 @@ use scryer_infrastructure::{
     SqliteWorkflowStore,
 };
 use serde_json::{Value, json};
+use sqlx::Row;
 use std::collections::HashMap;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
@@ -619,6 +620,24 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 key_name: "acquisition.delay_profiles".into(),
                 data_type: "json".into(),
                 default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "history.keep_forever".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "history.retention_days".into(),
+                data_type: "number".into(),
+                default_value_json: "180".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -2854,6 +2873,9 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
           acquisitionSettings: __type(name: "AcquisitionSettingsPayload") {
             fields { name }
           }
+          generalSettings: __type(name: "GeneralSettingsPayload") {
+            fields { name }
+          }
           mediaSettings: __type(name: "MediaSettingsPayload") {
             fields { name }
           }
@@ -2872,6 +2894,9 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
           qualityProfileCriteriaInput: __type(name: "QualityProfileCriteriaInput") {
             inputFields { name }
           }
+          updateGeneralSettingsInput: __type(name: "UpdateGeneralSettingsInput") {
+            inputFields { name }
+          }
         }
         "#,
         json!({}),
@@ -2888,6 +2913,7 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .collect();
     assert!(query_names.contains(&"subtitleSettings"));
     assert!(query_names.contains(&"acquisitionSettings"));
+    assert!(query_names.contains(&"generalSettings"));
     assert!(query_names.contains(&"mediaSettings"));
     assert!(query_names.contains(&"libraryPaths"));
     assert!(query_names.contains(&"serviceSettings"));
@@ -2906,6 +2932,7 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .collect();
     assert!(mutation_names.contains(&"updateSubtitleSettings"));
     assert!(mutation_names.contains(&"updateAcquisitionSettings"));
+    assert!(mutation_names.contains(&"updateGeneralSettings"));
     assert!(mutation_names.contains(&"updateMediaSettings"));
     assert!(mutation_names.contains(&"updateLibraryPaths"));
     assert!(mutation_names.contains(&"updateServiceSettings"));
@@ -2935,6 +2962,16 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .collect();
     assert!(acquisition_names.contains(&"pollIntervalSeconds"));
     assert!(acquisition_names.contains(&"batchSize"));
+
+    let general_fields = body["data"]["generalSettings"]["fields"]
+        .as_array()
+        .expect("GeneralSettingsPayload should expose fields");
+    let general_names: Vec<&str> = general_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(general_names.contains(&"keepHistoryForever"));
+    assert!(general_names.contains(&"historyRetentionDays"));
 
     let media_fields = body["data"]["mediaSettings"]["fields"]
         .as_array()
@@ -3002,6 +3039,16 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
     assert!(!criteria_input_names.contains(&"scoringPersona"));
     assert!(!criteria_input_names.contains(&"facetPersonaOverrides"));
     assert!(!criteria_input_names.contains(&"atmosPreferred"));
+
+    let general_input_fields = body["data"]["updateGeneralSettingsInput"]["inputFields"]
+        .as_array()
+        .expect("UpdateGeneralSettingsInput should expose inputFields");
+    let general_input_names: Vec<&str> = general_input_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(general_input_names.contains(&"keepHistoryForever"));
+    assert!(general_input_names.contains(&"historyRetentionDays"));
 }
 
 #[tokio::test]
@@ -3400,6 +3447,136 @@ async fn graphql_typed_acquisition_settings_round_trip() {
     assert_eq!(settings["pollIntervalSeconds"], 45);
     assert_eq!(settings["syncIntervalSeconds"], 1800);
     assert_eq!(settings["batchSize"], 25);
+}
+
+#[tokio::test]
+async fn graphql_typed_general_settings_defaults() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let read = gql(
+        &ctx,
+        r#"
+        query GeneralSettings {
+          generalSettings {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], false);
+    assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 180);
+}
+
+#[tokio::test]
+async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let first_update = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": false,
+            "historyRetentionDays": 45
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&first_update);
+    assert_eq!(
+        first_update["data"]["updateGeneralSettings"]["historyRetentionDays"],
+        45
+    );
+
+    let forever_update = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": true,
+            "historyRetentionDays": 0
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&forever_update);
+    assert_eq!(
+        forever_update["data"]["updateGeneralSettings"]["keepHistoryForever"],
+        true
+    );
+    assert_eq!(
+        forever_update["data"]["updateGeneralSettings"]["historyRetentionDays"],
+        45
+    );
+
+    let read = gql(
+        &ctx,
+        r#"
+        query GeneralSettings {
+          generalSettings {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], true);
+    assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 45);
+}
+
+#[tokio::test]
+async fn graphql_typed_general_settings_rejects_invalid_days() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": false,
+            "historyRetentionDays": 0
+          }
+        }),
+    )
+    .await;
+
+    assert!(
+        body["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected validation errors: {body}"
+    );
 }
 
 #[tokio::test]
@@ -4423,6 +4600,10 @@ async fn graphql_introspection_exposes_queue_and_source_enums() {
     );
     assert_eq!(field("importStatus")["type"]["name"], "ImportStatusValue");
     assert_eq!(
+        field("importErrorCode")["type"]["name"],
+        "ImportErrorCodeValue"
+    );
+    assert_eq!(
         field("trackedState")["type"]["name"],
         "TrackedDownloadStateValue"
     );
@@ -4563,6 +4744,78 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
     assert!(action_kind_names.contains(&"queued_manual_import"));
     assert!(action_kind_names.contains(&"assigned_tracked_download_title"));
     assert!(action_kind_names.contains(&"deleted"));
+}
+
+#[tokio::test]
+async fn graphql_queue_manual_import_returns_accepted_and_persists_pending_request() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "movie").await;
+    let client = ctx.http_client();
+    let response = client
+        .post(ctx.graphql_url())
+        .json(&json!({
+            "query": r#"
+                mutation QueueManualImport($input: QueueManualImportInput!) {
+                  queueManualImport(input: $input) {
+                    kind
+                    importId
+                    queueItem { id }
+                  }
+                }
+            "#,
+            "variables": {
+                "input": {
+                    "titleId": title_id,
+                    "clientType": "nzbget",
+                    "downloadClientItemId": "manual-import-download-1"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), 202);
+    let body: Value = response
+        .json()
+        .await
+        .expect("response should be valid json");
+    assert_no_errors(&body);
+
+    let import_id = body["data"]["queueManualImport"]["importId"]
+        .as_str()
+        .expect("queue manual import should return an import id");
+    assert_eq!(
+        body["data"]["queueManualImport"]["kind"],
+        json!("queued_manual_import")
+    );
+
+    let history_body = gql(
+        &ctx,
+        r#"
+        {
+          importHistory {
+            id
+            importType
+            status
+            sourceRef
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&history_body);
+
+    let queued = history_body["data"]["importHistory"]
+        .as_array()
+        .expect("import history should be an array")
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some(import_id))
+        .expect("queued manual import should be present in history");
+    assert_eq!(queued["sourceRef"], json!("manual-import-download-1"));
+    assert_eq!(queued["importType"], json!("manual_import"));
+    assert_eq!(queued["status"], json!("pending"));
 }
 
 #[tokio::test]
@@ -7575,6 +7828,545 @@ async fn graphql_run_housekeeping_reports_pruned_staged_nzb_artifacts() {
     assert_eq!(
         ctx.staged_nzb_store.count_staged_artifacts().await.unwrap(),
         0
+    );
+}
+
+#[tokio::test]
+async fn graphql_run_housekeeping_respects_configured_history_retention() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    ctx.app
+        .find_or_create_default_user()
+        .await
+        .expect("default user should initialize");
+    let baseline_domain_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM domain_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("baseline domain events count");
+
+    let title = create_catalog_title(
+        &ctx,
+        "Retention Fixture",
+        MediaFacet::Series,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "12345".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+
+    let now = Utc::now();
+    let stale_at = (now - Duration::days(40)).to_rfc3339();
+    let very_stale_at = (now - Duration::days(120)).to_rfc3339();
+    let fresh_at = (now - Duration::days(5)).to_rfc3339();
+    let wanted_item_id = Id::new().0;
+    let stale_completed_import_id = Id::new().0;
+    let fresh_completed_import_id = Id::new().0;
+    let stale_processing_import_id = Id::new().0;
+
+    sqlx::query(
+        "INSERT INTO wanted_items
+         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+    )
+    .bind(&wanted_item_id)
+    .bind(&title.id)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("wanted item should insert");
+
+    sqlx::query(
+        "INSERT INTO release_decisions
+         (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes, decision_code, candidate_score, current_score, score_delta, explanation_json, created_at)
+         VALUES (?, ?, ?, 'stale-release', NULL, NULL, 'accepted', 100, NULL, NULL, NULL, ?),
+                (?, ?, ?, 'fresh-release', NULL, NULL, 'accepted', 100, NULL, NULL, NULL, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&wanted_item_id)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&wanted_item_id)
+    .bind(&title.id)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("release decisions should insert");
+
+    sqlx::query(
+        "INSERT INTO release_download_attempts
+         (id, title_id, source_hint, source_title, outcome, error_message, attempted_at, created_at, updated_at)
+         VALUES (?, ?, NULL, 'stale-attempt', 'grabbed', NULL, ?, ?, ?),
+                (?, ?, NULL, 'fresh-attempt', 'grabbed', NULL, ?, ?, ?),
+                (?, ?, NULL, 'pending-attempt', 'pending', NULL, ?, ?, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&title.id)
+    .bind(&very_stale_at)
+    .bind(&very_stale_at)
+    .bind(&very_stale_at)
+    .bind(Id::new().0)
+    .bind(&title.id)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .bind(Id::new().0)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("release attempts should insert");
+
+    sqlx::query(
+        "INSERT INTO history_events
+         (id, event_type, actor_user_id, title_id, message, occurred_at, source, created_at, metadata_json)
+         VALUES (?, 'test', NULL, NULL, 'stale-history', ?, NULL, ?, NULL),
+                (?, 'test', NULL, NULL, 'fresh-history', ?, NULL, ?, NULL)",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("history events should insert");
+
+    sqlx::query(
+        "INSERT INTO domain_events
+         (event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, event_type, payload_json)
+         VALUES (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'title_added', '{}'),
+                (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'import_requested', '{}'),
+                (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'library_scan_progressed', '{}'),
+                (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'job_run_started', '{}')",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&fresh_at)
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("domain events should insert");
+
+    sqlx::query(
+        "INSERT INTO title_history
+         (id, title_id, episode_id, collection_id, event_type, source_title, quality, download_id, data_json, occurred_at, created_at)
+         VALUES (?, ?, NULL, NULL, 'grabbed', NULL, NULL, NULL, NULL, ?, ?),
+                (?, ?, NULL, NULL, 'grabbed', NULL, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&title.id)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("title history should insert");
+
+    sqlx::query(
+        "INSERT INTO imports
+         (id, source_system, source_ref, import_type, status, payload_json, result_json, started_at, finished_at, created_at, updated_at)
+         VALUES (?, 'test', 'stale-completed', 'manual_import', 'completed', '{}', '{}', NULL, ?, ?, ?),
+                (?, 'test', 'fresh-completed', 'manual_import', 'completed', '{}', '{}', NULL, ?, ?, ?),
+                (?, 'test', 'stale-processing', 'manual_import', 'processing', '{}', NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(&stale_completed_import_id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(&fresh_completed_import_id)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .bind(&fresh_at)
+    .bind(&stale_processing_import_id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("imports should insert");
+
+    sqlx::query(
+        "INSERT INTO download_import_artifacts
+         (id, source_system, source_ref, import_id, relative_path, normalized_file_name, media_kind, title_id, episode_id, season_number, episode_number, result, reason_code, imported_media_file_id, created_at)
+         VALUES (?, 'test', 'stale-completed', ?, NULL, 'stale.mkv', 'episode', ?, NULL, NULL, NULL, 'imported', NULL, NULL, ?),
+                (?, 'test', 'fresh-completed', ?, NULL, 'fresh.mkv', 'episode', ?, NULL, NULL, NULL, 'imported', NULL, NULL, ?),
+                (?, 'test', 'stale-processing', ?, NULL, 'active.mkv', 'episode', ?, NULL, NULL, NULL, 'imported', NULL, NULL, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_completed_import_id)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&fresh_completed_import_id)
+    .bind(&title.id)
+    .bind(&fresh_at)
+    .bind(Id::new().0)
+    .bind(&stale_processing_import_id)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("download import artifacts should insert");
+
+    sqlx::query(
+        "INSERT INTO rule_set_history (id, rule_set_id, action, rego_source, actor_id, created_at)
+         VALUES (?, 'rule-1', 'updated', NULL, NULL, ?),
+                (?, 'rule-1', 'updated', NULL, NULL, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&fresh_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("rule set history should insert");
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": false,
+            "historyRetentionDays": 30
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let body = gql(
+        &ctx,
+        "mutation { runHousekeeping { staleReleaseDecisions staleReleaseAttempts staleHistoryEvents staleHistoryRecords } }",
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseDecisions"], 1);
+    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseAttempts"], 1);
+    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryEvents"], 1);
+    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 9);
+
+    let remaining_release_decisions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM release_decisions")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("release decisions count");
+    assert_eq!(remaining_release_decisions, 1);
+
+    let remaining_release_attempts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM release_download_attempts")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("release attempts count");
+    assert_eq!(remaining_release_attempts, 2);
+
+    let remaining_history_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM history_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("history events count");
+    assert_eq!(remaining_history_events, 1);
+
+    let remaining_domain_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM domain_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("domain events count");
+    assert_eq!(remaining_domain_events, baseline_domain_events + 3);
+
+    let remaining_title_history: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_history")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("title history count");
+    assert_eq!(remaining_title_history, 1);
+
+    let remaining_imports: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM imports")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("imports count");
+    assert_eq!(remaining_imports, 2);
+
+    let remaining_import_artifacts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_import_artifacts")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("download import artifacts count");
+    assert_eq!(remaining_import_artifacts, 2);
+
+    let remaining_rule_set_history: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM rule_set_history")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("rule set history count");
+    assert_eq!(remaining_rule_set_history, 1);
+}
+
+#[tokio::test]
+async fn graphql_run_housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let baseline_domain_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM domain_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("baseline domain events count");
+    let stale_at = (Utc::now() - Duration::days(400)).to_rfc3339();
+    let stale_attempt_at = (Utc::now() - Duration::days(120)).to_rfc3339();
+    let import_id = Id::new().0;
+    let title = create_catalog_title(
+        &ctx,
+        "Retention Keep Forever Fixture",
+        MediaFacet::Series,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "67890".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+    let wanted_item_id = Id::new().0;
+
+    sqlx::query(
+        "INSERT INTO wanted_items
+         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+    )
+    .bind(&wanted_item_id)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("wanted item should insert");
+
+    sqlx::query(
+        "INSERT INTO history_events
+         (id, event_type, actor_user_id, title_id, message, occurred_at, source, created_at, metadata_json)
+         VALUES (?, 'test', NULL, NULL, 'stale-history', ?, NULL, ?, NULL)",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("history event should insert");
+
+    sqlx::query(
+        "INSERT INTO domain_events
+         (event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, event_type, payload_json)
+         VALUES (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'title_added', '{}'),
+                (?, ?, NULL, NULL, NULL, NULL, NULL, 1, 'test', NULL, 'library_scan_progressed', '{}')",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .bind(Id::new().0)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("domain events should insert");
+
+    sqlx::query(
+        "INSERT INTO imports
+         (id, source_system, source_ref, import_type, status, payload_json, result_json, started_at, finished_at, created_at, updated_at)
+         VALUES (?, 'test', 'stale-completed', 'manual_import', 'completed', '{}', '{}', NULL, ?, ?, ?)",
+    )
+    .bind(&import_id)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("import should insert");
+
+    sqlx::query(
+        "INSERT INTO download_import_artifacts
+         (id, source_system, source_ref, import_id, relative_path, normalized_file_name, media_kind, title_id, episode_id, season_number, episode_number, result, reason_code, imported_media_file_id, created_at)
+         VALUES (?, 'test', 'stale-completed', ?, NULL, 'stale.mkv', 'episode', NULL, NULL, NULL, NULL, 'imported', NULL, NULL, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&import_id)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("download import artifact should insert");
+
+    sqlx::query(
+        "INSERT INTO release_decisions
+         (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes, decision_code, candidate_score, current_score, score_delta, explanation_json, created_at)
+         VALUES (?, ?, ?, 'stale-release', NULL, NULL, 'accepted', 100, NULL, NULL, NULL, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&wanted_item_id)
+    .bind(&title.id)
+    .bind(&stale_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("release decision should insert");
+
+    sqlx::query(
+        "INSERT INTO release_download_attempts
+         (id, title_id, source_hint, source_title, outcome, error_message, attempted_at, created_at, updated_at)
+         VALUES (?, NULL, NULL, 'stale-attempt', 'grabbed', NULL, ?, ?, ?),
+                (?, NULL, NULL, 'pending-attempt', 'pending', NULL, ?, ?, ?)",
+    )
+    .bind(Id::new().0)
+    .bind(&stale_attempt_at)
+    .bind(&stale_attempt_at)
+    .bind(&stale_attempt_at)
+    .bind(Id::new().0)
+    .bind(&stale_attempt_at)
+    .bind(&stale_attempt_at)
+    .bind(&stale_attempt_at)
+    .execute(ctx.db.pool())
+    .await
+    .expect("release attempts should insert");
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            keepHistoryForever
+            historyRetentionDays
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": true,
+            "historyRetentionDays": 180
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let body = gql(
+        &ctx,
+        "mutation { runHousekeeping { staleReleaseDecisions staleReleaseAttempts staleHistoryEvents staleHistoryRecords } }",
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseDecisions"], 1);
+    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseAttempts"], 1);
+    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryEvents"], 0);
+    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 3);
+
+    let remaining_history_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM history_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("history events count");
+    assert_eq!(remaining_history_events, 1);
+
+    let remaining_imports: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM imports")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("imports count");
+    assert_eq!(remaining_imports, 1);
+
+    let remaining_domain_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM domain_events")
+        .fetch_one(ctx.db.pool())
+        .await
+        .expect("domain events count");
+    assert_eq!(remaining_domain_events, baseline_domain_events + 2);
+
+    let remaining_import_artifacts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_import_artifacts")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("download import artifacts count");
+    assert_eq!(remaining_import_artifacts, 1);
+
+    let remaining_release_decisions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM release_decisions")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("release decisions count");
+    assert_eq!(remaining_release_decisions, 0);
+
+    let remaining_release_attempts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM release_download_attempts")
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("release attempts count");
+    assert_eq!(remaining_release_attempts, 1);
+}
+
+#[tokio::test]
+async fn sqlite_history_retention_indexes_exist_after_migrations() {
+    let ctx = TestContext::new().await;
+
+    let history_event_indexes = sqlx::query("PRAGMA index_list('history_events')")
+        .fetch_all(ctx.db.pool())
+        .await
+        .expect("history event indexes");
+    let history_event_index_names = history_event_indexes
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(history_event_index_names.contains(&"idx_history_events_occurred_at".to_string()));
+
+    let import_indexes = sqlx::query("PRAGMA index_list('imports')")
+        .fetch_all(ctx.db.pool())
+        .await
+        .expect("import indexes");
+    let import_index_names = import_indexes
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(import_index_names.contains(&"idx_imports_status_updated_at".to_string()));
+
+    let rule_set_history_indexes = sqlx::query("PRAGMA index_list('rule_set_history')")
+        .fetch_all(ctx.db.pool())
+        .await
+        .expect("rule set history indexes");
+    let rule_set_history_index_names = rule_set_history_indexes
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(rule_set_history_index_names.contains(&"idx_rule_set_history_created_at".to_string()));
+
+    let release_decision_indexes = sqlx::query("PRAGMA index_list('release_decisions')")
+        .fetch_all(ctx.db.pool())
+        .await
+        .expect("release decision indexes");
+    let release_decision_index_names = release_decision_indexes
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(release_decision_index_names.contains(&"idx_release_decisions_created_at".to_string()));
+
+    let import_artifact_indexes = sqlx::query("PRAGMA index_list('download_import_artifacts')")
+        .fetch_all(ctx.db.pool())
+        .await
+        .expect("download import artifact indexes");
+    let import_artifact_index_names = import_artifact_indexes
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(
+        import_artifact_index_names
+            .contains(&"idx_download_import_artifacts_retention".to_string())
     );
 }
 

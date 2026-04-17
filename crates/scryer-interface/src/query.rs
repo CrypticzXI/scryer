@@ -75,6 +75,13 @@ fn from_acquisition_settings(
     }
 }
 
+fn from_general_settings(settings: scryer_application::GeneralSettings) -> GeneralSettingsPayload {
+    GeneralSettingsPayload {
+        keep_history_forever: settings.keep_history_forever,
+        history_retention_days: settings.history_retention_days,
+    }
+}
+
 fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfilePayload {
     DelayProfilePayload {
         id: profile.id,
@@ -743,6 +750,16 @@ impl QueryRoot {
             .await
             .map_err(to_gql_error)?;
         Ok(from_acquisition_settings(settings))
+    }
+
+    async fn general_settings(&self, ctx: &Context<'_>) -> GqlResult<GeneralSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_general_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_general_settings(settings))
     }
 
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {

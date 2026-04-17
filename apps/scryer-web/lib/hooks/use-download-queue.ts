@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useClient } from "urql";
 
 import {
@@ -6,13 +6,15 @@ import {
   downloadQueueSubscription,
 } from "@/lib/graphql/queries";
 import type { DownloadQueueItem } from "@/lib/types";
-import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
+import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
 
 type UseDownloadQueueArgs = {
   enabled: boolean;
   includeAllActivity: boolean;
   includeHistoryOnly: boolean;
+  onErrorStatus?: (message: string) => void;
 };
 
 export type UseDownloadQueueResult = {
@@ -27,8 +29,9 @@ export function useDownloadQueue({
   enabled,
   includeAllActivity,
   includeHistoryOnly,
+  onErrorStatus,
 }: UseDownloadQueueArgs): UseDownloadQueueResult {
-  const setGlobalStatus = useGlobalStatus();
+  const contextGlobalStatus = useContext(GlobalStatusContext);
   const client = useClient();
   const [queueItems, setQueueItems] = useState<DownloadQueueItem[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
@@ -83,7 +86,8 @@ export function useDownloadQueue({
         const liveIds = new Set(items.map((item) => item.downloadClientItemId));
         const kept = prev.filter(
           (item) =>
-            TERMINAL_STATES.has(item.state.toLowerCase()) &&
+            (TERMINAL_STATES.has(item.state.toLowerCase()) ||
+              isManualImportRequiredQueueItem(item)) &&
             !liveIds.has(item.downloadClientItemId),
         );
         return [...items, ...kept];
@@ -162,11 +166,11 @@ export function useDownloadQueue({
       const message =
         error instanceof Error ? error.message : "Failed to load queue.";
       setQueueError(message);
-      setGlobalStatus(message);
+      (onErrorStatus ?? contextGlobalStatus)?.(message);
     } finally {
       setQueueLoading(false);
     }
-  }, [client, enabled, includeAllActivity, includeHistoryOnly, setGlobalStatus]);
+  }, [client, contextGlobalStatus, enabled, includeAllActivity, includeHistoryOnly, onErrorStatus]);
 
   // --- Initial fetch + polling for history-only mode ---
   useEffect(() => {

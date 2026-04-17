@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DownloadQueueItem, ImportStatus, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
+    DownloadQueueItem, Title, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
 };
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
@@ -46,6 +46,31 @@ pub struct TrackedDownload {
     /// Whether import() has been called at least once. Prevents check() from
     /// re-evaluating a post-import ImportBlocked back to ImportPending.
     pub import_attempted: bool,
+    /// When a completed download path first became unavailable.
+    pub path_missing_since: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedDownloadQueueMetadata {
+    pub title_id: Option<String>,
+    pub facet: Option<String>,
+    pub state: TrackedDownloadState,
+    pub status: TrackedDownloadStatus,
+    pub status_messages: Vec<String>,
+    pub match_type: TitleMatchType,
+}
+
+impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
+    fn from(value: &TrackedDownload) -> Self {
+        Self {
+            title_id: value.title_id.clone(),
+            facet: value.facet.clone(),
+            state: value.state,
+            status: value.status,
+            status_messages: value.status_messages.clone(),
+            match_type: value.match_type,
+        }
+    }
 }
 
 impl TrackedDownload {
@@ -90,7 +115,8 @@ impl TrackedDownloadService {
 
         if self.cache.contains_key(&id) {
             let existing = self.cache.get_mut(&id).unwrap();
-            let should_reresolve = should_reresolve_title(existing, &client_item);
+            let matcher_dirty = app.runtime.monitored_title_matcher.read().await.dirty;
+            let should_reresolve = should_reresolve_title(existing, &client_item, matcher_dirty);
             // Update the client snapshot but preserve scryer state if not Downloading.
             if existing.state == TrackedDownloadState::Downloading {
                 existing.status = TrackedDownloadStatus::Ok;
@@ -132,6 +158,7 @@ impl TrackedDownloadService {
             status_messages: Vec::new(),
             client_item,
             import_attempted: false,
+            path_missing_since: None,
         };
 
         Self::resolve_title(app, &mut td).await;
@@ -169,7 +196,13 @@ impl TrackedDownloadService {
     /// Mark downloads no longer visible in any client as untrackable.
     pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) {
         for td in self.cache.values_mut() {
-            if !seen_ids.contains(&td.id) {
+            let should_preserve_tracking = matches!(
+                td.state,
+                TrackedDownloadState::ImportPending
+                    | TrackedDownloadState::Importing
+                    | TrackedDownloadState::FailedPending
+            );
+            if !seen_ids.contains(&td.id) && !should_preserve_tracking {
                 td.is_trackable = false;
             }
         }
@@ -219,13 +252,17 @@ impl TrackedDownloadService {
     // ── Title Resolution ─────────────────────────────────────────────────
 
     async fn resolve_title(app: &AppUseCase, td: &mut TrackedDownload) {
-        // 1. download_submissions lookup (highest confidence).
-        if let Ok(Some(sub)) = app
+        let existing_submission = app
             .services
             .workflow
             .download_submissions
             .find_by_client_item_id(&td.client_type, &td.client_item.download_client_item_id)
             .await
+            .ok()
+            .flatten();
+
+        // 1. download_submissions lookup (highest confidence).
+        if let Some(sub) = existing_submission.as_ref()
             && !sub.title_id.is_empty()
         {
             td.title_id = Some(sub.title_id.clone());
@@ -252,26 +289,23 @@ impl TrackedDownloadService {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(td.client_item.title_name.as_str());
         let parsed = crate::parse_release_metadata(release_title);
-        if let Ok(titles) = app.services.catalog.titles.list(None, None).await {
+        if let Ok(matcher) = app.monitored_title_matcher().await {
             let matched = if parsed.episode.is_some() {
-                crate::import_title_resolution::find_monitored_episode_title_from_release(
-                    &titles,
+                matcher.resolve_episode(
                     &parsed,
-                    td.facet.as_deref(),
+                    td.client_item.facet.as_deref().or(td.facet.as_deref()),
                 )
             } else {
-                crate::import_title_resolution::find_monitored_movie_title_from_release(
-                    &titles, &parsed,
-                )
+                matcher.resolve_movie(&parsed)
             };
 
-            if let Some(title) = matched {
-                td.title_id = Some(title.id.clone());
-                td.facet = Some(title.facet.as_str().to_string());
+            if let Some(resolved) = matched {
+                td.title_id = Some(resolved.title.id.clone());
+                td.facet = Some(resolved.title.facet.as_str().to_string());
                 if td.source_title.is_none() {
                     td.source_title = Some(release_title.to_string());
                 }
-                td.match_type = TitleMatchType::TitleParse;
+                td.match_type = resolved.match_type;
                 return;
             }
         }
@@ -281,19 +315,20 @@ impl TrackedDownloadService {
         //
         // Insert a stub download_submissions row for foreign downloads so they
         // get a tracked_state column for restart reconstruction.
-        if let Err(error) = app
-            .services
-            .workflow
-            .download_submissions
-            .record_submission(DownloadSubmission {
-                title_id: String::new(),
-                facet: td.facet.clone().unwrap_or_default(),
-                download_client_type: td.client_type.clone(),
-                download_client_item_id: td.client_item.download_client_item_id.clone(),
-                source_title: Some(td.client_item.title_name.clone()),
-                collection_id: None,
-            })
-            .await
+        if existing_submission.is_none()
+            && let Err(error) = app
+                .services
+                .workflow
+                .download_submissions
+                .record_submission(DownloadSubmission {
+                    title_id: String::new(),
+                    facet: td.facet.clone().unwrap_or_default(),
+                    download_client_type: td.client_type.clone(),
+                    download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    source_title: Some(td.client_item.title_name.clone()),
+                    collection_id: None,
+                })
+                .await
         {
             tracing::warn!(error = %error, id = %td.id, "failed to record tracked download stub submission");
         }
@@ -317,13 +352,12 @@ impl TrackedDownloadService {
 
         // Fall back to the latest import record for restart recovery if the
         // tracked state was not persisted before shutdown.
-        if let Ok(Some(import_record)) = app
+        if let Ok(true) = app
             .services
             .workflow
             .imports
-            .get_import_by_source_ref(&td.client_type, &td.client_item.download_client_item_id)
+            .is_already_imported(&td.client_type, &td.client_item.download_client_item_id)
             .await
-            && import_record.status == ImportStatus::Completed
         {
             td.state = TrackedDownloadState::Imported;
             let _ = app
@@ -346,7 +380,33 @@ fn title_id_present(value: Option<&str>) -> bool {
     value.is_some_and(|id| !id.trim().is_empty())
 }
 
-fn should_reresolve_title(existing: &TrackedDownload, incoming: &DownloadQueueItem) -> bool {
+fn normalize_title_signal(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut last_was_space = false;
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            normalized.extend(ch.to_lowercase());
+            last_was_space = false;
+        } else if !last_was_space {
+            normalized.push(' ');
+            last_was_space = true;
+        }
+    }
+    normalized.trim().to_string()
+}
+
+fn normalize_facet_signal(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn should_reresolve_title(
+    existing: &TrackedDownload,
+    incoming: &DownloadQueueItem,
+    matcher_dirty: bool,
+) -> bool {
     if matches!(
         existing.match_type,
         TitleMatchType::Submission | TitleMatchType::ClientParameter
@@ -354,11 +414,12 @@ fn should_reresolve_title(existing: &TrackedDownload, incoming: &DownloadQueueIt
         return false;
     }
 
-    if matches!(existing.match_type, TitleMatchType::Unmatched) {
-        return true;
-    }
-
-    if !existing.client_item.is_scryer_origin && incoming.is_scryer_origin {
+    if matcher_dirty
+        && matches!(
+            existing.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        )
+    {
         return true;
     }
 
@@ -374,13 +435,57 @@ fn should_reresolve_title(existing: &TrackedDownload, incoming: &DownloadQueueIt
         return true;
     }
 
+    if !existing.client_item.is_scryer_origin && incoming.is_scryer_origin {
+        return true;
+    }
+
+    if normalize_title_signal(&existing.client_item.title_name)
+        != normalize_title_signal(&incoming.title_name)
+    {
+        return true;
+    }
+
+    if normalize_facet_signal(existing.client_item.facet.as_deref())
+        != normalize_facet_signal(incoming.facet.as_deref())
+    {
+        return true;
+    }
+
     false
+}
+
+pub(crate) async fn assign_title_to_tracked_download(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    title: &Title,
+) {
+    td.title_id = Some(title.id.clone());
+    td.facet = Some(title.facet.as_str().to_string());
+    td.match_type = TitleMatchType::Submission;
+    td.status = TrackedDownloadStatus::Ok;
+    td.status_messages.clear();
+    td.import_attempted = false;
+
+    // A download that is already blocked for manual intervention should stay
+    // manually actionable after title assignment instead of being pushed
+    // straight back into auto-import.
+    if td.state == TrackedDownloadState::ImportBlocked {
+        return;
+    }
+
+    td.state = TrackedDownloadState::Downloading;
+    crate::failed_download_handler::check(td);
+    crate::completed_download_handler::check(app, td).await;
 }
 
 // ── Command Channel ──────────────────────────────────────────────────────────
 
 /// Commands sent from GraphQL mutations to the poller's TrackedDownloadService.
 pub enum TrackedDownloadCommand {
+    MarkImported {
+        id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
     Ignore {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
@@ -397,6 +502,10 @@ pub enum TrackedDownloadCommand {
         id: String,
         title_id: String,
         reply: oneshot::Sender<AppResult<()>>,
+    },
+    Snapshot {
+        ids: Vec<String>,
+        reply: oneshot::Sender<HashMap<String, TrackedDownloadQueueMetadata>>,
     },
 }
 
@@ -415,6 +524,22 @@ impl TrackedDownloadHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::Ignore {
+                id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })?
+    }
+
+    pub async fn mark_imported(&self, id: String) -> AppResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::MarkImported {
                 id,
                 reply: reply_tx,
             })
@@ -475,6 +600,25 @@ impl TrackedDownloadHandle {
             crate::AppError::Repository("tracked download service dropped reply".into())
         })?
     }
+
+    pub async fn snapshot(
+        &self,
+        ids: Vec<String>,
+    ) -> AppResult<HashMap<String, TrackedDownloadQueueMetadata>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::Snapshot {
+                ids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -492,13 +636,17 @@ mod tests {
         NullTitleRepository, NullUserRepository,
     };
     use crate::{
-        AppError, AppResult, AppServices, AppUseCase, DownloadSubmissionRepository, FacetRegistry,
+        AppError, AppResult, AppServices, AppUseCase, DomainEventRepository, DownloadClient,
+        DownloadClientAddRequest, DownloadGrabResult, DownloadSubmissionRepository, FacetRegistry,
         ImportRepository, IndexerConfigRepository, JwtAuthConfig, TitleMetadataUpdate,
         TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
-    use scryer_domain::{DownloadQueueState, Id, ImportRecord, ImportType, MediaFacet, Title};
+    use scryer_domain::{
+        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
+        ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title,
+    };
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -507,11 +655,13 @@ mod tests {
         submission: Option<crate::DownloadSubmission>,
         tracked_state: Option<String>,
         tracked_state_updates: Arc<Mutex<Vec<String>>>,
+        recorded_submissions: Arc<Mutex<Vec<crate::DownloadSubmission>>>,
     }
 
     #[async_trait]
     impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
-        async fn record_submission(&self, _: crate::DownloadSubmission) -> AppResult<()> {
+        async fn record_submission(&self, submission: crate::DownloadSubmission) -> AppResult<()> {
+            self.recorded_submissions.lock().await.push(submission);
             Ok(())
         }
 
@@ -559,8 +709,38 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct TestDownloadClient {
+        completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for TestDownloadClient {
+        async fn submit_download(
+            &self,
+            _: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
+            Ok(self.completed_downloads.lock().await.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestDomainEventRepo {
+        events: Arc<Mutex<Vec<DomainEvent>>>,
+        subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
+    }
+
+    #[derive(Default)]
     struct TestTitleRepo {
         titles: Vec<Title>,
+    }
+
+    struct MutableTitleRepo {
+        titles: Arc<Mutex<Vec<Title>>>,
+        list_for_matching_calls: Arc<Mutex<usize>>,
     }
 
     #[derive(Default)]
@@ -623,6 +803,15 @@ mod tests {
             Ok(self.import_record.clone())
         }
 
+        async fn get_import_by_source_ref_and_type(
+            &self,
+            _: &str,
+            _: &str,
+            _: ImportType,
+        ) -> AppResult<Option<ImportRecord>> {
+            Ok(self.import_record.clone())
+        }
+
         async fn update_import_status(
             &self,
             _: &str,
@@ -636,16 +825,130 @@ mod tests {
             Ok(0)
         }
 
+        async fn recover_stale_processing_imports_for_type(
+            &self,
+            _: ImportType,
+            _: i64,
+        ) -> AppResult<u64> {
+            Ok(0)
+        }
+
         async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
             Ok(vec![])
         }
 
+        async fn list_pending_imports_for_type(
+            &self,
+            _: ImportType,
+        ) -> AppResult<Vec<ImportRecord>> {
+            Ok(vec![])
+        }
+
+        async fn list_imports_for_sources(
+            &self,
+            _: &[(String, String)],
+        ) -> AppResult<Vec<ImportRecord>> {
+            Ok(self.import_record.clone().into_iter().collect())
+        }
+
         async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
-            Ok(false)
+            Ok(self.import_record.as_ref().is_some_and(|record| {
+                matches!(
+                    record.status,
+                    ImportStatus::Completed | ImportStatus::Skipped
+                )
+            }))
         }
 
         async fn list_imports(&self, _: usize) -> AppResult<Vec<ImportRecord>> {
             Ok(vec![])
+        }
+    }
+
+    #[async_trait]
+    impl DomainEventRepository for TestDomainEventRepo {
+        async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
+            let mut events = self.events.lock().await;
+            let sequence = events
+                .last()
+                .map(|existing| existing.sequence + 1)
+                .unwrap_or(1);
+            let stored = DomainEvent {
+                sequence,
+                event_id: event.event_id,
+                occurred_at: event.occurred_at,
+                actor_user_id: event.actor_user_id,
+                title_id: event.title_id,
+                facet: event.facet,
+                correlation_id: event.correlation_id,
+                causation_id: event.causation_id,
+                schema_version: event.schema_version,
+                stream: event.stream,
+                payload: event.payload,
+            };
+            events.push(stored.clone());
+            Ok(stored)
+        }
+
+        async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>> {
+            let mut stored = Vec::with_capacity(events.len());
+            for event in events {
+                stored.push(self.append(event).await?);
+            }
+            Ok(stored)
+        }
+
+        async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .filter(|event| {
+                    filter
+                        .after_sequence
+                        .is_none_or(|after| event.sequence > after)
+                        && filter
+                            .before_sequence
+                            .is_none_or(|before| event.sequence < before)
+                        && filter.title_id.as_ref().is_none_or(|title_id| {
+                            event.title_id.as_deref() == Some(title_id.as_str())
+                        })
+                        && filter
+                            .facet
+                            .as_ref()
+                            .is_none_or(|facet| event.facet.as_ref() == Some(facet))
+                        && filter.event_types.as_ref().is_none_or(|event_types| {
+                            event_types
+                                .iter()
+                                .any(|event_type| &event.payload.event_type() == event_type)
+                        })
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn list_after_sequence(
+            &self,
+            after_sequence: i64,
+            limit: usize,
+        ) -> AppResult<Vec<DomainEvent>> {
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .filter(|event| event.sequence > after_sequence)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
+            let offsets = self.subscriber_offsets.lock().await;
+            Ok(*offsets.get(subscriber).unwrap_or(&0))
+        }
+
+        async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()> {
+            let mut offsets = self.subscriber_offsets.lock().await;
+            offsets.insert(subscriber.to_string(), sequence);
+            Ok(())
         }
     }
 
@@ -655,8 +958,97 @@ mod tests {
             Ok(self.titles.clone())
         }
 
+        async fn list_for_matching(
+            &self,
+            _: Option<MediaFacet>,
+            _: Option<String>,
+        ) -> AppResult<Vec<Title>> {
+            Ok(self.titles.clone())
+        }
+
         async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
             Ok(self.titles.iter().find(|title| title.id == id).cloned())
+        }
+
+        async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+
+        async fn create(&self, _: Title) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_metadata(
+            &self,
+            _: &str,
+            _: Option<String>,
+            _: Option<MediaFacet>,
+            _: Option<Vec<String>>,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update_title_hydrated_metadata(
+            &self,
+            _: &str,
+            _: TitleMetadataUpdate,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn replace_match_state(
+            &self,
+            _: &str,
+            _: Vec<scryer_domain::ExternalId>,
+            _: Vec<String>,
+        ) -> AppResult<Title> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn delete(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn set_folder_path(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_folder_path(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
+            Ok(0)
+        }
+    }
+
+    #[async_trait]
+    impl TitleRepository for MutableTitleRepo {
+        async fn list(&self, _: Option<MediaFacet>, _: Option<String>) -> AppResult<Vec<Title>> {
+            Ok(self.titles.lock().await.clone())
+        }
+
+        async fn list_for_matching(
+            &self,
+            _: Option<MediaFacet>,
+            _: Option<String>,
+        ) -> AppResult<Vec<Title>> {
+            *self.list_for_matching_calls.lock().await += 1;
+            Ok(self.titles.lock().await.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
+            Ok(self
+                .titles
+                .lock()
+                .await
+                .iter()
+                .find(|title| title.id == id)
+                .cloned())
         }
 
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
@@ -727,13 +1119,27 @@ mod tests {
         download_submissions: Arc<TestDownloadSubmissionRepo>,
         imports: Arc<TestImportRepo>,
     ) -> AppUseCase {
+        build_app_with_title_repo_and_download_client(
+            title_repo,
+            Arc::new(NullDownloadClient),
+            download_submissions,
+            imports,
+        )
+    }
+
+    fn build_app_with_title_repo_and_download_client(
+        title_repo: Arc<dyn TitleRepository>,
+        download_client: Arc<dyn DownloadClient>,
+        download_submissions: Arc<TestDownloadSubmissionRepo>,
+        imports: Arc<TestImportRepo>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             title_repo,
             Arc::new(NullShowRepository),
             Arc::new(NullUserRepository),
             Arc::new(TestIndexerConfigRepo),
             Arc::new(NullIndexerClient),
-            Arc::new(NullDownloadClient),
+            download_client,
             Arc::new(NullDownloadClientConfigRepository),
             Arc::new(NullReleaseAttemptRepository),
             Arc::new(crate::null_repositories::NullSettingsRepository),
@@ -742,6 +1148,7 @@ mod tests {
         )
         .with_download_submissions(download_submissions)
         .with_imports(imports)
+        .with_domain_events(Arc::new(TestDomainEventRepo::default()))
         .build_partial_for_tests();
 
         AppUseCase::new(
@@ -774,6 +1181,7 @@ mod tests {
             attention_reason: None,
             download_client_item_id: "dl-1".to_string(),
             import_status: None,
+            import_error_code: None,
             import_error_message: None,
             imported_at: None,
             is_scryer_origin: true,
@@ -781,6 +1189,26 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+        }
+    }
+
+    fn build_completed_download(
+        client_type: &str,
+        item_id: &str,
+        name: &str,
+        dest_dir: &str,
+        category: Option<&str>,
+    ) -> CompletedDownload {
+        CompletedDownload {
+            client_type: client_type.to_string(),
+            client_id: "client-1".to_string(),
+            download_client_item_id: item_id.to_string(),
+            name: name.to_string(),
+            dest_dir: dest_dir.to_string(),
+            category: category.map(str::to_string),
+            size_bytes: None,
+            completed_at: None,
+            parameters: vec![],
         }
     }
 
@@ -836,6 +1264,7 @@ mod tests {
             }),
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
+            recorded_submissions: Arc::new(Mutex::new(vec![])),
         });
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
@@ -969,9 +1398,29 @@ mod tests {
             submission: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
+            recorded_submissions: Arc::new(Mutex::new(vec![])),
         });
         let imports = Arc::new(TestImportRepo::default());
-        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let completed_dir = tempdir
+            .path()
+            .join("YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL");
+        std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![build_completed_download(
+                "weaver",
+                "job-1",
+                "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+                completed_dir.to_string_lossy().as_ref(),
+                Some("anime"),
+            )])),
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            title_repo,
+            download_client,
+            download_submissions,
+            imports,
+        );
         let mut tracker = TrackedDownloadService::new();
         let mut item = build_client_item();
         item.client_type = "weaver".to_string();
@@ -995,6 +1444,244 @@ mod tests {
 
         assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
         assert!(tracked.status_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tracked_download_resolution_marks_embedded_external_id_matches_as_id_only() {
+        let mut title = build_title("Paperman", MediaFacet::Movie, &[]);
+        title.external_ids.push(scryer_domain::ExternalId {
+            source: "imdb".to_string(),
+            value: "tt2388725".to_string(),
+        });
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![title.clone()],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.client_type = "weaver".to_string();
+        item.client_name = "weaver".to_string();
+        item.download_client_item_id = "job-imdb".to_string();
+        item.title_name = "Paperman.2012.[tt2388725].1080p.BluRay.x264-GRP".to_string();
+        item.facet = Some("movie".to_string());
+        item.is_scryer_origin = false;
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find("weaver:job-imdb").expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert_eq!(tracked.match_type, TitleMatchType::IdOnly);
+    }
+
+    #[tokio::test]
+    async fn assigning_title_to_completed_blocked_download_keeps_manual_import_actionable() {
+        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![title.clone()],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let completed_dir = tempdir.path().join("4f8e2c7a91b6d3e0");
+        std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![build_completed_download(
+                "weaver",
+                "job-manual-movie",
+                "4f8e2c7a91b6d3e0",
+                completed_dir.to_string_lossy().as_ref(),
+                Some("movie"),
+            )])),
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            title_repo,
+            download_client,
+            download_submissions,
+            imports,
+        );
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "weaver".to_string();
+        item.client_name = "weaver".to_string();
+        item.download_client_item_id = "job-manual-movie".to_string();
+        item.title_name = "4f8e2c7a91b6d3e0".to_string();
+        item.facet = Some("movie".to_string());
+        item.is_scryer_origin = false;
+
+        tracker.track(&app, item).await;
+        let tracked = tracker
+            .find_mut("weaver:job-manual-movie")
+            .expect("tracked download mut");
+        crate::completed_download_handler::check(&app, tracked).await;
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert!(tracked.title_id.is_none());
+
+        let tracked = tracker
+            .find_mut("weaver:job-manual-movie")
+            .expect("tracked download mut");
+        assign_title_to_tracked_download(&app, tracked, &title).await;
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert!(!tracked.import_attempted);
+
+        crate::completed_download_handler::check(&app, tracked).await;
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+    }
+
+    #[tokio::test]
+    async fn repeated_unmatched_snapshot_uses_cached_matcher_until_title_event_invalidates_it() {
+        let titles = Arc::new(Mutex::new(Vec::new()));
+        let list_for_matching_calls = Arc::new(Mutex::new(0usize));
+        let title_repo = Arc::new(MutableTitleRepo {
+            titles: titles.clone(),
+            list_for_matching_calls: list_for_matching_calls.clone(),
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut initial = build_client_item();
+        initial.client_type = "weaver".to_string();
+        initial.client_name = "weaver".to_string();
+        initial.download_client_item_id = "job-manual-movie-reresolve".to_string();
+        initial.title_name = "Paperman".to_string();
+        initial.facet = Some("movie".to_string());
+        initial.is_scryer_origin = false;
+
+        tracker.track(&app, initial).await;
+        let tracked = tracker
+            .find("weaver:job-manual-movie-reresolve")
+            .expect("tracked download");
+        assert!(tracked.title_id.is_none());
+        assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
+        assert_eq!(*list_for_matching_calls.lock().await, 1);
+
+        let mut unchanged = build_client_item();
+        unchanged.client_type = "weaver".to_string();
+        unchanged.client_name = "weaver".to_string();
+        unchanged.download_client_item_id = "job-manual-movie-reresolve".to_string();
+        unchanged.title_name = "Paperman".to_string();
+        unchanged.facet = Some("movie".to_string());
+        unchanged.is_scryer_origin = false;
+
+        tracker.track(&app, unchanged).await;
+
+        let tracked = tracker
+            .find("weaver:job-manual-movie-reresolve")
+            .expect("tracked download");
+        assert!(tracked.title_id.is_none());
+        assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
+        assert_eq!(
+            *list_for_matching_calls.lock().await,
+            1,
+            "unchanged unmatched polls should reuse the cached matcher"
+        );
+
+        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        titles.lock().await.push(title.clone());
+        app.append_domain_event(crate::domain_events::new_title_domain_event(
+            None,
+            &title,
+            scryer_domain::DomainEventPayload::TitleUpdated(scryer_domain::TitleUpdatedEventData {
+                title: crate::domain_events::title_context_snapshot(&title),
+            }),
+        ))
+        .await
+        .expect("invalidate matcher");
+
+        let mut updated = build_client_item();
+        updated.client_type = "weaver".to_string();
+        updated.client_name = "weaver".to_string();
+        updated.download_client_item_id = "job-manual-movie-reresolve".to_string();
+        updated.title_name = "Paperman".to_string();
+        updated.facet = Some("movie".to_string());
+        updated.is_scryer_origin = false;
+
+        tracker.track(&app, updated).await;
+
+        let tracked = tracker
+            .find("weaver:job-manual-movie-reresolve")
+            .expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
+        assert_eq!(
+            *list_for_matching_calls.lock().await,
+            2,
+            "title events should invalidate the cached matcher"
+        );
+    }
+
+    #[tokio::test]
+    async fn unchanged_unmatched_snapshot_does_not_reresolve_every_poll() {
+        let title_repo = Arc::new(TestTitleRepo::default());
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions.clone(), imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut initial = build_client_item();
+        initial.client_type = "weaver".to_string();
+        initial.client_name = "weaver".to_string();
+        initial.download_client_item_id = "job-unmatched-repeat".to_string();
+        initial.title_name = "Paperman".to_string();
+        initial.facet = Some("movie".to_string());
+        initial.is_scryer_origin = false;
+
+        tracker.track(&app, initial.clone()).await;
+        tracker.track(&app, initial).await;
+
+        let recorded = download_submissions.recorded_submissions.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].download_client_item_id,
+            "job-unmatched-repeat".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn assigning_title_to_blocked_download_keeps_manual_import_actionable_even_if_client_is_still_downloading()
+     {
+        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![title.clone()],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "weaver".to_string();
+        item.client_name = "weaver".to_string();
+        item.download_client_item_id = "job-manual-movie-downloading".to_string();
+        item.title_name = "Paperman".to_string();
+        item.facet = Some("movie".to_string());
+        item.state = DownloadQueueState::Downloading;
+        item.is_scryer_origin = false;
+
+        tracker.track(&app, item).await;
+        let tracked = tracker
+            .find_mut("weaver:job-manual-movie-downloading")
+            .expect("tracked download mut");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        tracked.match_type = TitleMatchType::Unmatched;
+        tracked.title_id = None;
+
+        assign_title_to_tracked_download(&app, tracked, &title).await;
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert!(!tracked.import_attempted);
+
+        crate::completed_download_handler::check(&app, tracked).await;
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
     }
 
     #[tokio::test]
@@ -1037,5 +1724,102 @@ mod tests {
         assert_eq!(tracked.match_type, TitleMatchType::ClientParameter);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert!(tracked.client_item.is_scryer_origin);
+    }
+
+    #[tokio::test]
+    async fn track_reresolves_when_facet_hint_arrives_on_later_snapshot() {
+        let anime_title = build_title("One Piece", MediaFacet::Anime, &[]);
+        let series_title = build_title("One Piece", MediaFacet::Series, &[]);
+        let title_repo = Arc::new(TestTitleRepo {
+            titles: vec![anime_title.clone(), series_title],
+        });
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(title_repo, download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut initial = build_client_item();
+        initial.client_type = "weaver".to_string();
+        initial.client_name = "weaver".to_string();
+        initial.download_client_item_id = "job-facet-reresolve".to_string();
+        initial.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        initial.facet = None;
+        initial.is_scryer_origin = false;
+
+        tracker.track(&app, initial).await;
+
+        let tracked = tracker
+            .find("weaver:job-facet-reresolve")
+            .expect("tracked download");
+        assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
+        assert!(tracked.title_id.is_none());
+
+        let mut updated = build_client_item();
+        updated.client_type = "weaver".to_string();
+        updated.client_name = "weaver".to_string();
+        updated.download_client_item_id = "job-facet-reresolve".to_string();
+        updated.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        updated.facet = Some("anime".to_string());
+        updated.is_scryer_origin = false;
+
+        tracker.track(&app, updated).await;
+
+        let tracked = tracker
+            .find("weaver:job-facet-reresolve")
+            .expect("tracked download");
+        assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
+        assert_eq!(tracked.title_id.as_deref(), Some(anime_title.id.as_str()));
+    }
+
+    #[test]
+    fn update_trackable_preserves_in_flight_import_states() {
+        let mut tracker = TrackedDownloadService::new();
+
+        for (suffix, state) in [
+            ("pending", TrackedDownloadState::ImportPending),
+            ("importing", TrackedDownloadState::Importing),
+            ("failed", TrackedDownloadState::FailedPending),
+        ] {
+            tracker.cache.insert(
+                format!("nzbget:{suffix}"),
+                TrackedDownload {
+                    id: format!("nzbget:{suffix}"),
+                    client_id: "client-1".to_string(),
+                    client_type: "nzbget".to_string(),
+                    client_item: build_client_item(),
+                    state,
+                    status: TrackedDownloadStatus::Ok,
+                    status_messages: Vec::new(),
+                    title_id: None,
+                    facet: Some("series".to_string()),
+                    source_title: None,
+                    indexer: None,
+                    added_at: None,
+                    notified_manual_interaction: false,
+                    match_type: TitleMatchType::Unmatched,
+                    is_trackable: true,
+                    import_attempted: false,
+                    path_missing_since: None,
+                },
+            );
+        }
+
+        tracker.update_trackable(&HashSet::new());
+
+        assert!(
+            tracker
+                .find("nzbget:pending")
+                .is_some_and(|td| td.is_trackable)
+        );
+        assert!(
+            tracker
+                .find("nzbget:importing")
+                .is_some_and(|td| td.is_trackable)
+        );
+        assert!(
+            tracker
+                .find("nzbget:failed")
+                .is_some_and(|td| td.is_trackable)
+        );
     }
 }

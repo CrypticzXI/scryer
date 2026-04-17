@@ -5,7 +5,7 @@ use scryer_application::{
 };
 use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType, MediaFacet};
 use sqlx::Row;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 use crate::types::{
     LibraryProbeSignatureRecord, ReleaseDownloadFailureSignatureRecord,
@@ -76,6 +76,51 @@ fn workflow_operation_from_row(
         updated_at: row
             .try_get("updated_at")
             .map_err(|err| AppError::Repository(err.to_string()))?,
+    })
+}
+
+fn import_record_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<ImportRecord> {
+    Ok(ImportRecord {
+        id: row
+            .try_get("id")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        source_system: row
+            .try_get("source_system")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        source_ref: row
+            .try_get("source_ref")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        import_type: {
+            let s: String = row
+                .try_get("import_type")
+                .map_err(|e| AppError::Repository(e.to_string()))?;
+            ImportType::parse(&s)
+                .ok_or_else(|| AppError::Repository(format!("unknown import_type: {s}")))?
+        },
+        status: {
+            let s: String = row
+                .try_get("status")
+                .map_err(|e| AppError::Repository(e.to_string()))?;
+            ImportStatus::parse(&s).unwrap_or_default()
+        },
+        payload_json: row
+            .try_get("payload_json")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        result_json: row
+            .try_get("result_json")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        started_at: row
+            .try_get("started_at")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        finished_at: row
+            .try_get("finished_at")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        created_at: row
+            .try_get("created_at")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        updated_at: row
+            .try_get("updated_at")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
     })
 }
 
@@ -631,51 +676,7 @@ pub(crate) async fn get_import_by_id_query(
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    match row {
-        Some(row) => Ok(Some(ImportRecord {
-            id: row
-                .try_get("id")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_system: row
-                .try_get("source_system")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_ref: row
-                .try_get("source_ref")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            import_type: {
-                let s: String = row
-                    .try_get("import_type")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportType::parse(&s)
-                    .ok_or_else(|| AppError::Repository(format!("unknown import_type: {s}")))?
-            },
-            status: {
-                let s: String = row
-                    .try_get("status")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportStatus::parse(&s).unwrap_or_default()
-            },
-            payload_json: row
-                .try_get("payload_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            result_json: row
-                .try_get("result_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            started_at: row
-                .try_get("started_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            finished_at: row
-                .try_get("finished_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            created_at: row
-                .try_get("created_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            updated_at: row
-                .try_get("updated_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-        })),
-        None => Ok(None),
-    }
+    row.as_ref().map(import_record_from_row).transpose()
 }
 
 pub(crate) async fn get_import_by_source_ref_query(
@@ -689,6 +690,7 @@ pub(crate) async fn get_import_by_source_ref_query(
                 created_at, updated_at
          FROM imports
          WHERE source_system = ? AND source_ref = ?
+         ORDER BY updated_at DESC
          LIMIT 1",
     )
     .bind(source_system)
@@ -697,51 +699,32 @@ pub(crate) async fn get_import_by_source_ref_query(
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    match row {
-        Some(row) => Ok(Some(ImportRecord {
-            id: row
-                .try_get("id")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_system: row
-                .try_get("source_system")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_ref: row
-                .try_get("source_ref")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            import_type: {
-                let s: String = row
-                    .try_get("import_type")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportType::parse(&s)
-                    .ok_or_else(|| AppError::Repository(format!("unknown import_type: {s}")))?
-            },
-            status: {
-                let s: String = row
-                    .try_get("status")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportStatus::parse(&s).unwrap_or_default()
-            },
-            payload_json: row
-                .try_get("payload_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            result_json: row
-                .try_get("result_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            started_at: row
-                .try_get("started_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            finished_at: row
-                .try_get("finished_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            created_at: row
-                .try_get("created_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            updated_at: row
-                .try_get("updated_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-        })),
-        None => Ok(None),
-    }
+    row.as_ref().map(import_record_from_row).transpose()
+}
+
+pub(crate) async fn get_import_by_source_ref_and_type_query(
+    pool: &SqlitePool,
+    source_system: &str,
+    source_ref: &str,
+    import_type: ImportType,
+) -> AppResult<Option<ImportRecord>> {
+    let row = sqlx::query(
+        "SELECT id, source_system, source_ref, import_type, status,
+                payload_json, result_json, started_at, finished_at,
+                created_at, updated_at
+         FROM imports
+         WHERE source_system = ? AND source_ref = ? AND import_type = ?
+         ORDER BY updated_at DESC
+         LIMIT 1",
+    )
+    .bind(source_system)
+    .bind(source_ref)
+    .bind(import_type.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    row.as_ref().map(import_record_from_row).transpose()
 }
 
 pub(crate) async fn update_import_status_query(
@@ -791,10 +774,41 @@ pub(crate) async fn recover_stale_processing_imports_query(
              finished_at = ?,
              updated_at = ?
          WHERE status = 'processing'
+           AND import_type != 'manual_import'
            AND updated_at < ?",
     )
     .bind(&now_str)
     .bind(&now_str)
+    .bind(&cutoff)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(result.rows_affected())
+}
+
+pub(crate) async fn recover_stale_processing_imports_for_type_query(
+    pool: &SqlitePool,
+    import_type: ImportType,
+    stale_seconds: i64,
+) -> AppResult<u64> {
+    let now = Utc::now();
+    let cutoff = (now - chrono::Duration::seconds(stale_seconds)).to_rfc3339();
+    let now_str = now.to_rfc3339();
+
+    let result = sqlx::query(
+        "UPDATE imports
+         SET status = 'failed',
+             result_json = '{\"error\":\"stale processing recovery\"}',
+             finished_at = ?,
+             updated_at = ?
+         WHERE status = 'processing'
+           AND import_type = ?
+           AND updated_at < ?",
+    )
+    .bind(&now_str)
+    .bind(&now_str)
+    .bind(import_type.as_str())
     .bind(&cutoff)
     .execute(pool)
     .await
@@ -818,48 +832,77 @@ pub(crate) async fn list_pending_imports_query(pool: &SqlitePool) -> AppResult<V
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(ImportRecord {
-            id: row
-                .try_get("id")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_system: row
-                .try_get("source_system")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_ref: row
-                .try_get("source_ref")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            import_type: {
-                let s: String = row
-                    .try_get("import_type")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportType::parse(&s)
-                    .ok_or_else(|| AppError::Repository(format!("unknown import_type: {s}")))?
-            },
-            status: {
-                let s: String = row
-                    .try_get("status")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportStatus::parse(&s).unwrap_or_default()
-            },
-            payload_json: row
-                .try_get("payload_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            result_json: row
-                .try_get("result_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            started_at: row
-                .try_get("started_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            finished_at: row
-                .try_get("finished_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            created_at: row
-                .try_get("created_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            updated_at: row
-                .try_get("updated_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-        });
+        out.push(import_record_from_row(&row)?);
+    }
+
+    Ok(out)
+}
+
+pub(crate) async fn list_pending_imports_for_type_query(
+    pool: &SqlitePool,
+    import_type: ImportType,
+) -> AppResult<Vec<ImportRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, source_system, source_ref, import_type, status,
+                payload_json, result_json, started_at, finished_at,
+                created_at, updated_at
+         FROM imports
+         WHERE import_type = ?
+           AND status IN ('queued', 'pending', 'running', 'processing')
+         ORDER BY created_at ASC",
+    )
+    .bind(import_type.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(import_record_from_row(&row)?);
+    }
+
+    Ok(out)
+}
+
+pub(crate) async fn list_imports_for_sources_query(
+    pool: &SqlitePool,
+    sources: &[(String, String)],
+) -> AppResult<Vec<ImportRecord>> {
+    if sources.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut builder: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+        "SELECT id, source_system, source_ref, import_type, status,
+                payload_json, result_json, started_at, finished_at,
+                created_at, updated_at
+         FROM imports
+         WHERE ",
+    );
+
+    for (index, (source_system, source_ref)) in sources.iter().enumerate() {
+        if index > 0 {
+            builder.push(" OR ");
+        }
+
+        builder
+            .push("(source_system = ")
+            .push_bind(source_system)
+            .push(" AND source_ref = ")
+            .push_bind(source_ref)
+            .push(")");
+    }
+    builder.push(" ORDER BY updated_at DESC");
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(import_record_from_row(&row)?);
     }
 
     Ok(out)
@@ -885,48 +928,7 @@ pub(crate) async fn list_imports_query(
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(ImportRecord {
-            id: row
-                .try_get("id")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_system: row
-                .try_get("source_system")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            source_ref: row
-                .try_get("source_ref")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            import_type: {
-                let s: String = row
-                    .try_get("import_type")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportType::parse(&s)
-                    .ok_or_else(|| AppError::Repository(format!("unknown import_type: {s}")))?
-            },
-            status: {
-                let s: String = row
-                    .try_get("status")
-                    .map_err(|e| AppError::Repository(e.to_string()))?;
-                ImportStatus::parse(&s).unwrap_or_default()
-            },
-            payload_json: row
-                .try_get("payload_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            result_json: row
-                .try_get("result_json")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            started_at: row
-                .try_get("started_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            finished_at: row
-                .try_get("finished_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            created_at: row
-                .try_get("created_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-            updated_at: row
-                .try_get("updated_at")
-                .map_err(|e| AppError::Repository(e.to_string()))?,
-        });
+        out.push(import_record_from_row(&row)?);
     }
 
     Ok(out)

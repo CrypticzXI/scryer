@@ -100,6 +100,7 @@ fn map_queue_item(
         attention_reason,
         download_client_item_id: item.client_item_id,
         import_status: None,
+        import_error_code: None,
         import_error_message: None,
         imported_at: None,
         is_scryer_origin: false,

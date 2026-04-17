@@ -1122,6 +1122,7 @@ mod tests {
             attention_reason: None,
             download_client_item_id: id.to_string(),
             import_status: None,
+            import_error_code: None,
             import_error_message: None,
             imported_at: None,
             is_scryer_origin: false,

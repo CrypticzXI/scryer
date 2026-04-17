@@ -2,12 +2,7 @@ use async_graphql::{
     Context, Subscription,
     futures_util::stream::{self, BoxStream, unfold},
 };
-use scryer_application::{
-    apply_download_queue_projection_event, replay_download_queue_state, sorted_download_queue_items,
-};
-use scryer_domain::{
-    DomainEvent, DomainEventFilter, DomainEventType, DownloadQueueState, Entitlement,
-};
+use scryer_domain::{DomainEvent, DownloadQueueItem, DownloadQueueState, Entitlement};
 use std::collections::{HashSet, VecDeque};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -26,44 +21,6 @@ pub struct SubscriptionRoot;
 
 fn empty_box_stream<T: Send + 'static>() -> BoxStream<'static, T> {
     Box::pin(stream::empty())
-}
-
-async fn load_domain_events_for_projection(
-    app: &scryer_application::AppUseCase,
-    actor: &scryer_domain::User,
-    event_types: Vec<DomainEventType>,
-) -> Result<(Vec<DomainEvent>, i64), scryer_application::AppError> {
-    let mut events = Vec::new();
-    let mut after_sequence = 0i64;
-
-    loop {
-        let batch = app
-            .list_domain_events(
-                actor,
-                &DomainEventFilter {
-                    event_types: Some(event_types.clone()),
-                    after_sequence: Some(after_sequence),
-                    limit: 500,
-                    ..DomainEventFilter::default()
-                },
-            )
-            .await?;
-        if batch.is_empty() {
-            break;
-        }
-
-        after_sequence = batch
-            .last()
-            .map(|event| event.sequence)
-            .unwrap_or(after_sequence);
-        let count = batch.len();
-        events.extend(batch);
-        if count < 500 {
-            break;
-        }
-    }
-
-    Ok((events, after_sequence))
 }
 
 fn library_scan_state_stream_from_domain_events(
@@ -118,105 +75,37 @@ async fn job_run_state_stream_from_domain_events(
     Box::pin(stream)
 }
 
-async fn download_queue_state_stream_from_domain_events(
-    app: scryer_application::AppUseCase,
-    actor: scryer_domain::User,
-    receiver: tokio::sync::broadcast::Receiver<i64>,
+fn download_queue_state_stream_from_snapshots(
+    receiver: tokio::sync::broadcast::Receiver<Vec<DownloadQueueItem>>,
     include_all_activity: bool,
     include_history_only: bool,
 ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
-    let event_types = vec![
-        DomainEventType::DownloadQueueItemUpserted,
-        DomainEventType::DownloadQueueItemRemoved,
-    ];
-
-    let (events, cursor) =
-        match load_domain_events_for_projection(&app, &actor, event_types.clone()).await {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                tracing::warn!("download_queue_state: initial load failed: {error}");
-                return empty_box_stream();
-            }
-        };
-
-    let initial_items = replay_download_queue_state(&events);
-    let initial_snapshot = filter_download_queue_items(
-        sorted_download_queue_items(&initial_items),
-        include_all_activity,
-        include_history_only,
-    )
-    .into_iter()
-    .map(from_download_queue_item)
-    .collect::<Vec<_>>();
-
-    let pending_initial = if initial_snapshot.is_empty() {
-        VecDeque::new()
-    } else {
-        VecDeque::from(vec![initial_snapshot])
-    };
-
     let stream = unfold(
-        (receiver, cursor, pending_initial, initial_items),
-        move |(mut receiver, mut cursor, mut pending, mut items)| {
-            let app = app.clone();
-            let actor = actor.clone();
-            let event_types = event_types.clone();
-            async move {
-                loop {
-                    if let Some(snapshot) = pending.pop_front() {
-                        return Some((snapshot, (receiver, cursor, pending, items)));
-                    }
+        (receiver, VecDeque::<Vec<DownloadQueueItemPayload>>::new()),
+        move |(mut receiver, mut pending)| async move {
+            loop {
+                if let Some(snapshot) = pending.pop_front() {
+                    return Some((snapshot, (receiver, pending)));
+                }
 
-                    let events = match app
-                        .list_domain_events(
-                            &actor,
-                            &DomainEventFilter {
-                                event_types: Some(event_types.clone()),
-                                after_sequence: Some(cursor),
-                                limit: 100,
-                                ..DomainEventFilter::default()
-                            },
+                match receiver.recv().await {
+                    Ok(snapshot) => {
+                        let payload = filter_download_queue_items(
+                            snapshot,
+                            include_all_activity,
+                            include_history_only,
                         )
-                        .await
-                    {
-                        Ok(events) if !events.is_empty() => events,
-                        Ok(_) => match receiver.recv().await {
-                            Ok(sequence) => {
-                                if sequence > cursor {
-                                    cursor = sequence.saturating_sub(1);
-                                }
-                                continue;
-                            }
-                            Err(RecvError::Lagged(n)) => {
-                                tracing::debug!(
-                                    "download_queue_state: receiver lagged, skipped {n} wakeups"
-                                );
-                                continue;
-                            }
-                            Err(RecvError::Closed) => return None,
-                        },
-                        Err(error) => {
-                            tracing::warn!("download_queue_state: list failed: {error}");
-                            return None;
-                        }
-                    };
-
-                    for event in events {
-                        cursor = event.sequence;
-                        if let Some(snapshot) =
-                            apply_download_queue_projection_event(&mut items, &event)
-                        {
-                            let payload = filter_download_queue_items(
-                                snapshot,
-                                include_all_activity,
-                                include_history_only,
-                            )
-                            .into_iter()
-                            .map(from_download_queue_item)
-                            .collect::<Vec<_>>();
-                            pending.push_back(payload);
-                        }
+                        .into_iter()
+                        .map(from_download_queue_item)
+                        .collect::<Vec<_>>();
+                        pending.push_back(payload);
                     }
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!(
+                            "download_queue_state: receiver lagged, skipped {n} snapshots"
+                        );
+                    }
+                    Err(RecvError::Closed) => return None,
                 }
             }
         },
@@ -429,7 +318,7 @@ impl SubscriptionRoot {
             actor.id
         );
 
-        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+        let receiver = match app.subscribe_download_queue_state(&actor) {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("download_queue sub: subscribe failed: {error}");
@@ -437,14 +326,11 @@ impl SubscriptionRoot {
             }
         };
 
-        download_queue_state_stream_from_domain_events(
-            app,
-            actor,
+        download_queue_state_stream_from_snapshots(
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
         )
-        .await
     }
 
     async fn download_queue_state(
@@ -473,7 +359,7 @@ impl SubscriptionRoot {
             return empty_box_stream();
         }
 
-        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+        let receiver = match app.subscribe_download_queue_state(&actor) {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("download_queue_state sub: subscribe failed: {error}");
@@ -481,14 +367,11 @@ impl SubscriptionRoot {
             }
         };
 
-        download_queue_state_stream_from_domain_events(
-            app,
-            actor,
+        download_queue_state_stream_from_snapshots(
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
         )
-        .await
     }
 
     async fn library_scan_progress(
@@ -874,6 +757,7 @@ mod tests {
             attention_reason: None,
             download_client_item_id: id.to_string(),
             import_status: None,
+            import_error_code: None,
             import_error_message: None,
             imported_at: None,
             is_scryer_origin,

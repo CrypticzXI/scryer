@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { CheckCircle2, FileVideo, Loader2, XCircle } from "lucide-react";
+import { FileVideo, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,8 +25,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useTranslate } from "@/lib/context/translate-context";
 import { previewManualImportQuery } from "@/lib/graphql/queries";
-import { executeManualImportMutation } from "@/lib/graphql/mutations";
+import { queueManualImportMutation } from "@/lib/graphql/mutations";
 import { useClient } from "urql";
 
 type FilePreview = {
@@ -50,14 +52,6 @@ type AvailableEpisode = {
   episodeLabel: string | null;
   title: string | null;
   monitored: boolean;
-};
-
-type ImportResult = {
-  filePath: string;
-  episodeId: string;
-  success: boolean;
-  destPath: string | null;
-  errorMessage: string | null;
 };
 
 function formatFileSize(bytes: number) {
@@ -105,6 +99,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   titleId: string;
   titleName: string;
+  clientType: string;
   downloadClientItemId: string;
   onImportComplete?: () => void;
 };
@@ -114,17 +109,19 @@ export function ManualImportDialog({
   onOpenChange,
   titleId,
   titleName,
+  clientType,
   downloadClientItemId,
   onImportComplete,
 }: Props) {
   const client = useClient();
+  const setGlobalStatus = useGlobalStatus();
+  const t = useTranslate();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [files, setFiles] = React.useState<FilePreview[]>([]);
   const [episodes, setEpisodes] = React.useState<AvailableEpisode[]>([]);
   const [mappings, setMappings] = React.useState<Record<string, string>>({});
   const [importing, setImporting] = React.useState(false);
-  const [results, setResults] = React.useState<ImportResult[] | null>(null);
 
   // Load preview when dialog opens
   React.useEffect(() => {
@@ -132,7 +129,6 @@ export function ManualImportDialog({
       setFiles([]);
       setEpisodes([]);
       setMappings({});
-      setResults(null);
       setError(null);
       return;
     }
@@ -177,21 +173,34 @@ export function ManualImportDialog({
 
     setImporting(true);
     try {
-      const { data, error: mutationError } = await client.mutation(executeManualImportMutation, {
-        input: { titleId, files: fileMappings },
+      const { error: mutationError } = await client.mutation(queueManualImportMutation, {
+        input: {
+          titleId,
+          clientType,
+          downloadClientItemId,
+          files: fileMappings,
+        },
       }).toPromise();
       if (mutationError) throw mutationError;
-      setResults(data.executeManualImport);
+      setGlobalStatus(t("queue.manualImportQueued"));
       onImportComplete?.();
+      onOpenChange(false);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Import failed");
     } finally {
       setImporting(false);
     }
-  }, [mappings, titleId, client, onImportComplete]);
-
-  const successCount = results?.filter((r) => r.success).length ?? 0;
-  const failCount = results?.filter((r) => !r.success).length ?? 0;
+  }, [
+    client,
+    clientType,
+    downloadClientItemId,
+    mappings,
+    onImportComplete,
+    onOpenChange,
+    setGlobalStatus,
+    t,
+    titleId,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -210,56 +219,6 @@ export function ManualImportDialog({
           </div>
         ) : error && files.length === 0 ? (
           <div className="py-8 text-center text-sm text-red-400">{error}</div>
-        ) : results ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3 text-sm">
-              {successCount > 0 && (
-                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="h-4 w-4" />
-                  {successCount} imported
-                </span>
-              )}
-              {failCount > 0 && (
-                <span className="flex items-center gap-1 text-red-400">
-                  <XCircle className="h-4 w-4" />
-                  {failCount} failed
-                </span>
-              )}
-            </div>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>File</TableHead>
-                  <TableHead className="w-20 text-center">Status</TableHead>
-                  <TableHead>Detail</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {results.map((result) => {
-                  const fileName = result.filePath.split("/").pop() ?? result.filePath;
-                  return (
-                    <TableRow key={result.filePath}>
-                      <TableCell className="max-w-[300px] truncate font-mono text-xs">
-                        {fileName}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {result.success ? (
-                          <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                        ) : (
-                          <XCircle className="mx-auto h-4 w-4 text-red-400" />
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {result.success
-                          ? result.destPath?.split("/").pop() ?? "Imported"
-                          : result.errorMessage ?? "Unknown error"}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
         ) : (
           <>
             {files.length === 0 ? (
@@ -340,30 +299,22 @@ export function ManualImportDialog({
         )}
 
         <DialogFooter>
-          {results ? (
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Close
-            </Button>
-          ) : (
-            <>
-              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={importing}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => void handleImport()}
-                disabled={importing || assignedCount === 0 || loading}
-              >
-                {importing ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Importing...
-                  </>
-                ) : (
-                  `Import ${assignedCount} file${assignedCount === 1 ? "" : "s"}`
-                )}
-              </Button>
-            </>
-          )}
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={importing}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void handleImport()}
+            disabled={importing || assignedCount === 0 || loading}
+          >
+            {importing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Queueing...
+              </>
+            ) : (
+              `Queue ${assignedCount} file${assignedCount === 1 ? "" : "s"}`
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

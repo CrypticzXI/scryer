@@ -1,5 +1,6 @@
 use scryer_application::{AppError, AppResult};
-use sqlx::{Row, SqlitePool};
+use scryer_domain::DomainEventType;
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 pub(crate) async fn delete_release_decisions_older_than_query(
     pool: &SqlitePool,
@@ -25,7 +26,7 @@ pub(crate) async fn delete_release_attempts_older_than_query(
 ) -> AppResult<u32> {
     let modifier = format!("-{days} days");
     let result = sqlx::query(
-        "DELETE FROM release_download_attempts WHERE created_at < datetime('now', ?) AND outcome != 'pending'",
+        "DELETE FROM release_download_attempts WHERE attempted_at < datetime('now', ?) AND outcome != 'pending'",
     )
     .bind(&modifier)
     .execute(pool)
@@ -56,7 +57,7 @@ pub(crate) async fn delete_history_events_older_than_query(
     days: i64,
 ) -> AppResult<u32> {
     let modifier = format!("-{days} days");
-    let result = sqlx::query("DELETE FROM history_events WHERE created_at < datetime('now', ?)")
+    let result = sqlx::query("DELETE FROM history_events WHERE occurred_at < datetime('now', ?)")
         .bind(&modifier)
         .execute(pool)
         .await
@@ -67,17 +68,116 @@ pub(crate) async fn delete_history_events_older_than_query(
     Ok(result.rows_affected() as u32)
 }
 
-pub(crate) async fn delete_domain_events_older_than_query(
+pub(crate) async fn delete_domain_events_older_than_for_types_query(
+    pool: &SqlitePool,
+    days: i64,
+    event_types: &[DomainEventType],
+) -> AppResult<u32> {
+    if event_types.is_empty() {
+        return Ok(0);
+    }
+
+    let modifier = format!("-{days} days");
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "DELETE FROM domain_events WHERE occurred_at < datetime('now', ",
+    );
+    builder.push_bind(&modifier);
+    builder.push(") AND event_type IN (");
+    let mut separated = builder.separated(", ");
+    for event_type in event_types {
+        separated.push_bind(event_type.as_str());
+    }
+    separated.push_unseparated(")");
+
+    let result = builder.build().execute(pool).await.map_err(|e| {
+        AppError::Repository(format!("housekeeping: domain_events cleanup failed: {e}"))
+    })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
+pub(crate) async fn delete_title_history_older_than_query(
     pool: &SqlitePool,
     days: i64,
 ) -> AppResult<u32> {
     let modifier = format!("-{days} days");
-    let result = sqlx::query("DELETE FROM domain_events WHERE occurred_at < datetime('now', ?)")
+    let result = sqlx::query("DELETE FROM title_history WHERE occurred_at < datetime('now', ?)")
         .bind(&modifier)
         .execute(pool)
         .await
         .map_err(|e| {
-            AppError::Repository(format!("housekeeping: domain_events cleanup failed: {e}"))
+            AppError::Repository(format!("housekeeping: title_history cleanup failed: {e}"))
+        })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
+pub(crate) async fn delete_download_import_artifacts_older_than_query(
+    pool: &SqlitePool,
+    days: i64,
+) -> AppResult<u32> {
+    let modifier = format!("-{days} days");
+    let result = sqlx::query(
+        "DELETE FROM download_import_artifacts
+         WHERE created_at < datetime('now', ?)
+           AND (
+                import_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM imports
+                    WHERE imports.id = download_import_artifacts.import_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM imports
+                    WHERE imports.id = download_import_artifacts.import_id
+                      AND imports.status IN ('completed', 'failed', 'skipped')
+                )
+           )",
+    )
+    .bind(&modifier)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        AppError::Repository(format!(
+            "housekeeping: download_import_artifacts cleanup failed: {e}"
+        ))
+    })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
+pub(crate) async fn delete_terminal_imports_older_than_query(
+    pool: &SqlitePool,
+    days: i64,
+) -> AppResult<u32> {
+    let modifier = format!("-{days} days");
+    let result = sqlx::query(
+        "DELETE FROM imports
+         WHERE status IN ('completed', 'failed', 'skipped')
+           AND updated_at < datetime('now', ?)",
+    )
+    .bind(&modifier)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Repository(format!("housekeeping: imports cleanup failed: {e}")))?;
+
+    Ok(result.rows_affected() as u32)
+}
+
+pub(crate) async fn delete_rule_set_history_older_than_query(
+    pool: &SqlitePool,
+    days: i64,
+) -> AppResult<u32> {
+    let modifier = format!("-{days} days");
+    let result = sqlx::query("DELETE FROM rule_set_history WHERE created_at < datetime('now', ?)")
+        .bind(&modifier)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            AppError::Repository(format!(
+                "housekeeping: rule_set_history cleanup failed: {e}"
+            ))
         })?;
 
     Ok(result.rows_affected() as u32)

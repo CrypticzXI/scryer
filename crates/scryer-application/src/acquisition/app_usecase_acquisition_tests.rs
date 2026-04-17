@@ -91,6 +91,22 @@ fn unknown_availability_treated_as_announced() {
     ));
 }
 
+#[tokio::test]
+async fn skip_interval_does_not_replay_missed_poll_ticks_in_a_burst() {
+    let mut interval = new_skip_interval(std::time::Duration::from_millis(50));
+    interval.tick().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+    interval.tick().await;
+
+    let next_tick =
+        tokio::time::timeout(std::time::Duration::from_millis(10), interval.tick()).await;
+    assert!(
+        next_tick.is_err(),
+        "skip interval should not have an immediate catch-up tick waiting"
+    );
+}
+
 // ── in_cinemas ────────────────────────────────────────────────────────────────
 
 #[test]

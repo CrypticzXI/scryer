@@ -1010,6 +1010,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           onOpenChange={(open) => { if (!open) setManualImportItem(null); }}
           titleId={title.id}
           titleName={title.name}
+          clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
           onImportComplete={() => void handleManualImportComplete()}
         />

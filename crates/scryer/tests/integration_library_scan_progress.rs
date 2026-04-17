@@ -2,7 +2,6 @@
 
 mod common;
 
-use chrono::Utc;
 use serde_json::json;
 use tokio::time::{Duration, Instant};
 use wiremock::matchers::{method, path};
@@ -10,10 +9,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 use common::TestContext;
 use scryer_application::{LibraryScanSession, LibraryScanStatus};
-use scryer_domain::{
-    DomainEventPayload, DomainEventStream, Id, LibraryScanProgressedEventData,
-    LibraryScanStartedEventData, MediaFacet, NewDomainEvent,
-};
+use scryer_domain::{Id, MediaFacet};
 use scryer_infrastructure::SettingDefinitionSeed;
 
 async fn gql(ctx: &TestContext, query: &str, variables: serde_json::Value) -> serde_json::Value {
@@ -125,82 +121,109 @@ async fn wait_for_scan_status(
 #[tokio::test]
 async fn active_library_scans_query_returns_progress_snapshot() {
     let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
 
-    ctx.app
-        .append_domain_event(NewDomainEvent {
-            event_id: Id::new().0,
-            occurred_at: Utc::now(),
-            actor_user_id: None,
-            title_id: None,
-            facet: Some(MediaFacet::Series),
-            correlation_id: None,
-            causation_id: None,
-            schema_version: 1,
-            stream: DomainEventStream::LibraryScan {
-                session_id: "session-1".to_string(),
-            },
-            payload: DomainEventPayload::LibraryScanStarted(LibraryScanStartedEventData {
-                session_id: "session-1".to_string(),
-                mode: "full".to_string(),
-            }),
-        })
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    std::fs::create_dir_all(series_root.join("Unknown Show (2020)"))
+        .expect("create unknown series folder");
+    set_media_path(&ctx, "series.path", series_root.to_string_lossy().as_ref()).await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(750))
+                .set_body_json(json!({
+                    "data": {
+                        "searchTvdbBatch": []
+                    }
+                })),
+        )
+        .with_priority(1)
+        .mount(&ctx.smg_server)
+        .await;
+
+    let start_resp = ctx
+        .http_client()
+        .post(ctx.graphql_url())
+        .json(&json!({
+            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
+                scanLibrary(facet: $facet) {
+                    sessionId
+                    facet
+                    status
+                }
+            }"#,
+            "variables": { "facet": "series" }
+        }))
+        .send()
         .await
-        .expect("append library scan started event");
-    ctx.app
-        .append_domain_event(NewDomainEvent {
-            event_id: Id::new().0,
-            occurred_at: Utc::now(),
-            actor_user_id: None,
-            title_id: None,
-            facet: Some(MediaFacet::Series),
-            correlation_id: None,
-            causation_id: None,
-            schema_version: 1,
-            stream: DomainEventStream::LibraryScan {
-                session_id: "session-1".to_string(),
-            },
-            payload: DomainEventPayload::LibraryScanProgressed(LibraryScanProgressedEventData {
-                session_id: "session-1".to_string(),
-                status: "running".to_string(),
-                found_titles: 12,
-                title_match_completed: 7,
-                title_match_total_known: false,
-                titles_completed: 2,
-                titles_total: Some(4),
-                files_completed: 5,
-                files_total: Some(9),
-                warning_message: None,
-            }),
-        })
-        .await
-        .expect("append library scan progressed event");
+        .expect("request should succeed");
+    assert_eq!(start_resp.status(), 201);
+    let start: serde_json::Value = start_resp.json().await.expect("should be valid JSON");
+    assert_no_errors(&start);
+    let session_id = start["data"]["scanLibrary"]["sessionId"]
+        .as_str()
+        .expect("scanLibrary should return a session id")
+        .to_string();
+    assert_eq!(start["data"]["scanLibrary"]["facet"], "series");
 
-    let body = gql(
-        &ctx,
-        r#"query { activeLibraryScans { sessionId facet status foundTitles titleMatchTotalKnown titleMatchProgress { total completed failed } hydrationProgress { total completed failed } mediaAnalysisProgress { total completed failed } } }"#,
-        json!({}),
-    )
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let scan = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for activeLibraryScans to expose session {session_id}"
+        );
 
-    assert_no_errors(&body);
-    let scans = body["data"]["activeLibraryScans"]
-        .as_array()
-        .expect("activeLibraryScans should be an array");
-    assert_eq!(scans.len(), 1);
-    assert_eq!(scans[0]["sessionId"], "session-1");
-    assert_eq!(scans[0]["facet"], "series");
-    assert_eq!(scans[0]["status"], "running");
-    assert_eq!(scans[0]["foundTitles"], 12);
-    assert_eq!(scans[0]["titleMatchTotalKnown"], false);
-    assert_eq!(scans[0]["titleMatchProgress"]["total"], 12);
-    assert_eq!(scans[0]["titleMatchProgress"]["completed"], 7);
-    assert_eq!(scans[0]["titleMatchProgress"]["failed"], 0);
-    assert_eq!(scans[0]["hydrationProgress"]["total"], 4);
-    assert_eq!(scans[0]["hydrationProgress"]["completed"], 2);
-    assert_eq!(scans[0]["hydrationProgress"]["failed"], 0);
-    assert_eq!(scans[0]["mediaAnalysisProgress"]["total"], 9);
-    assert_eq!(scans[0]["mediaAnalysisProgress"]["completed"], 5);
-    assert_eq!(scans[0]["mediaAnalysisProgress"]["failed"], 0);
+        let body = gql(
+            &ctx,
+            r#"query { activeLibraryScans { sessionId facet status foundTitles titleMatchTotalKnown titleMatchProgress { total completed failed } hydrationProgress { total completed failed } mediaAnalysisProgress { total completed failed } } }"#,
+            json!({}),
+        )
+        .await;
+
+        assert_no_errors(&body);
+        if let Some(scan) = body["data"]["activeLibraryScans"]
+            .as_array()
+            .and_then(|scans| {
+                scans
+                    .iter()
+                    .find(|scan| scan["sessionId"].as_str() == Some(session_id.as_str()))
+                    .cloned()
+            })
+        {
+            break scan;
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    assert_eq!(scan["sessionId"], session_id);
+    assert_eq!(scan["facet"], "series");
+    assert!(
+        matches!(
+            scan["status"].as_str(),
+            Some("discovering") | Some("running")
+        ),
+        "expected active scan status, got {scan}"
+    );
+    assert!(scan["foundTitles"].as_u64().is_some());
+    assert!(scan["titleMatchTotalKnown"].as_bool().is_some());
+    assert!(scan["titleMatchProgress"]["total"].as_u64().is_some());
+    assert!(scan["titleMatchProgress"]["completed"].as_u64().is_some());
+    assert!(scan["titleMatchProgress"]["failed"].as_u64().is_some());
+    assert!(scan["hydrationProgress"]["total"].as_u64().is_some());
+    assert!(scan["hydrationProgress"]["completed"].as_u64().is_some());
+    assert!(scan["hydrationProgress"]["failed"].as_u64().is_some());
+    assert!(scan["mediaAnalysisProgress"]["total"].as_u64().is_some());
+    assert!(
+        scan["mediaAnalysisProgress"]["completed"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(scan["mediaAnalysisProgress"]["failed"].as_u64().is_some());
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 use super::*;
+use crate::import_title_resolution::find_monitored_movie_title_from_release;
 use crate::missing_required_audio_languages;
 use crate::post_download_gate::facet_to_category_hint;
-use scryer_domain::{ExternalId, MediaFacet, Title};
+use scryer_domain::{CompletedDownload, ExternalId, MediaFacet, Title};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,20 @@ fn test_movie_title_with_aliases_and_ids(
         })
         .collect();
     title
+}
+
+fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedDownload {
+    CompletedDownload {
+        client_type: "weaver".to_string(),
+        client_id: "client-1".to_string(),
+        download_client_item_id: "job-1".to_string(),
+        name: name.to_string(),
+        dest_dir: dest_dir.to_string_lossy().to_string(),
+        category: None,
+        size_bytes: None,
+        completed_at: None,
+        parameters: vec![],
+    }
 }
 
 // ── has_scryer_origin ─────────────────────────────────────────────────────────
@@ -210,6 +225,71 @@ fn find_monitored_movie_title_from_release_prefers_imdb_id() {
     assert_eq!(matched.id, "movie-2");
 }
 
+#[test]
+fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("Paperman.2012.1080p.BluRay.x264-GRP");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"movie").expect("write file");
+    let completed = test_completed_download("Paperman.2012.1080p.BluRay.x264-GRP", &dest_dir);
+
+    let parsed = build_augmented_movie_import_metadata(&file_path, &completed);
+
+    assert_eq!(parsed.year, Some(2012));
+    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
+    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+}
+
+#[test]
+fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obfuscated_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let episode = parsed.episode.expect("episode metadata");
+
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+}
+
+#[test]
+fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_exist() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("Bluey.S01.Complete.720p.WEB-DL.AV1");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("Bluey.S01E03.720p.WEB-DL.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download("Bluey.S01.Complete.720p.WEB-DL.AV1", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
+    let episode = parsed.episode.expect("episode metadata");
+
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![3]);
+}
+
+#[test]
+fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_title_when_other_files_exist()
+ {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
+
+    assert!(parsed.episode.is_none());
+    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+}
+
 // ── is_sample_file ────────────────────────────────────────────────────────────
 
 #[test]
@@ -306,6 +386,14 @@ fn build_rename_tokens_includes_title_and_year() {
     let tokens = build_rename_tokens(&title, &parsed, "mkv");
     assert_eq!(tokens.get("title").map(String::as_str), Some("Test Movie"));
     assert_eq!(tokens.get("ext").map(String::as_str), Some("mkv"));
+    assert_eq!(tokens.get("year").map(String::as_str), Some("2024"));
+}
+
+#[test]
+fn build_rename_tokens_falls_back_to_title_year_when_release_year_is_missing() {
+    let title = test_title(MediaFacet::Movie);
+    let parsed = crate::parse_release_metadata("obfuscated.release.name");
+    let tokens = build_rename_tokens(&title, &parsed, "mkv");
     assert_eq!(tokens.get("year").map(String::as_str), Some("2024"));
 }
 

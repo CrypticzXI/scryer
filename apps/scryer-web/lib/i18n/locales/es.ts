@@ -443,6 +443,17 @@ const es: LocaleDictionary = {
   "settings.generalText": "Ajustes generales de la aplicación.",
   "settings.generalPlaceholder":
     "Configurar idioma y otras preferencias globales.",
+  "settings.historyRetentionTitle": "Retención del historial",
+  "settings.historyRetentionHelp":
+    "Esto conserva el historial visible para el usuario y el registro de auditoría de Scryer. Los cambios se aplicarán en la próxima ejecución de mantenimiento.",
+  "settings.historyRetentionExternalHelp":
+    "La limpieza operativa de datos temporales de adquisición seguirá ejecutándose, y esto no controla el historial conservado por SABnzbd, NZBGet o Weaver.",
+  "settings.keepHistoryForever": "Conservar historial para siempre",
+  "settings.historyRetentionDaysLabel": "Conservar historial durante N días",
+  "settings.historyRetentionSaved":
+    "Ajustes de retención del historial guardados.",
+  "settings.historyRetentionValidation":
+    "Los días de retención del historial deben ser al menos 1, salvo que el historial se conserve para siempre.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "Ruta del certificado TLS",
   "settings.tlsCertPathHelp":
@@ -691,6 +702,7 @@ const es: LocaleDictionary = {
     "La importación manual está disponible para elementos de la cola que requieren atención.",
   "queue.releaseTitle": "Lanzamiento",
   "queue.blockReason": "Motivo del bloqueo",
+  "queue.errorCode": "Código de error",
   "queue.showDetails": "Mostrar detalles",
   "queue.hideDetails": "Ocultar detalles",
   "queue.assignTitle": "Asignar título",

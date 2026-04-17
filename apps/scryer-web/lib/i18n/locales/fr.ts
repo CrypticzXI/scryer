@@ -442,6 +442,17 @@ const fr: LocaleDictionary = {
   "settings.generalText": "Paramètres généraux de l'application.",
   "settings.generalPlaceholder":
     "Configurez la langue et d'autres préférences globales.",
+  "settings.historyRetentionTitle": "Rétention de l’historique",
+  "settings.historyRetentionHelp":
+    "Cela conserve l’historique visible par l’utilisateur et la piste d’audit de Scryer. Les modifications prendront effet lors de la prochaine exécution du nettoyage.",
+  "settings.historyRetentionExternalHelp":
+    "Le nettoyage opérationnel des données temporaires d’acquisition continue de s’exécuter, et ce réglage ne contrôle pas l’historique conservé par SABnzbd, NZBGet ou Weaver.",
+  "settings.keepHistoryForever": "Conserver l’historique indéfiniment",
+  "settings.historyRetentionDaysLabel": "Conserver l’historique pendant N jours",
+  "settings.historyRetentionSaved":
+    "Paramètres de rétention de l’historique enregistrés.",
+  "settings.historyRetentionValidation":
+    "Le nombre de jours de rétention de l’historique doit être au moins de 1, sauf si l’historique est conservé indéfiniment.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "Chemin du certificat TLS",
   "settings.tlsCertPathHelp":
@@ -691,6 +702,7 @@ const fr: LocaleDictionary = {
     "L'importation manuelle est disponible pour les éléments de file d'attente nécessitant une attention.",
   "queue.releaseTitle": "Version",
   "queue.blockReason": "Raison du blocage",
+  "queue.errorCode": "Code d’erreur",
   "queue.showDetails": "Afficher les détails",
   "queue.hideDetails": "Masquer les détails",
   "queue.assignTitle": "Attribuer un titre",

@@ -678,6 +678,7 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         attention_reason,
         download_client_item_id: job.id.to_string(),
         import_status: None,
+        import_error_code: None,
         import_error_message: None,
         imported_at: None,
         is_scryer_origin: is_scryer,
@@ -1034,17 +1035,6 @@ impl DownloadClient for WeaverDownloadClient {
                     .map(|entry| (entry.key.clone(), entry.value.clone()))
                     .collect::<Vec<_>>();
 
-                // Only return jobs submitted by scryer (have *scryer_title_id metadata).
-                let is_scryer = parameters.iter().any(|(k, _)| k == "*scryer_title_id")
-                    || job
-                        .client_request_id
-                        .as_deref()
-                        .map(|value| value.trim_start().starts_with("scryer:"))
-                        .unwrap_or(false);
-                if !is_scryer {
-                    return None;
-                }
-
                 Some(CompletedDownload {
                     client_type: "weaver".to_string(),
                     client_id: String::new(),
@@ -1199,8 +1189,11 @@ impl DownloadClient for WeaverDownloadClient {
 mod tests {
     use chrono::Utc;
     use serde_json::json;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{WeaverDownloadClient, WeaverQueueItem, weaver_item_to_queue_item};
+    use scryer_application::DownloadClient;
     use scryer_domain::{DownloadClientConfig, DownloadQueueState};
 
     fn test_config(config_json: &str) -> DownloadClientConfig {
@@ -1291,5 +1284,52 @@ mod tests {
 
         assert_eq!(item.title_id.as_deref(), Some("title-77"));
         assert!(item.is_scryer_origin);
+    }
+
+    #[tokio::test]
+    async fn list_completed_downloads_includes_non_scryer_completed_jobs() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItems": [
+                        {
+                            "id": 10000,
+                            "name": "8f1d2c3b4a59687766554433221100ff",
+                            "state": "COMPLETE",
+                            "error": null,
+                            "progressPercent": 100.0,
+                            "totalBytes": 123456789_u64,
+                            "category": "2000",
+                            "attributes": [],
+                            "clientRequestId": null,
+                            "outputDir": "/data/complete/8f1d2c3b4a59687766554433221100ff.#10000",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:10:00Z",
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let downloads = client
+            .list_completed_downloads()
+            .await
+            .expect("completed downloads should load");
+
+        assert_eq!(downloads.len(), 1);
+        assert_eq!(downloads[0].download_client_item_id, "10000");
+        assert_eq!(downloads[0].name, "8f1d2c3b4a59687766554433221100ff");
+        assert_eq!(
+            downloads[0].dest_dir,
+            "/data/complete/8f1d2c3b4a59687766554433221100ff.#10000"
+        );
+        assert!(downloads[0].parameters.is_empty());
     }
 }
