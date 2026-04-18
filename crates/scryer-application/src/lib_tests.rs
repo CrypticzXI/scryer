@@ -1,6 +1,9 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::{DomainEventPayload, EventType, JobRunStartedEventData, RootFolderEntry};
+use scryer_domain::{
+    DomainEventPayload, EventType, JobRunCompletedEventData, JobRunStartedEventData,
+    RootFolderEntry,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2305,7 +2308,7 @@ impl DownloadClient for StubDownloadClient {
     }
 }
 
-fn bootstrap() -> (AppUseCase, User) {
+pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
 }
 
@@ -4689,6 +4692,129 @@ async fn active_library_scans_and_subscription_use_runtime_tracker_state() {
 
     assert_eq!(initial.session_id, session.session_id);
     assert_eq!(initial.facet, session.facet);
+}
+
+#[tokio::test]
+async fn notification_broadcast_ignores_operational_domain_events() {
+    let (app, _) = bootstrap();
+    let mut receiver = app.runtime.notification_event_broadcast.subscribe();
+
+    app.append_domain_event(crate::domain_events::new_global_domain_event(
+        None,
+        DomainEventPayload::JobRunStarted(JobRunStartedEventData {
+            run_id: "run-1".to_string(),
+            job_key: "rss_sync".to_string(),
+            operation_type: "job".to_string(),
+            trigger_source: "system_internal".to_string(),
+        }),
+    ))
+    .await
+    .expect("operational event should append");
+
+    assert!(
+        matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "operational events should not wake notification dispatcher"
+    );
+
+    let notification = app
+        .append_domain_event(crate::domain_events::new_global_domain_event(
+            None,
+            DomainEventPayload::TitleAdded(scryer_domain::TitleAddedEventData {
+                title: scryer_domain::TitleContextSnapshot {
+                    title_name: "Wake Fixture".to_string(),
+                    facet: MediaFacet::Movie,
+                    year: Some(2024),
+                    poster_url: None,
+                    external_ids: scryer_domain::DomainExternalIds::default(),
+                },
+            }),
+        ))
+        .await
+        .expect("notification event should append");
+
+    let wake = receiver
+        .recv()
+        .await
+        .expect("notification wake should arrive after notification event");
+    assert_eq!(wake, notification.sequence);
+}
+
+#[tokio::test]
+async fn notification_broadcast_wakes_once_for_notification_batches() {
+    let (app, _) = bootstrap();
+    let mut receiver = app.runtime.notification_event_broadcast.subscribe();
+
+    let stored = app
+        .append_domain_events(vec![
+            crate::domain_events::new_global_domain_event(
+                None,
+                DomainEventPayload::JobRunStarted(JobRunStartedEventData {
+                    run_id: "run-1".to_string(),
+                    job_key: "rss_sync".to_string(),
+                    operation_type: "job".to_string(),
+                    trigger_source: "system_internal".to_string(),
+                }),
+            ),
+            crate::domain_events::new_global_domain_event(
+                None,
+                DomainEventPayload::TitleAdded(scryer_domain::TitleAddedEventData {
+                    title: scryer_domain::TitleContextSnapshot {
+                        title_name: "First Notification".to_string(),
+                        facet: MediaFacet::Movie,
+                        year: Some(2024),
+                        poster_url: None,
+                        external_ids: scryer_domain::DomainExternalIds::default(),
+                    },
+                }),
+            ),
+            crate::domain_events::new_global_domain_event(
+                None,
+                DomainEventPayload::ImportRejected(scryer_domain::ImportRejectedEventData {
+                    title: Some(scryer_domain::TitleContextSnapshot {
+                        title_name: "Second Notification".to_string(),
+                        facet: MediaFacet::Movie,
+                        year: Some(2024),
+                        poster_url: None,
+                        external_ids: scryer_domain::DomainExternalIds::default(),
+                    }),
+                    status: ImportStatus::Failed,
+                    source_path: Some("/downloads/example.mkv".to_string()),
+                    reason: Some("not parsable".to_string()),
+                    episode_ids: Vec::new(),
+                }),
+            ),
+            crate::domain_events::new_global_domain_event(
+                None,
+                DomainEventPayload::JobRunCompleted(JobRunCompletedEventData {
+                    run_id: "run-1".to_string(),
+                    job_key: "rss_sync".to_string(),
+                    summary_text: Some("done".to_string()),
+                }),
+            ),
+        ])
+        .await
+        .expect("batch should append");
+
+    let wake = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("notification wake should arrive")
+        .expect("notification broadcast should stay open");
+    assert_eq!(
+        wake,
+        stored.last().expect("batch should have events").sequence,
+        "mixed batches should publish a high-water wake hint"
+    );
+
+    assert!(
+        matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "a mixed batch should emit one notification wake, not one per notification event"
+    );
 }
 
 fn failed_history_item(download_client_item_id: &str, title_name: &str) -> DownloadQueueItem {

@@ -13,8 +13,8 @@ use scryer_application::{
 };
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldOption, ConfigFieldType, DomainEventPayload, DomainEventStream,
-    DomainEventType, DomainExternalIds, ImportCompletedEventData, MediaFacet,
-    MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
+    DomainEventType, DomainExternalIds, ImportCompletedEventData, LibraryScanProgressedEventData,
+    MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
     MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NewDomainEvent,
     NotificationEventType, TitleContextSnapshot,
 };
@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::broadcast::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -952,4 +953,215 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
         .collect::<Vec<_>>();
 
     assert_eq!(captured, expected);
+}
+
+#[tokio::test]
+async fn notification_dispatcher_replays_notifications_after_operational_burst() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::jellyfin());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+
+    let channel = app
+        .create_notification_channel(
+            &user,
+            "Jellyfin".into(),
+            "jellyfin".into(),
+            config_json_with_path_mappings(),
+            true,
+        )
+        .await
+        .expect("create channel");
+
+    app.create_notification_subscription(
+        &user,
+        channel.id.clone(),
+        DomainEventType::ImportCompleted.as_str().to_string(),
+        "global".into(),
+        None,
+        true,
+    )
+    .await
+    .expect("create import-complete subscription");
+
+    for i in 0..300 {
+        app.append_domain_event(new_event(
+            &format!("evt-scan-{i}"),
+            "title-scan",
+            "movie",
+            DomainEventPayload::LibraryScanProgressed(LibraryScanProgressedEventData {
+                session_id: format!("scan-{i}"),
+                status: "running".to_string(),
+                found_titles: i as i64 + 1,
+                title_match_completed: 0,
+                title_match_total_known: false,
+                titles_completed: i as i64 + 1,
+                titles_total: Some(300),
+                files_completed: i as i64 + 1,
+                files_total: Some(300),
+                warning_message: None,
+            }),
+        ))
+        .await
+        .expect("operational burst event should append");
+    }
+
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    tokio::task::yield_now().await;
+
+    app.append_domain_event(new_event(
+        "evt-import-after-burst",
+        "title-1",
+        "series",
+        DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+            title: title_context(
+                "Burst Replay Show",
+                "series",
+                DomainExternalIds {
+                    imdb_id: Some("tt456".to_string()),
+                    tmdb_id: None,
+                    tvdb_id: Some("123".to_string()),
+                    anidb_id: None,
+                },
+            ),
+            media_updates: vec![MediaPathUpdate {
+                path: "/data/TV/Burst Replay Show/S01E01.mkv".to_string(),
+                update_type: MediaUpdateType::Created,
+            }],
+            imported_count: 1,
+            episode_ids: vec!["episode-1".to_string()],
+        }),
+    ))
+    .await
+    .expect("notification event should append");
+
+    let captured = wait_for_captured(&provider, 1).await;
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher task");
+
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].event_type,
+        NotificationEventType::ImportComplete.as_str()
+    );
+    assert_eq!(captured[0].title, "Import complete: Burst Replay Show");
+    assert_eq!(
+        captured[0].message,
+        "Imported 1 file for 'Burst Replay Show'."
+    );
+}
+
+#[tokio::test]
+async fn notification_dispatcher_ignores_operational_burst_while_running() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::jellyfin());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+
+    let channel = app
+        .create_notification_channel(
+            &user,
+            "Jellyfin".into(),
+            "jellyfin".into(),
+            config_json_with_path_mappings(),
+            true,
+        )
+        .await
+        .expect("create channel");
+
+    app.create_notification_subscription(
+        &user,
+        channel.id.clone(),
+        DomainEventType::ImportCompleted.as_str().to_string(),
+        "global".into(),
+        None,
+        true,
+    )
+    .await
+    .expect("create import-complete subscription");
+
+    let mut wake_rx = app.notification_wake_receiver();
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    tokio::task::yield_now().await;
+
+    for i in 0..300 {
+        app.append_domain_event(new_event(
+            &format!("evt-live-scan-{i}"),
+            "title-scan",
+            "movie",
+            DomainEventPayload::LibraryScanProgressed(LibraryScanProgressedEventData {
+                session_id: format!("scan-live-{i}"),
+                status: "running".to_string(),
+                found_titles: i as i64 + 1,
+                title_match_completed: 0,
+                title_match_total_known: false,
+                titles_completed: i as i64 + 1,
+                titles_total: Some(300),
+                files_completed: i as i64 + 1,
+                files_total: Some(300),
+                warning_message: None,
+            }),
+        ))
+        .await
+        .expect("operational burst event should append");
+    }
+
+    assert!(
+        matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)),
+        "operational bursts should not enqueue notification dispatcher wakes"
+    );
+
+    let notification_event = app
+        .append_domain_event(new_event(
+            "evt-live-import-after-burst",
+            "title-1",
+            "series",
+            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: title_context(
+                    "Live Burst Show",
+                    "series",
+                    DomainExternalIds {
+                        imdb_id: Some("tt456".to_string()),
+                        tmdb_id: None,
+                        tvdb_id: Some("123".to_string()),
+                        anidb_id: None,
+                    },
+                ),
+                media_updates: vec![MediaPathUpdate {
+                    path: "/data/TV/Live Burst Show/S01E01.mkv".to_string(),
+                    update_type: MediaUpdateType::Created,
+                }],
+                imported_count: 1,
+                episode_ids: vec!["episode-1".to_string()],
+            }),
+        ))
+        .await
+        .expect("notification event should append");
+
+    let wake = tokio::time::timeout(Duration::from_secs(1), wake_rx.recv())
+        .await
+        .expect("notification wake should arrive")
+        .expect("notification wake channel should stay open");
+    assert_eq!(wake, notification_event.sequence);
+    assert!(
+        matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)),
+        "notification event should enqueue exactly one wake"
+    );
+
+    let captured = wait_for_captured(&provider, 1).await;
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher task");
+
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].event_type,
+        NotificationEventType::ImportComplete.as_str()
+    );
+    assert_eq!(captured[0].title, "Import complete: Live Burst Show");
+    assert_eq!(
+        captured[0].message,
+        "Imported 1 file for 'Live Burst Show'."
+    );
 }

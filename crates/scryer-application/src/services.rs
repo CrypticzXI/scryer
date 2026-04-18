@@ -3,6 +3,9 @@ use super::*;
 #[derive(Clone)]
 pub struct AppRuntimeState {
     pub domain_event_broadcast: broadcast::Sender<i64>,
+    /// Wake-only high-water hints for the notification dispatcher. Send-side filtering keeps
+    /// operational bursts from waking it, while persisted filtered replay remains authoritative.
+    pub notification_event_broadcast: broadcast::Sender<i64>,
     pub import_history_broadcast: broadcast::Sender<()>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
     pub(crate) monitored_title_matcher:
@@ -24,11 +27,15 @@ pub struct AppRuntimeState {
 impl Default for AppRuntimeState {
     fn default() -> Self {
         let (domain_event_tx, _domain_event_rx) = broadcast::channel(256);
+        // Match the main domain-event buffer so short notification bursts can queue wake hints
+        // while the dispatcher catches up from persisted offsets.
+        let (notification_event_tx, _notification_event_rx) = broadcast::channel(256);
         let (import_history_tx, _) = broadcast::channel::<()>(16);
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
             domain_event_broadcast: domain_event_tx,
+            notification_event_broadcast: notification_event_tx,
             import_history_broadcast: import_history_tx,
             settings_changed_broadcast: settings_changed_tx,
             monitored_title_matcher: Arc::new(RwLock::new(
@@ -894,6 +901,17 @@ impl AppUseCase {
             self.invalidate_monitored_title_matcher().await;
         }
         let _ = self.runtime.domain_event_broadcast.send(stored.sequence);
+        if crate::notifications::dispatcher::notification_event_type(&stored.payload).is_some() {
+            tracing::debug!(
+                sequence = stored.sequence,
+                event_type = stored.payload.event_type().as_str(),
+                "queued notification dispatcher wake for notification-relevant domain event"
+            );
+            let _ = self
+                .runtime
+                .notification_event_broadcast
+                .send(stored.sequence);
+        }
         Ok(stored)
     }
 
@@ -915,6 +933,26 @@ impl AppUseCase {
         }
         if let Some(last) = stored.last() {
             let _ = self.runtime.domain_event_broadcast.send(last.sequence);
+        }
+        let notification_count = stored
+            .iter()
+            .filter(|event| {
+                crate::notifications::dispatcher::notification_event_type(&event.payload).is_some()
+            })
+            .count();
+        if notification_count > 0
+            && let Some(last) = stored.last()
+        {
+            tracing::debug!(
+                high_water_sequence = last.sequence,
+                batch_len = stored.len(),
+                notification_events = notification_count,
+                "queued notification dispatcher wake for notification-relevant domain event batch"
+            );
+            let _ = self
+                .runtime
+                .notification_event_broadcast
+                .send(last.sequence);
         }
         Ok(stored)
     }
