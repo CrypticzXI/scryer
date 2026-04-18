@@ -10,8 +10,110 @@ export type DownloadQueueDisplayStateInput = Pick<
   | "trackedStatusMessages"
 >;
 
+export function downloadQueueItemIdentityKey(
+  item: Pick<DownloadQueueItem, "id" | "clientType" | "downloadClientItemId">,
+): string {
+  if (!item.clientType.trim() && !item.downloadClientItemId.trim()) {
+    return item.id;
+  }
+
+  return `${item.clientType}::${item.downloadClientItemId}`;
+}
+
+function parseQueueSortTimestamp(value: string | null | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function queueStateSortRank(state: string | null | undefined): number {
+  switch (normalizeQueueState(state)) {
+    case "downloading":
+    case "verifying":
+    case "repairing":
+    case "extracting":
+      return 0;
+    case "queued":
+      return 1;
+    case "paused":
+      return 2;
+    case "import_pending":
+    case "importpending":
+    case "completed":
+      return 3;
+    case "failed":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
 export function normalizeQueueState(state: string | null | undefined): string {
   return (state ?? "").trim().toLowerCase();
+}
+
+export function isActiveQueueState(state: string | null | undefined): boolean {
+  const normalized = normalizeQueueState(state);
+  return (
+    normalized === "downloading" ||
+    normalized === "queued" ||
+    normalized === "paused" ||
+    normalized === "verifying" ||
+    normalized === "repairing" ||
+    normalized === "extracting"
+  );
+}
+
+export function isHistoryQueueState(state: string | null | undefined): boolean {
+  const normalized = normalizeQueueState(state);
+  return (
+    normalized === "completed" ||
+    normalized === "failed" ||
+    normalized === "import_pending" ||
+    normalized === "importpending"
+  );
+}
+
+export function compareDownloadQueueItems(
+  left: DownloadQueueItem,
+  right: DownloadQueueItem,
+): number {
+  const leftRank = queueStateSortRank(left.state);
+  const rightRank = queueStateSortRank(right.state);
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+
+  const leftState = normalizeQueueState(left.state);
+  if (
+    leftState === "downloading" ||
+    leftState === "verifying" ||
+    leftState === "repairing" ||
+    leftState === "extracting"
+  ) {
+    return (
+      right.progressPercent - left.progressPercent ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
+  if (leftState === "queued" || leftState === "paused") {
+    return (
+      parseQueueSortTimestamp(left.queuedAt) - parseQueueSortTimestamp(right.queuedAt) ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
+  return (
+    parseQueueSortTimestamp(right.lastUpdatedAt) -
+      parseQueueSortTimestamp(left.lastUpdatedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+export function sortDownloadQueueItems(
+  items: DownloadQueueItem[],
+): DownloadQueueItem[] {
+  return [...items].sort(compareDownloadQueueItems);
 }
 
 export function buildQueueStatusDetail(

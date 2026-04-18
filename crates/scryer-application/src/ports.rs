@@ -1145,10 +1145,28 @@ pub trait DownloadClient: Send + Sync {
         Ok(items.into_iter().skip(offset).take(limit).collect())
     }
 
+    async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_history_page(0, limit).await
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         Err(AppError::Repository(
             "completed download listing is not supported for this client".to_string(),
         ))
+    }
+
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut items = self.list_completed_downloads().await?;
+        items.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+        items.truncate(limit);
+        Ok(items)
     }
 
     async fn pause_queue_item(&self, _id: &str) -> AppResult<()> {

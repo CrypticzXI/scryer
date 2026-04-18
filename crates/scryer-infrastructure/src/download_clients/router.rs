@@ -741,6 +741,51 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         Ok(all_items)
     }
 
+    async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let clients = self.list_enabled_clients_by_priority().await?;
+        if clients.is_empty() {
+            return self.fallback_client.list_recent_activity(limit).await;
+        }
+
+        let mut all_items = Vec::new();
+        for config in clients {
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for recent activity listing");
+                    continue;
+                }
+            };
+            match client.list_recent_activity(limit).await {
+                Ok(mut items) => {
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                        item.client_name = config.name.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
+                }
+            }
+        }
+
+        let mut seen = HashSet::with_capacity(all_items.len());
+        all_items.retain(|item| seen.insert(download_queue_history_key(item)));
+        all_items.sort_by(compare_history_items_desc);
+        all_items.truncate(limit);
+        Ok(all_items)
+    }
+
     async fn list_history_page(
         &self,
         offset: usize,
@@ -831,6 +876,60 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         Ok(all_items)
     }
 
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let clients = self.list_enabled_clients_by_priority().await?;
+        if clients.is_empty() {
+            return self
+                .fallback_client
+                .list_recent_completed_downloads(limit)
+                .await;
+        }
+
+        let mut all_items = Vec::new();
+        for config in clients {
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for recent completed downloads");
+                    continue;
+                }
+            };
+            match client.list_recent_completed_downloads(limit).await {
+                Ok(mut items) => {
+                    tracing::debug!(
+                        client = %config.name,
+                        client_type = %config.client_type,
+                        count = items.len(),
+                        "recent completed downloads from client"
+                    );
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list recent completed downloads");
+                }
+            }
+        }
+
+        all_items.sort_by(compare_completed_downloads_desc);
+        all_items.truncate(limit);
+        Ok(all_items)
+    }
+
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.pause_queue_item(id).await;
@@ -874,6 +973,17 @@ fn download_queue_history_key(item: &DownloadQueueItem) -> String {
     }
 
     format!("{}:{}", item.client_type, item.download_client_item_id)
+}
+
+fn compare_completed_downloads_desc(
+    left: &scryer_domain::CompletedDownload,
+    right: &scryer_domain::CompletedDownload,
+) -> std::cmp::Ordering {
+    right.completed_at.cmp(&left.completed_at).then_with(|| {
+        right
+            .download_client_item_id
+            .cmp(&left.download_client_item_id)
+    })
 }
 
 #[cfg(test)]
@@ -954,6 +1064,7 @@ mod tests {
         submissions: Mutex<Vec<DownloadClientAddRequest>>,
         queue_items: Mutex<Vec<DownloadQueueItem>>,
         history_items: Mutex<Vec<DownloadQueueItem>>,
+        completed_downloads: Mutex<Vec<scryer_domain::CompletedDownload>>,
         paused: Mutex<Vec<String>>,
         resumed: Mutex<Vec<String>>,
         deleted: Mutex<Vec<(String, bool)>>,
@@ -978,6 +1089,12 @@ mod tests {
 
         async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
             Ok(self.history_items.lock().unwrap().clone())
+        }
+
+        async fn list_completed_downloads(
+            &self,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            Ok(self.completed_downloads.lock().unwrap().clone())
         }
 
         async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
@@ -1764,5 +1881,146 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["b-1".to_string(), "a-2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_recent_activity_merges_clients_before_truncating() {
+        let client_a = Arc::new(MockDownloadClient::default());
+        let client_b = Arc::new(MockDownloadClient::default());
+
+        let mut a1 = test_queue_item("a-1");
+        a1.last_updated_at = Some("300".to_string());
+        let mut a2 = test_queue_item("a-2");
+        a2.last_updated_at = Some("100".to_string());
+        client_a.history_items.lock().unwrap().extend([a1, a2]);
+
+        let mut b1 = test_queue_item("b-1");
+        b1.last_updated_at = Some("200".to_string());
+        let mut b2 = test_queue_item("b-2");
+        b2.last_updated_at = Some("50".to_string());
+        client_b.history_items.lock().unwrap().extend([b1, b2]);
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("client-a".to_string(), client_a.clone()),
+                    ("client-b".to_string(), client_b.clone()),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("client-a", "Client A", "qbittorrent", 0),
+                    test_config("client-b", "Client B", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_recent_activity(2)
+            .await
+            .expect("recent activity should succeed");
+
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_downloads_merges_clients_before_truncating() {
+        let client_a = Arc::new(MockDownloadClient::default());
+        let client_b = Arc::new(MockDownloadClient::default());
+
+        client_a.completed_downloads.lock().unwrap().extend([
+            scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "a-1".to_string(),
+                name: "A 1".to_string(),
+                dest_dir: "/downloads/a-1".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            },
+            scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "a-2".to_string(),
+                name: "A 2".to_string(),
+                dest_dir: "/downloads/a-2".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now() - chrono::Duration::minutes(2)),
+                parameters: Vec::new(),
+            },
+        ]);
+        client_b.completed_downloads.lock().unwrap().extend([
+            scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "b-1".to_string(),
+                name: "B 1".to_string(),
+                dest_dir: "/downloads/b-1".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now() - chrono::Duration::minutes(1)),
+                parameters: Vec::new(),
+            },
+            scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "b-2".to_string(),
+                name: "B 2".to_string(),
+                dest_dir: "/downloads/b-2".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now() - chrono::Duration::minutes(3)),
+                parameters: Vec::new(),
+            },
+        ]);
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("client-a".to_string(), client_a.clone()),
+                    ("client-b".to_string(), client_b.clone()),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("client-a", "Client A", "qbittorrent", 0),
+                    test_config("client-b", "Client B", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_recent_completed_downloads(2)
+            .await
+            .expect("recent completed downloads should succeed");
+
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
     }
 }

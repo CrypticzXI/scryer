@@ -103,6 +103,7 @@ type QueueRowPresentation = {
   failureReason: string;
   hasStatusDetails: boolean;
   hasExpandableDetails: boolean;
+  displayTitle: string;
   releaseTitle: string;
   canPause: boolean;
   canResume: boolean;
@@ -157,6 +158,7 @@ function deriveQueueRowPresentation(
       (canRetryManualImport && queueItem.facet === "movie"));
   const releaseTitle =
     queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "\u2014";
+  const displayTitle = releaseTitle;
   const hasExpandableDetails =
     (displayStateKey === "import_blocked" || displayStateKey === "import_failed") &&
     (failureReason.length > 0 || releaseTitle !== "\u2014");
@@ -173,6 +175,7 @@ function deriveQueueRowPresentation(
     failureReason,
     hasStatusDetails,
     hasExpandableDetails,
+    displayTitle,
     releaseTitle,
     canPause: stateKey === "downloading" || stateKey === "queued",
     canResume: stateKey === "paused",
@@ -222,6 +225,28 @@ function ActivityQueueStatusBadge({
         <ChevronDown className="h-3.5 w-3.5 opacity-80" aria-hidden="true" />
       )}
     </button>
+  );
+}
+
+function ActivityQueueTitleContent({
+  displayTitle,
+  releaseTitle,
+}: {
+  displayTitle: string;
+  releaseTitle: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="break-words whitespace-normal text-sm text-foreground">{displayTitle}</p>
+      {releaseTitle !== displayTitle ? (
+        <p
+          className="break-words whitespace-normal text-xs text-muted-foreground"
+          title={releaseTitle}
+        >
+          {releaseTitle}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -479,9 +504,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           <div key={queueItem.id} className="rounded-xl border border-border bg-card/40 p-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="break-words text-sm font-medium text-foreground">
-                  {queueItem.titleName || "\u2014"}
-                </p>
+                <ActivityQueueTitleContent
+                  displayTitle={row.displayTitle}
+                  releaseTitle={row.releaseTitle}
+                />
                 <p className="mt-1 text-xs text-muted-foreground">
                   {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
                 </p>
@@ -736,9 +762,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           <Fragment key={queueItem.id}>
             <TableRow>
               <TableCell className="min-w-0">
-                <p className="break-words whitespace-normal text-sm">
-                  {queueItem.titleName || "\u2014"}
-                </p>
+                <ActivityQueueTitleContent
+                  displayTitle={row.displayTitle}
+                  releaseTitle={row.releaseTitle}
+                />
               </TableCell>
               <TableCell className="min-w-0 align-middle">
                 <p className="break-words whitespace-normal text-sm">
@@ -1108,7 +1135,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           ) : null}
 
           {isMobile ? (
-            queueItems.length === 0 && !queueLoading && !hasManualImportRequiredSection ? (
+            queueItems.length === 0 && hasManualImportRequiredSection ? null : queueItems.length ===
+                0 && !queueLoading ? (
               <p className="text-sm text-muted-foreground">{t("queue.empty")}</p>
             ) : queueItems.length === 0 ? (
               <div className={`${scrollHeightClass} overflow-y-auto pr-1`}>
@@ -1128,7 +1156,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               </div>
             )
           ) : (
-            queueItems.length === 0 && !queueLoading && hasManualImportRequiredSection ? null : (
+            queueItems.length === 0 && hasManualImportRequiredSection ? null : (
               <div
                 onScroll={handleResultsScroll}
                 className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}

@@ -8,7 +8,12 @@ import {
 import type { DownloadQueueItem } from "@/lib/types";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
-import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
+import {
+  downloadQueueItemIdentityKey,
+  isActiveQueueState,
+  isManualImportRequiredQueueItem,
+  sortDownloadQueueItems,
+} from "@/lib/utils/download-queue";
 
 type UseDownloadQueueArgs = {
   enabled: boolean;
@@ -74,7 +79,7 @@ export function useDownloadQueue({
       // from the existing state so the table doesn't flash empty.
       setQueueItems((prev) => {
         if (!includeAllActivity) {
-          return items;
+          return sortDownloadQueueItems(items);
         }
 
         const TERMINAL_STATES = new Set([
@@ -83,14 +88,14 @@ export function useDownloadQueue({
           "import_pending",
           "importpending",
         ]);
-        const liveIds = new Set(items.map((item) => item.downloadClientItemId));
+        const liveIds = new Set(items.map((item) => downloadQueueItemIdentityKey(item)));
         const kept = prev.filter(
           (item) =>
             (TERMINAL_STATES.has(item.state.toLowerCase()) ||
               isManualImportRequiredQueueItem(item)) &&
-            !liveIds.has(item.downloadClientItemId),
+            !liveIds.has(downloadQueueItemIdentityKey(item)),
         );
-        return [...items, ...kept];
+        return sortDownloadQueueItems([...items, ...kept]);
       });
       setQueueError(null);
       setLastRefreshedAt(new Date());
@@ -128,36 +133,28 @@ export function useDownloadQueue({
       // If the subscription isn't active yet (initial load), full replace.
       // Once the subscription is running, merge so we don't clobber live data.
       if (!initialFetchDoneRef.current) {
-        setQueueItems(queryItems);
+        setQueueItems(sortDownloadQueueItems(queryItems));
       } else {
         setQueueItems((prev) => {
           // Build a map of query items keyed by downloadClientItemId
           const queryMap = new Map(
             queryItems.map((i: DownloadQueueItem) => [
-              i.downloadClientItemId,
+              downloadQueueItemIdentityKey(i),
               i,
             ]),
           );
           // Keep existing active items that the query didn't return
           // (subscription may have fresher live data)
-          const ACTIVE_STATES = new Set([
-            "downloading",
-            "queued",
-            "paused",
-            "verifying",
-            "repairing",
-            "extracting",
-          ]);
           const merged = [...queryItems];
           for (const item of prev) {
             if (
-              ACTIVE_STATES.has(item.state.toLowerCase()) &&
-              !queryMap.has(item.downloadClientItemId)
+              isActiveQueueState(item.state) &&
+              !queryMap.has(downloadQueueItemIdentityKey(item))
             ) {
               merged.push(item);
             }
           }
-          return merged;
+          return sortDownloadQueueItems(merged);
         });
       }
       setQueueError(null);

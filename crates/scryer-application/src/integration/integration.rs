@@ -1,6 +1,8 @@
 use super::*;
 use crate::domain_events::new_download_queue_domain_event;
-use crate::event_views::{apply_download_queue_projection_event, sorted_download_queue_items};
+use crate::event_views::{
+    apply_download_queue_projection_event, sort_download_queue_items, sorted_download_queue_items,
+};
 use crate::tracked_downloads::{
     TrackedDownload, TrackedDownloadQueueMetadata, tracked_download_id,
 };
@@ -9,6 +11,9 @@ use scryer_domain::{
     DownloadQueueItemUpsertedEventData, ImportType,
 };
 use std::collections::{HashMap, HashSet};
+
+const DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT: usize = 100;
+const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
 
 fn extract_url_origin(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -511,10 +516,14 @@ impl AppUseCase {
                 .await?
         };
         let history_items = if include_history_only || include_all_activity {
+            // The queue poller and Activity snapshot only need a recent window of
+            // history. Older completed items can still be recovered through the
+            // explicit history page or manual import flows without forcing an
+            // unbounded history scan every 2 seconds.
             self.services
                 .integrations
                 .download_client
-                .list_history()
+                .list_recent_activity(DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT)
                 .await?
         } else {
             Vec::new()
@@ -619,29 +628,7 @@ impl AppUseCase {
             });
             merged.truncate(50);
         } else {
-            // Enrich completed/failed items with import status from the imports table
-            merged.sort_by(|left, right| {
-                let left_rank = queue_state_sort_rank(&left.state);
-                let right_rank = queue_state_sort_rank(&right.state);
-                if left_rank != right_rank {
-                    return left_rank.cmp(&right_rank);
-                }
-
-                match left.state {
-                    DownloadQueueState::Downloading => right
-                        .progress_percent
-                        .cmp(&left.progress_percent)
-                        .then_with(|| left.id.cmp(&right.id)),
-                    DownloadQueueState::Queued | DownloadQueueState::Paused => {
-                        parse_sort_value(left.queued_at.as_deref(), right.queued_at.as_deref())
-                    }
-                    _ => parse_sort_value(
-                        left.last_updated_at.as_deref(),
-                        right.last_updated_at.as_deref(),
-                    )
-                    .reverse(),
-                }
-            });
+            sort_download_queue_items(&mut merged);
         }
 
         // Enrich completed/failed items with import status from the imports table
@@ -1438,6 +1425,7 @@ pub async fn start_download_queue_poller(
                             crate::completed_download_handler::load_completed_download_lookup_for_items(
                                 &app,
                                 &items,
+                                DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
                             )
                             .await;
 
@@ -1894,20 +1882,6 @@ fn is_history_download_state(state: &DownloadQueueState) -> bool {
             | DownloadQueueState::ImportPending
             | DownloadQueueState::Failed
     )
-}
-
-fn queue_state_sort_rank(state: &DownloadQueueState) -> u8 {
-    match state {
-        DownloadQueueState::Downloading => 0,
-        DownloadQueueState::Verifying
-        | DownloadQueueState::Repairing
-        | DownloadQueueState::Extracting => 0,
-        DownloadQueueState::Queued => 1,
-        DownloadQueueState::Paused => 2,
-        DownloadQueueState::ImportPending => 3,
-        DownloadQueueState::Completed => 3,
-        DownloadQueueState::Failed => 4,
-    }
 }
 
 #[cfg(test)]

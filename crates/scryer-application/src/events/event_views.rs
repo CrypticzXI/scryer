@@ -8,11 +8,12 @@ use crate::{
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     ConfigurationChangeAction, DomainEvent, DomainEventPayload, DownloadQueueItemRemovedEventData,
-    DownloadQueueItemUpsertedEventData, EventType, HistoryEvent, ImportRejectedEventData,
-    ImportStatus, JobNextRunUpdatedEventData, MediaFacet, MediaFileDeletedReason,
-    MetadataHydrationState, PostProcessingResult, TitleHistoryEventType, TitleHistoryRecord,
+    DownloadQueueItemUpsertedEventData, DownloadQueueState, EventType, HistoryEvent,
+    ImportRejectedEventData, ImportStatus, JobNextRunUpdatedEventData, MediaFacet,
+    MediaFileDeletedReason, MetadataHydrationState, PostProcessingResult, TitleHistoryEventType,
+    TitleHistoryRecord,
 };
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 fn default_activity_channels() -> Vec<ActivityChannel> {
     vec![ActivityChannel::WebUi]
@@ -723,13 +724,65 @@ pub fn sorted_download_queue_items(
     items: &HashMap<String, DownloadQueueItem>,
 ) -> Vec<DownloadQueueItem> {
     let mut values = items.values().cloned().collect::<Vec<_>>();
-    values.sort_by(|left, right| {
-        left.client_type.cmp(&right.client_type).then_with(|| {
-            left.download_client_item_id
-                .cmp(&right.download_client_item_id)
-        })
-    });
+    sort_download_queue_items(&mut values);
     values
+}
+
+pub fn sort_download_queue_items(items: &mut [DownloadQueueItem]) {
+    items.sort_by(compare_download_queue_items);
+}
+
+pub fn compare_download_queue_items(
+    left: &DownloadQueueItem,
+    right: &DownloadQueueItem,
+) -> Ordering {
+    let left_rank = queue_state_sort_rank(&left.state);
+    let right_rank = queue_state_sort_rank(&right.state);
+    if left_rank != right_rank {
+        return left_rank.cmp(&right_rank);
+    }
+
+    match left.state {
+        DownloadQueueState::Downloading
+        | DownloadQueueState::Verifying
+        | DownloadQueueState::Repairing
+        | DownloadQueueState::Extracting => right
+            .progress_percent
+            .cmp(&left.progress_percent)
+            .then_with(|| left.id.cmp(&right.id)),
+        DownloadQueueState::Queued | DownloadQueueState::Paused => {
+            compare_queue_sort_values(left.queued_at.as_deref(), right.queued_at.as_deref())
+                .then_with(|| left.id.cmp(&right.id))
+        }
+        _ => compare_queue_sort_values(
+            right.last_updated_at.as_deref(),
+            left.last_updated_at.as_deref(),
+        )
+        .then_with(|| left.id.cmp(&right.id)),
+    }
+}
+
+fn compare_queue_sort_values(left: Option<&str>, right: Option<&str>) -> Ordering {
+    fn parse(value: Option<&str>) -> i64 {
+        value
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0)
+    }
+
+    parse(left).cmp(&parse(right))
+}
+
+fn queue_state_sort_rank(state: &DownloadQueueState) -> u8 {
+    match state {
+        DownloadQueueState::Downloading
+        | DownloadQueueState::Verifying
+        | DownloadQueueState::Repairing
+        | DownloadQueueState::Extracting => 0,
+        DownloadQueueState::Queued => 1,
+        DownloadQueueState::Paused => 2,
+        DownloadQueueState::ImportPending | DownloadQueueState::Completed => 3,
+        DownloadQueueState::Failed => 4,
+    }
 }
 
 #[cfg(test)]
@@ -737,9 +790,9 @@ mod tests {
     use super::*;
     use chrono::{Duration, Utc};
     use scryer_domain::{
-        DomainEventStream, DomainExternalIds, ImportCompletedEventData, JobRunStartedEventData,
-        LibraryScanCompletedEventData, LibraryScanProgressedEventData, MediaFacet, MediaPathUpdate,
-        MediaUpdateType, TitleContextSnapshot,
+        DomainEventStream, DomainExternalIds, DownloadQueueState, ImportCompletedEventData,
+        JobRunStartedEventData, LibraryScanCompletedEventData, LibraryScanProgressedEventData,
+        MediaFacet, MediaPathUpdate, MediaUpdateType, TitleContextSnapshot,
     };
 
     fn title_snapshot(name: &str, facet: MediaFacet) -> TitleContextSnapshot {
@@ -769,6 +822,42 @@ mod tests {
             schema_version: 1,
             stream: DomainEventStream::Global,
             payload,
+        }
+    }
+
+    fn queue_item(
+        id: &str,
+        state: DownloadQueueState,
+        progress_percent: u8,
+        queued_at: i64,
+        last_updated_at: i64,
+    ) -> DownloadQueueItem {
+        DownloadQueueItem {
+            id: id.to_string(),
+            title_id: None,
+            title_name: "Example".to_string(),
+            facet: None,
+            client_id: "client-1".to_string(),
+            client_name: "Weaver".to_string(),
+            client_type: "weaver".to_string(),
+            state,
+            progress_percent,
+            size_bytes: None,
+            remaining_seconds: None,
+            queued_at: Some(queued_at.to_string()),
+            last_updated_at: Some(last_updated_at.to_string()),
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: id.to_string(),
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            is_scryer_origin: true,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
         }
     }
 
@@ -809,6 +898,65 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].source_title.as_deref(), Some("/data/new.mkv"));
         assert_eq!(records[1].source_title.as_deref(), Some("/data/old.mkv"));
+    }
+
+    #[test]
+    fn sorted_download_queue_items_matches_query_ordering_contract() {
+        let items = HashMap::from([
+            (
+                "queued".to_string(),
+                queue_item("queued", DownloadQueueState::Queued, 0, 10, 10),
+            ),
+            (
+                "failed".to_string(),
+                queue_item("failed", DownloadQueueState::Failed, 0, 10, 50),
+            ),
+            (
+                "completed-newer".to_string(),
+                queue_item("completed-newer", DownloadQueueState::Completed, 0, 10, 30),
+            ),
+            (
+                "downloading-fast".to_string(),
+                queue_item(
+                    "downloading-fast",
+                    DownloadQueueState::Downloading,
+                    80,
+                    10,
+                    10,
+                ),
+            ),
+            (
+                "downloading-slower".to_string(),
+                queue_item(
+                    "downloading-slower",
+                    DownloadQueueState::Downloading,
+                    35,
+                    10,
+                    10,
+                ),
+            ),
+            (
+                "completed-older".to_string(),
+                queue_item("completed-older", DownloadQueueState::Completed, 0, 10, 20),
+            ),
+        ]);
+
+        let ordered = sorted_download_queue_items(&items)
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered,
+            vec![
+                "downloading-fast".to_string(),
+                "downloading-slower".to_string(),
+                "queued".to_string(),
+                "completed-newer".to_string(),
+                "completed-older".to_string(),
+                "failed".to_string(),
+            ]
+        );
     }
 
     #[test]

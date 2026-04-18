@@ -2271,6 +2271,8 @@ struct StubDownloadClient {
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
+    history_calls: Arc<Mutex<usize>>,
+    recent_activity_calls: Arc<Mutex<Vec<usize>>>,
 }
 
 #[async_trait]
@@ -2296,7 +2298,20 @@ impl DownloadClient for StubDownloadClient {
     }
 
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
+        *self.history_calls.lock().await += 1;
         Ok(self.history_items.lock().await.clone())
+    }
+
+    async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        self.recent_activity_calls.lock().await.push(limit);
+        Ok(self
+            .history_items
+            .lock()
+            .await
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect())
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
@@ -4501,6 +4516,75 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
     assert!(!items[0].is_scryer_origin);
     assert!(items[0].title_id.is_none());
     assert!(items[0].facet.is_none());
+}
+
+#[tokio::test]
+async fn list_download_queue_uses_bounded_recent_activity_instead_of_full_history() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    *download_client.history_items.lock().await = vec![DownloadQueueItem {
+        id: "history-1".to_string(),
+        title_id: None,
+        title_name: "History Download".to_string(),
+        facet: None,
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state: DownloadQueueState::Completed,
+        progress_percent: 100,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: Some("100".to_string()),
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: "history-1".to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        is_scryer_origin: false,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }];
+
+    let items = app
+        .list_download_queue(&user, true, false)
+        .await
+        .expect("list queue should succeed");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(*download_client.history_calls.lock().await, 0);
+    assert_eq!(
+        download_client
+            .recent_activity_calls
+            .lock()
+            .await
+            .as_slice(),
+        &[100]
+    );
 }
 
 #[tokio::test]

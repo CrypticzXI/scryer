@@ -326,9 +326,23 @@ pub(crate) async fn load_completed_download_lookup(
     Ok(index_completed_downloads(completed_downloads))
 }
 
+pub(crate) async fn load_recent_completed_download_lookup(
+    app: &AppUseCase,
+    limit: usize,
+) -> AppResult<CompletedDownloadLookup> {
+    let completed_downloads = app
+        .services
+        .integrations
+        .download_client
+        .list_recent_completed_downloads(limit)
+        .await?;
+    Ok(index_completed_downloads(completed_downloads))
+}
+
 pub(crate) async fn load_completed_download_lookup_for_items(
     app: &AppUseCase,
     items: &[DownloadQueueItem],
+    limit: usize,
 ) -> Option<CompletedDownloadLookup> {
     if !items
         .iter()
@@ -337,16 +351,18 @@ pub(crate) async fn load_completed_download_lookup_for_items(
         return None;
     }
 
-    Some(match load_completed_download_lookup(app).await {
-        Ok(lookup) => lookup,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "download queue poller: failed to load completed download snapshot for this cycle"
-            );
-            CompletedDownloadLookup::default()
-        }
-    })
+    Some(
+        match load_recent_completed_download_lookup(app, limit).await {
+            Ok(lookup) => lookup,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "download queue poller: failed to load completed download snapshot for this cycle"
+                );
+                CompletedDownloadLookup::default()
+            }
+        },
+    )
 }
 
 fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDownloadLookup {
@@ -1224,6 +1240,7 @@ mod tests {
     struct TestDownloadClient {
         completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
         completed_download_calls: Arc<AtomicUsize>,
+        recent_completed_download_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1238,6 +1255,22 @@ mod tests {
         async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
             self.completed_download_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.completed_downloads.lock().await.clone())
+        }
+
+        async fn list_recent_completed_downloads(
+            &self,
+            limit: usize,
+        ) -> AppResult<Vec<CompletedDownload>> {
+            self.recent_completed_download_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .completed_downloads
+                .lock()
+                .await
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
@@ -1732,6 +1765,7 @@ mod tests {
         let download_client = Arc::new(TestDownloadClient {
             completed_downloads: Arc::new(Mutex::new(vec![completed.clone()])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
@@ -1758,6 +1792,7 @@ mod tests {
         let download_client = Arc::new(TestDownloadClient {
             completed_downloads: Arc::new(Mutex::new(vec![completed.clone()])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
@@ -1769,6 +1804,7 @@ mod tests {
         let lookup = load_completed_download_lookup_for_items(
             &app,
             &[first.client_item.clone(), second.client_item.clone()],
+            100,
         )
         .await
         .expect("completed lookup should load");
@@ -1777,6 +1813,12 @@ mod tests {
         assert_eq!(
             download_client
                 .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
                 .load(Ordering::SeqCst),
             1
         );
@@ -1997,6 +2039,7 @@ mod tests {
                 ..completed
             }])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
         });
         let app = build_app_with_download_client(vec![], vec![], vec![], vec![], download_client);
         let actor = User::new_admin("admin");

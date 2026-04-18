@@ -689,6 +689,35 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
     }
 }
 
+fn weaver_item_to_completed_download(job: &WeaverQueueItem) -> Option<CompletedDownload> {
+    if job.state != WeaverQueueState::Completed {
+        return None;
+    }
+
+    let output_dir = job
+        .output_dir
+        .as_ref()
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let parameters = job
+        .attributes
+        .iter()
+        .map(|entry| (entry.key.clone(), entry.value.clone()))
+        .collect::<Vec<_>>();
+
+    Some(CompletedDownload {
+        client_type: "weaver".to_string(),
+        client_id: String::new(),
+        download_client_item_id: job.id.to_string(),
+        name: job.name.clone(),
+        dest_dir: output_dir,
+        category: job.category.clone(),
+        size_bytes: Some(job.total_bytes as i64),
+        completed_at: job.completed_at.or(Some(Utc::now())),
+        parameters,
+    })
+}
+
 fn compat_job_to_queue_item(job: PublishedWeaverJob) -> WeaverQueueItem {
     WeaverQueueItem {
         id: job.id,
@@ -993,6 +1022,22 @@ impl DownloadClient for WeaverDownloadClient {
         Ok(jobs.iter().map(weaver_item_to_queue_item).collect())
     }
 
+    async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let jobs = match self.query_history_items(Some(limit), Some(0)).await {
+            Ok(items) => items,
+            Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
+                self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(0))
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(jobs.iter().map(weaver_item_to_queue_item).collect())
+    }
+
     async fn list_history_page(
         &self,
         offset: usize,
@@ -1009,6 +1054,28 @@ impl DownloadClient for WeaverDownloadClient {
         Ok(jobs.iter().map(weaver_item_to_queue_item).collect())
     }
 
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let jobs = match self.query_history_items(Some(limit), Some(0)).await {
+            Ok(items) => items,
+            Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
+                self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(0))
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(jobs
+            .iter()
+            .filter_map(weaver_item_to_completed_download)
+            .collect())
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         let jobs = match self.query_history_items(None, None).await {
             Ok(items) => items,
@@ -1020,33 +1087,7 @@ impl DownloadClient for WeaverDownloadClient {
         };
         Ok(jobs
             .iter()
-            .filter_map(|job| {
-                if job.state != WeaverQueueState::Completed {
-                    return None;
-                }
-                let output_dir = job
-                    .output_dir
-                    .as_ref()
-                    .filter(|v| !v.is_empty())?
-                    .to_string();
-                let parameters = job
-                    .attributes
-                    .iter()
-                    .map(|entry| (entry.key.clone(), entry.value.clone()))
-                    .collect::<Vec<_>>();
-
-                Some(CompletedDownload {
-                    client_type: "weaver".to_string(),
-                    client_id: String::new(),
-                    download_client_item_id: job.id.to_string(),
-                    name: job.name.clone(),
-                    dest_dir: output_dir,
-                    category: job.category.clone(),
-                    size_bytes: Some(job.total_bytes as i64),
-                    completed_at: job.completed_at.or(Some(Utc::now())),
-                    parameters,
-                })
-            })
+            .filter_map(weaver_item_to_completed_download)
             .collect())
     }
 
@@ -1189,7 +1230,7 @@ impl DownloadClient for WeaverDownloadClient {
 mod tests {
     use chrono::Utc;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{WeaverDownloadClient, WeaverQueueItem, weaver_item_to_queue_item};
@@ -1331,5 +1372,106 @@ mod tests {
             "/data/complete/8f1d2c3b4a59687766554433221100ff.#10000"
         );
         assert!(downloads[0].parameters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_recent_activity_uses_bounded_history_items_query() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("\"first\":2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItems": [
+                        {
+                            "id": 10001,
+                            "name": "Paperman.2012.1080p",
+                            "state": "COMPLETE",
+                            "error": null,
+                            "progressPercent": 100.0,
+                            "totalBytes": 123456789_u64,
+                            "category": "2000",
+                            "attributes": [],
+                            "clientRequestId": null,
+                            "outputDir": "/data/complete/Paperman.2012.1080p.#10001",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:10:00Z",
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let items = client
+            .list_recent_activity(2)
+            .await
+            .expect("recent activity should load");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].download_client_item_id, "10001");
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_downloads_uses_bounded_history_items_query() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("\"first\":3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItems": [
+                        {
+                            "id": 10002,
+                            "name": "8f1d2c3b4a59687766554433221100ff",
+                            "state": "COMPLETE",
+                            "error": null,
+                            "progressPercent": 100.0,
+                            "totalBytes": 123456789_u64,
+                            "category": "2000",
+                            "attributes": [],
+                            "clientRequestId": null,
+                            "outputDir": "/data/complete/8f1d2c3b4a59687766554433221100ff.#10002",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:10:00Z",
+                            "attention": null
+                        },
+                        {
+                            "id": 10003,
+                            "name": "ignored.failed.job",
+                            "state": "FAILED",
+                            "error": "failed",
+                            "progressPercent": 100.0,
+                            "totalBytes": 123456789_u64,
+                            "category": "2000",
+                            "attributes": [],
+                            "clientRequestId": null,
+                            "outputDir": "/data/complete/ignored.failed.job.#10003",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:11:00Z",
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let downloads = client
+            .list_recent_completed_downloads(3)
+            .await
+            .expect("recent completed downloads should load");
+
+        assert_eq!(downloads.len(), 1);
+        assert_eq!(downloads[0].download_client_item_id, "10002");
     }
 }
