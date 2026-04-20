@@ -122,16 +122,14 @@ pub(crate) async fn get_title_by_external_id_query(
     source: &str,
     value: &str,
 ) -> AppResult<Option<Title>> {
-    let sql = format!(
+    let row = sqlx::query(
         "SELECT titles.* FROM titles
          JOIN title_external_ids ON title_external_ids.title_id = titles.id
          WHERE LOWER(title_external_ids.source) = LOWER(?)
            AND title_external_ids.external_id = ?
          ORDER BY titles.id ASC
-         LIMIT 1"
-    );
-
-    let row = sqlx::query(&sql)
+         LIMIT 1",
+    )
         .bind(source)
         .bind(value)
         .fetch_optional(pool)
@@ -219,7 +217,7 @@ pub(crate) async fn get_title_by_external_id_in_facet_query(
     source: &str,
     value: &str,
 ) -> AppResult<Option<Title>> {
-    let sql = format!(
+    let row = sqlx::query(
         "SELECT titles.*
          FROM titles
          JOIN title_external_ids ON title_external_ids.title_id = titles.id
@@ -227,10 +225,8 @@ pub(crate) async fn get_title_by_external_id_in_facet_query(
            AND LOWER(title_external_ids.source) = LOWER(?)
            AND title_external_ids.external_id = ?
          ORDER BY titles.id ASC
-         LIMIT 1"
-    );
-
-    let row = sqlx::query(&sql)
+         LIMIT 1",
+    )
         .bind(facet.as_str())
         .bind(source)
         .bind(value)
