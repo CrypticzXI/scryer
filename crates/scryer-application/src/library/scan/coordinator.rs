@@ -38,6 +38,7 @@ impl LibraryScanCoordinator {
         let session_id = session_id_override.unwrap_or_else(|| Id::new().0);
         let session = app
             .runtime
+            .library
             .library_scan_tracker
             .start_session_with_id(session_id, facet.clone(), mode)
             .await?;
@@ -89,6 +90,7 @@ impl LibraryScanCoordinator {
         let Some(session) = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .get_session(self.session_id())
             .await
@@ -229,6 +231,7 @@ impl LibraryScanCoordinator {
         let Some(session) = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .complete_if_finished(self.session_id())
             .await
@@ -250,6 +253,7 @@ impl LibraryScanCoordinator {
         let failed_session = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .fail_session(self.session_id())
             .await;
@@ -283,6 +287,7 @@ impl LibraryScanCoordinator {
         let canceled_session = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .cancel_session(self.session_id())
             .await;
@@ -318,6 +323,7 @@ impl LibraryScanCoordinator {
         let Some(snapshot) = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .apply_delta(self.session_id(), &delta)
             .await
@@ -364,6 +370,7 @@ impl LibraryScanCoordinator {
         if let Some(session) = self
             .app
             .runtime
+            .library
             .library_scan_tracker
             .get_session(self.session_id())
             .await

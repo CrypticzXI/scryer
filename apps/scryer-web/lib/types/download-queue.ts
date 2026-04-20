@@ -26,6 +26,12 @@ export type ImportErrorCode =
   | "disk_full"
   | "unknown";
 
+export type DownloadQueueDeleteStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed";
+
 export type TrackedDownloadState =
   | "downloading"
   | "import_pending"
@@ -37,6 +43,45 @@ export type TrackedDownloadState =
   | "ignored";
 
 export type TrackedDownloadStatus = "ok" | "warning" | "error";
+
+export type DownloadDisplayState =
+  | "queued"
+  | "downloading"
+  | "paused"
+  | "post_processing"
+  | "completed"
+  | "failed"
+  | "importing"
+  | "import_pending"
+  | "import_blocked"
+  | "import_failed"
+  | "removing"
+  | "remove_failed";
+
+export type DownloadActivityFilter =
+  | "all"
+  | "downloading"
+  | "queued"
+  | "paused"
+  | "post_processing";
+
+export type DownloadImportFilter =
+  | "all"
+  | "importing"
+  | "pending"
+  | "blocked"
+  | "failed";
+
+export type DownloadHistoryFilter = "all" | "success" | "failed";
+export type DownloadActivityStatus = Exclude<DownloadActivityFilter, "all">;
+export type DownloadImportStatus = Exclude<DownloadImportFilter, "all">;
+export type DownloadHistoryStatus = Exclude<DownloadHistoryFilter, "all">;
+export type ActivitySortKey = "title" | "client" | "status" | "progress" | "size";
+export type SortDirection = "asc" | "desc";
+export type SortConfig = {
+  key: ActivitySortKey;
+  direction: SortDirection;
+};
 
 export type TitleMatchType =
   | "submission"
@@ -55,6 +100,7 @@ export type DownloadQueueItem = {
   clientName: string;
   clientType: string;
   state: DownloadQueueState;
+  displayState: DownloadDisplayState;
   progressPercent: number;
   sizeBytes: string | null;
   remainingSeconds: number | null;
@@ -67,6 +113,8 @@ export type DownloadQueueItem = {
   importErrorCode: ImportErrorCode | null;
   importErrorMessage: string | null;
   importedAt: string | null;
+  deleteStatus: DownloadQueueDeleteStatus | null;
+  deleteErrorMessage: string | null;
   trackedState: TrackedDownloadState | null;
   trackedStatus: TrackedDownloadStatus | null;
   trackedStatusMessages: string[];
@@ -76,4 +124,18 @@ export type DownloadQueueItem = {
 export type DownloadHistoryPage = {
   items: DownloadQueueItem[];
   hasMore: boolean;
+  totalCount: number;
+  availableClients: DownloadClientFilterOption[];
+};
+
+export type DownloadImportPage = {
+  items: DownloadQueueItem[];
+  hasMore: boolean;
+  totalCount: number;
+};
+
+export type DownloadClientFilterOption = {
+  clientId: string;
+  clientName: string;
+  clientType: string;
 };

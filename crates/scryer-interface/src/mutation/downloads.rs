@@ -27,6 +27,7 @@ fn download_queue_action_payload(
     download_client_item_id: impl Into<String>,
     client_type: Option<String>,
     import_id: Option<String>,
+    command_id: Option<String>,
     removed: bool,
     queue_item: Option<DownloadQueueItemPayload>,
 ) -> DownloadQueueActionPayload {
@@ -35,6 +36,7 @@ fn download_queue_action_payload(
         download_client_item_id: download_client_item_id.into(),
         client_type,
         import_id,
+        command_id,
         removed,
         queue_item,
     }
@@ -118,6 +120,7 @@ impl DownloadMutations {
             download_client_item_id,
             Some(client_type),
             Some(import_id),
+            None,
             false,
             queue_item,
         ))
@@ -179,6 +182,7 @@ impl DownloadMutations {
             download_client_item_id,
             Some(client_type),
             None,
+            None,
             false,
             queue_item,
         ))
@@ -213,6 +217,7 @@ impl DownloadMutations {
             download_client_item_id,
             Some(client_type),
             None,
+            None,
             false,
             queue_item,
         ))
@@ -246,6 +251,7 @@ impl DownloadMutations {
             DownloadQueueActionKindValue::RetriedTrackedDownloadImport,
             download_client_item_id,
             Some(client_type),
+            None,
             None,
             false,
             queue_item,
@@ -282,6 +288,7 @@ impl DownloadMutations {
             download_client_item_id,
             Some(client_type),
             None,
+            None,
             false,
             queue_item,
         ))
@@ -305,6 +312,7 @@ impl DownloadMutations {
             DownloadQueueActionKindValue::Paused,
             download_client_item_id,
             queue_item.as_ref().map(|item| item.client_type.clone()),
+            None,
             None,
             false,
             queue_item,
@@ -330,6 +338,7 @@ impl DownloadMutations {
             download_client_item_id,
             queue_item.as_ref().map(|item| item.client_type.clone()),
             None,
+            None,
             false,
             queue_item,
         ))
@@ -342,22 +351,33 @@ impl DownloadMutations {
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let client_type = input.client_type.clone();
         let download_client_item_id = input.download_client_item_id.clone();
-        let existing_queue_item =
-            queue_item_payload_for_action(&app, &actor, None, &download_client_item_id).await?;
-        app.delete_download_queue_item(&actor, &input.download_client_item_id, input.is_history)
+        let existing_queue_item = queue_item_payload_for_action(
+            &app,
+            &actor,
+            Some(&client_type),
+            &download_client_item_id,
+        )
+        .await?;
+        let command = app
+            .delete_download_queue_item(
+                &actor,
+                &input.client_type,
+                &input.download_client_item_id,
+                input.is_history,
+            )
             .await
             .map_err(to_gql_error)?;
 
         Ok(download_queue_action_payload(
-            DownloadQueueActionKindValue::Deleted,
+            DownloadQueueActionKindValue::DeleteQueued,
             download_client_item_id,
-            existing_queue_item
-                .as_ref()
-                .map(|item| item.client_type.clone()),
+            Some(client_type),
             None,
-            true,
-            None,
+            Some(command.id),
+            false,
+            existing_queue_item,
         ))
     }
 }

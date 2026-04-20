@@ -276,6 +276,55 @@ pub(crate) async fn update_wanted_item_status_query(
     Ok(())
 }
 
+pub(crate) async fn complete_wanted_item_for_title_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    episode_id: Option<&str>,
+    last_search_at: Option<&str>,
+    current_score: Option<i32>,
+) -> AppResult<bool> {
+    let now = Utc::now().to_rfc3339();
+
+    let result = match episode_id {
+        Some(episode_id) => {
+            sqlx::query(
+                "UPDATE wanted_items
+                 SET status = ?, next_search_at = ?, last_search_at = ?,
+                     current_score = COALESCE(?, current_score), updated_at = ?
+                 WHERE title_id = ? AND episode_id = ?",
+            )
+            .bind(scryer_application::WantedStatus::Completed.as_str())
+            .bind(Option::<String>::None)
+            .bind(last_search_at)
+            .bind(current_score)
+            .bind(&now)
+            .bind(title_id)
+            .bind(episode_id)
+            .execute(pool)
+            .await
+        }
+        None => {
+            sqlx::query(
+                "UPDATE wanted_items
+                 SET status = ?, next_search_at = ?, last_search_at = ?,
+                     current_score = COALESCE(?, current_score), updated_at = ?
+                 WHERE title_id = ? AND episode_id IS NULL",
+            )
+            .bind(scryer_application::WantedStatus::Completed.as_str())
+            .bind(Option::<String>::None)
+            .bind(last_search_at)
+            .bind(current_score)
+            .bind(&now)
+            .bind(title_id)
+            .execute(pool)
+            .await
+        }
+    }
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn get_wanted_item_for_title_query(
     pool: &SqlitePool,
     title_id: &str,

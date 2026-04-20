@@ -16,20 +16,20 @@ use scryer_domain::PluginInstallation;
 use scryer_domain::{BlocklistEntry, TitleHistoryEventType, TitleHistoryRecord};
 
 use crate::{
-    AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
-    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileRepository, NewBlocklistEntry,
-    NewTitleHistoryEvent, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
-    PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
-    StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary,
-    TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository, TitleImageBlob, TitleImageKind,
-    TitleImageProcessor, TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
-    TitleMediaFile, TitleMediaSizeSummary, WantedItem, WantedItemRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadQueueCommandRecord,
+    DownloadQueueCommandRepository, DownloadSubmission, DownloadSubmissionRepository,
+    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
+    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
+    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
+    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
+    TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository,
+    TitleImageBlob, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
+    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -124,6 +124,55 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
         _: &crate::MediaFacet,
     ) -> AppResult<()> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullDownloadQueueCommandRepository;
+
+#[async_trait]
+impl DownloadQueueCommandRepository for NullDownloadQueueCommandRepository {
+    async fn queue_delete_command(
+        &self,
+        _: &str,
+        _: &str,
+        _: bool,
+        _: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord> {
+        Err(AppError::Repository(
+            "download queue command repository is not configured".to_string(),
+        ))
+    }
+
+    async fn recover_stale_running_delete_commands(&self, _: i64) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        Ok(vec![])
+    }
+
+    async fn mark_delete_command_running(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_delete_command_completed(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_delete_command_failed(&self, _: &str, _: Option<&str>) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        _: &[(String, String, bool)],
+    ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        Ok(vec![])
+    }
+
+    async fn prune_terminal_delete_commands_older_than(&self, _: i64) -> AppResult<u32> {
+        Ok(0)
     }
 }
 
@@ -740,6 +789,12 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     async fn delete_terminal_imports_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
+    async fn delete_terminal_download_queue_commands_older_than(
+        &self,
+        _days: i64,
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
     async fn delete_rule_set_history_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
@@ -771,6 +826,13 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     }
     async fn list_for_title(&self, _: &str) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
+    }
+    async fn find_by_title_and_request_signature(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(None)
     }
     async fn delete_for_title(&self, _: &str) -> AppResult<()> {
         Ok(())
@@ -1149,13 +1211,13 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
 #[cfg(test)]
 pub mod test_nulls {
     use crate::{
-        AppError, AppResult, CollectionUpdate, DownloadClient, DownloadClientAddRequest,
-        DownloadClientConfigRepository, DownloadClientConfigUpdate, DownloadGrabResult,
-        EpisodeUpdate, IndexerClient, IndexerRoutingPlan, IndexerSearchResponse,
-        PrimaryCollectionSummary, QualityProfile, QualityProfileRepository,
-        ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-        SearchMode, ShowRepository, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
-        TitleRepository, UserRepository,
+        AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClient,
+        DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientConfigUpdate,
+        DownloadGrabResult, EpisodeUpdate, IndexerClient, IndexerRoutingPlan,
+        IndexerSearchResponse, PendingTitleHydration, PrimaryCollectionSummary, QualityProfile,
+        QualityProfileRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
+        ReleaseDownloadFailureSignature, SearchMode, ShowRepository, TitleMetadataUpdate,
+        TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
     };
     use async_trait::async_trait;
     use scryer_domain::{
@@ -1171,6 +1233,9 @@ pub mod test_nulls {
         async fn list(&self, _: Option<MediaFacet>, _: Option<String>) -> AppResult<Vec<Title>> {
             Ok(vec![])
         }
+        async fn list_by_external_ids(&self, _: &str, _: &[String]) -> AppResult<Vec<Title>> {
+            Ok(vec![])
+        }
         async fn list_for_matching(
             &self,
             _: Option<MediaFacet>,
@@ -1184,8 +1249,40 @@ pub mod test_nulls {
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
             Ok(None)
         }
+        async fn find_by_external_id_in_facet(
+            &self,
+            _: MediaFacet,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+        async fn create_or_get_existing(&self, _: Title) -> AppResult<CreateTitleOutcome> {
+            Err(AppError::Repository("not configured".into()))
+        }
         async fn create(&self, _: Title) -> AppResult<Title> {
             Err(AppError::Repository("not configured".into()))
+        }
+        async fn list_titles_due_for_hydration(
+            &self,
+            _: usize,
+            _: &[MediaFacet],
+        ) -> AppResult<Vec<PendingTitleHydration>> {
+            Ok(vec![])
+        }
+        async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+        async fn schedule_title_metadata_hydration_retry(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+        async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+            Ok(())
         }
         async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
             Err(AppError::Repository("not configured".into()))

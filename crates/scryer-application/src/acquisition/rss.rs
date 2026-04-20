@@ -254,7 +254,7 @@ impl AppUseCase {
         );
 
         // Dedup against previously seen GUIDs (in-memory, resets on restart)
-        let mut seen_guids = self.runtime.rss_seen_guids.write().await;
+        let mut seen_guids = self.runtime.acquisition.rss_seen_guids.write().await;
         let initial_seen_count = seen_guids.len();
 
         let mut new_results: Vec<IndexerSearchResult> = Vec::new();
@@ -864,6 +864,11 @@ impl AppUseCase {
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
         let source_password = normalize_release_password(best.password_hint.as_deref());
+        let request_signature = normalize_release_selection_signature(
+            source_hint.as_deref(),
+            source_title.as_deref(),
+            best.source_kind,
+        );
 
         let _ = self
             .services
@@ -948,6 +953,27 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let episode = if wanted.media_type == "episode" {
+                    match wanted.episode_id.as_deref() {
+                        Some(episode_id) => self
+                            .services
+                            .catalog
+                            .shows
+                            .get_episode_by_id(episode_id)
+                            .await
+                            .ok()
+                            .flatten(),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let submission_scope =
+                    super::acquisition::download_submission_scope_for_release_title(
+                        wanted,
+                        episode.as_ref(),
+                        &best.title,
+                    );
                 let _ = self
                     .services
                     .workflow
@@ -957,8 +983,12 @@ impl AppUseCase {
                         facet: facet_str.trim_matches('"').to_string(),
                         download_client_type: grab.client_type,
                         download_client_item_id: grab.job_id,
+                        source_hint: None,
+                        source_kind: None,
                         source_title: source_title.clone(),
-                        collection_id: None,
+                        request_signature: request_signature.clone(),
+                        episode_id: submission_scope.episode_id,
+                        collection_id: submission_scope.collection_id,
                     })
                     .await;
 

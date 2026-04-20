@@ -9,7 +9,7 @@ use scryer_application::{
     AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate,
     InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
     ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleRepository, WantedItem, WantedItemRepository,
+    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title};
 use scryer_infrastructure::{
@@ -19,7 +19,7 @@ use scryer_infrastructure::{
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::HashMap;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
@@ -4743,11 +4743,11 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
         .collect();
     assert!(action_kind_names.contains(&"queued_manual_import"));
     assert!(action_kind_names.contains(&"assigned_tracked_download_title"));
-    assert!(action_kind_names.contains(&"deleted"));
+    assert!(action_kind_names.contains(&"delete_queued"));
 }
 
 #[tokio::test]
-async fn graphql_queue_manual_import_returns_accepted_and_persists_pending_request() {
+async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "movie").await;
     let client = ctx.http_client();
@@ -4775,7 +4775,7 @@ async fn graphql_queue_manual_import_returns_accepted_and_persists_pending_reque
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), 202);
+    assert_eq!(response.status(), 200);
     let body: Value = response
         .json()
         .await
@@ -4816,6 +4816,282 @@ async fn graphql_queue_manual_import_returns_accepted_and_persists_pending_reque
     assert_eq!(queued["sourceRef"], json!("manual-import-download-1"));
     assert_eq!(queued["importType"], json!("manual_import"));
     assert_eq!(queued["status"], json!("pending"));
+}
+
+#[tokio::test]
+async fn graphql_delete_download_returns_ok_and_persists_queued_delete_command() {
+    let ctx = TestContext::new().await;
+    let client = ctx.http_client();
+    let response = client
+        .post(ctx.graphql_url())
+        .json(&json!({
+            "query": r#"
+                mutation DeleteDownload($input: DeleteDownloadInput!) {
+                  deleteDownload(input: $input) {
+                    kind
+                    commandId
+                    removed
+                    clientType
+                    queueItem { id }
+                  }
+                }
+            "#,
+            "variables": {
+                "input": {
+                    "clientType": "nzbget",
+                    "downloadClientItemId": "queued-delete-download-1",
+                    "isHistory": true
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), 200);
+    let body: Value = response
+        .json()
+        .await
+        .expect("response should be valid json");
+    assert_no_errors(&body);
+
+    let action = &body["data"]["deleteDownload"];
+    let command_id = action["commandId"]
+        .as_str()
+        .expect("delete download should return a queued command id");
+    assert_eq!(action["kind"], json!("delete_queued"));
+    assert_eq!(action["removed"], json!(false));
+    assert_eq!(action["clientType"], json!("nzbget"));
+    assert!(action["queueItem"].is_null());
+
+    let queued = sqlx::query(
+        "SELECT action, client_type, download_client_item_id, is_history, status
+         FROM download_queue_commands
+         WHERE id = ?",
+    )
+    .bind(command_id)
+    .fetch_one(ctx.db.pool())
+    .await
+    .expect("queued delete command should be persisted");
+
+    assert_eq!(
+        queued
+            .try_get::<String, _>("action")
+            .expect("action should be readable"),
+        "delete"
+    );
+    assert_eq!(
+        queued
+            .try_get::<String, _>("client_type")
+            .expect("client_type should be readable"),
+        "nzbget"
+    );
+    assert_eq!(
+        queued
+            .try_get::<String, _>("download_client_item_id")
+            .expect("download_client_item_id should be readable"),
+        "queued-delete-download-1"
+    );
+    assert!(
+        queued
+            .try_get::<i64, _>("is_history")
+            .expect("is_history should be readable")
+            != 0
+    );
+    assert_eq!(
+        queued
+            .try_get::<String, _>("status")
+            .expect("status should be readable"),
+        "queued"
+    );
+}
+
+#[tokio::test]
+async fn graphql_delete_download_marks_history_item_completed_after_poller_runs() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let create_config_body = gql(
+        &ctx,
+        r#"
+        mutation CreateDownloadClientConfig($input: CreateDownloadClientConfigInput!) {
+          createDownloadClientConfig(input: $input) {
+            id
+            clientType
+            isEnabled
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "name": "NZBGet",
+                "clientType": "nzbget",
+                "configJson": "{}",
+                "isEnabled": true
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&create_config_body);
+    assert_eq!(
+        create_config_body["data"]["createDownloadClientConfig"]["clientType"],
+        json!("nzbget")
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/jsonrpc"))
+        .and(body_string_contains(r#""method":"listgroups""#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("nzbget/listgroups.json")),
+        )
+        .mount(&ctx.nzbget_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/jsonrpc"))
+        .and(body_string_contains(r#""method":"postqueue""#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("nzbget/postqueue.json")),
+        )
+        .mount(&ctx.nzbget_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/jsonrpc"))
+        .and(body_string_contains(r#""method":"history""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": "2.0",
+            "result": {
+                "History": [{
+                    "NZBID": 123,
+                    "Name": "Queued Delete Download",
+                    "Status": "SUCCESS",
+                    "HistoryTime": Utc::now().timestamp(),
+                    "FileSizeMB": 10
+                }]
+            },
+            "id": "scryer-rpc"
+        })))
+        .mount(&ctx.nzbget_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/jsonrpc"))
+        .and(body_string_contains(r#""method":"editqueue""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": "2.0",
+            "result": true,
+            "id": "scryer-rpc"
+        })))
+        .mount(&ctx.nzbget_server)
+        .await;
+
+    let delete_body = gql(
+        &ctx,
+        r#"
+        mutation DeleteDownload($input: DeleteDownloadInput!) {
+          deleteDownload(input: $input) {
+            kind
+            commandId
+            removed
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "clientType": "nzbget",
+                "downloadClientItemId": "123",
+                "isHistory": true
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&delete_body);
+    assert_eq!(
+        delete_body["data"]["deleteDownload"]["kind"],
+        json!("delete_queued")
+    );
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        ctx.app.clone(),
+        token.child_token(),
+    ));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let status: Option<String> = sqlx::query_scalar(
+                "SELECT status
+                 FROM download_queue_commands
+                 WHERE client_type = 'nzbget'
+                   AND download_client_item_id = '123'
+                   AND is_history = 1",
+            )
+            .fetch_optional(ctx.db.pool())
+            .await
+            .expect("queued delete status should load");
+            if status.as_deref() == Some("completed") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("queued delete should complete");
+
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    let queue_body = gql(
+        &ctx,
+        r#"
+        {
+          downloadQueue(includeAllActivity: true) {
+            downloadClientItemId
+            state
+            deleteStatus
+            deleteErrorMessage
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&queue_body);
+
+    assert!(
+        queue_body["data"]["downloadQueue"]
+            .as_array()
+            .expect("download queue should be an array")
+            .iter()
+            .all(|item| item["downloadClientItemId"].as_str() != Some("123"))
+    );
+
+    let history_body = gql(
+        &ctx,
+        r#"
+        {
+          downloadHistory(limit: 100, offset: 0, filter: all) {
+            items {
+              downloadClientItemId
+              state
+              deleteStatus
+              deleteErrorMessage
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&history_body);
+
+    let item = history_body["data"]["downloadHistory"]["items"]
+        .as_array()
+        .expect("download history should be an array")
+        .iter()
+        .find(|item| item["downloadClientItemId"].as_str() == Some("123"))
+        .expect("history item should remain visible in history");
+
+    assert_eq!(item["state"], json!("completed"));
+    assert_eq!(item["deleteStatus"], json!("completed"));
+    assert!(item["deleteErrorMessage"].is_null());
 }
 
 #[tokio::test]
@@ -5264,6 +5540,53 @@ async fn graphql_add_title_with_structured_options() {
 }
 
 #[tokio::test]
+async fn graphql_add_title_returns_async_hydration_payload_fields() {
+    let ctx = TestContext::new().await;
+    let query = r#"mutation($input: AddTitleInput!) {
+        addTitle(input: $input) {
+            metadataHydrationState
+            reusedExistingTitle
+            reusedQueuedDownload
+            title {
+                id
+                name
+            }
+        }
+    }"#;
+    let variables = json!({
+        "input": {
+            "name": "Async Payload Movie",
+            "facet": "movie",
+            "monitored": true,
+            "tags": [],
+            "externalIds": [{ "source": "tvdb", "value": "123456" }]
+        }
+    });
+
+    let first = gql(&ctx, query, variables.clone()).await;
+    assert_no_errors(&first);
+    assert_eq!(
+        first["data"]["addTitle"]["metadataHydrationState"],
+        "pending"
+    );
+    assert_eq!(first["data"]["addTitle"]["reusedExistingTitle"], false);
+    assert_eq!(first["data"]["addTitle"]["reusedQueuedDownload"], false);
+
+    let second = gql(&ctx, query, variables).await;
+    assert_no_errors(&second);
+    assert_eq!(
+        second["data"]["addTitle"]["metadataHydrationState"],
+        "pending"
+    );
+    assert_eq!(second["data"]["addTitle"]["reusedExistingTitle"], true);
+    assert_eq!(second["data"]["addTitle"]["reusedQueuedDownload"], false);
+    assert_eq!(
+        second["data"]["addTitle"]["title"]["id"],
+        first["data"]["addTitle"]["title"]["id"]
+    );
+}
+
+#[tokio::test]
 async fn graphql_add_title_then_list() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Listed Movie", "movie").await;
@@ -5291,6 +5614,72 @@ async fn graphql_add_multiple_titles() {
     let body = gql(&ctx, "{ titles { id facet } }", json!({})).await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["titles"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn graphql_titles_by_external_ids_returns_catalog_titles() {
+    let ctx = TestContext::new().await;
+    let first = create_catalog_title(
+        &ctx,
+        "Mario",
+        MediaFacet::Movie,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "18861".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+    create_catalog_title(
+        &ctx,
+        "Mario Duplicate",
+        MediaFacet::Series,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "18861".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+    let second = create_catalog_title(
+        &ctx,
+        "The Super Mario Galaxy Movie",
+        MediaFacet::Movie,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "354713".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"query($source: String!, $values: [String!]!) {
+          titlesByExternalIds(source: $source, values: $values) {
+            id
+            name
+            facet
+            externalIds { source value }
+          }
+        }"#,
+        json!({
+            "source": "tvdb",
+            "values": ["18861", "18861", "000000", "354713"]
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let titles = body["data"]["titlesByExternalIds"]
+        .as_array()
+        .expect("titles array");
+    assert_eq!(titles.len(), 2);
+    assert_eq!(titles[0]["id"].as_str(), Some(first.id.as_str()));
+    assert_eq!(titles[1]["id"].as_str(), Some(second.id.as_str()));
 }
 
 #[tokio::test]
@@ -5857,6 +6246,48 @@ async fn graphql_trigger_title_wanted_search() {
         "movie"
     );
     assert_eq!(body["data"]["wantedItems"]["items"][0]["status"], "wanted");
+}
+
+#[tokio::test]
+async fn graphql_trigger_title_wanted_search_series_queues_all_monitored_episodes() {
+    let ctx = TestContext::new().await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let (title, collection) =
+        create_series_scan_title(&ctx, media_root.path(), "Search Monitored Series", vec![]).await;
+    create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
+    create_series_scan_episode(&ctx, &title, &collection, "1", "2", "S01E02").await;
+
+    let body = gql(
+        &ctx,
+        r#"mutation($input: TitleIdInput!) {
+            triggerTitleWantedSearch(input: $input)
+        }"#,
+        json!({ "input": { "titleId": title.id.clone() } }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["triggerTitleWantedSearch"], 2);
+
+    let body = gql(
+        &ctx,
+        r#"query($titleId: String) {
+            wantedItems(titleId: $titleId) {
+                total
+                items { titleId mediaType status }
+            }
+        }"#,
+        json!({ "titleId": title.id.clone() }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["wantedItems"]["total"], 2);
+    let items = body["data"]["wantedItems"]["items"]
+        .as_array()
+        .expect("wanted items array");
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|item| item["titleId"] == title.id));
+    assert!(items.iter().all(|item| item["mediaType"] == "episode"));
+    assert!(items.iter().all(|item| item["status"] == "wanted"));
 }
 
 #[tokio::test]
@@ -7561,7 +7992,11 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             facet: "movie".to_string(),
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-delete".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await

@@ -1,3 +1,6 @@
+// async-graphql schema expansion exceeded the default macro recursion depth.
+#![recursion_limit = "256"]
+
 mod admin_routes;
 mod base_path;
 mod init;
@@ -21,10 +24,11 @@ use scryer_application::{
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     PluginInstallationRepository, SeriesFacetHandler, TitleImageKind, TitleImageRepository,
     start_background_acquisition_poller, start_background_banner_loop,
-    start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_manual_import_poller, start_background_poster_loop,
-    start_background_subtitle_poller, start_download_queue_poller, start_notification_dispatcher,
-    tracked_downloads::TrackedDownloadHandle,
+    start_background_download_delete_poller, start_background_fanart_loop,
+    start_background_library_refresh_loop, start_background_manual_import_poller,
+    start_background_poster_loop, start_background_subtitle_poller,
+    start_background_title_hydration_loop, start_download_queue_poller,
+    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
@@ -581,6 +585,7 @@ async fn bootstrap_application(
     .with_acquisition_state(workflow_store.clone())
     .with_domain_events(workflow_store.clone())
     .with_download_submissions(workflow_store.clone())
+    .with_download_queue_commands(workflow_store.clone())
     .with_external_import_monitor_snapshots(workflow_store.clone())
     .with_import_artifacts(workflow_store.clone())
     .with_imports(workflow_store.clone())
@@ -675,6 +680,10 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
+    tokio::spawn(start_background_title_hydration_loop(
+        app_use_case.clone(),
+        shutdown_token.child_token(),
+    ));
     tokio::spawn(start_background_poster_loop(
         app_use_case.clone(),
         shutdown_token.child_token(),
@@ -696,6 +705,10 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     tokio::spawn(start_background_manual_import_poller(
+        app_use_case.clone(),
+        shutdown_token.child_token(),
+    ));
+    tokio::spawn(start_background_download_delete_poller(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));

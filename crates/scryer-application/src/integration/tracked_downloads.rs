@@ -115,7 +115,13 @@ impl TrackedDownloadService {
 
         if self.cache.contains_key(&id) {
             let existing = self.cache.get_mut(&id).unwrap();
-            let matcher_dirty = app.runtime.monitored_title_matcher.read().await.dirty;
+            let matcher_dirty = app
+                .runtime
+                .catalog
+                .monitored_title_matcher
+                .read()
+                .await
+                .dirty;
             let should_reresolve = should_reresolve_title(existing, &client_item, matcher_dirty);
             // Update the client snapshot but preserve scryer state if not Downloading.
             if existing.state == TrackedDownloadState::Downloading {
@@ -325,7 +331,11 @@ impl TrackedDownloadService {
                     facet: td.facet.clone().unwrap_or_default(),
                     download_client_type: td.client_type.clone(),
                     download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    source_hint: None,
+                    source_kind: None,
                     source_title: Some(td.client_item.title_name.clone()),
+                    request_signature: None,
+                    episode_id: None,
                     collection_id: None,
                 })
                 .await
@@ -636,10 +646,10 @@ mod tests {
         NullTitleRepository, NullUserRepository,
     };
     use crate::{
-        AppError, AppResult, AppServices, AppUseCase, DomainEventRepository, DownloadClient,
-        DownloadClientAddRequest, DownloadGrabResult, DownloadSubmissionRepository, FacetRegistry,
-        ImportRepository, IndexerConfigRepository, JwtAuthConfig, TitleMetadataUpdate,
-        TitleRepository,
+        AppError, AppResult, AppServices, AppUseCase, CreateTitleOutcome, DomainEventRepository,
+        DownloadClient, DownloadClientAddRequest, DownloadGrabResult, DownloadSubmissionRepository,
+        FacetRegistry, ImportRepository, IndexerConfigRepository, JwtAuthConfig,
+        PendingTitleHydration, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -675,6 +685,14 @@ mod tests {
 
         async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {
             Ok(vec![])
+        }
+
+        async fn find_by_title_and_request_signature(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<crate::DownloadSubmission>> {
+            Ok(None)
         }
 
         async fn delete_for_title(&self, _: &str) -> AppResult<()> {
@@ -958,6 +976,31 @@ mod tests {
             Ok(self.titles.clone())
         }
 
+        async fn list_by_external_ids(
+            &self,
+            source: &str,
+            values: &[String],
+        ) -> AppResult<Vec<Title>> {
+            let mut matches = Vec::new();
+            let mut seen = HashSet::new();
+            for value in values
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(title) = self.titles.iter().find(|title| {
+                    title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case(source)
+                            && external_id.value == value
+                    })
+                }) && seen.insert(title.id.clone())
+                {
+                    matches.push(title.clone());
+                }
+            }
+            Ok(matches)
+        }
+
         async fn list_for_matching(
             &self,
             _: Option<MediaFacet>,
@@ -974,8 +1017,46 @@ mod tests {
             Ok(None)
         }
 
+        async fn find_by_external_id_in_facet(
+            &self,
+            _: MediaFacet,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+
+        async fn create_or_get_existing(&self, _: Title) -> AppResult<CreateTitleOutcome> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
         async fn create(&self, _: Title) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn list_titles_due_for_hydration(
+            &self,
+            _: usize,
+            _: &[MediaFacet],
+        ) -> AppResult<Vec<PendingTitleHydration>> {
+            Ok(vec![])
+        }
+
+        async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn schedule_title_metadata_hydration_retry(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+            Ok(())
         }
 
         async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
@@ -1032,6 +1113,32 @@ mod tests {
             Ok(self.titles.lock().await.clone())
         }
 
+        async fn list_by_external_ids(
+            &self,
+            source: &str,
+            values: &[String],
+        ) -> AppResult<Vec<Title>> {
+            let titles = self.titles.lock().await;
+            let mut matches = Vec::new();
+            let mut seen = HashSet::new();
+            for value in values
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(title) = titles.iter().find(|title| {
+                    title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case(source)
+                            && external_id.value == value
+                    })
+                }) && seen.insert(title.id.clone())
+                {
+                    matches.push(title.clone());
+                }
+            }
+            Ok(matches)
+        }
+
         async fn list_for_matching(
             &self,
             _: Option<MediaFacet>,
@@ -1055,8 +1162,46 @@ mod tests {
             Ok(None)
         }
 
+        async fn find_by_external_id_in_facet(
+            &self,
+            _: MediaFacet,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+
+        async fn create_or_get_existing(&self, _: Title) -> AppResult<CreateTitleOutcome> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
         async fn create(&self, _: Title) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn list_titles_due_for_hydration(
+            &self,
+            _: usize,
+            _: &[MediaFacet],
+        ) -> AppResult<Vec<PendingTitleHydration>> {
+            Ok(vec![])
+        }
+
+        async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn schedule_title_metadata_hydration_retry(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+            Ok(())
         }
 
         async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
@@ -1184,6 +1329,8 @@ mod tests {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: true,
             tracked_state: None,
             tracked_status: None,
@@ -1259,7 +1406,11 @@ mod tests {
                 facet: "series".to_string(),
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "dl-1".to_string(),
+                source_hint: None,
+                source_kind: None,
                 source_title: Some("Restart Recovery Show".to_string()),
+                request_signature: None,
+                episode_id: None,
                 collection_id: None,
             }),
             tracked_state: None,
@@ -1319,6 +1470,14 @@ mod tests {
 
             async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {
                 Ok(vec![])
+            }
+
+            async fn find_by_title_and_request_signature(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> AppResult<Option<crate::DownloadSubmission>> {
+                Ok(None)
             }
 
             async fn delete_for_title(&self, _: &str) -> AppResult<()> {

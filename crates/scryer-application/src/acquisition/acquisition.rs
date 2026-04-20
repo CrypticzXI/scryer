@@ -595,6 +595,115 @@ impl DownloadClientSnapshot {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DownloadSubmissionScope {
+    pub episode_id: Option<String>,
+    pub collection_id: Option<String>,
+}
+
+fn episode_collection_id_for_wanted_item(
+    item: &WantedItem,
+    episode: Option<&Episode>,
+) -> Option<String> {
+    episode
+        .and_then(|episode| episode.collection_id.clone())
+        .or_else(|| item.collection_id.clone())
+}
+
+pub(crate) fn direct_download_submission_scope_for_wanted_item(
+    item: &WantedItem,
+    episode: Option<&Episode>,
+) -> DownloadSubmissionScope {
+    match item.media_type.as_str() {
+        "episode" => DownloadSubmissionScope {
+            episode_id: item.episode_id.clone(),
+            collection_id: episode_collection_id_for_wanted_item(item, episode),
+        },
+        "interstitial_movie" => DownloadSubmissionScope {
+            episode_id: None,
+            collection_id: item.collection_id.clone(),
+        },
+        _ => DownloadSubmissionScope::default(),
+    }
+}
+
+pub(crate) fn download_submission_scope_for_release_title(
+    item: &WantedItem,
+    episode: Option<&Episode>,
+    release_title: &str,
+) -> DownloadSubmissionScope {
+    if item.media_type == "episode" {
+        let parsed = crate::parse_release_metadata(release_title);
+        if parsed.episode.as_ref().is_some_and(|episode| {
+            episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+        }) {
+            return collection_download_submission_scope_for_wanted_item(item, episode);
+        }
+    }
+
+    direct_download_submission_scope_for_wanted_item(item, episode)
+}
+
+pub(crate) fn collection_download_submission_scope_for_wanted_item(
+    item: &WantedItem,
+    episode: Option<&Episode>,
+) -> DownloadSubmissionScope {
+    match item.media_type.as_str() {
+        "episode" => DownloadSubmissionScope {
+            episode_id: None,
+            collection_id: episode_collection_id_for_wanted_item(item, episode),
+        },
+        "interstitial_movie" => DownloadSubmissionScope {
+            episode_id: None,
+            collection_id: item.collection_id.clone(),
+        },
+        _ => DownloadSubmissionScope::default(),
+    }
+}
+
+fn submission_is_active_or_completed(
+    submission: &DownloadSubmission,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> bool {
+    dl_snapshot
+        .active_client_ids
+        .contains(&submission.download_client_item_id)
+        || dl_snapshot
+            .completed_client_ids
+            .contains(&submission.download_client_item_id)
+}
+
+fn submission_blocks_wanted_item(
+    submission: &DownloadSubmission,
+    item: &WantedItem,
+    episode_collection_id: Option<&str>,
+) -> bool {
+    match item.media_type.as_str() {
+        "episode" => {
+            if submission.episode_id.as_deref() == item.episode_id.as_deref() {
+                return true;
+            }
+
+            if submission.episode_id.is_none() && submission.collection_id.is_none() {
+                return true;
+            }
+
+            submission.episode_id.is_none()
+                && episode_collection_id.is_some()
+                && submission.collection_id.as_deref() == episode_collection_id
+        }
+        "interstitial_movie" => {
+            if submission.episode_id.is_some() {
+                return false;
+            }
+
+            item.collection_id.is_some()
+                && submission.collection_id.as_deref() == item.collection_id.as_deref()
+        }
+        _ => submission.episode_id.is_none() && submission.collection_id.is_none(),
+    }
+}
+
 /// Check grabbed wanted items against the download client. If a grabbed
 /// release has failed in the download client, blocklist it and re-queue the
 /// wanted item for immediate re-search.
@@ -1185,34 +1294,6 @@ async fn process_single_wanted_item(
         }
     };
 
-    // Episode-level gate: skip if a download for this title is already active
-    // or completed in the download client.  Prevents grab spirals where multiple
-    // releases for the same episode are grabbed simultaneously.
-    let submissions = app
-        .services
-        .workflow
-        .download_submissions
-        .list_for_title(&item.title_id)
-        .await
-        .unwrap_or_default();
-
-    let has_active_or_completed = submissions.iter().any(|sub| {
-        dl_snapshot
-            .active_client_ids
-            .contains(&sub.download_client_item_id)
-            || dl_snapshot
-                .completed_client_ids
-                .contains(&sub.download_client_item_id)
-    });
-
-    if has_active_or_completed {
-        info!(
-            title = title.name.as_str(),
-            "skipping search — download for this title is already active or completed"
-        );
-        return Ok(());
-    }
-
     // Load episode data for episode-type wanted items
     let episode = if item.media_type == "episode" {
         if let Some(ep_id) = item.episode_id.as_deref() {
@@ -1229,6 +1310,35 @@ async fn process_single_wanted_item(
     } else {
         None
     };
+
+    // Item-aware gate: skip only when an active/recent submission blocks this
+    // wanted item, not every sibling episode on the same title.
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&item.title_id)
+        .await
+        .unwrap_or_default();
+    let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
+
+    let has_blocking_active_or_completed_submission = submissions.iter().any(|submission| {
+        submission_is_active_or_completed(submission, dl_snapshot)
+            && submission_blocks_wanted_item(submission, item, episode_collection_id.as_deref())
+    });
+
+    if has_blocking_active_or_completed_submission {
+        info!(
+            title = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            episode_id = item.episode_id.as_deref(),
+            collection_id = episode_collection_id
+                .as_deref()
+                .or(item.collection_id.as_deref()),
+            "skipping search — download for this wanted item is already active or completed"
+        );
+        return Ok(());
+    }
 
     // For interstitial movies, build a synthetic title from the collection's movie metadata
     // so the search uses the movie's name/year/IMDB ID instead of the parent series'
@@ -1498,6 +1608,11 @@ async fn process_single_wanted_item(
                             normalize_release_attempt_title(pack_title.as_deref());
                         let pack_password =
                             normalize_release_password(best_pack.password_hint.as_deref());
+                        let request_signature = normalize_release_selection_signature(
+                            pack_url.as_deref(),
+                            pack_title.as_deref(),
+                            best_pack.source_kind,
+                        );
 
                         let grab_result = app
                             .services
@@ -1551,6 +1666,11 @@ async fn process_single_wanted_item(
                                     .await;
                                 let facet_str = serde_json::to_string(&title.facet)
                                     .unwrap_or_else(|_| "\"other\"".to_string());
+                                let submission_scope =
+                                    collection_download_submission_scope_for_wanted_item(
+                                        item,
+                                        episode.as_ref(),
+                                    );
                                 let _ = app
                                     .services
                                     .workflow
@@ -1560,8 +1680,12 @@ async fn process_single_wanted_item(
                                         facet: facet_str.trim_matches('"').to_string(),
                                         download_client_type: grab.client_type,
                                         download_client_item_id: grab.job_id,
+                                        source_hint: None,
+                                        source_kind: None,
                                         source_title: Some(best_pack.title.clone()),
-                                        collection_id: None,
+                                        request_signature: request_signature.clone(),
+                                        episode_id: submission_scope.episode_id,
+                                        collection_id: submission_scope.collection_id,
                                     })
                                     .await;
                                 let pack_score = best_pack
@@ -1982,6 +2106,11 @@ async fn process_single_wanted_item(
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
         let source_password = normalize_release_password(candidate.password_hint.as_deref());
+        let request_signature = normalize_release_selection_signature(
+            source_hint.as_deref(),
+            source_title.as_deref(),
+            candidate.source_kind,
+        );
 
         let _ = app
             .services
@@ -2144,6 +2273,8 @@ async fn process_single_wanted_item(
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
+                let submission_scope =
+                    direct_download_submission_scope_for_wanted_item(item, episode.as_ref());
 
                 app.services
                     .workflow
@@ -2159,8 +2290,12 @@ async fn process_single_wanted_item(
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_type: grab.client_type,
                             download_client_item_id: grab.job_id,
+                            source_hint: None,
+                            source_kind: None,
                             source_title: source_title.clone(),
-                            collection_id: item.collection_id.clone(),
+                            request_signature: request_signature.clone(),
+                            episode_id: submission_scope.episode_id,
+                            collection_id: submission_scope.collection_id,
                         },
                         grabbed_pending_release_id: None,
                         grabbed_at: Some(now.to_rfc3339()),
@@ -2713,7 +2848,7 @@ impl AppUseCase {
         };
 
         if queued > 0 {
-            self.runtime.acquisition_wake.notify_one();
+            self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
         Ok(queued)
@@ -2753,7 +2888,7 @@ impl AppUseCase {
         }
 
         if queued > 0 {
-            self.runtime.acquisition_wake.notify_one();
+            self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
         Ok(queued)
@@ -2781,7 +2916,7 @@ impl AppUseCase {
                 grabbed_release: item.grabbed_release.clone(),
             })
             .await?;
-        self.runtime.acquisition_wake.notify_one();
+        self.runtime.acquisition.acquisition_wake.notify_one();
         Ok(())
     }
 
@@ -3195,7 +3330,7 @@ pub async fn start_background_acquisition_poller(
     rss_sync_interval.tick().await;
     pending_release_interval.tick().await;
 
-    let wake = app.runtime.acquisition_wake.clone();
+    let wake = app.runtime.acquisition.acquisition_wake.clone();
 
     /// Run a scheduled task inside a spawned task to isolate panics.
     /// If the task panics, the error is logged and the scheduler loop continues.

@@ -51,8 +51,8 @@ function matchesChunkModule(id: string, modules: readonly string[]) {
   return modules.some((moduleId) => id.endsWith(moduleId));
 }
 
-export default defineConfig(({ mode }) => ({
-  base: "./",
+export default defineConfig(({ command, mode }) => ({
+  base: command === "serve" ? "/" : "./",
   plugins: [
     react({
       babel:

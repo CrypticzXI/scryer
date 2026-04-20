@@ -48,6 +48,32 @@ type MediaContentContainerProps = {
   onOpenOverview: (targetView: ViewId, titleId: string) => void;
 };
 
+function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
+  return [...titles].sort((left, right) => {
+    const nameCompare = left.name.toLocaleLowerCase().localeCompare(
+      right.name.toLocaleLowerCase(),
+    );
+    if (nameCompare !== 0) {
+      return nameCompare;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function upsertCatalogTitleRecord(
+  titles: TitleRecord[],
+  title: TitleRecord,
+): TitleRecord[] {
+  const next = [...titles];
+  const existingIndex = next.findIndex((item) => item.id === title.id);
+  if (existingIndex === -1) {
+    next.push(title);
+  } else {
+    next[existingIndex] = title;
+  }
+  return sortCatalogTitles(next);
+}
+
 export const MediaContentContainer = React.memo(function MediaContentContainer({
   view,
   contentSettingsSection,
@@ -65,7 +91,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedTvdbId,
     selectTvdbCandidate,
     searchResults,
-    catalogChangeSignal,
   } = searchState;
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -362,24 +387,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
         if (existingIndex === -1) {
           next.push(title);
-          setTitleStatus(t("title.statusTemplate", { count: next.length }));
-          return next;
+        } else {
+          next[existingIndex] = title;
         }
-
-        next[existingIndex] = title;
+        const sorted = sortCatalogTitles(next);
         setTitleStatus(t("title.statusTemplate", { count: next.length }));
-        return next;
+        return sorted;
       });
     },
     [setMonitoredTitles, setTitleStatus, t],
   );
-
-  React.useEffect(() => {
-    if (!catalogChangeSignal || !shouldLoadCatalogTitles) {
-      return;
-    }
-    void refreshTitles();
-  }, [catalogChangeSignal, refreshTitles, shouldLoadCatalogTitles]);
 
   useTitleListReactiveRefresh({
     facet: activeFacet,
@@ -461,7 +478,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             { name: data.addTitle.title.name },
           ),
         );
-        await refreshTitles();
+        if (shouldLoadCatalogTitles && data?.addTitle?.title) {
+          setMonitoredTitles((current) => {
+            const next = upsertCatalogTitleRecord(
+              current,
+              data.addTitle.title as TitleRecord,
+            );
+            setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            return next;
+          });
+        }
       } catch (error) {
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.queueFailed"),
@@ -472,9 +498,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       minAvailabilityForQueue,
       monitoredForQueue,
       queueFacet,
-      refreshTitles,
       client,
+      shouldLoadCatalogTitles,
+      setMonitoredTitles,
       setGlobalStatus,
+      setTitleStatus,
       t,
       seasonFoldersForQueue,
       setTitleNameForQueue,
@@ -546,7 +574,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         const queuedName = data.addTitleAndQueueDownload.title.name;
         const queuedMessage = t("status.queueSuccess", { name: queuedName });
         setGlobalStatus(queuedMessage);
-        await refreshTitles();
+        if (shouldLoadCatalogTitles && data?.addTitleAndQueueDownload?.title) {
+          setMonitoredTitles((current) => {
+            const next = upsertCatalogTitleRecord(
+              current,
+              data.addTitleAndQueueDownload.title as TitleRecord,
+            );
+            setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            return next;
+          });
+        }
       } catch (error) {
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.queueFailed"),
@@ -557,10 +594,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       minAvailabilityForQueue,
       monitoredForQueue,
       queueFacet,
-      refreshTitles,
       client,
       selectedTvdb,
+      shouldLoadCatalogTitles,
+      setMonitoredTitles,
       setGlobalStatus,
+      setTitleStatus,
       titleNameForQueue,
       t,
       seasonFoldersForQueue,

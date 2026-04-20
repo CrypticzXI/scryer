@@ -597,13 +597,18 @@ export function SeasonSection({
                                   </span>
                                 ) : null}
                               </div>
-                              <div className="mt-3 flex flex-wrap gap-2">
+                              <div
+                                className={cn(
+                                  "mt-3 gap-2",
+                                  onAutoSearchEpisode ? "grid grid-cols-2" : "grid grid-cols-1",
+                                )}
+                              >
                                 {onAutoSearchEpisode ? (
                                   <Button
                                     type="button"
                                     size="sm"
                                     variant="secondary"
-                                    className="flex-1 sm:flex-none"
+                                    className="w-full"
                                     onClick={() => onAutoSearchEpisode(episode)}
                                     disabled={autoSearching}
                                   >
@@ -618,8 +623,8 @@ export function SeasonSection({
                                 <Button
                                   type="button"
                                   size="sm"
-                                  variant="outline"
-                                  className="flex-1 sm:flex-none"
+                                  variant="primary"
+                                  className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
                                   onClick={() => onToggleEpisodeSearch(episode)}
                                 >
                                   <Search className="h-4 w-4" />

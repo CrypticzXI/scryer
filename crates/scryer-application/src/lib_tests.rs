@@ -2,13 +2,13 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
     DomainEventPayload, EventType, JobRunCompletedEventData, JobRunStartedEventData,
-    RootFolderEntry,
+    RootFolderEntry, TrackedDownloadState,
 };
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{Duration, Instant, sleep, timeout};
 
 #[derive(Default)]
 struct MockTitleRepo {
@@ -38,6 +38,28 @@ impl TitleRepository for MockTitleRepo {
             .collect())
     }
 
+    async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
+        let requested: Vec<&str> = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect();
+        let list = self.store.lock().await;
+        let mut matches = Vec::new();
+        let mut seen = HashSet::new();
+        for value in requested {
+            if let Some(title) = list.iter().find(|title| {
+                title.external_ids.iter().any(|external_id| {
+                    external_id.source.eq_ignore_ascii_case(source) && external_id.value == value
+                })
+            }) && seen.insert(title.id.clone())
+            {
+                matches.push(title.clone());
+            }
+        }
+        Ok(matches)
+    }
+
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,
@@ -63,9 +85,113 @@ impl TitleRepository for MockTitleRepo {
             .cloned())
     }
 
+    async fn find_by_external_id_in_facet(
+        &self,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>> {
+        let list = self.store.lock().await;
+        Ok(list
+            .iter()
+            .find(|title| {
+                title.facet == facet
+                    && title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case(source)
+                            && external_id.value == value
+                    })
+            })
+            .cloned())
+    }
+
+    async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
+        let mut list = self.store.lock().await;
+        let mut matching_ids = list
+            .iter()
+            .filter(|existing| {
+                existing.facet == title.facet
+                    && existing.external_ids.iter().any(|existing_external_id| {
+                        title.external_ids.iter().any(|incoming_external_id| {
+                            existing_external_id
+                                .source
+                                .eq_ignore_ascii_case(&incoming_external_id.source)
+                                && existing_external_id.value == incoming_external_id.value
+                        })
+                    })
+            })
+            .map(|existing| existing.id.clone())
+            .collect::<Vec<_>>();
+        matching_ids.sort();
+        matching_ids.dedup();
+
+        if matching_ids.len() > 1 {
+            return Err(AppError::Validation(
+                "external ids already map to multiple titles".into(),
+            ));
+        }
+
+        if let Some(existing_id) = matching_ids.first()
+            && let Some(existing) = list.iter().find(|entry| entry.id == *existing_id)
+        {
+            return Ok(CreateTitleOutcome {
+                title: existing.clone(),
+                reused_existing: true,
+            });
+        }
+
+        list.push(title.clone());
+        Ok(CreateTitleOutcome {
+            title,
+            reused_existing: false,
+        })
+    }
+
     async fn create(&self, title: Title) -> AppResult<Title> {
         self.store.lock().await.push(title.clone());
         Ok(title)
+    }
+
+    async fn list_titles_due_for_hydration(
+        &self,
+        _limit: usize,
+        excluded_facets: &[MediaFacet],
+    ) -> AppResult<Vec<PendingTitleHydration>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|title| {
+                title.metadata_fetched_at.is_none()
+                    && !excluded_facets.iter().any(|facet| facet == &title.facet)
+                    && title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case("tvdb")
+                            && !external_id.value.trim().is_empty()
+                    })
+            })
+            .cloned()
+            .map(|title| PendingTitleHydration {
+                title,
+                attempt_count: 0,
+            })
+            .collect())
+    }
+
+    async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn schedule_title_metadata_hydration_retry(
+        &self,
+        _: &str,
+        _: &str,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+        Ok(())
     }
 
     async fn update_metadata(
@@ -976,6 +1102,140 @@ impl IndexerClient for MockIndexerClient {
                 extra: Default::default(),
                 guid: None,
                 info_url: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedIndexerSearch {
+    query: String,
+    season: Option<u32>,
+    episode: Option<u32>,
+}
+
+#[derive(Default, Clone)]
+struct TrackingIndexerClient {
+    searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
+}
+
+#[async_trait]
+impl IndexerClient for TrackingIndexerClient {
+    async fn search(
+        &self,
+        query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        season: Option<u32>,
+        episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        self.searches.lock().await.push(RecordedIndexerSearch {
+            query: query.clone(),
+            season,
+            episode,
+        });
+
+        let release_title = match (season, episode) {
+            (Some(season), Some(episode)) => {
+                format!("{query}.S{season:02}E{episode:02}.1080p.WEB-DL")
+            }
+            (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
+            (None, _) => format!("{query}.2024.1080p.WEB-DL"),
+        };
+        let release_slug = release_title.replace([' ', '/'], ".");
+
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: release_title.clone(),
+                link: Some(format!("https://example.invalid/info/{release_slug}")),
+                download_url: Some(format!(
+                    "https://example.invalid/download/{release_slug}.nzb"
+                )),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some(format!("guid-{release_slug}")),
+                info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct FixedReleaseIndexerClient {
+    release_title: String,
+    indexer_languages: Option<Vec<String>>,
+}
+
+impl FixedReleaseIndexerClient {
+    fn new(release_title: impl Into<String>) -> Self {
+        Self {
+            release_title: release_title.into(),
+            indexer_languages: None,
+        }
+    }
+}
+
+#[async_trait]
+impl IndexerClient for FixedReleaseIndexerClient {
+    async fn search(
+        &self,
+        _query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: self.release_title.clone(),
+                link: Some("https://example.invalid/info".to_string()),
+                download_url: Some("https://example.invalid/download.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: self.indexer_languages.clone(),
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some("guid-fixed-release".to_string()),
+                info_url: Some("https://example.invalid/info".to_string()),
             }],
             api_current: None,
             api_max: None,
@@ -2086,6 +2346,21 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .collect())
     }
 
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        let entries = self.store.lock().await;
+        Ok(entries
+            .iter()
+            .find(|entry| {
+                entry.title_id == title_id
+                    && entry.request_signature.as_deref() == Some(request_signature)
+            })
+            .cloned())
+    }
+
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
         self.deleted_title_ids
             .lock()
@@ -2270,9 +2545,16 @@ struct StubDownloadClient {
     queue_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
+    delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
     history_calls: Arc<Mutex<usize>>,
     recent_activity_calls: Arc<Mutex<Vec<usize>>>,
+}
+
+impl StubDownloadClient {
+    async fn set_delete_error(&self, error: Option<&str>) {
+        *self.delete_error.lock().await = error.map(str::to_string);
+    }
 }
 
 #[async_trait]
@@ -2315,11 +2597,157 @@ impl DownloadClient for StubDownloadClient {
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+        if let Some(error) = self.delete_error.lock().await.clone() {
+            return Err(AppError::Repository(error));
+        }
         self.deleted_items
             .lock()
             .await
             .push((id.to_string(), is_history));
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TrackingDownloadQueueCommandRepo {
+    queued: Arc<Mutex<Vec<DownloadQueueCommandRecord>>>,
+    recovered_count: Arc<Mutex<u64>>,
+}
+
+impl TrackingDownloadQueueCommandRepo {
+    async fn seed_pending(
+        &self,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+    ) -> String {
+        let id = format!("delete-command-{download_client_item_id}");
+        self.queued.lock().await.push(DownloadQueueCommandRecord {
+            id: id.clone(),
+            action: scryer_domain::DownloadQueueCommandAction::Delete,
+            client_type: client_type.to_string(),
+            download_client_item_id: download_client_item_id.to_string(),
+            is_history,
+            status: scryer_domain::DownloadQueueDeleteStatus::Queued,
+            error_text: None,
+            requested_by_user_id: Some("admin".to_string()),
+            started_at: None,
+            finished_at: None,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        });
+        id
+    }
+
+    async fn get(&self, id: &str) -> Option<DownloadQueueCommandRecord> {
+        self.queued
+            .lock()
+            .await
+            .iter()
+            .find(|record| record.id == id)
+            .cloned()
+    }
+}
+
+#[async_trait]
+impl DownloadQueueCommandRepository for TrackingDownloadQueueCommandRepo {
+    async fn queue_delete_command(
+        &self,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord> {
+        let id = self
+            .seed_pending(client_type, download_client_item_id, is_history)
+            .await;
+        let mut queued = self.queued.lock().await;
+        let record = queued
+            .iter_mut()
+            .find(|record| record.id == id)
+            .expect("seeded queued delete command");
+        record.requested_by_user_id = requested_by_user_id.map(str::to_string);
+        Ok(record.clone())
+    }
+
+    async fn recover_stale_running_delete_commands(&self, _stale_seconds: i64) -> AppResult<u64> {
+        Ok(*self.recovered_count.lock().await)
+    }
+
+    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        Ok(self
+            .queued
+            .lock()
+            .await
+            .iter()
+            .filter(|record| record.status == scryer_domain::DownloadQueueDeleteStatus::Queued)
+            .cloned()
+            .collect())
+    }
+
+    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()> {
+        let mut queued = self.queued.lock().await;
+        let record = queued
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("queued delete {}", id)))?;
+        record.status = scryer_domain::DownloadQueueDeleteStatus::Running;
+        record.started_at = Some(Utc::now().to_rfc3339());
+        record.updated_at = Utc::now().to_rfc3339();
+        Ok(())
+    }
+
+    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()> {
+        let mut queued = self.queued.lock().await;
+        let record = queued
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("queued delete {}", id)))?;
+        record.status = scryer_domain::DownloadQueueDeleteStatus::Completed;
+        record.finished_at = Some(Utc::now().to_rfc3339());
+        record.updated_at = Utc::now().to_rfc3339();
+        Ok(())
+    }
+
+    async fn mark_delete_command_failed(
+        &self,
+        id: &str,
+        error_text: Option<&str>,
+    ) -> AppResult<()> {
+        let mut queued = self.queued.lock().await;
+        let record = queued
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("queued delete {}", id)))?;
+        record.status = scryer_domain::DownloadQueueDeleteStatus::Failed;
+        record.error_text = error_text.map(str::to_string);
+        record.finished_at = Some(Utc::now().to_rfc3339());
+        record.updated_at = Utc::now().to_rfc3339();
+        Ok(())
+    }
+
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        sources: &[(String, String, bool)],
+    ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        let queued = self.queued.lock().await;
+        Ok(sources
+            .iter()
+            .filter_map(|(client_type, item_id, is_history)| {
+                queued
+                    .iter()
+                    .find(|record| {
+                        record.client_type == *client_type
+                            && record.download_client_item_id == *item_id
+                            && record.is_history == *is_history
+                    })
+                    .cloned()
+            })
+            .collect())
+    }
+
+    async fn prune_terminal_delete_commands_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
     }
 }
 
@@ -2374,10 +2802,140 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     (app, User::new_admin("admin"))
 }
 
+fn bootstrap_with_metadata_gateway_and_titles(
+    metadata_gateway: Arc<dyn MetadataGateway>,
+) -> (AppUseCase, User, Arc<MockTitleRepo>) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let settings = Arc::new(MockSettingsRepo);
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let download_client = Arc::new(StubDownloadClient::default());
+    let indexer_client = Arc::new(MockIndexerClient);
+
+    let services = AppServices::builder(
+        titles.clone(),
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_metadata_gateway(metadata_gateway)
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, User::new_admin("admin"), titles)
+}
+
+fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64) -> Title {
+    Title {
+        id: id.to_string(),
+        name: format!("Title {id}"),
+        facet,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: tvdb_id.to_string(),
+        }],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2026),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        banner_url: None,
+        banner_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        folder_path: None,
+    }
+}
+
+fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
+    MovieMetadata {
+        tvdb_id,
+        name: name.to_string(),
+        slug: name.to_ascii_lowercase().replace(' ', "-"),
+        year: Some(2026),
+        content_status: "Released".to_string(),
+        overview: format!("{name} overview"),
+        poster_url: format!("https://example.com/{tvdb_id}.jpg"),
+        banner_url: None,
+        background_url: None,
+        language: "eng".to_string(),
+        runtime_minutes: 100,
+        sort_title: name.to_string(),
+        imdb_id: format!("tt{tvdb_id:07}"),
+        anidb_id: None,
+        genres: vec!["Drama".to_string()],
+        studio: "Test Studio".to_string(),
+        tmdb_release_date: Some("2026-01-01".to_string()),
+    }
+}
+
 fn bootstrap_with_cleanup_tracking(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
+) -> (AppUseCase, User) {
+    bootstrap_with_cleanup_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        Arc::new(MockIndexerClient),
+    )
+}
+
+fn bootstrap_with_cleanup_tracking_and_indexer(
+    download_client: Arc<StubDownloadClient>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
@@ -2387,7 +2945,6 @@ fn bootstrap_with_cleanup_tracking(
     let release_attempts = Arc::new(MockReleaseAttemptRepo);
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
-    let indexer_client = Arc::new(MockIndexerClient);
 
     let services = AppServices::builder(
         titles,
@@ -2428,16 +2985,135 @@ fn bootstrap_with_cleanup_tracking(
     (app, User::new_admin("admin"))
 }
 
+fn bootstrap_with_search_settings_and_indexer(
+    settings: Arc<StoredSettingsRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let download_client = Arc::new(StubDownloadClient::default());
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, User::new_admin("admin"))
+}
+
+fn bootstrap_with_delete_queue(
+    download_client: Arc<StubDownloadClient>,
+    download_queue_commands: Arc<TrackingDownloadQueueCommandRepo>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let settings = Arc::new(MockSettingsRepo);
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let indexer_client = Arc::new(MockIndexerClient);
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_queue_commands(download_queue_commands)
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, User::new_admin("admin"))
+}
+
 fn bootstrap_with_acquisition_tracking(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
     wanted_items: Arc<TrackingWantedItemRepo>,
 ) -> (AppUseCase, User) {
-    let (app, user) = bootstrap_with_cleanup_tracking(
+    bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items,
+        Arc::new(MockIndexerClient),
+    )
+}
+
+fn bootstrap_with_acquisition_tracking_and_indexer(
+    download_client: Arc<StubDownloadClient>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    wanted_items: Arc<TrackingWantedItemRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+) -> (AppUseCase, User) {
+    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
         download_client,
         download_submissions.clone(),
         pending_releases.clone(),
+        indexer_client,
     );
     let app = app.with_test_overrides(|services| {
         services
@@ -3250,6 +3926,7 @@ async fn cancel_full_library_scan_marks_session_canceled_and_allows_restart() {
     assert_eq!(projected.found_titles, 1);
     assert!(
         app.runtime
+            .library
             .library_scan_cancellation_tokens
             .lock()
             .await
@@ -3351,6 +4028,7 @@ async fn ensure_library_scan_cancellation_token_reuses_existing_token() {
     );
     assert_eq!(
         app.runtime
+            .library
             .library_scan_cancellation_tokens
             .lock()
             .await
@@ -3992,19 +4670,21 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         )
         .await
         .expect("seed untranslated title");
+    let created_title = created.title;
 
     let mut outcome = app
         .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
-            title: created.clone(),
+            title: created_title.clone(),
             requested_tvdb_id: None,
             sync_wanted_after_completion: false,
+            source: crate::catalog_workflow::HydrationSource::Interactive,
         }])
         .await
         .expect("hydrate title");
 
     let hydrated = outcome
         .hydrated_titles
-        .remove(&created.id)
+        .remove(&created_title.id)
         .expect("hydrated title should be returned");
     assert_eq!(hydrated.name, "デューン");
     assert_eq!(hydrated.metadata_language.as_deref(), Some("jpn"));
@@ -4016,6 +4696,173 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .expect("list titles");
     assert_eq!(persisted[0].name, "デューン");
     assert_eq!(persisted[0].metadata_language.as_deref(), Some("jpn"));
+}
+
+#[tokio::test]
+async fn background_title_hydrator_skips_full_scan_owned_facets_and_hydrates_other_due_titles() {
+    let metadata_gateway = Arc::new(MockMetadataGateway {
+        movies: HashMap::from([(101, make_movie_metadata(101, "Eligible Movie"))]),
+    });
+    let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
+
+    TitleRepository::create(
+        &*titles,
+        make_due_hydration_title("movie-due", MediaFacet::Movie, 101),
+    )
+    .await
+    .expect("seed due movie title");
+    TitleRepository::create(
+        &*titles,
+        make_due_hydration_title("series-due", MediaFacet::Series, 202),
+    )
+    .await
+    .expect("seed due series title");
+
+    app.runtime
+        .library
+        .library_scan_tracker
+        .start_session_with_id(
+            "series-scan-owned".to_string(),
+            MediaFacet::Series,
+            LibraryScanMode::Full,
+        )
+        .await
+        .expect("start series scan");
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_title_hydration_loop(
+        app.clone(),
+        token.child_token(),
+    ));
+
+    let hydrated_movie = timeout(Duration::from_secs(1), async {
+        loop {
+            let title = app
+                .services
+                .catalog
+                .titles
+                .get_by_id("movie-due")
+                .await
+                .expect("load movie title")
+                .expect("movie title should exist");
+            if title.metadata_fetched_at.is_some() {
+                break title;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("movie due title should hydrate");
+
+    let skipped_series = app
+        .services
+        .catalog
+        .titles
+        .get_by_id("series-due")
+        .await
+        .expect("load series title")
+        .expect("series title should exist");
+
+    token.cancel();
+    handle
+        .await
+        .expect("title hydration loop should stop cleanly");
+
+    assert!(hydrated_movie.metadata_fetched_at.is_some());
+    assert!(
+        skipped_series.metadata_fetched_at.is_none(),
+        "background worker should not hydrate titles for the facet owned by the active scan"
+    );
+}
+
+#[tokio::test]
+async fn background_title_hydrator_retries_scan_owned_movie_titles_after_scan_clears() {
+    for mode in [LibraryScanMode::Full, LibraryScanMode::Additive] {
+        let metadata_gateway = Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(303, make_movie_metadata(303, "Recovered Movie"))]),
+        });
+        let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
+
+        let title_id = format!("movie-due-{}", mode.as_str());
+        let session_id = format!("scan-owned-{}", mode.as_str());
+        TitleRepository::create(
+            &*titles,
+            make_due_hydration_title(&title_id, MediaFacet::Movie, 303),
+        )
+        .await
+        .expect("seed due movie title");
+
+        app.runtime
+            .library
+            .library_scan_tracker
+            .start_session_with_id(session_id.clone(), MediaFacet::Movie, mode.clone())
+            .await
+            .expect("start movie scan");
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let handle = tokio::spawn(start_background_title_hydration_loop(
+            app.clone(),
+            token.child_token(),
+        ));
+
+        let premature_hydration = timeout(Duration::from_millis(250), async {
+            loop {
+                let title = app
+                    .services
+                    .catalog
+                    .titles
+                    .get_by_id(&title_id)
+                    .await
+                    .expect("load movie title")
+                    .expect("movie title should exist");
+                if title.metadata_fetched_at.is_some() {
+                    break title;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            premature_hydration.is_err(),
+            "background worker should not hydrate a scan-owned movie title while the scan is active"
+        );
+
+        app.runtime
+            .library
+            .library_scan_tracker
+            .cancel_session(&session_id)
+            .await
+            .expect("clear scan-owned session");
+
+        let hydrated = timeout(Duration::from_secs(1), async {
+            loop {
+                let title = app
+                    .services
+                    .catalog
+                    .titles
+                    .get_by_id(&title_id)
+                    .await
+                    .expect("load movie title after scan clear")
+                    .expect("movie title should still exist");
+                if title.metadata_fetched_at.is_some() {
+                    break title;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("movie due title should hydrate after scan clears");
+
+        token.cancel();
+        handle
+            .await
+            .expect("title hydration loop should stop cleanly");
+
+        assert!(
+            hydrated.metadata_fetched_at.is_some(),
+            "scan-owned movie title should remain due and hydrate after the scan clears"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4062,6 +4909,7 @@ async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
         )
         .await
         .expect("seed existing title");
+    let existing_title = existing_title.title;
     app.services
         .catalog
         .titles
@@ -4128,6 +4976,178 @@ async fn add_title_and_queue_sends_download_job() {
 }
 
 #[tokio::test]
+async fn add_title_with_outcome_returns_pending_and_reuses_existing_tvdb_title() {
+    let (app, user) = bootstrap();
+    let request = NewTitle {
+        name: "Slow Hydration Movie".into(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "123456".to_string(),
+        }],
+        min_availability: None,
+        ..Default::default()
+    };
+
+    let first = app
+        .add_title_with_outcome(&user, request.clone())
+        .await
+        .expect("first add should succeed");
+    assert_eq!(
+        first.metadata_hydration_state,
+        AddTitleHydrationState::Pending
+    );
+    assert!(!first.reused_existing_title);
+
+    let second = app
+        .add_title_with_outcome(&user, request)
+        .await
+        .expect("duplicate add should reuse existing title");
+    assert_eq!(second.title.id, first.title.id);
+    assert_eq!(
+        second.metadata_hydration_state,
+        AddTitleHydrationState::Pending
+    );
+    assert!(second.reused_existing_title);
+
+    let titles = app
+        .list_titles(&user, Some(MediaFacet::Movie), None)
+        .await
+        .expect("titles should load");
+    assert_eq!(titles.len(), 1);
+}
+
+#[tokio::test]
+async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let request = NewTitle {
+        name: "Queued Once".into(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "654321".to_string(),
+        }],
+        min_availability: None,
+        ..Default::default()
+    };
+    let queued_release = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/releases/queued-once.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Queued.Once.2026.1080p.WEB-DL".to_string()),
+    };
+
+    let first = app
+        .add_title_and_queue_download_with_outcome(&user, request.clone(), queued_release.clone())
+        .await
+        .expect("first queued add should succeed");
+    assert!(!first.reused_existing_title);
+    assert!(!first.reused_queued_download);
+
+    let second = app
+        .add_title_and_queue_download_with_outcome(&user, request, queued_release)
+        .await
+        .expect("duplicate queued add should reuse existing queue submission");
+    assert_eq!(second.title.id, first.title.id);
+    assert_eq!(second.download_job_id, first.download_job_id);
+    assert!(second.reused_existing_title);
+    assert!(second.reused_queued_download);
+
+    let submissions = download_submissions.store.lock().await.clone();
+    let expected_signature = normalize_release_selection_signature(
+        Some("https://example.invalid/releases/queued-once.nzb"),
+        Some("Queued.Once.2026.1080p.WEB-DL"),
+        Some(DownloadSourceKind::NzbUrl),
+    );
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].request_signature, expected_signature);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Queued Once".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_reuses_matching_queue_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Existing Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "7654321".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let queued_release = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/releases/existing-queue.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
+    };
+
+    let first = app
+        .queue_existing_title_download(&user, &title.id, queued_release.clone())
+        .await
+        .expect("first queue should succeed");
+    let second = app
+        .queue_existing_title_download(&user, &title.id, queued_release)
+        .await
+        .expect("second queue should reuse submission");
+
+    assert_eq!(second, first);
+
+    let submissions = download_submissions.store.lock().await.clone();
+    let expected_signature = normalize_release_selection_signature(
+        Some("https://example.invalid/releases/existing-queue.nzb"),
+        Some("Existing.Queue.2026.1080p.WEB-DL"),
+        Some(DownloadSourceKind::NzbUrl),
+    );
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].title_id, title.id);
+    assert_eq!(submissions[0].request_signature, expected_signature);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Existing Queue".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn search_titles_supports_facet_filter() {
     let (app, user) = bootstrap();
 
@@ -4188,6 +5208,67 @@ async fn search_indexer_requires_query() {
         )
         .await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "Anime.Show.S01E01.1080p.WEB-DL.DUAL.H.265",
+    ));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    app.set_facet_required_audio_languages(&user, "anime", vec!["English".to_string()])
+        .await
+        .expect("set anime required audio");
+
+    let results = app
+        .search_indexers(
+            &user,
+            IndexerSearchRequest {
+                query: "Anime Show".into(),
+                imdb_id: None,
+                tvdb_id: None,
+                anidb_id: None,
+                category: Some("anime".into()),
+            },
+        )
+        .await
+        .expect("search indexers");
+
+    assert_eq!(results.len(), 1);
+    let parsed = results[0]
+        .parsed_release_metadata
+        .as_ref()
+        .expect("search result should be parsed");
+    assert_eq!(
+        parsed.languages_audio,
+        vec!["eng".to_string(), "jpn".to_string()]
+    );
+    let decision = results[0]
+        .quality_profile_decision
+        .as_ref()
+        .expect("search result should be scored");
+    assert!(decision.allowed);
+    assert!(
+        decision
+            .scoring_log
+            .iter()
+            .any(|entry| entry.code == "required_audio_languages_match")
+    );
 }
 
 #[tokio::test]
@@ -4323,7 +5404,11 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             facet: "movie".to_string(),
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-fallback".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some(created.name.clone()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await
@@ -4351,6 +5436,8 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: true,
             tracked_state: None,
             tracked_status: None,
@@ -4378,6 +5465,8 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: false,
             tracked_state: None,
             tracked_status: None,
@@ -4405,6 +5494,8 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: false,
             tracked_state: None,
             tracked_status: None,
@@ -4473,7 +5564,11 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
             facet: String::new(),
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "foreign-stub".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some("Foreign Download".to_string()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await
@@ -4500,6 +5595,8 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,
@@ -4508,7 +5605,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
     }];
 
     let items = app
-        .list_download_queue(&user, true, false)
+        .list_download_queue(&user, true, false, DownloadActivityFilter::All)
         .await
         .expect("list queue");
 
@@ -4519,7 +5616,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
 }
 
 #[tokio::test]
-async fn list_download_queue_uses_bounded_recent_activity_instead_of_full_history() {
+async fn list_download_queue_uses_live_queue_only_for_all_activity() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -4563,6 +5660,8 @@ async fn list_download_queue_uses_bounded_recent_activity_instead_of_full_histor
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,
@@ -4571,20 +5670,356 @@ async fn list_download_queue_uses_bounded_recent_activity_instead_of_full_histor
     }];
 
     let items = app
-        .list_download_queue(&user, true, false)
+        .list_download_queue(&user, true, false, DownloadActivityFilter::All)
         .await
         .expect("list queue should succeed");
 
-    assert_eq!(items.len(), 1);
+    assert!(items.is_empty());
     assert_eq!(*download_client.history_calls.lock().await, 0);
-    assert_eq!(
+    assert!(
         download_client
             .recent_activity_calls
             .lock()
             .await
-            .as_slice(),
-        &[100]
+            .is_empty()
     );
+}
+
+fn queue_history_fixture_item(
+    download_client_item_id: &str,
+    state: DownloadQueueState,
+    last_updated_at: i64,
+) -> DownloadQueueItem {
+    DownloadQueueItem {
+        id: download_client_item_id.to_string(),
+        title_id: Some("title-1".to_string()),
+        title_name: format!("Fixture {download_client_item_id}"),
+        facet: Some("movie".to_string()),
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state,
+        progress_percent: 100,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: Some(last_updated_at.to_string()),
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: download_client_item_id.to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: true,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }
+}
+
+#[tokio::test]
+async fn list_download_import_page_returns_only_import_rows_for_selected_filter() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let mut importing =
+        queue_history_fixture_item("importing-1", DownloadQueueState::Completed, 40);
+    importing.import_status = Some(ImportStatus::Running);
+
+    let mut pending =
+        queue_history_fixture_item("pending-1", DownloadQueueState::ImportPending, 30);
+    pending.tracked_state = Some(TrackedDownloadState::ImportPending);
+
+    let mut blocked = queue_history_fixture_item("blocked-1", DownloadQueueState::Completed, 20);
+    blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+
+    let failed = queue_history_fixture_item("failed-1", DownloadQueueState::Failed, 10);
+    let completed = queue_history_fixture_item("completed-1", DownloadQueueState::Completed, 5);
+
+    *download_client.history_items.lock().await =
+        vec![completed, failed, blocked.clone(), pending, importing];
+
+    let page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
+        .await
+        .expect("import page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert!(!page.has_more);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "blocked-1");
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(&page.items[0]),
+        DownloadDisplayState::ImportBlocked
+    );
+}
+
+#[tokio::test]
+async fn list_download_history_page_filters_terminal_rows_and_clamps_page_size_to_50() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let mut history_items = (0..120)
+        .map(|index| {
+            queue_history_fixture_item(
+                &format!("completed-{index}"),
+                DownloadQueueState::Completed,
+                10_000 - index as i64,
+            )
+        })
+        .collect::<Vec<_>>();
+    history_items.extend((0..5).map(|index| {
+        queue_history_fixture_item(
+            &format!("failed-{index}"),
+            DownloadQueueState::Failed,
+            20_000 - index as i64,
+        )
+    }));
+
+    let mut blocked =
+        queue_history_fixture_item("blocked-import", DownloadQueueState::Completed, 30_000);
+    blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+    history_items.push(blocked);
+
+    *download_client.history_items.lock().await = history_items;
+
+    let failed_page = app
+        .list_download_history_page(
+            &user,
+            250,
+            0,
+            Some(vec![DownloadHistoryFilter::Failed]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("failed history page should load");
+    assert_eq!(failed_page.total_count, 5);
+    assert_eq!(failed_page.items.len(), 5);
+    assert_eq!(failed_page.available_clients.len(), 1);
+    assert!(
+        failed_page
+            .items
+            .iter()
+            .all(|item| item.state == DownloadQueueState::Failed)
+    );
+    assert!(!failed_page.has_more);
+
+    let all_page = app
+        .list_download_history_page(
+            &user,
+            250,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("all history page should load");
+    assert_eq!(all_page.total_count, 125);
+    assert_eq!(all_page.items.len(), 50);
+    assert!(all_page.has_more);
+    assert_eq!(
+        all_page.items[0].download_client_item_id, "failed-0",
+        "newest terminal rows should be returned first"
+    );
+    assert!(all_page.items.iter().all(
+        |item| crate::integration::derive_download_queue_display_state(item)
+            != DownloadDisplayState::ImportBlocked
+    ));
+
+    let client_filtered_page = app
+        .list_download_history_page(
+            &user,
+            250,
+            0,
+            Some(vec![DownloadHistoryFilter::Failed]),
+            Some(vec!["primary".to_string()]),
+            false,
+            None,
+        )
+        .await
+        .expect("client filtered history page should load");
+    assert_eq!(client_filtered_page.total_count, 5);
+    assert_eq!(client_filtered_page.available_clients.len(), 1);
+}
+
+#[tokio::test]
+async fn list_download_history_page_sorts_before_paginating() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let history_items = (0..60)
+        .map(|index| {
+            let mut item = queue_history_fixture_item(
+                &format!("sort-{index:02}"),
+                DownloadQueueState::Completed,
+                10_000 - index as i64,
+            );
+            item.title_name = format!("Title {:02}", 59 - index);
+            item
+        })
+        .collect::<Vec<_>>();
+
+    *download_client.history_items.lock().await = history_items;
+
+    let first_page = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            Some(DownloadHistorySort {
+                key: DownloadHistorySortKey::Title,
+                direction: SortDirection::Asc,
+            }),
+        )
+        .await
+        .expect("sorted history page should load");
+
+    let second_page = app
+        .list_download_history_page(
+            &user,
+            50,
+            50,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            Some(DownloadHistorySort {
+                key: DownloadHistorySortKey::Title,
+                direction: SortDirection::Asc,
+            }),
+        )
+        .await
+        .expect("second sorted history page should load");
+
+    assert_eq!(first_page.items.len(), 50);
+    assert_eq!(second_page.items.len(), 10);
+    assert_eq!(first_page.items[0].title_name, "Title 00");
+    assert_eq!(first_page.items[49].title_name, "Title 49");
+    assert_eq!(second_page.items[0].title_name, "Title 50");
+}
+
+#[tokio::test]
+async fn list_download_history_page_can_limit_to_scryer_submitted_rows() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let mut scryer_item =
+        queue_history_fixture_item("scryer-item", DownloadQueueState::Completed, 100);
+    scryer_item.client_id = "primary".to_string();
+    scryer_item.client_name = "Primary".to_string();
+
+    let mut external_item =
+        queue_history_fixture_item("external-item", DownloadQueueState::Failed, 90);
+    external_item.is_scryer_origin = false;
+    external_item.client_id = "secondary".to_string();
+    external_item.client_name = "Secondary".to_string();
+
+    *download_client.history_items.lock().await = vec![scryer_item, external_item];
+
+    let page = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("scryer filtered history page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert!(page.items.iter().all(|item| item.is_scryer_origin));
+    assert_eq!(page.available_clients.len(), 1);
+    assert_eq!(page.available_clients[0].client_id, "primary");
 }
 
 #[tokio::test]
@@ -4692,6 +6127,8 @@ async fn download_queue_subscription_bootstraps_from_live_queue_without_history_
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,
@@ -4745,11 +6182,100 @@ async fn download_queue_subscription_sends_empty_bootstrap_snapshot() {
 }
 
 #[tokio::test]
+async fn queued_delete_poller_executes_client_delete() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let command_id = download_queue_commands
+        .seed_pending("nzbget", "job-1", true)
+        .await;
+    let (app, _) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let token = tokio_util::sync::CancellationToken::new();
+
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+
+    let record = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(record) = download_queue_commands.get(&command_id).await
+                && record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+            {
+                break record;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued delete should complete");
+
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert_eq!(
+        record.status,
+        scryer_domain::DownloadQueueDeleteStatus::Completed
+    );
+    assert_eq!(
+        download_client.deleted_items.lock().await.clone(),
+        vec![("job-1".to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn queued_delete_poller_marks_failure_and_persists_error() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_delete_error(Some("delete failed"))
+        .await;
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let command_id = download_queue_commands
+        .seed_pending("nzbget", "job-2", false)
+        .await;
+    let (app, _) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let token = tokio_util::sync::CancellationToken::new();
+
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+
+    let record = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(record) = download_queue_commands.get(&command_id).await
+                && record.status == scryer_domain::DownloadQueueDeleteStatus::Failed
+            {
+                break record;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued delete should fail");
+
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert_eq!(
+        record.status,
+        scryer_domain::DownloadQueueDeleteStatus::Failed
+    );
+    assert_eq!(
+        record.error_text.as_deref(),
+        Some("repository: delete failed")
+    );
+    assert!(download_client.deleted_items.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn active_library_scans_and_subscription_use_runtime_tracker_state() {
     let (app, user) = bootstrap();
 
     let session = app
         .runtime
+        .library
         .library_scan_tracker
         .start_session_with_id(
             "scan-runtime-1".to_string(),
@@ -4781,7 +6307,7 @@ async fn active_library_scans_and_subscription_use_runtime_tracker_state() {
 #[tokio::test]
 async fn notification_broadcast_ignores_operational_domain_events() {
     let (app, _) = bootstrap();
-    let mut receiver = app.runtime.notification_event_broadcast.subscribe();
+    let mut receiver = app.runtime.events.notification_event_broadcast.subscribe();
 
     app.append_domain_event(crate::domain_events::new_global_domain_event(
         None,
@@ -4829,7 +6355,7 @@ async fn notification_broadcast_ignores_operational_domain_events() {
 #[tokio::test]
 async fn notification_broadcast_wakes_once_for_notification_batches() {
     let (app, _) = bootstrap();
-    let mut receiver = app.runtime.notification_event_broadcast.subscribe();
+    let mut receiver = app.runtime.events.notification_event_broadcast.subscribe();
 
     let stored = app
         .append_domain_events(vec![
@@ -4923,6 +6449,8 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,
@@ -5025,7 +6553,11 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             facet: "movie".to_string(),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await
@@ -5074,6 +6606,8 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     assert!(submissions.iter().any(|submission| {
         submission.download_client_item_id == format!("job-for-{}", title.id)
             && submission.source_title.as_deref() == Some("Standby.Release.1080p.WEB-DL")
+            && submission.request_signature.as_deref()
+                == Some("nzb_url|https://example.com/standby.nzb|Standby.Release.1080p.WEB-DL")
     }));
 
     assert_eq!(
@@ -5180,7 +6714,11 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             facet: "movie".to_string(),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await
@@ -5248,6 +6786,8 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     assert!(submissions.iter().any(|submission| {
         submission.download_client_item_id == format!("job-for-{}", title.id)
             && submission.source_title.as_deref() == Some("Standby.Release.1080p.WEB-DL")
+            && submission.request_signature.as_deref()
+                == Some("nzb_url|https://example.com/standby.nzb|Standby.Release.1080p.WEB-DL")
     }));
 
     assert_eq!(
@@ -5334,7 +6874,11 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
             facet: "anime".to_string(),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "shared-job".to_string(),
+            source_hint: None,
+            source_kind: None,
             source_title: Some("Shared.Release".to_string()),
+            request_signature: None,
+            episode_id: None,
             collection_id: None,
         })
         .await
@@ -5348,6 +6892,511 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
         .await
         .clone();
     assert_eq!(calls, vec![title.id.clone()]);
+}
+
+#[tokio::test]
+async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Episode Blocking Scope".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season_one = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season one");
+
+    let season_two = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season two");
+
+    let episode_one = app
+        .services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season_one.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Season 1 Premiere".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1_440),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create episode one");
+
+    let episode_two = app
+        .services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season_two.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("2".to_string()),
+            episode_label: Some("S02E01".to_string()),
+            title: Some("Season 2 Premiere".to_string()),
+            air_date: Some("2025-01-01".to_string()),
+            duration_seconds: Some(1_440),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create episode two");
+
+    for episode in [&episode_one, &episode_two] {
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                episode_id: Some(episode.id.clone()),
+                collection_id: None,
+                season_number: episode.season_number.clone(),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(Utc::now().to_rfc3339()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed due episode wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "anime".to_string(),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "episode-one-active".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Episode.Blocking.Scope.S01E01".to_string()),
+            request_signature: None,
+            episode_id: Some(episode_one.id.clone()),
+            collection_id: Some(season_one.id.clone()),
+        })
+        .await
+        .expect("record active episode submission");
+
+    *download_client.queue_items.lock().await = vec![DownloadQueueItem {
+        id: "episode-one-active".to_string(),
+        title_id: Some(title.id.clone()),
+        title_name: title.name.clone(),
+        facet: Some("anime".to_string()),
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state: DownloadQueueState::Queued,
+        progress_percent: 0,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: None,
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: "episode-one-active".to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: true,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }];
+
+    app.run_acquisition_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].season, Some(2));
+    assert_eq!(searches[0].episode, Some(1));
+}
+
+#[tokio::test]
+async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Season Pack Blocking Scope".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season_one = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season one");
+
+    let season_two = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season two");
+
+    for (collection, season_number, episode_number, label) in [
+        (&season_one, "1", "1", "S01E01"),
+        (&season_one, "1", "2", "S01E02"),
+        (&season_two, "2", "1", "S02E01"),
+    ] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(collection.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some(season_number.to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                episode_id: Some(episode.id.clone()),
+                collection_id: None,
+                season_number: Some(season_number.to_string()),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(Utc::now().to_rfc3339()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed due episode wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "anime".to_string(),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "season-one-pack".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Season.Pack.Blocking.Scope.S01".to_string()),
+            request_signature: None,
+            episode_id: None,
+            collection_id: Some(season_one.id.clone()),
+        })
+        .await
+        .expect("record active season pack submission");
+
+    *download_client.queue_items.lock().await = vec![DownloadQueueItem {
+        id: "season-one-pack".to_string(),
+        title_id: Some(title.id.clone()),
+        title_name: title.name.clone(),
+        facet: Some("anime".to_string()),
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state: DownloadQueueState::Queued,
+        progress_percent: 0,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: None,
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: "season-one-pack".to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: true,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }];
+
+    app.run_acquisition_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].season, Some(2));
+    assert_eq!(searches[0].episode, Some(1));
+}
+
+#[tokio::test]
+async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Movie Blocking Scope".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie");
+
+    wanted_items
+        .upsert_wanted_item(&WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed due movie wanted item");
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "movie-active".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Movie.Blocking.Scope".to_string()),
+            request_signature: None,
+            episode_id: None,
+            collection_id: None,
+        })
+        .await
+        .expect("record active movie submission");
+
+    *download_client.queue_items.lock().await = vec![DownloadQueueItem {
+        id: "movie-active".to_string(),
+        title_id: Some(title.id.clone()),
+        title_name: title.name.clone(),
+        facet: Some("movie".to_string()),
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state: DownloadQueueState::Queued,
+        progress_percent: 0,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: None,
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: "movie-active".to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: true,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }];
+
+    app.run_acquisition_cycle_once().await;
+
+    assert!(indexer_client.searches.lock().await.is_empty());
 }
 
 #[tokio::test]

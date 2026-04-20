@@ -317,6 +317,18 @@ impl LibraryScanTracker {
         sessions
     }
 
+    pub async fn active_facets(&self) -> Vec<MediaFacet> {
+        let state = self.state.lock().await;
+        let mut facets = state
+            .sessions
+            .values()
+            .map(|session| session.facet.clone())
+            .collect::<Vec<_>>();
+        facets.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        facets.dedup();
+        facets
+    }
+
     /// Canonical gate for background workers that should yield while any
     /// library scan is active instead of open-coding their own polling loops.
     pub async fn wait_until_idle(&self) {
@@ -332,6 +344,26 @@ impl LibraryScanTracker {
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::debug!(
                         "library_scan_progress: idle waiter lagged, skipped {n} messages"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+
+    pub async fn wait_for_active_facets_change(&self, current_facets: &[MediaFacet]) {
+        let mut receiver = self.subscribe();
+
+        loop {
+            if self.active_facets().await != current_facets {
+                return;
+            }
+
+            match receiver.recv().await {
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!(
+                        "library_scan_progress: active facet waiter lagged, skipped {n} messages"
                     );
                 }
                 Err(broadcast::error::RecvError::Closed) => return,

@@ -427,6 +427,62 @@ fn required_audio_language_missing_blocks() {
     );
 }
 
+#[test]
+fn required_audio_language_match_accepts_canonical_lowercase_codes() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Movie.2024.1080p.WEB-DL.English.H.265");
+    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(d.allowed);
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "required_audio_languages_match")
+    );
+}
+
+#[test]
+fn dual_audio_release_satisfies_required_english() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Anime.Show.S01E01.1080p.WEB-DL.DUAL.H.265");
+    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(d.allowed);
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "required_audio_languages_match")
+    );
+}
+
+#[test]
+fn japanese_only_release_still_blocks_required_english() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Anime.Show.S01E01.1080p.WEB-DL.JAPANESE.H.265");
+    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(!d.allowed);
+    assert!(
+        d.block_codes
+            .contains(&"required_audio_language_missing".to_string())
+    );
+}
+
 // ── evaluate_against_profile: upgrade guard ───────────────────────────────
 
 #[test]

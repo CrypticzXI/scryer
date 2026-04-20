@@ -65,11 +65,15 @@ pub(crate) fn missing_required_audio_languages<'a>(
     missing
 }
 
+pub(crate) fn required_audio_languages_match(required: &[String], actual: &[String]) -> bool {
+    missing_required_audio_languages(required, actual).is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         missing_required_audio_languages, normalize_required_audio_languages,
-        release_audio_language_hints,
+        release_audio_language_hints, required_audio_languages_match,
     };
     use crate::release_parser::parse_release_metadata;
 
@@ -124,5 +128,35 @@ mod tests {
             ),
             vec!["jpn".to_string()]
         );
+    }
+
+    #[test]
+    fn dual_audio_matches_required_english() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
+        let actual = release_audio_language_hints(&parsed, None);
+        assert!(required_audio_languages_match(
+            &["eng".to_string()],
+            &actual
+        ));
+    }
+
+    #[test]
+    fn dual_audio_matches_required_japanese() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
+        let actual = release_audio_language_hints(&parsed, None);
+        assert!(required_audio_languages_match(
+            &["jpn".to_string()],
+            &actual
+        ));
+    }
+
+    #[test]
+    fn explicit_english_audio_does_not_imply_japanese() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO ENG 1080p");
+        let actual = release_audio_language_hints(&parsed, None);
+        assert!(!required_audio_languages_match(
+            &["jpn".to_string()],
+            &actual
+        ));
     }
 }

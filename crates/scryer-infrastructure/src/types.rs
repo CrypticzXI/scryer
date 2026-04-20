@@ -33,6 +33,22 @@ pub struct WorkflowOperationRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct DownloadQueueCommandRecord {
+    pub id: String,
+    pub action: String,
+    pub client_type: String,
+    pub download_client_item_id: String,
+    pub is_history: bool,
+    pub status: String,
+    pub error_text: Option<String>,
+    pub requested_by_user_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct LibraryProbeSignatureRecord {
     pub title_id: String,
     pub path: String,

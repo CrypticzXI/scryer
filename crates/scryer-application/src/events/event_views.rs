@@ -511,7 +511,7 @@ fn download_queue_command_label(action: scryer_domain::DownloadQueueCommandActio
     match action {
         scryer_domain::DownloadQueueCommandAction::Pause => "paused",
         scryer_domain::DownloadQueueCommandAction::Resume => "resumed",
-        scryer_domain::DownloadQueueCommandAction::Delete => "deleted",
+        scryer_domain::DownloadQueueCommandAction::Delete => "delete queued",
     }
 }
 
@@ -853,6 +853,8 @@ mod tests {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: true,
             tracked_state: None,
             tracked_status: None,

@@ -489,6 +489,37 @@ impl PrioritizedDownloadClientRouter {
             "download client item not found: {id}"
         )))
     }
+
+    async fn resolve_client_for_type(
+        &self,
+        client_type: &str,
+    ) -> AppResult<Option<Arc<dyn DownloadClient>>> {
+        let normalized = client_type.trim();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let configs = self.list_enabled_clients_by_priority().await?;
+        if configs.is_empty() {
+            return Ok(None);
+        }
+
+        for config in configs {
+            if !config.client_type.eq_ignore_ascii_case(normalized) {
+                continue;
+            }
+
+            return Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            )
+            .map(Some);
+        }
+
+        Ok(None)
+    }
 }
 
 #[async_trait]
@@ -950,6 +981,20 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
         self.fallback_client.delete_queue_item(id, is_history).await
     }
+
+    async fn delete_queue_item_for_client(
+        &self,
+        client_type: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_type(client_type).await? {
+            return client.delete_queue_item(id, is_history).await;
+        }
+        self.fallback_client
+            .delete_queue_item_for_client(client_type, id, is_history)
+            .await
+    }
 }
 
 fn parse_history_timestamp(value: Option<&str>) -> i64 {
@@ -1242,6 +1287,8 @@ mod tests {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin: false,
             tracked_state: None,
             tracked_status: None,

@@ -64,12 +64,16 @@ function formatEpisodeProgress(
   ownedEpisodes: number | null | undefined,
   monitoredEpisodes: number | null | undefined,
 ) {
-  if (typeof monitoredEpisodes !== "number" || monitoredEpisodes <= 0) {
+  if (typeof monitoredEpisodes !== "number") {
     return "—";
   }
 
+  if (monitoredEpisodes <= 0) {
+    return "0 / 0";
+  }
+
   const owned = typeof ownedEpisodes === "number" && ownedEpisodes >= 0 ? ownedEpisodes : 0;
-  return `${owned}/${monitoredEpisodes}`;
+  return `${owned} / ${monitoredEpisodes}`;
 }
 
 type SortKey = "name" | "monitored" | "quality" | "episodes" | "status" | "size";
@@ -516,10 +520,10 @@ export function TitleTable({
             )}
           </TableCell>
           {!isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap tabular-nums">
+              <TableCell className="align-middle whitespace-nowrap tabular-nums">
               {formatEpisodeProgress(
                 item.episodesOwned,
-                item.episodesMonitored ?? item.episodesTotal,
+                item.episodesMonitored,
               )}
             </TableCell>
           ) : null}

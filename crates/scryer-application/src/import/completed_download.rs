@@ -805,10 +805,10 @@ mod tests {
     };
     use crate::{
         ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
-        DomainEventRepository, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
-        EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
-        IndexerConfigRepository, JwtAuthConfig, QualityProfile, QualityProfileRepository,
-        ShowRepository, TitleMetadataUpdate, TitleRepository,
+        CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
+        DownloadGrabResult, EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
+        IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, QualityProfile,
+        QualityProfileRepository, ShowRepository, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -854,6 +854,33 @@ mod tests {
                 .collect())
         }
 
+        async fn list_by_external_ids(
+            &self,
+            source: &str,
+            values: &[String],
+        ) -> AppResult<Vec<Title>> {
+            let requested: Vec<&str> = values
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .collect();
+            let titles = self.titles.lock().await;
+            let mut matches = Vec::new();
+            let mut seen = HashSet::new();
+            for value in requested {
+                if let Some(title) = titles.iter().find(|title| {
+                    title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case(source)
+                            && external_id.value == value
+                    })
+                }) && seen.insert(title.id.clone())
+                {
+                    matches.push(title.clone());
+                }
+            }
+            Ok(matches)
+        }
+
         async fn list_for_matching(
             &self,
             facet: Option<MediaFacet>,
@@ -880,9 +907,60 @@ mod tests {
                 .cloned())
         }
 
+        async fn find_by_external_id_in_facet(
+            &self,
+            facet: MediaFacet,
+            source: &str,
+            value: &str,
+        ) -> AppResult<Option<Title>> {
+            let titles = self.titles.lock().await;
+            Ok(titles
+                .iter()
+                .find(|title| {
+                    title.facet == facet
+                        && title.external_ids.iter().any(|external_id| {
+                            external_id.source.eq_ignore_ascii_case(source)
+                                && external_id.value == value
+                        })
+                })
+                .cloned())
+        }
+
+        async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
+            Ok(CreateTitleOutcome {
+                title: self.create(title).await?,
+                reused_existing: false,
+            })
+        }
+
         async fn create(&self, title: Title) -> AppResult<Title> {
             self.titles.lock().await.push(title.clone());
             Ok(title)
+        }
+
+        async fn list_titles_due_for_hydration(
+            &self,
+            _: usize,
+            _: &[MediaFacet],
+        ) -> AppResult<Vec<PendingTitleHydration>> {
+            Ok(vec![])
+        }
+
+        async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn schedule_title_metadata_hydration_retry(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+            Ok(())
         }
 
         async fn update_metadata(
@@ -1604,6 +1682,8 @@ mod tests {
                 import_error_code: None,
                 import_error_message: None,
                 imported_at: None,
+                delete_status: None,
+                delete_error_message: None,
                 is_scryer_origin: true,
                 tracked_state: None,
                 tracked_status: None,
@@ -2068,6 +2148,8 @@ mod tests {
                 import_error_code: None,
                 import_error_message: None,
                 imported_at: None,
+                delete_status: None,
+                delete_error_message: None,
                 is_scryer_origin: false,
                 tracked_state: None,
                 tracked_status: None,

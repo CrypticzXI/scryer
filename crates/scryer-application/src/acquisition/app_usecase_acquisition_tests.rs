@@ -58,6 +58,76 @@ fn base_title() -> Title {
     }
 }
 
+fn base_episode_wanted_item() -> WantedItem {
+    let now = now_utc().to_rfc3339();
+    WantedItem {
+        id: "wanted-episode-1".to_string(),
+        title_id: "title-1".to_string(),
+        title_name: Some("Test Show".to_string()),
+        episode_id: Some("episode-1".to_string()),
+        collection_id: Some("season-1".to_string()),
+        season_number: Some("1".to_string()),
+        media_type: "episode".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn base_interstitial_wanted_item() -> WantedItem {
+    let now = now_utc().to_rfc3339();
+    WantedItem {
+        id: "wanted-interstitial-1".to_string(),
+        title_id: "title-1".to_string(),
+        title_name: Some("Test Show".to_string()),
+        episode_id: None,
+        collection_id: Some("movie-collection-1".to_string()),
+        season_number: None,
+        media_type: "interstitial_movie".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn base_episode() -> Episode {
+    Episode {
+        id: "episode-1".to_string(),
+        title_id: "title-1".to_string(),
+        collection_id: Some("season-1".to_string()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("Pilot".to_string()),
+        air_date: None,
+        duration_seconds: None,
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        monitored: true,
+        created_at: now_utc(),
+    }
+}
+
 // ── announced ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -301,4 +371,77 @@ fn fresh_failed_grab_titles_require_stale_last_search() {
 
     item.last_search_at = Some((now - chrono::Duration::minutes(25)).to_rfc3339());
     assert!(should_research_failed_grab(&item, &now));
+}
+
+#[test]
+fn season_pack_release_uses_collection_submission_scope() {
+    let wanted = base_episode_wanted_item();
+    let episode = base_episode();
+
+    let scope = download_submission_scope_for_release_title(
+        &wanted,
+        Some(&episode),
+        "Test.Show.S01.2025.Complete.1080p.WEB-DL.AVC.AAC-DBTV",
+    );
+
+    assert_eq!(scope.episode_id, None);
+    assert_eq!(scope.collection_id.as_deref(), Some("season-1"));
+}
+
+#[test]
+fn single_episode_release_uses_episode_submission_scope() {
+    let wanted = base_episode_wanted_item();
+    let episode = base_episode();
+
+    let scope = download_submission_scope_for_release_title(
+        &wanted,
+        Some(&episode),
+        "Test.Show.S01E01.1080p.WEB-DL.AVC.AAC-DBTV",
+    );
+
+    assert_eq!(scope.episode_id.as_deref(), Some("episode-1"));
+    assert_eq!(scope.collection_id.as_deref(), Some("season-1"));
+}
+
+#[test]
+fn interstitial_movie_blocking_is_collection_scoped() {
+    let wanted = base_interstitial_wanted_item();
+
+    let title_submission = DownloadSubmission {
+        title_id: wanted.title_id.clone(),
+        facet: "anime".to_string(),
+        download_client_type: "sabnzbd".to_string(),
+        download_client_item_id: "job-1".to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some("Title-level".to_string()),
+        request_signature: None,
+        episode_id: None,
+        collection_id: None,
+    };
+    assert!(!submission_blocks_wanted_item(
+        &title_submission,
+        &wanted,
+        wanted.collection_id.as_deref(),
+    ));
+
+    let matching_collection_submission = DownloadSubmission {
+        collection_id: wanted.collection_id.clone(),
+        ..title_submission.clone()
+    };
+    assert!(submission_blocks_wanted_item(
+        &matching_collection_submission,
+        &wanted,
+        wanted.collection_id.as_deref(),
+    ));
+
+    let different_collection_submission = DownloadSubmission {
+        collection_id: Some("movie-collection-2".to_string()),
+        ..title_submission
+    };
+    assert!(!submission_blocks_wanted_item(
+        &different_collection_submission,
+        &wanted,
+        wanted.collection_id.as_deref(),
+    ));
 }

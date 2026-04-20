@@ -36,10 +36,18 @@ impl TitleMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let request = map_add_input(input)?;
-        let domain_title = app.add_title(&actor, request).await.map_err(to_gql_error)?;
+        let result = app
+            .add_title_with_outcome(&actor, request)
+            .await
+            .map_err(to_gql_error)?;
 
         Ok(AddTitleResult {
-            title: from_title(domain_title),
+            title: from_title(result.title),
+            metadata_hydration_state: AddTitleHydrationStateValue::from_application(
+                result.metadata_hydration_state,
+            ),
+            reused_existing_title: result.reused_existing_title,
+            reused_queued_download: false,
             download_job_id: None,
             queued_download: None,
         })
@@ -56,8 +64,8 @@ impl TitleMutations {
         let source_kind = parse_download_source_kind(input.source_kind);
         let source_title = input.source_title.clone();
         let request = map_add_input(input)?;
-        let (title, job_id) = app
-            .add_title_and_queue_download(
+        let result = app
+            .add_title_and_queue_download_with_outcome(
                 &actor,
                 request,
                 QueuedReleaseSelection {
@@ -68,12 +76,21 @@ impl TitleMutations {
             )
             .await
             .map_err(to_gql_error)?;
-        let queued_download =
-            queued_download_payload(&title, job_id.clone(), source_title, source_kind);
+        let queued_download = queued_download_payload(
+            &result.title,
+            result.download_job_id.clone(),
+            source_title,
+            source_kind,
+        );
 
         Ok(AddTitleResult {
-            title: from_title(title),
-            download_job_id: Some(job_id),
+            title: from_title(result.title),
+            metadata_hydration_state: AddTitleHydrationStateValue::from_application(
+                result.metadata_hydration_state,
+            ),
+            reused_existing_title: result.reused_existing_title,
+            reused_queued_download: result.reused_queued_download,
+            download_job_id: Some(result.download_job_id),
             queued_download: Some(queued_download),
         })
     }

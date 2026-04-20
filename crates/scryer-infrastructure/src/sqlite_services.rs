@@ -7,6 +7,18 @@ use crate::commands::{DbCommand, spawn_db_command_worker};
 use crate::encryption::EncryptionKey;
 use crate::types::MigrationMode;
 
+const DEFAULT_SQLITE_MAX_CONNECTIONS: u32 = 16;
+const MAX_SQLITE_CONNECTIONS_CAP: u32 = 64;
+
+fn sqlite_max_connections_from_env() -> u32 {
+    std::env::var("SCRYER_SQLITE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_SQLITE_MAX_CONNECTIONS)
+        .clamp(1, MAX_SQLITE_CONNECTIONS_CAP)
+}
+
 #[derive(Clone)]
 pub struct DbRuntime {
     pub(crate) sender: mpsc::Sender<DbCommand>,
@@ -79,7 +91,8 @@ impl DbRuntime {
                 .idle_timeout(None)
                 .max_lifetime(None)
         } else {
-            sqlx::sqlite::SqlitePoolOptions::new().max_connections(4)
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(sqlite_max_connections_from_env())
         };
 
         // Build connect options so every connection gets WAL + busy_timeout.

@@ -1,4 +1,4 @@
-const TITLE_CORE_FIELDS = `
+export const TITLE_CORE_FIELDS = `
     id
     name
     facet
@@ -191,6 +191,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     clientName
     clientType
     state
+    displayState
     progressPercent
     sizeBytes
     remainingSeconds
@@ -203,6 +204,8 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     importErrorCode
     importErrorMessage
     importedAt
+    deleteStatus
+    deleteErrorMessage
     trackedState
     trackedStatus
     trackedStatusMessages
@@ -601,6 +604,12 @@ ${TITLE_LIST_FIELDS}
   }
 }`;
 
+export const titlesByExternalIdsQuery = `query TitlesByExternalIds($source: String!, $values: [String!]!) {
+  titlesByExternalIds(source: $source, values: $values) {
+${TITLE_LIST_FIELDS}
+  }
+}`;
+
 export const titleListEntryQuery = `query TitleListEntry($id: String!) {
   title(id: $id) {
 ${TITLE_LIST_FIELDS}
@@ -993,34 +1002,42 @@ export const downloadClientsQuery = `query DownloadClients {
   }
 }`;
 
-export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean) {
-  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $activityFilter: DownloadActivityFilterValue) {
+  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
-export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset: Int) {
-  downloadHistory(limit: $limit, offset: $offset) {
+export const downloadImportQuery = `query DownloadImport($limit: Int, $offset: Int, $filter: DownloadImportFilterValue) {
+  downloadImport(limit: $limit, offset: $offset, filter: $filter) {
     items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
     }
     hasMore
+    totalCount
   }
 }`;
 
-export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean) {
-  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset: Int, $filters: [DownloadHistoryFilterValue!], $clientIds: [String!], $scryerSubmittedOnly: Boolean, $sortKey: DownloadHistorySortKeyValue, $sortDirection: SortDirectionValue) {
+  downloadHistory(limit: $limit, offset: $offset, filters: $filters, clientIds: $clientIds, scryerSubmittedOnly: $scryerSubmittedOnly, sortKey: $sortKey, sortDirection: $sortDirection) {
+    items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }
+    hasMore
+    totalCount
+    availableClients {
+      clientId
+      clientName
+      clientType
+    }
   }
 }`;
 
-export const manualImportRequiredCountQuery = `query ManualImportRequiredCount {
-  downloadQueue(includeAllActivity: true) {
-    id
-    state
-    attentionReason
-    importStatus
-    importErrorCode
-    importErrorMessage
-    trackedState
-    trackedStatusMessages
+export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $activityFilter: DownloadActivityFilterValue) {
+  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+}`;
+
+export const importQueueCountQuery = `query ImportQueueCount {
+  downloadImport(limit: 1, offset: 0, filter: all) {
+    totalCount
   }
 }`;
 

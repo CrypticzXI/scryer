@@ -115,11 +115,12 @@ pub(crate) async fn wait_for_projected_library_scan_session(
     app: &AppUseCase,
     session_id: &str,
 ) -> AppResult<LibraryScanSession> {
-    let mut receiver = app.runtime.library_scan_tracker.subscribe();
+    let mut receiver = app.runtime.library.library_scan_tracker.subscribe();
 
     loop {
         if let Some(session) = app
             .runtime
+            .library
             .library_scan_tracker
             .get_session(session_id)
             .await

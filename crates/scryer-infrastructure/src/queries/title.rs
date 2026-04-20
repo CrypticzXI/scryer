@@ -1,13 +1,13 @@
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, EpisodeUpdate, PrimaryCollectionSummary,
-    TitleMetadataUpdate,
+    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
+    PendingTitleHydration, PrimaryCollectionSummary, TitleMetadataUpdate,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, ExternalId, InterstitialMovieMetadata,
     MediaFacet, Title,
 };
 use serde_json;
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 use super::common::parse_utc_datetime;
@@ -123,22 +123,235 @@ pub(crate) async fn get_title_by_external_id_query(
     value: &str,
 ) -> AppResult<Option<Title>> {
     let sql = format!(
-        "SELECT {} FROM titles
-         WHERE EXISTS (
-             SELECT 1
-             FROM json_each(titles.external_ids) AS external_id
-             WHERE LOWER(json_extract(external_id.value, '$.source')) = LOWER(?)
-               AND json_extract(external_id.value, '$.value') = ?
-         )
-         ORDER BY id ASC
+        "SELECT {columns} FROM titles
+         JOIN title_external_ids ON title_external_ids.title_id = titles.id
+         WHERE LOWER(title_external_ids.source) = LOWER(?)
+           AND title_external_ids.external_id = ?
+         ORDER BY titles.id ASC
          LIMIT 1",
-        TITLE_COLUMNS
+        columns = TITLE_COLUMNS
     );
 
     let row = sqlx::query(&sql)
         .bind(source)
         .bind(value)
         .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match row {
+        Some(row) => Ok(Some(row_to_title(
+            &row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
+        None => Ok(None),
+    }
+}
+
+pub(crate) async fn list_titles_by_external_ids_query(
+    pool: &SqlitePool,
+    source: &str,
+    values: &[String],
+) -> AppResult<Vec<Title>> {
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new("WITH requested(ordinal, external_id) AS (");
+    for (ordinal, value) in values.iter().enumerate() {
+        if ordinal > 0 {
+            builder.push(" UNION ALL ");
+        }
+        builder
+            .push("SELECT ")
+            .push_bind(ordinal as i64)
+            .push(", ")
+            .push_bind(value);
+    }
+    builder.push(
+        "), requested_title_ids AS (
+            SELECT
+                requested.ordinal AS ordinal,
+                (
+                    SELECT title_external_ids.title_id
+                    FROM title_external_ids
+                    WHERE LOWER(title_external_ids.source) = LOWER(",
+    );
+    builder.push_bind(source);
+    builder.push(
+        ")
+                      AND title_external_ids.external_id = requested.external_id
+                    ORDER BY title_external_ids.title_id ASC
+                    LIMIT 1
+                ) AS title_id
+            FROM requested
+        ), deduped AS (
+            SELECT MIN(ordinal) AS ordinal, title_id
+            FROM requested_title_ids
+            WHERE title_id IS NOT NULL
+            GROUP BY title_id
+        )
+        SELECT ",
+    );
+    builder.push(TITLE_COLUMNS);
+    builder.push(
+        " FROM deduped
+          JOIN titles ON titles.id = deduped.title_id
+          ORDER BY deduped.ordinal ASC, titles.id ASC",
+    );
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let base_path = normalized_base_path_from_env();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(row_to_title(&row, TitleReadMode::Presentation, &base_path)?);
+    }
+    Ok(out)
+}
+
+pub(crate) async fn get_title_by_external_id_in_facet_query(
+    pool: &SqlitePool,
+    facet: MediaFacet,
+    source: &str,
+    value: &str,
+) -> AppResult<Option<Title>> {
+    let sql = format!(
+        "SELECT {columns}
+         FROM titles
+         JOIN title_external_ids ON title_external_ids.title_id = titles.id
+         WHERE title_external_ids.facet = ?
+           AND LOWER(title_external_ids.source) = LOWER(?)
+           AND title_external_ids.external_id = ?
+         ORDER BY titles.id ASC
+         LIMIT 1",
+        columns = TITLE_COLUMNS
+    );
+
+    let row = sqlx::query(&sql)
+        .bind(facet.as_str())
+        .bind(source)
+        .bind(value)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match row {
+        Some(row) => Ok(Some(row_to_title(
+            &row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
+        None => Ok(None),
+    }
+}
+
+fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for external_id in external_ids {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        let value = external_id.value.trim().to_string();
+        if source.is_empty() || value.is_empty() {
+            continue;
+        }
+        if seen.insert((source.clone(), value.clone())) {
+            out.push((source, value));
+        }
+    }
+    out
+}
+
+async fn list_existing_title_ids_for_external_ids_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    facet: MediaFacet,
+    external_ids: &[(String, String)],
+) -> AppResult<Vec<String>> {
+    if external_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT DISTINCT title_id FROM title_external_ids WHERE facet = ",
+    );
+    builder.push_bind(facet.as_str());
+    builder.push(" AND (");
+    for (index, (source, value)) in external_ids.iter().enumerate() {
+        if index > 0 {
+            builder.push(" OR ");
+        }
+        builder
+            .push("(source = ")
+            .push_bind(source)
+            .push(" AND external_id = ")
+            .push_bind(value)
+            .push(")");
+    }
+    builder.push(")");
+
+    let rows = builder
+        .build()
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(
+            row.try_get("title_id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        );
+    }
+    Ok(ids)
+}
+
+async fn replace_title_external_ids_projection_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    title_id: &str,
+    facet: MediaFacet,
+    external_ids: &[ExternalId],
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM title_external_ids WHERE title_id = ?")
+        .bind(title_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for (source, value) in normalized_external_ids(external_ids) {
+        sqlx::query(
+            "INSERT INTO title_external_ids
+             (id, title_id, facet, source, external_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(scryer_domain::Id::new().0)
+        .bind(title_id)
+        .bind(facet.as_str())
+        .bind(source)
+        .bind(value)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
+
+    Ok(())
+}
+
+async fn get_title_by_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> AppResult<Option<Title>> {
+    let sql = format!("SELECT {} FROM titles WHERE id = ?", TITLE_COLUMNS);
+    let row = sqlx::query(&sql)
+        .bind(id)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1484,7 +1697,7 @@ fn row_to_episode(row: &sqlx::sqlite::SqliteRow) -> AppResult<Episode> {
     })
 }
 
-pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppResult<Title> {
+async fn insert_title_row_tx(tx: &mut Transaction<'_, Sqlite>, title: &Title) -> AppResult<()> {
     let tags_json =
         serde_json::to_string(&title.tags).map_err(|err| AppError::Repository(err.to_string()))?;
     let ext_json = serde_json::to_string(&title.external_ids)
@@ -1496,6 +1709,15 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
     let tagged_aliases_json = serde_json::to_string(&title.tagged_aliases)
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let metadata_fetched_at = title.metadata_fetched_at.map(|value| value.to_rfc3339());
+    let metadata_hydration_next_attempt_at = if title.metadata_fetched_at.is_none()
+        && normalized_external_ids(&title.external_ids)
+            .iter()
+            .any(|(source, _)| source == "tvdb")
+    {
+        Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
+    };
 
     sqlx::query(
         "INSERT INTO titles (
@@ -1503,9 +1725,10 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
             year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id,
             runtime_minutes, genres, content_status, language, first_aired, network, studio,
             country, aliases, metadata_language, metadata_fetched_at, min_availability,
-            digital_release_date, folder_path, tagged_aliases_json
+            digital_release_date, folder_path, tagged_aliases_json,
+            metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&title.id)
     .bind(&title.name)
@@ -1538,11 +1761,229 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
     .bind(&title.digital_release_date)
     .bind(&title.folder_path)
     .bind(&tagged_aliases_json)
-    .execute(pool)
+    .bind(&metadata_hydration_next_attempt_at)
+    .bind(0_i64)
+    .execute(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
+    Ok(())
+}
+
+pub(crate) async fn create_or_get_existing_title_query(
+    pool: &SqlitePool,
+    title: &Title,
+) -> AppResult<CreateTitleOutcome> {
+    let external_ids = normalized_external_ids(&title.external_ids);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let existing_ids =
+        list_existing_title_ids_for_external_ids_tx(&mut tx, title.facet.clone(), &external_ids)
+            .await?;
+    if existing_ids.len() > 1 {
+        return Err(AppError::Validation(
+            "external ids already map to multiple titles".to_string(),
+        ));
+    }
+    if let Some(existing_id) = existing_ids.first() {
+        let existing = get_title_by_id_tx(&mut tx, existing_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", existing_id)))?;
+        tx.rollback()
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        return Ok(CreateTitleOutcome {
+            title: existing,
+            reused_existing: true,
+        });
+    }
+
+    insert_title_row_tx(&mut tx, title).await?;
+
+    match replace_title_external_ids_projection_tx(
+        &mut tx,
+        &title.id,
+        title.facet.clone(),
+        &title.external_ids,
+    )
+    .await
+    {
+        Ok(()) => {
+            tx.commit()
+                .await
+                .map_err(|err| AppError::Repository(err.to_string()))?;
+            Ok(CreateTitleOutcome {
+                title: title.clone(),
+                reused_existing: false,
+            })
+        }
+        Err(error) => {
+            let _ = tx.rollback().await;
+            if matches!(&error, AppError::Repository(message) if message.contains("UNIQUE constraint failed"))
+            {
+                let mut lookup_tx = pool
+                    .begin()
+                    .await
+                    .map_err(|err| AppError::Repository(err.to_string()))?;
+                let conflict_ids = list_existing_title_ids_for_external_ids_tx(
+                    &mut lookup_tx,
+                    title.facet.clone(),
+                    &external_ids,
+                )
+                .await?;
+                if conflict_ids.len() == 1 {
+                    let existing = get_title_by_id_tx(&mut lookup_tx, &conflict_ids[0])
+                        .await?
+                        .ok_or_else(|| AppError::NotFound(format!("title {}", conflict_ids[0])))?;
+                    lookup_tx
+                        .rollback()
+                        .await
+                        .map_err(|err| AppError::Repository(err.to_string()))?;
+                    return Ok(CreateTitleOutcome {
+                        title: existing,
+                        reused_existing: true,
+                    });
+                }
+                if conflict_ids.len() > 1 {
+                    lookup_tx
+                        .rollback()
+                        .await
+                        .map_err(|err| AppError::Repository(err.to_string()))?;
+                    return Err(AppError::Validation(
+                        "external ids already map to multiple titles".to_string(),
+                    ));
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppResult<Title> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    insert_title_row_tx(&mut tx, title).await?;
+    replace_title_external_ids_projection_tx(
+        &mut tx,
+        &title.id,
+        title.facet.clone(),
+        &title.external_ids,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     Ok(title.clone())
+}
+
+pub(crate) async fn list_titles_due_for_hydration_query(
+    pool: &SqlitePool,
+    limit: usize,
+    excluded_facets: &[MediaFacet],
+) -> AppResult<Vec<PendingTitleHydration>> {
+    let facet_filter = if excluded_facets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " AND facet NOT IN ({})",
+            std::iter::repeat_n("?", excluded_facets.len())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let sql = format!(
+        "SELECT {columns}, metadata_hydration_attempt_count
+         FROM titles
+         WHERE metadata_fetched_at IS NULL
+           AND metadata_hydration_next_attempt_at IS NOT NULL
+           AND metadata_hydration_next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+           {facet_filter}
+         ORDER BY metadata_hydration_next_attempt_at ASC, id ASC
+         LIMIT ?",
+        columns = TITLE_COLUMNS,
+        facet_filter = facet_filter,
+    );
+    let mut query = sqlx::query(&sql);
+    for facet in excluded_facets {
+        query = query.bind(facet.as_str());
+    }
+    let rows = query
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let base_path = normalized_base_path_from_env();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(PendingTitleHydration {
+            title: row_to_title(&row, TitleReadMode::Presentation, &base_path)?,
+            attempt_count: row
+                .try_get("metadata_hydration_attempt_count")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) async fn mark_title_metadata_hydration_due_now_query(
+    pool: &SqlitePool,
+    id: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+             metadata_hydration_attempt_count = 0
+         WHERE id = ?",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn schedule_title_metadata_hydration_retry_query(
+    pool: &SqlitePool,
+    id: &str,
+    next_attempt_at: &str,
+    attempt_count: i64,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = ?,
+             metadata_hydration_attempt_count = ?
+         WHERE id = ?",
+    )
+    .bind(next_attempt_at)
+    .bind(attempt_count)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn clear_title_metadata_hydration_retry_state_query(
+    pool: &SqlitePool,
+    id: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = NULL,
+             metadata_hydration_attempt_count = 0
+         WHERE id = ?",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(())
 }
 
 pub(crate) async fn update_title_monitored_query(
@@ -1633,8 +2074,13 @@ pub(crate) async fn update_title_metadata_query(
     }
     statement = statement.bind(id);
 
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
     let result = statement
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1642,9 +2088,20 @@ pub(crate) async fn update_title_metadata_query(
         return Err(AppError::NotFound(format!("title {}", id)));
     }
 
-    get_title_by_id_query(pool, id)
+    let title = get_title_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    replace_title_external_ids_projection_tx(
+        &mut tx,
+        &title.id,
+        title.facet.clone(),
+        &title.external_ids,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(title)
 }
 
 pub(crate) async fn replace_title_match_state_query(
@@ -1657,6 +2114,11 @@ pub(crate) async fn replace_title_match_state_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let tags_json =
         serde_json::to_string(&tags).map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let result = sqlx::query(
         "UPDATE titles SET
@@ -1682,13 +2144,25 @@ pub(crate) async fn replace_title_match_state_query(
             tagged_aliases_json = '[]',
             metadata_language = NULL,
             metadata_fetched_at = NULL,
+            metadata_hydration_next_attempt_at = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM json_each(?) AS external_id
+                    WHERE LOWER(TRIM(COALESCE(json_extract(external_id.value, '$.source'), ''))) = 'tvdb'
+                      AND TRIM(COALESCE(json_extract(external_id.value, '$.value'), '')) != ''
+                )
+                THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                ELSE NULL
+            END,
+            metadata_hydration_attempt_count = 0,
             digital_release_date = NULL
          WHERE id = ?",
     )
     .bind(&external_ids_json)
     .bind(&tags_json)
+    .bind(&external_ids_json)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1696,9 +2170,20 @@ pub(crate) async fn replace_title_match_state_query(
         return Err(AppError::NotFound(format!("title {}", id)));
     }
 
-    get_title_by_id_query(pool, id)
+    let title = get_title_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    replace_title_external_ids_projection_tx(
+        &mut tx,
+        &title.id,
+        title.facet.clone(),
+        &title.external_ids,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(title)
 }
 
 pub(crate) async fn update_title_hydrated_metadata_query(
@@ -1709,6 +2194,11 @@ pub(crate) async fn update_title_hydrated_metadata_query(
     let genres_json = serde_json::to_string(&metadata.genres)
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let aliases_json = serde_json::to_string(&metadata.aliases)
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut tx = pool
+        .begin()
+        .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let result = sqlx::query(
@@ -1734,6 +2224,14 @@ pub(crate) async fn update_title_hydrated_metadata_query(
             tagged_aliases_json = CASE WHEN NULLIF(?, '[]') IS NOT NULL THEN ? ELSE tagged_aliases_json END,
             metadata_language = COALESCE(NULLIF(?, ''), metadata_language),
             metadata_fetched_at = COALESCE(NULLIF(?, ''), metadata_fetched_at),
+            metadata_hydration_next_attempt_at = CASE
+                WHEN NULLIF(?, '') IS NOT NULL THEN NULL
+                ELSE metadata_hydration_next_attempt_at
+            END,
+            metadata_hydration_attempt_count = CASE
+                WHEN NULLIF(?, '') IS NOT NULL THEN 0
+                ELSE metadata_hydration_attempt_count
+            END,
             digital_release_date = COALESCE(NULLIF(?, ''), digital_release_date)
          WHERE id = ?",
     )
@@ -1761,9 +2259,11 @@ pub(crate) async fn update_title_hydrated_metadata_query(
     .bind(serde_json::to_string(&metadata.tagged_aliases).unwrap_or_else(|_| "[]".to_string()))
     .bind(&metadata.metadata_language)
     .bind(&metadata.metadata_fetched_at)
+    .bind(&metadata.metadata_fetched_at)
+    .bind(&metadata.metadata_fetched_at)
     .bind(&metadata.digital_release_date)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1776,7 +2276,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
         let existing_json: String =
             sqlx::query_scalar("SELECT external_ids FROM titles WHERE id = ?")
                 .bind(id)
-                .fetch_one(pool)
+                .fetch_one(&mut *tx)
                 .await
                 .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1797,7 +2297,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
         sqlx::query("UPDATE titles SET external_ids = ? WHERE id = ?")
             .bind(&merged_json)
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
     }
@@ -1806,7 +2306,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
     if !metadata.extra_tags.is_empty() {
         let existing_json: String = sqlx::query_scalar("SELECT tags FROM titles WHERE id = ?")
             .bind(id)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1826,14 +2326,25 @@ pub(crate) async fn update_title_hydrated_metadata_query(
         sqlx::query("UPDATE titles SET tags = ? WHERE id = ?")
             .bind(&merged_json)
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
     }
 
-    get_title_by_id_query(pool, id)
+    let title = get_title_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    replace_title_external_ids_projection_tx(
+        &mut tx,
+        &title.id,
+        title.facet.clone(),
+        &title.external_ids,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(title)
 }
 
 pub(crate) async fn delete_title_query(pool: &SqlitePool, id: &str) -> AppResult<()> {

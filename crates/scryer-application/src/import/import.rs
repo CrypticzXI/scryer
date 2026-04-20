@@ -10,7 +10,9 @@ use crate::{
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
-    parse_release_metadata, render_rename_template, require,
+    parse_release_metadata,
+    polling_worker::PollingWorker,
+    render_rename_template, require,
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
@@ -48,6 +50,7 @@ pub async fn start_background_manual_import_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
+    let worker = PollingWorker::new("manual_import_poller", token);
     tracing::info!(
         interval_seconds = MANUAL_IMPORT_POLLER_INTERVAL_SECONDS,
         "manual import poller started"
@@ -57,113 +60,107 @@ pub async fn start_background_manual_import_poller(
     ));
 
     loop {
-        tokio::select! {
-            _ = token.cancelled() => {
-                tracing::info!("manual import poller shutting down");
-                break;
-            }
-            _ = interval.tick() => {
-                match app
-                    .services
-                    .workflow
-                    .imports
-                    .recover_stale_processing_imports_for_type(
-                        ImportType::ManualImport,
-                        MANUAL_IMPORT_STALE_RECOVERY_SECONDS,
-                    )
-                    .await
-                {
-                    Ok(recovered) if recovered > 0 => {
-                        tracing::warn!(recovered, "recovered stale manual import requests");
-                    }
-                    Err(error) => {
-                        tracing::warn!(error = %error, "failed to recover stale manual imports");
-                    }
-                    _ => {}
-                }
+        if !worker.wait_for_tick(&mut interval).await {
+            return;
+        }
 
-                let pending = match app
-                    .services
-                    .workflow
-                    .imports
-                    .list_pending_imports_for_type(ImportType::ManualImport)
-                    .await
-                {
-                    Ok(records) => records,
+        match app
+            .services
+            .workflow
+            .imports
+            .recover_stale_processing_imports_for_type(
+                ImportType::ManualImport,
+                MANUAL_IMPORT_STALE_RECOVERY_SECONDS,
+            )
+            .await
+        {
+            Ok(recovered) if recovered > 0 => {
+                worker.warn_recovered("recover_stale_manual_imports", recovered);
+            }
+            Err(error) => {
+                worker.warn_error("recover_stale_manual_imports", &error);
+            }
+            _ => {}
+        }
+
+        let pending = match app
+            .services
+            .workflow
+            .imports
+            .list_pending_imports_for_type(ImportType::ManualImport)
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                worker.warn_error("list_pending_manual_imports", &error);
+                continue;
+            }
+        };
+
+        for record in pending {
+            let payload =
+                match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
+                    Ok(payload) => payload,
                     Err(error) => {
-                        tracing::warn!(error = %error, "failed to load pending manual imports");
+                        let result_json = manual_import_result_json(
+                            &record.id,
+                            &ManualImportRequestPayload {
+                                requested_by_user_id: None,
+                                title_id: None,
+                                download_client_item_id: record.source_ref.clone(),
+                                client_type: record.source_system.clone(),
+                                files: Vec::new(),
+                                requested_at: record.created_at.clone(),
+                            },
+                            ImportStatus::Failed,
+                            Some(ImportErrorCode::Unknown),
+                            Some(format!("invalid manual import payload: {error}")),
+                            Vec::new(),
+                        );
+                        let _ = app
+                            .update_import_status_and_notify(
+                                &record.id,
+                                ImportStatus::Failed,
+                                result_json,
+                            )
+                            .await;
                         continue;
                     }
                 };
 
-                for record in pending {
-                    let payload = match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            let result_json = manual_import_result_json(
-                                &record.id,
-                                &ManualImportRequestPayload {
-                                    requested_by_user_id: None,
-                                    title_id: None,
-                                    download_client_item_id: record.source_ref.clone(),
-                                    client_type: record.source_system.clone(),
-                                    files: Vec::new(),
-                                    requested_at: record.created_at.clone(),
-                                },
-                                ImportStatus::Failed,
-                                Some(ImportErrorCode::Unknown),
-                                Some(format!("invalid manual import payload: {error}")),
-                                Vec::new(),
-                            );
-                            let _ = app
-                                .update_import_status_and_notify(
-                                    &record.id,
-                                    ImportStatus::Failed,
-                                    result_json,
-                                )
-                                .await;
-                            continue;
-                        }
-                    };
-
-                    let (status, result_json) = match execute_queued_manual_import(&app, &record.id, &payload).await {
-                        Ok(result) => result,
-                        Err(error) => (
+            let (status, result_json) =
+                match execute_queued_manual_import(&app, &record.id, &payload).await {
+                    Ok(result) => result,
+                    Err(error) => (
+                        ImportStatus::Failed,
+                        manual_import_result_json(
+                            &record.id,
+                            &payload,
                             ImportStatus::Failed,
-                            manual_import_result_json(
-                                &record.id,
-                                &payload,
-                                ImportStatus::Failed,
-                                Some(classify_manual_import_error_message(&error.to_string())),
-                                Some(error.to_string()),
-                                Vec::new(),
-                            ),
+                            Some(classify_manual_import_error_message(&error.to_string())),
+                            Some(error.to_string()),
+                            Vec::new(),
                         ),
-                    };
+                    ),
+                };
 
-                    if let Err(error) = app
-                        .update_import_status_and_notify(&record.id, status, result_json)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            import_id = %record.id,
-                            "failed to finalize manual import request"
-                        );
-                        continue;
-                    }
+            if let Err(error) = app
+                .update_import_status_and_notify(&record.id, status, result_json)
+                .await
+            {
+                worker.warn_error("finalize_manual_import_request", &error);
+                continue;
+            }
 
-                    if status == ImportStatus::Completed
-                        && let Some(handle) = app.runtime.tracked_download_handle.as_ref()
-                    {
-                        let _ = handle
-                            .mark_imported(crate::tracked_downloads::tracked_download_id(
-                                &payload.client_type,
-                                &payload.download_client_item_id,
-                            ))
-                            .await;
-                    }
-                }
+            if status == ImportStatus::Completed
+                && let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref()
+            {
+                let _ = handle
+                    .mark_imported(crate::tracked_downloads::tracked_download_id(
+                        &payload.client_type,
+                        &payload.download_client_item_id,
+                    ))
+                    .await;
             }
         }
     }
@@ -540,7 +537,11 @@ async fn remove_download_history_item(
         .services
         .integrations
         .download_client
-        .delete_queue_item(&completed.download_client_item_id, true)
+        .delete_queue_item_for_client(
+            &completed.client_type,
+            &completed.download_client_item_id,
+            true,
+        )
         .await
     {
         tracing::warn!(
@@ -2763,37 +2764,19 @@ pub(crate) async fn mark_wanted_completed(
     episode_id: Option<&str>,
     imported_score: Option<i32>,
 ) {
+    let now = Utc::now().to_rfc3339();
+
     match app
         .services
         .workflow
         .wanted_items
-        .get_wanted_item_for_title(title_id, episode_id)
+        .complete_wanted_item_for_title(title_id, episode_id, Some(&now), imported_score)
         .await
     {
-        Ok(Some(wanted)) => {
-            let now = Utc::now();
-            let now_str = now.to_rfc3339();
-            let score = imported_score.or(wanted.current_score);
-
-            if let Err(err) = app
-                .services
-                .workflow
-                .wanted_items
-                .transition_wanted_to_completed(&WantedCompleteTransition {
-                    id: wanted.id.clone(),
-                    last_search_at: Some(now_str),
-                    search_count: wanted.search_count,
-                    current_score: score,
-                    grabbed_release: wanted.grabbed_release.clone(),
-                })
-                .await
-            {
-                tracing::warn!(error = %err, title_id = %title_id, "failed to mark wanted item completed");
-            }
-        }
-        Ok(None) => {}
+        Ok(true) => {}
+        Ok(false) => {}
         Err(err) => {
-            tracing::warn!(error = %err, title_id = %title_id, "failed to look up wanted item");
+            tracing::warn!(error = %err, title_id = %title_id, "failed to mark wanted item completed");
         }
     }
 }

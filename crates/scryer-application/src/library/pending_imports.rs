@@ -239,17 +239,10 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .find_by_external_id("tvdb", target_tvdb_id)
+            .find_by_external_id_in_facet(item.facet.clone(), "tvdb", target_tvdb_id)
             .await?;
 
         let (title, created) = if let Some(existing_title) = existing_title {
-            if existing_title.facet != item.facet {
-                return Err(AppError::Validation(format!(
-                    "tvdb id {target_tvdb_id} is already assigned to {} title {}",
-                    existing_title.facet.as_str(),
-                    existing_title.name
-                )));
-            }
             (existing_title, false)
         } else {
             let metadata_language = self.metadata_language().await;
@@ -312,7 +305,7 @@ impl AppUseCase {
             let created = self
                 .create_title_without_hydration(actor, new_title)
                 .await?;
-            (created, true)
+            (created.title, !created.reused_existing)
         };
 
         let scan_path = match item.facet {

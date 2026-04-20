@@ -60,7 +60,8 @@ services:
       SCRYER_WEB_UI_URL: http://nodejs:3000
       SCRYER_AUTH_ENABLED: "false"
       SCRYER_BACKGROUND_LIBRARY_REFRESH: "false"
-      RUST_LOG: "${RUST_LOG:-info,scryer_application::app_usecase_catalog=debug,scryer_application::app_usecase_library=debug,scryer_application::library_scan_coordinator=debug,scryer_application::library_scan_progress=debug,scryer_application::library_scan_title_registry=debug,scryer_infrastructure::queries::title=debug}"
+      SCRYER_SQLITE_MAX_CONNECTIONS: "16"
+      RUST_LOG: "${RUST_LOG:-info,scryer_application::app_usecase_catalog=debug,scryer_application::app_usecase_library=debug}"
       CARGO_TARGET_DIR: /cargo-target
       SCRYER_SMG_REGISTRATION_SECRET: ${SCRYER_SMG_REGISTRATION_SECRET}
     command: >
@@ -85,7 +86,7 @@ services:
       - "8080:8080"
 
   nodejs:
-    image: node:25-alpine
+    image: node:22-alpine
     container_name: scryer-nodejs
     restart: unless-stopped
     working_dir: /app

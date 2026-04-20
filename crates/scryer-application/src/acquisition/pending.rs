@@ -443,6 +443,11 @@ impl AppUseCase {
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()));
         let source_title = Some(pr.release_title.clone());
+        let request_signature = normalize_release_selection_signature(
+            source_hint.as_deref(),
+            source_title.as_deref(),
+            source_kind,
+        );
 
         let _ = self
             .services
@@ -530,6 +535,27 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let episode = if wanted.media_type == "episode" {
+                    match wanted.episode_id.as_deref() {
+                        Some(episode_id) => self
+                            .services
+                            .catalog
+                            .shows
+                            .get_episode_by_id(episode_id)
+                            .await
+                            .ok()
+                            .flatten(),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let submission_scope =
+                    super::acquisition::download_submission_scope_for_release_title(
+                        wanted,
+                        episode.as_ref(),
+                        &pr.release_title,
+                    );
                 let grabbed_json = serde_json::json!({
                     "title": pr.release_title,
                     "score": pr.release_score,
@@ -553,8 +579,12 @@ impl AppUseCase {
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_type: grab.client_type,
                             download_client_item_id: grab.job_id,
+                            source_hint: None,
+                            source_kind: None,
                             source_title: source_title.clone(),
-                            collection_id: None,
+                            request_signature: request_signature.clone(),
+                            episode_id: submission_scope.episode_id,
+                            collection_id: submission_scope.collection_id,
                         },
                         grabbed_pending_release_id: Some(pr.id.clone()),
                         grabbed_at: Some(now.to_rfc3339()),

@@ -5,11 +5,13 @@ mod common;
 use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
-    AcquisitionStateRepository, AppError, DownloadSubmission, DownloadSubmissionRepository,
-    PendingReleaseRepository, PendingReleaseStatus, SuccessfulGrabCommit, TitleRepository,
-    WantedCompleteTransition, WantedItemRepository, WantedSearchTransition, WantedStatus,
+    AcquisitionStateRepository, AppError, DownloadSourceKind, DownloadSubmission,
+    DownloadSubmissionRepository, PendingReleaseRepository, PendingReleaseStatus,
+    SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition, WantedItemRepository,
+    WantedSearchTransition, WantedStatus,
 };
 use scryer_domain::{MediaFacet, Title};
+use sqlx::query;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -347,7 +349,11 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 facet: "movie".to_string(),
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-1".to_string(),
+                source_hint: None,
+                source_kind: None,
                 source_title: Some("Best.Release.1080p.WEB-DL".to_string()),
+                request_signature: None,
+                episode_id: None,
                 collection_id: None,
             },
             grabbed_pending_release_id: None,
@@ -447,7 +453,11 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 facet: "movie".to_string(),
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-2".to_string(),
+                source_hint: None,
+                source_kind: None,
                 source_title: Some(claimed.release_title.clone()),
+                request_signature: None,
+                episode_id: None,
                 collection_id: None,
             },
             grabbed_pending_release_id: Some(claimed.id.clone()),
@@ -475,6 +485,81 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .unwrap()
         .unwrap();
     assert_eq!(sibling_release.status, PendingReleaseStatus::Superseded);
+}
+
+#[tokio::test]
+async fn download_submission_roundtrips_episode_scope() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-episode-scope").await;
+    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+
+    workflow_store
+        .record_submission(DownloadSubmission {
+            title_id: "title-episode-scope".to_string(),
+            facet: "series".to_string(),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "job-episode-scope".to_string(),
+            source_hint: Some("https://example.invalid/releases/episode-scope.nzb".to_string()),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
+            request_signature: Some("episode-scope-signature".to_string()),
+            episode_id: Some("episode-1".to_string()),
+            collection_id: Some("season-1".to_string()),
+        })
+        .await
+        .expect("record submission");
+
+    let submission = workflow_store
+        .find_by_client_item_id("nzbget", "job-episode-scope")
+        .await
+        .expect("find submission")
+        .expect("submission exists");
+
+    assert_eq!(submission.title_id, "title-episode-scope");
+    assert_eq!(submission.episode_id.as_deref(), Some("episode-1"));
+    assert_eq!(submission.collection_id.as_deref(), Some("season-1"));
+    assert_eq!(
+        submission.request_signature.as_deref(),
+        Some("episode-scope-signature")
+    );
+}
+
+#[tokio::test]
+async fn download_submission_legacy_rows_without_episode_id_still_load() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-legacy-scope").await;
+    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+
+    query(
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_type, download_client_item_id, source_title,
+          source_hint, source_kind, request_signature, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("submission-legacy")
+    .bind("title-legacy-scope")
+    .bind("series")
+    .bind("nzbget")
+    .bind("job-legacy-scope")
+    .bind("Legacy.Scope.S01E01.1080p.WEB-DL")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .execute(ctx.db.pool())
+    .await
+    .expect("insert legacy submission row");
+
+    let submission = workflow_store
+        .find_by_client_item_id("nzbget", "job-legacy-scope")
+        .await
+        .expect("find legacy submission")
+        .expect("legacy submission exists");
+
+    assert_eq!(submission.title_id, "title-legacy-scope");
+    assert_eq!(submission.episode_id, None);
+    assert_eq!(submission.collection_id, None);
+    assert_eq!(submission.request_signature, None);
 }
 
 #[tokio::test]

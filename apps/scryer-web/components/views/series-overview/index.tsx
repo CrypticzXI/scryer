@@ -100,7 +100,6 @@ export function SeriesOverviewView({
   onSetCollectionMonitored,
   onSetEpisodeMonitored,
   onSetTitleMonitored,
-  onSearchMonitored,
   onRefreshAndScan,
   onAutoSearchEpisode,
   onAutoSearchInterstitialMovie,
@@ -116,10 +115,7 @@ export function SeriesOverviewView({
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
   monitoredUpdating = false,
-  searchMonitoredLoading = false,
   refreshAndScanLoading = false,
-  onRequestDeleteTitle,
-  deleteLoading = false,
   onDeleteFile,
   onOpenFixMatch,
 }: Props) {
@@ -539,13 +535,9 @@ export function SeriesOverviewView({
       <OverviewControlPanel
         monitored={title.monitored}
         monitoredUpdating={monitoredUpdating}
-        searchMonitoredLoading={searchMonitoredLoading}
         refreshAndScanLoading={refreshAndScanLoading}
-        deleteLoading={deleteLoading}
         onToggleMonitoring={onSetTitleMonitored ? () => void onSetTitleMonitored(!title.monitored) : undefined}
-        onSearchMonitored={onSearchMonitored ? () => void onSearchMonitored() : undefined}
         onRefreshAndScan={onRefreshAndScan ? () => void onRefreshAndScan() : undefined}
-        onRequestDelete={onRequestDeleteTitle}
         onHistory={() => setHistoryOpen(true)}
         settingsPanel={
           onUpdateTitleOptions && qualityProfiles && defaultRootFolder ? (

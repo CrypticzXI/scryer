@@ -39,6 +39,7 @@ const fr: LocaleDictionary = {
   "label.no": "Non",
   "label.category": "Catégorie",
   "label.filter": "Filtre",
+  "label.filters": "Filtres",
   "label.for": "pour",
   "label.enabled": "Activé",
   "label.disabled": "Désactivé",
@@ -673,9 +674,11 @@ const fr: LocaleDictionary = {
   "activity.scryerOnly": "Scryer uniquement",
   "activity.allActivity": "Toute l'activité",
   "activity.history": "Historique",
+  "activity.scryerSubmitted": "Envoyé par Scryer",
   "queue.title": "Titre",
   "queue.client": "Client",
   "queue.status": "État",
+  "queue.source": "Source",
   "queue.progress": "Progression",
   "queue.size": "Taille",
   "queue.state.queued": "En file d'attente",
@@ -698,6 +701,7 @@ const fr: LocaleDictionary = {
   "queue.manualImportQueued": "Importation manuelle mise en file d'attente.",
   "queue.manualImportFailed":
     "Échec de la mise en file d'attente de l'importation manuelle.",
+  "queue.removeFailed": "Échec de la suppression",
   "queue.manualImportTooltip":
     "L'importation manuelle est disponible pour les éléments de file d'attente nécessitant une attention.",
   "queue.releaseTitle": "Version",
@@ -730,6 +734,7 @@ const fr: LocaleDictionary = {
   "queue.resumeFailed": "Échec de la reprise du téléchargement.",
   "queue.deleting": "Suppression…",
   "queue.deleteSuccess": "Téléchargement supprimé.",
+  "queue.deleteQueued": "Suppression mise en file d'attente.",
   "queue.deleteFailed": "Échec de la suppression du téléchargement.",
   "queue.deleteConfirmTitle": "Supprimer le téléchargement",
   "queue.deleteConfirmDescription":

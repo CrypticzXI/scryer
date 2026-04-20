@@ -28,6 +28,7 @@ mod media;
 mod notifications;
 mod null_repositories;
 mod plugins;
+mod polling_worker;
 mod ports;
 mod quality;
 mod rules;
@@ -109,12 +110,14 @@ pub use acquisition::delay_profile::{
 };
 pub use acquisition::policy::AcquisitionThresholds;
 pub use acquisition_workflow::start_background_acquisition_poller;
+pub use app_usecase_integration::derive_download_queue_display_state;
+pub use app_usecase_integration::matches_download_activity_filter;
 pub use app_usecase_integration::start_download_queue_poller;
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
 pub(crate) use audio_requirements::{
     missing_required_audio_languages, normalize_required_audio_languages,
-    release_audio_language_hints,
+    release_audio_language_hints, required_audio_languages_match,
 };
 pub use catalog::facets::handler::{
     FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
@@ -122,6 +125,7 @@ pub use catalog::facets::handler::{
 pub use catalog::facets::movie::MovieFacetHandler;
 pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
+pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_banner_loop;
 pub use catalog::title_images::start_background_fanart_loop;
 pub use catalog::title_images::start_background_poster_loop;
@@ -148,6 +152,7 @@ pub use import_workflow::{
     execute_queued_manual_import, import_completed_download, preview_manual_import,
     retry_failed_import, start_background_manual_import_poller, try_import_completed_downloads,
 };
+pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub use jobs::jobs::start_background_library_refresh_loop;
 pub use library::rename::{
     LibraryRenamer, NullLibraryRenamer, RenameApplyItemResult, RenameApplyResult,
@@ -180,8 +185,9 @@ pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
     INDEXER_PROVIDER_NZBGEEK, INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES,
     await_cancellable, await_cancellable_app_result, normalize_release_attempt_hint,
-    normalize_release_attempt_title, normalize_release_password, normalize_show_text_opt,
-    normalize_tags, parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, to_hex,
+    normalize_release_attempt_title, normalize_release_password,
+    normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
+    parsed_episode_lookup_season, require, sanitize_ids, sha256_hex, to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread};
 pub use jobs::definitions::{
@@ -204,23 +210,24 @@ pub use media::analyzer::NativeMediaAnalyzer;
 pub use notifications::dispatcher::start_notification_dispatcher;
 pub use null_repositories::{
     NullAcquisitionStateRepository, NullBlocklistRepository, NullDomainEventRepository,
-    NullDownloadSubmissionRepository, NullExternalImportMonitorSnapshotRepository,
-    NullFileImporter, NullHousekeepingRepository, NullImportRepository, NullIndexerStatsTracker,
-    NullJobRunRepository, NullLibraryProbeRepository, NullLibraryScanUnmatchedItemRepository,
-    NullMediaFileRepository, NullNotificationChannelRepository,
-    NullNotificationSubscriptionRepository, NullPendingReleaseRepository,
-    NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
-    NullSettingsRepository, NullStagedNzbStore, NullSystemInfoProvider, NullTitleHistoryRepository,
+    NullDownloadQueueCommandRepository, NullDownloadSubmissionRepository,
+    NullExternalImportMonitorSnapshotRepository, NullFileImporter, NullHousekeepingRepository,
+    NullImportRepository, NullIndexerStatsTracker, NullJobRunRepository,
+    NullLibraryProbeRepository, NullLibraryScanUnmatchedItemRepository, NullMediaFileRepository,
+    NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
+    NullPendingReleaseRepository, NullPluginInstallationRepository,
+    NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
+    NullStagedNzbStore, NullSystemInfoProvider, NullTitleHistoryRepository,
     NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
     NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, DomainEventRepository, DownloadClient,
-    DownloadClientConfigRepository, DownloadClientPluginProvider, DownloadSubmissionRepository,
-    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository,
-    ImportArtifactRepository, ImportRepository, IndexerClient, IndexerConfigRepository,
-    IndexerPluginProvider, IndexerStatsTracker, JobRunRepository, LibraryProbeRepository,
-    LibraryScanUnmatchedItemRepository, MediaAnalyzer, MediaFileRepository,
+    DownloadClientConfigRepository, DownloadClientPluginProvider, DownloadQueueCommandRepository,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
+    HousekeepingRepository, ImportArtifactRepository, ImportRepository, IndexerClient,
+    IndexerConfigRepository, IndexerPluginProvider, IndexerStatsTracker, JobRunRepository,
+    LibraryProbeRepository, LibraryScanUnmatchedItemRepository, MediaAnalyzer, MediaFileRepository,
     NotificationChannelRepository, NotificationClient, NotificationPluginProvider,
     NotificationSubscriptionRepository, PendingReleaseRepository, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
@@ -273,14 +280,18 @@ pub use settings::keys::{
 };
 pub(crate) use types::JwtClaims;
 pub use types::{
-    BackupInfo, CancelLibraryScanResult, DiskSpaceInfo, DownloadGrabResult, DownloadHistoryPage,
-    DownloadSourceKind, FixTitleMatchResult, HealthCheckResult, HealthCheckStatus,
-    HousekeepingReport, IndexerQueryStats, IndexerSearchResponse, IndexerSearchResult,
-    JwtAuthConfig, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingRelease, PendingReleaseStatus, PrimaryCollectionSummary, ReleaseDecision,
+    AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
+    CancelLibraryScanResult, CreateTitleOutcome, DiskSpaceInfo, DownloadActivityFilter,
+    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
+    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
+    DownloadQueueCommandRecord, DownloadSourceKind, FixTitleMatchResult, HealthCheckResult,
+    HealthCheckStatus, HousekeepingReport, IndexerQueryStats, IndexerSearchResponse,
+    IndexerSearchResult, JwtAuthConfig, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedSearchAttempt, PendingImportConnection, PendingImportCounts,
+    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PendingReleaseStatus,
+    PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,
     ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
-    SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    SortDirection, SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
     TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
     WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,

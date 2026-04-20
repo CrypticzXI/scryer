@@ -6,7 +6,11 @@ pub struct DownloadSubmission {
     pub facet: String,
     pub download_client_type: String,
     pub download_client_item_id: String,
+    pub source_hint: Option<String>,
+    pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+    pub request_signature: Option<String>,
+    pub episode_id: Option<String>,
     pub collection_id: Option<String>,
 }
 

@@ -8,7 +8,6 @@ type GlobalSearchProviderProps = {
   activeFacet: Facet;
   queueFacet: Facet;
   uiLanguage: LocaleCode;
-  onCatalogChanged: () => void;
   children: ReactNode;
 };
 
@@ -16,13 +15,11 @@ export function GlobalSearchProvider({
   activeFacet,
   queueFacet,
   uiLanguage,
-  onCatalogChanged,
   children,
 }: GlobalSearchProviderProps) {
   const searchState = useGlobalSearch({
     queueFacet,
     uiLanguage,
-    onCatalogChanged,
   });
 
   const { setQueueFacet, setTvdbCandidates, setSearchResults, setSelectedTvdbId } = searchState;

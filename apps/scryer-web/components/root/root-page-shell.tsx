@@ -47,12 +47,11 @@ import {
 import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
-  manualImportRequiredCountQuery,
+  importQueueCountQuery,
   pendingImportCountsQuery,
 } from "@/lib/graphql/queries";
-import type { DownloadQueueItem, PendingImportCounts } from "@/lib/types";
+import type { PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
-import { isManualImportRequiredQueueItem } from "@/lib/utils/download-queue";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -345,13 +344,11 @@ function AuthenticatedHomePage({
     }
   }, []);
 
-  const onCatalogChanged = useCallback(() => {}, []);
-
   const refreshSidebarCounts = useCallback(async () => {
     try {
       const [pendingImportsResult, manualImportCountResult] = await Promise.all([
         backendClient.query(pendingImportCountsQuery, {}).toPromise(),
-        backendClient.query(manualImportRequiredCountQuery, {}).toPromise(),
+        backendClient.query(importQueueCountQuery, {}).toPromise(),
       ]);
 
       if (pendingImportsResult.error) {
@@ -368,9 +365,8 @@ function AuthenticatedHomePage({
         setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
       }
 
-      const queueItems = (manualImportCountResult.data?.downloadQueue ?? []) as DownloadQueueItem[];
       setManualImportRequiredCount(
-        queueItems.filter((item) => isManualImportRequiredQueueItem(item)).length,
+        Number(manualImportCountResult.data?.downloadImport?.totalCount ?? 0),
       );
     } catch {
       setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
@@ -538,7 +534,6 @@ function AuthenticatedHomePage({
                 activeFacet={activeFacet}
                 queueFacet={queueFacet}
                 uiLanguage={uiLanguage}
-                onCatalogChanged={onCatalogChanged}
               >
                 <RootHeader
                   onOpenOverview={handleOpenOverview}

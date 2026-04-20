@@ -160,13 +160,13 @@ impl AppUseCase {
 
     pub async fn list_jobs(&self, actor: &User) -> AppResult<Vec<JobDefinition>> {
         require(actor, &Entitlement::ManageConfig)?;
-        let next_runs = self.runtime.job_run_tracker.all_next_runs().await;
+        let next_runs = self.runtime.jobs.job_run_tracker.all_next_runs().await;
         Ok(crate::jobs::all_job_definitions(&next_runs))
     }
 
     pub async fn active_job_runs(&self, actor: &User) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
-        let runs = self.runtime.job_run_tracker.list_active().await;
+        let runs = self.runtime.jobs.job_run_tracker.list_active().await;
         if runs.is_empty() {
             self.load_active_job_run_projection().await
         } else {
@@ -182,7 +182,7 @@ impl AppUseCase {
     ) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
         let active_runs = {
-            let runs = self.runtime.job_run_tracker.list_active().await;
+            let runs = self.runtime.jobs.job_run_tracker.list_active().await;
             if runs.is_empty() {
                 self.load_active_job_run_projection().await?
             } else {
@@ -215,7 +215,7 @@ impl AppUseCase {
     pub async fn list_recent_job_runs(&self, actor: &User, limit: usize) -> AppResult<Vec<JobRun>> {
         require(actor, &Entitlement::ManageConfig)?;
         let active_runs = {
-            let runs = self.runtime.job_run_tracker.list_active().await;
+            let runs = self.runtime.jobs.job_run_tracker.list_active().await;
             if runs.is_empty() {
                 self.load_active_job_run_projection().await?
             } else {
@@ -250,8 +250,8 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut receiver = app.runtime.job_run_tracker.subscribe();
-            let mut initial_runs = app.runtime.job_run_tracker.list_active().await;
+            let mut receiver = app.runtime.jobs.job_run_tracker.subscribe();
+            let mut initial_runs = app.runtime.jobs.job_run_tracker.list_active().await;
             if initial_runs.is_empty() {
                 initial_runs = match app.load_active_job_run_projection().await {
                     Ok(runs) => runs,
@@ -293,6 +293,7 @@ impl AppUseCase {
             .await?;
         let run_payload = JobRun::from_record(&run, None);
         self.runtime
+            .jobs
             .job_run_tracker
             .upsert_active_run(run_payload.clone())
             .await;
@@ -331,6 +332,7 @@ impl AppUseCase {
             .await?;
         let run_payload = JobRun::from_record(&run, None);
         self.runtime
+            .jobs
             .job_run_tracker
             .upsert_active_run(run_payload)
             .await;
@@ -351,6 +353,7 @@ impl AppUseCase {
 
     pub async fn set_job_next_run_at(&self, job_key: JobKey, next_run_at: chrono::DateTime<Utc>) {
         self.runtime
+            .jobs
             .job_run_tracker
             .set_next_run_at(job_key, next_run_at)
             .await;
@@ -367,7 +370,13 @@ impl AppUseCase {
     }
 
     async fn ensure_job_can_start(&self, job_key: JobKey) -> AppResult<()> {
-        if self.runtime.job_run_tracker.has_active_job(job_key).await {
+        if self
+            .runtime
+            .jobs
+            .job_run_tracker
+            .has_active_job(job_key)
+            .await
+        {
             return Err(AppError::Validation(format!(
                 "{} is already running",
                 job_key.display_name()
@@ -375,7 +384,12 @@ impl AppUseCase {
         }
 
         if let Some(facet) = job_key_library_facet(job_key) {
-            let active_scans = self.runtime.library_scan_tracker.list_active().await;
+            let active_scans = self
+                .runtime
+                .library
+                .library_scan_tracker
+                .list_active()
+                .await;
             if active_scans
                 .into_iter()
                 .any(|session| session.facet == facet)
@@ -540,7 +554,7 @@ impl AppUseCase {
             }
             JobKey::HealthChecks => {
                 let results = self.run_health_checks().await;
-                *self.runtime.health_check_results.write().await = results.clone();
+                *self.runtime.health.results.write().await = results.clone();
                 let errors = results
                     .iter()
                     .filter(|result| matches!(result.status, HealthCheckStatus::Error))
@@ -625,6 +639,7 @@ impl AppUseCase {
         run.updated_at = completed_at;
         let updated = self.services.events.job_runs.update_job_run(&run).await?;
         self.runtime
+            .jobs
             .job_run_tracker
             .upsert_active_run(JobRun::from_record(&updated, library_scan_progress))
             .await;
@@ -661,6 +676,7 @@ impl AppUseCase {
         run.updated_at = completed_at;
         let updated = self.services.events.job_runs.update_job_run(&run).await?;
         self.runtime
+            .jobs
             .job_run_tracker
             .upsert_active_run(JobRun::from_record(&updated, None))
             .await;

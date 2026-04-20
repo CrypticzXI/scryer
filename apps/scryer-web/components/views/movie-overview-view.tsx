@@ -11,7 +11,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleHistoryModal } from "@/components/common/title-history-modal";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -597,18 +596,10 @@ export function MovieOverviewView({
   title,
   collections,
   events: _events,
-  searchResults,
-  searching,
   renamePlan,
   renamePreviewing,
   renameApplying,
-  interactiveSearchAttempted,
-  searchMonitoredLoading,
   refreshAndScanLoading,
-  deleteLoading,
-  onSearch,
-  onQueue,
-  onSearchMonitored,
   onRefreshAndScan,
   onTitleChanged,
   onPreviewRename,
@@ -624,7 +615,6 @@ export function MovieOverviewView({
   onPauseWanted,
   onResumeWanted,
   onResetWanted,
-  onRequestDeleteTitle,
   blocklistEntries,
   mediaFiles,
   subtitleDownloads,
@@ -691,38 +681,6 @@ export function MovieOverviewView({
   const wantedPhaseLabel = wantedItem?.searchPhase
     ? localizedWantedPhase(t, wantedItem.searchPhase)
     : null;
-  const interactiveSearchPanel = (
-    <div className="p-4">
-      {searching ? (
-        <div className="flex flex-col items-center gap-4 py-8">
-          <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
-          <p className="text-sm text-muted-foreground">{t("title.searchingReleases")}</p>
-          <div className="w-full space-y-2">
-            {[1, 2, 3].map((n) => (
-              <div
-                key={n}
-                className="h-12 animate-pulse rounded-lg bg-muted"
-                style={{ animationDelay: `${n * 150}ms` }}
-              />
-            ))}
-          </div>
-        </div>
-      ) : searchResults.length > 0 ? (
-        <SearchResultBuckets
-          results={searchResults}
-          onQueue={onQueue}
-        />
-      ) : interactiveSearchAttempted ? (
-        <p className="text-sm text-muted-foreground">
-          {t("title.noReleasesFound", { name: title.name })}
-        </p>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          {t("title.interactiveSearchHint", { name: title.name })}
-        </p>
-      )}
-    </div>
-  );
 
   return (
     <div className="space-y-4">
@@ -942,17 +900,10 @@ export function MovieOverviewView({
 
       <OverviewControlPanel
         monitored={title.monitored}
-        searchMonitoredLabel={t("label.search")}
         monitoredUpdating={monitoredUpdating}
-        searchMonitoredLoading={searchMonitoredLoading}
-        interactiveSearchLoading={searching}
         refreshAndScanLoading={refreshAndScanLoading}
-        deleteLoading={deleteLoading}
         onToggleMonitoring={() => void onSetTitleMonitored(!title.monitored)}
-        onSearchMonitored={() => void onSearchMonitored()}
-        onInteractiveSearch={() => void onSearch()}
         onRefreshAndScan={() => void onRefreshAndScan()}
-        onRequestDelete={onRequestDeleteTitle}
         onHistory={() => setHistoryOpen(true)}
         settingsPanel={(
             <TitleSettingsPanel
@@ -964,7 +915,6 @@ export function MovieOverviewView({
               onOpenFixMatch={onOpenFixMatch}
             />
         )}
-        interactiveSearchPanel={interactiveSearchPanel}
       />
 
       {/* files on disk */}

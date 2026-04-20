@@ -1,5 +1,14 @@
 use super::*;
 
+fn hydration_source_for_scan_mode(
+    mode: LibraryScanMode,
+) -> crate::catalog_workflow::HydrationSource {
+    match mode {
+        LibraryScanMode::Full => crate::catalog_workflow::HydrationSource::LibraryScanFull,
+        LibraryScanMode::Additive => crate::catalog_workflow::HydrationSource::LibraryScanAdditive,
+    }
+}
+
 pub(super) async fn title_requires_scan_hydration(
     app: &AppUseCase,
     title: &Title,
@@ -177,6 +186,15 @@ impl AppUseCase {
         coordinator.add_file_total(file_total).await;
         coordinator.mark_file_total_known().await;
 
+        let hydration_source = self
+            .runtime
+            .library
+            .library_scan_tracker
+            .get_session(session_id)
+            .await
+            .map(|session| hydration_source_for_scan_mode(session.mode))
+            .unwrap_or(crate::catalog_workflow::HydrationSource::LibraryScanFull);
+
         let mut hydration_targets = Vec::new();
         for work in workset.values() {
             let needs_hydration =
@@ -186,12 +204,14 @@ impl AppUseCase {
                     title: work.title.clone(),
                     requested_tvdb_id: None,
                     sync_wanted_after_completion: false,
+                    source: hydration_source,
                 });
             }
         }
 
         let track_hydration_metadata_progress = self
             .runtime
+            .library
             .library_scan_tracker
             .get_session(session_id)
             .await
@@ -377,6 +397,7 @@ impl AppUseCase {
                     title: request.work.title.clone(),
                     requested_tvdb_id: None,
                     sync_wanted_after_completion: false,
+                    source: crate::catalog_workflow::HydrationSource::Interactive,
                 }])
                 .await?;
             request.work.title = hydration_outcome
@@ -646,7 +667,7 @@ impl AppUseCase {
 
         let mut summary = LibraryScanSummary::default();
         let mut layout_summary = TitleScanLayoutSummary::default();
-        let analysis_limit = self.runtime.library_scan_analysis_limit.clone();
+        let analysis_limit = self.runtime.library.library_scan_analysis_limit.clone();
         let mut pending_progress = TitleScanProgressDelta::default();
         let mut unchanged_file_skips = 0usize;
         let mut analyzed_files = 0usize;

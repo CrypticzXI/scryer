@@ -103,6 +103,8 @@ fn map_queue_item(
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,

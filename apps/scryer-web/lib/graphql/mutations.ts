@@ -1,4 +1,4 @@
-import { JOB_RUN_FIELDS } from "./queries";
+import { JOB_RUN_FIELDS, TITLE_CORE_FIELDS } from "./queries";
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
@@ -140,7 +140,11 @@ export const reorderDownloadClientsMutation = `mutation ReorderDownloadClients($
 
 export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
   addTitle(input: $input) {
-    title { id name facet minAvailability }
+    title {${TITLE_CORE_FIELDS}
+    }
+    metadataHydrationState
+    reusedExistingTitle
+    reusedQueuedDownload
     downloadJobId
     queuedDownload {
       jobId
@@ -154,7 +158,11 @@ export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
 
 export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTitleInput!) {
   addTitleAndQueueDownload(input: $input) {
-    title { id name facet }
+    title {${TITLE_CORE_FIELDS}
+    }
+    metadataHydrationState
+    reusedExistingTitle
+    reusedQueuedDownload
     downloadJobId
     queuedDownload {
       jobId
@@ -518,8 +526,17 @@ export const deleteDownloadMutation = `mutation DeleteDownload($input: DeleteDow
   deleteDownload(input: $input) {
     kind
     downloadClientItemId
+    commandId
     removed
     clientType
+    queueItem {
+      id
+      clientType
+      downloadClientItemId
+      state
+      deleteStatus
+      deleteErrorMessage
+    }
   }
 }`;
 

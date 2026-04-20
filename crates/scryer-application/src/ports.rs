@@ -6,6 +6,7 @@ use scryer_domain::ImportType;
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,
@@ -13,7 +14,27 @@ pub trait TitleRepository: Send + Sync {
     ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>>;
+    async fn find_by_external_id_in_facet(
+        &self,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>>;
+    async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome>;
     async fn create(&self, title: Title) -> AppResult<Title>;
+    async fn list_titles_due_for_hydration(
+        &self,
+        limit: usize,
+        excluded_facets: &[MediaFacet],
+    ) -> AppResult<Vec<PendingTitleHydration>>;
+    async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
+    async fn schedule_title_metadata_hydration_retry(
+        &self,
+        id: &str,
+        next_attempt_at: &str,
+        attempt_count: i64,
+    ) -> AppResult<()>;
+    async fn clear_title_metadata_hydration_retry_state(&self, id: &str) -> AppResult<()>;
     async fn update_monitored(&self, id: &str, monitored: bool) -> AppResult<Title>;
     async fn update_metadata(
         &self,
@@ -230,6 +251,8 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_terminal_download_queue_commands_older_than(&self, days: i64)
+    -> AppResult<u32>;
     async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
@@ -321,6 +344,11 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     ) -> AppResult<Option<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+    ) -> AppResult<Option<DownloadSubmission>>;
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
 
@@ -511,6 +539,37 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
     async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()>;
 }
 
+#[async_trait]
+pub trait DownloadQueueCommandRepository: Send + Sync {
+    async fn queue_delete_command(
+        &self,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<crate::DownloadQueueCommandRecord>;
+
+    async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64>;
+
+    async fn list_pending_delete_commands(
+        &self,
+    ) -> AppResult<Vec<crate::DownloadQueueCommandRecord>>;
+
+    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()>;
+
+    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()>;
+
+    async fn mark_delete_command_failed(&self, id: &str, error_text: Option<&str>)
+    -> AppResult<()>;
+
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        sources: &[(String, String, bool)],
+    ) -> AppResult<Vec<crate::DownloadQueueCommandRecord>>;
+
+    async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32>;
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkflowOperationInfo {
     pub id: String,
@@ -675,6 +734,29 @@ pub trait WantedItemRepository: Send + Sync {
             transition.grabbed_release.as_deref(),
         )
         .await
+    }
+
+    async fn complete_wanted_item_for_title(
+        &self,
+        title_id: &str,
+        episode_id: Option<&str>,
+        last_search_at: Option<&str>,
+        current_score: Option<i32>,
+    ) -> AppResult<bool> {
+        let Some(wanted) = self.get_wanted_item_for_title(title_id, episode_id).await? else {
+            return Ok(false);
+        };
+
+        self.transition_wanted_to_completed(&WantedCompleteTransition {
+            id: wanted.id,
+            last_search_at: last_search_at.map(str::to_string),
+            search_count: wanted.search_count,
+            current_score: current_score.or(wanted.current_score),
+            grabbed_release: wanted.grabbed_release,
+        })
+        .await?;
+
+        Ok(true)
     }
 
     async fn transition_wanted_to_paused(
@@ -1185,6 +1267,16 @@ pub trait DownloadClient: Send + Sync {
         Err(AppError::Repository(
             "delete is not supported for this download client".to_string(),
         ))
+    }
+
+    async fn delete_queue_item_for_client(
+        &self,
+        client_type: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        let _ = client_type;
+        self.delete_queue_item(id, is_history).await
     }
 
     async fn mark_imported(&self, _request: &DownloadClientMarkImportedRequest) -> AppResult<()> {

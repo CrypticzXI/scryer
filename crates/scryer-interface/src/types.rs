@@ -1,12 +1,13 @@
 use async_graphql::{Enum, InputObject, Json, SimpleObject};
 use scryer_application::{
     ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
-    ActivitySeverity as AppActivitySeverity, DownloadSourceKind as AppDownloadSourceKind,
-    JobCategory as AppJobCategory, JobKey as AppJobKey, JobRunStatus as AppJobRunStatus,
-    JobScheduleKind as AppJobScheduleKind, JobSection as AppJobSection,
-    JobTriggerSource as AppJobTriggerSource, LibraryScanMode as AppLibraryScanMode,
-    LibraryScanStatus as AppLibraryScanStatus, PendingReleaseStatus as AppPendingReleaseStatus,
-    ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
+    ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
+    DownloadSourceKind as AppDownloadSourceKind, JobCategory as AppJobCategory,
+    JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
+    JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
+    LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
+    PendingReleaseStatus as AppPendingReleaseStatus, ScoringOverrides as AppScoringOverrides,
+    ScoringPersona as AppScoringPersona, SortDirection as AppSortDirection,
     WantedStatus as AppWantedStatus,
 };
 use scryer_domain::{
@@ -231,6 +232,142 @@ impl DownloadQueueStateValue {
             DownloadQueueState::Completed => Self::Completed,
             DownloadQueueState::ImportPending => Self::ImportPending,
             DownloadQueueState::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadDisplayStateValue {
+    Queued,
+    Downloading,
+    Paused,
+    PostProcessing,
+    Completed,
+    Failed,
+    Importing,
+    ImportPending,
+    ImportBlocked,
+    ImportFailed,
+    Removing,
+    RemoveFailed,
+}
+
+impl DownloadDisplayStateValue {
+    pub fn from_application(value: scryer_application::DownloadDisplayState) -> Self {
+        match value {
+            scryer_application::DownloadDisplayState::Queued => Self::Queued,
+            scryer_application::DownloadDisplayState::Downloading => Self::Downloading,
+            scryer_application::DownloadDisplayState::Paused => Self::Paused,
+            scryer_application::DownloadDisplayState::PostProcessing => Self::PostProcessing,
+            scryer_application::DownloadDisplayState::Completed => Self::Completed,
+            scryer_application::DownloadDisplayState::Failed => Self::Failed,
+            scryer_application::DownloadDisplayState::Importing => Self::Importing,
+            scryer_application::DownloadDisplayState::ImportPending => Self::ImportPending,
+            scryer_application::DownloadDisplayState::ImportBlocked => Self::ImportBlocked,
+            scryer_application::DownloadDisplayState::ImportFailed => Self::ImportFailed,
+            scryer_application::DownloadDisplayState::Removing => Self::Removing,
+            scryer_application::DownloadDisplayState::RemoveFailed => Self::RemoveFailed,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadActivityFilterValue {
+    All,
+    Downloading,
+    Queued,
+    Paused,
+    PostProcessing,
+}
+
+impl DownloadActivityFilterValue {
+    pub fn into_application(self) -> scryer_application::DownloadActivityFilter {
+        match self {
+            Self::All => scryer_application::DownloadActivityFilter::All,
+            Self::Downloading => scryer_application::DownloadActivityFilter::Downloading,
+            Self::Queued => scryer_application::DownloadActivityFilter::Queued,
+            Self::Paused => scryer_application::DownloadActivityFilter::Paused,
+            Self::PostProcessing => scryer_application::DownloadActivityFilter::PostProcessing,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadImportFilterValue {
+    All,
+    Importing,
+    Pending,
+    Blocked,
+    Failed,
+}
+
+impl DownloadImportFilterValue {
+    pub fn into_application(self) -> scryer_application::DownloadImportFilter {
+        match self {
+            Self::All => scryer_application::DownloadImportFilter::All,
+            Self::Importing => scryer_application::DownloadImportFilter::Importing,
+            Self::Pending => scryer_application::DownloadImportFilter::Pending,
+            Self::Blocked => scryer_application::DownloadImportFilter::Blocked,
+            Self::Failed => scryer_application::DownloadImportFilter::Failed,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadHistoryFilterValue {
+    All,
+    Success,
+    Failed,
+}
+
+impl DownloadHistoryFilterValue {
+    pub fn into_application(self) -> scryer_application::DownloadHistoryFilter {
+        match self {
+            Self::All => scryer_application::DownloadHistoryFilter::All,
+            Self::Success => scryer_application::DownloadHistoryFilter::Success,
+            Self::Failed => scryer_application::DownloadHistoryFilter::Failed,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadHistorySortKeyValue {
+    Title,
+    Client,
+    Status,
+    Progress,
+    Size,
+}
+
+impl DownloadHistorySortKeyValue {
+    pub fn into_application(self) -> AppDownloadHistorySortKey {
+        match self {
+            Self::Title => AppDownloadHistorySortKey::Title,
+            Self::Client => AppDownloadHistorySortKey::Client,
+            Self::Status => AppDownloadHistorySortKey::Status,
+            Self::Progress => AppDownloadHistorySortKey::Progress,
+            Self::Size => AppDownloadHistorySortKey::Size,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum SortDirectionValue {
+    Asc,
+    Desc,
+}
+
+impl SortDirectionValue {
+    pub fn into_application(self) -> AppSortDirection {
+        match self {
+            Self::Asc => AppSortDirection::Asc,
+            Self::Desc => AppSortDirection::Desc,
         }
     }
 }
@@ -506,6 +643,26 @@ impl ImportErrorCodeValue {
             ImportErrorCode::PermissionDenied => Self::PermissionDenied,
             ImportErrorCode::DiskFull => Self::DiskFull,
             ImportErrorCode::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum DownloadQueueDeleteStatusValue {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl DownloadQueueDeleteStatusValue {
+    pub fn from_domain(value: scryer_domain::DownloadQueueDeleteStatus) -> Self {
+        match value {
+            scryer_domain::DownloadQueueDeleteStatus::Queued => Self::Queued,
+            scryer_domain::DownloadQueueDeleteStatus::Running => Self::Running,
+            scryer_domain::DownloadQueueDeleteStatus::Completed => Self::Completed,
+            scryer_domain::DownloadQueueDeleteStatus::Failed => Self::Failed,
         }
     }
 }
@@ -1479,6 +1636,7 @@ pub struct DownloadQueueItemPayload {
     pub client_name: String,
     pub client_type: String,
     pub state: DownloadQueueStateValue,
+    pub display_state: DownloadDisplayStateValue,
     pub progress_percent: i32,
     pub size_bytes: Option<String>,
     pub remaining_seconds: Option<i32>,
@@ -1491,6 +1649,8 @@ pub struct DownloadQueueItemPayload {
     pub import_error_code: Option<ImportErrorCodeValue>,
     pub import_error_message: Option<String>,
     pub imported_at: Option<String>,
+    pub delete_status: Option<DownloadQueueDeleteStatusValue>,
+    pub delete_error_message: Option<String>,
     pub tracked_state: Option<TrackedDownloadStateValue>,
     pub tracked_status: Option<TrackedDownloadStatusValue>,
     pub tracked_status_messages: Vec<String>,
@@ -1501,6 +1661,22 @@ pub struct DownloadQueueItemPayload {
 pub struct DownloadHistoryPagePayload {
     pub items: Vec<DownloadQueueItemPayload>,
     pub has_more: bool,
+    pub total_count: i32,
+    pub available_clients: Vec<DownloadClientFilterOptionPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DownloadImportPagePayload {
+    pub items: Vec<DownloadQueueItemPayload>,
+    pub has_more: bool,
+    pub total_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DownloadClientFilterOptionPayload {
+    pub client_id: String,
+    pub client_name: String,
+    pub client_type: String,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1569,8 +1745,29 @@ pub struct AssignTrackedDownloadTitleInput {
 #[derive(SimpleObject, Clone)]
 pub struct AddTitleResult {
     pub title: TitlePayload,
+    pub metadata_hydration_state: AddTitleHydrationStateValue,
+    pub reused_existing_title: bool,
+    pub reused_queued_download: bool,
     pub download_job_id: Option<String>,
     pub queued_download: Option<QueueDownloadPayload>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum AddTitleHydrationStateValue {
+    Pending,
+    Complete,
+    NotRequired,
+}
+
+impl AddTitleHydrationStateValue {
+    pub fn from_application(value: scryer_application::AddTitleHydrationState) -> Self {
+        match value {
+            scryer_application::AddTitleHydrationState::Pending => Self::Pending,
+            scryer_application::AddTitleHydrationState::Complete => Self::Complete,
+            scryer_application::AddTitleHydrationState::NotRequired => Self::NotRequired,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2004,6 +2201,7 @@ pub enum DownloadQueueActionKindValue {
     AssignedTrackedDownloadTitle,
     Paused,
     Resumed,
+    DeleteQueued,
     Deleted,
 }
 
@@ -2013,6 +2211,7 @@ pub struct DownloadQueueActionPayload {
     pub download_client_item_id: String,
     pub client_type: Option<String>,
     pub import_id: Option<String>,
+    pub command_id: Option<String>,
     pub removed: bool,
     pub queue_item: Option<DownloadQueueItemPayload>,
 }
@@ -2505,6 +2704,7 @@ pub struct ResumeDownloadInput {
 
 #[derive(InputObject)]
 pub struct DeleteDownloadInput {
+    pub client_type: String,
     pub download_client_item_id: String,
     pub is_history: bool,
 }

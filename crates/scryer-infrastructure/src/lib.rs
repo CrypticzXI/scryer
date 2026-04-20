@@ -51,7 +51,8 @@ pub use staged_nzb_store::FileSystemStagedNzbStore;
 pub use title_images::SqliteTitleImageProcessor;
 pub(crate) use types::sqlite_url_with_create;
 pub use types::{
-    EmbeddedMigrationDescriptor, LibraryProbeSignatureRecord, MigrationMode, MigrationStatus,
-    SettingDefinitionSeed, SettingsDefinitionRecord, SettingsValueRecord, WorkflowOperationRecord,
+    DownloadQueueCommandRecord, EmbeddedMigrationDescriptor, LibraryProbeSignatureRecord,
+    MigrationMode, MigrationStatus, SettingDefinitionSeed, SettingsDefinitionRecord,
+    SettingsValueRecord, WorkflowOperationRecord,
 };
 pub use workflow_store::SqliteWorkflowStore;

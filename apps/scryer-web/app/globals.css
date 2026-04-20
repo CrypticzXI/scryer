@@ -907,6 +907,11 @@ h6 {
   .pt-safe {
     padding-top: env(safe-area-inset-top);
   }
+  @media (max-width: 767px) {
+    .pt-safe-comfort {
+      padding-top: calc(env(safe-area-inset-top) + 0.5rem);
+    }
+  }
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom);
   }

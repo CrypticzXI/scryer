@@ -15,6 +15,7 @@ import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-cont
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Facet, JobDefinition, JobKey, JobRun, LibraryScanStatus } from "@/lib/types";
 import { isTerminalJobRunStatus } from "@/lib/utils/job-runs";
+import { cn } from "@/lib/utils";
 
 type SystemJobsViewState = {
   jobs: JobDefinition[];
@@ -505,7 +506,87 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
             {t("jobs.action.run")}
           </Button>
         </TableCell>
-      </TableRow>
+        </TableRow>
+    ));
+
+  const renderMobileCards = (rows: JobTableRow[]) =>
+    rows.map(({ job, lastRun, status, isDisabled }) => (
+      <div
+        key={job.key}
+        className="rounded-xl border border-border bg-card/55 p-4"
+      >
+        <div
+          className="cursor-pointer space-y-3"
+          onClick={() => onSelectJob(job.key)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onSelectJob(job.key);
+            }
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm font-semibold text-foreground">{job.displayName}</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">{job.description}</p>
+            </div>
+            <span
+              className={cn(
+                "shrink-0 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium",
+                runStatusTone(status),
+              )}
+            >
+              {runStatusLabel(status, t)}
+            </span>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("jobs.column.schedule")}
+              </p>
+              <p className="text-sm text-foreground/85">{job.schedule.description}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("jobs.column.nextRun")}
+              </p>
+              <p className="text-sm text-foreground/85">{formatDate(job.schedule.nextRunAt, t)}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {t("jobs.column.lastRun")}
+              </p>
+              <p className="text-sm text-foreground/85">
+                {formatDate(lastRun?.completedAt ?? lastRun?.startedAt ?? null, t)}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-3">
+          <button
+            type="button"
+            className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            onClick={() => onSelectJob(job.key)}
+          >
+            {t("jobs.recentRuns")}
+          </button>
+          <Button
+            size="sm"
+            variant="default"
+            disabled={isDisabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTriggerJob(job.key);
+            }}
+          >
+            {t("jobs.action.run")}
+          </Button>
+        </div>
+      </div>
     ));
 
   return (
@@ -516,19 +597,63 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
             <CardTitle>{t("jobs.title")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {renderSortableHeader("name", t("jobs.column.name"))}
-                  <TableHead className="w-[14rem]">{t("jobs.column.schedule")}</TableHead>
-                  {renderSortableHeader("nextRun", t("jobs.column.nextRun"), "w-[10.5rem]")}
-                  {renderSortableHeader("lastRun", t("jobs.column.lastRun"), "w-[10.5rem]")}
-                  {renderSortableHeader("status", t("jobs.column.status"))}
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>{renderRows(sortedJobRows)}</TableBody>
-            </Table>
+            <div className="space-y-3 md:hidden">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant={sortKey === "name" ? "secondary" : "outline"}
+                  onClick={() => handleSort("name")}
+                >
+                  {t("jobs.column.name")}
+                  {renderSortIcon("name")}
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant={sortKey === "nextRun" ? "secondary" : "outline"}
+                  onClick={() => handleSort("nextRun")}
+                >
+                  {t("jobs.column.nextRun")}
+                  {renderSortIcon("nextRun")}
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant={sortKey === "lastRun" ? "secondary" : "outline"}
+                  onClick={() => handleSort("lastRun")}
+                >
+                  {t("jobs.column.lastRun")}
+                  {renderSortIcon("lastRun")}
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant={sortKey === "status" ? "secondary" : "outline"}
+                  onClick={() => handleSort("status")}
+                >
+                  {t("jobs.column.status")}
+                  {renderSortIcon("status")}
+                </Button>
+              </div>
+              <div className="space-y-3">{renderMobileCards(sortedJobRows)}</div>
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {renderSortableHeader("name", t("jobs.column.name"))}
+                    <TableHead className="w-[14rem]">{t("jobs.column.schedule")}</TableHead>
+                    {renderSortableHeader("nextRun", t("jobs.column.nextRun"), "w-[10.5rem]")}
+                    {renderSortableHeader("lastRun", t("jobs.column.lastRun"), "w-[10.5rem]")}
+                    {renderSortableHeader("status", t("jobs.column.status"))}
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>{renderRows(sortedJobRows)}</TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       </div>

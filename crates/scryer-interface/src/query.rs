@@ -114,6 +114,30 @@ fn from_download_history_page(
             .map(from_download_queue_item)
             .collect(),
         has_more: page.has_more,
+        total_count: page.total_count as i32,
+        available_clients: page
+            .available_clients
+            .into_iter()
+            .map(|client| DownloadClientFilterOptionPayload {
+                client_id: client.client_id,
+                client_name: client.client_name,
+                client_type: client.client_type,
+            })
+            .collect(),
+    }
+}
+
+fn from_download_import_page(
+    page: scryer_application::DownloadImportPage,
+) -> DownloadImportPagePayload {
+    DownloadImportPagePayload {
+        items: page
+            .items
+            .into_iter()
+            .map(from_download_queue_item)
+            .collect(),
+        has_more: page.has_more,
+        total_count: page.total_count as i32,
     }
 }
 
@@ -137,6 +161,54 @@ fn from_metadata_search_item(
     }
 }
 
+async fn title_payloads_from_titles(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+    titles: Vec<scryer_domain::Title>,
+) -> GqlResult<Vec<TitlePayload>> {
+    let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
+    let summaries = app
+        .list_primary_collection_summaries(actor, &title_ids)
+        .await
+        .map_err(to_gql_error)?;
+    let media_size_summaries = app
+        .list_title_media_size_summaries(actor, &title_ids)
+        .await
+        .map_err(to_gql_error)?;
+    let episode_progress_summaries = app
+        .list_title_episode_progress_summaries(actor, &title_ids)
+        .await
+        .map_err(to_gql_error)?;
+    let summary_map: std::collections::HashMap<&str, _> =
+        summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
+    let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
+        .iter()
+        .map(|summary| (summary.title_id.as_str(), summary.total_size_bytes))
+        .collect();
+    let episode_progress_map: std::collections::HashMap<&str, _> = episode_progress_summaries
+        .iter()
+        .map(|summary| (summary.title_id.as_str(), summary))
+        .collect();
+
+    Ok(titles
+        .into_iter()
+        .map(|t| {
+            let id = t.id.clone();
+            let mut payload = from_title(t);
+            if let Some(s) = summary_map.get(id.as_str()) {
+                payload.quality_tier = s.label.clone();
+            }
+            payload.size_bytes = media_size_map.get(id.as_str()).copied();
+            if let Some(summary) = episode_progress_map.get(id.as_str()) {
+                payload.episodes_owned = Some(summary.owned_episodes);
+                payload.episodes_monitored = Some(summary.monitored_episodes);
+                payload.episodes_total = Some(summary.total_episodes);
+            }
+            payload
+        })
+        .collect())
+}
+
 #[derive(Copy, Clone)]
 pub struct QueryRoot;
 
@@ -156,47 +228,23 @@ impl QueryRoot {
             .await
             .map_err(to_gql_error)?;
 
-        let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-        let summaries = app
-            .list_primary_collection_summaries(&actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?;
-        let media_size_summaries = app
-            .list_title_media_size_summaries(&actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?;
-        let episode_progress_summaries = app
-            .list_title_episode_progress_summaries(&actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?;
-        let summary_map: std::collections::HashMap<&str, _> =
-            summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
-        let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
-            .iter()
-            .map(|summary| (summary.title_id.as_str(), summary.total_size_bytes))
-            .collect();
-        let episode_progress_map: std::collections::HashMap<&str, _> = episode_progress_summaries
-            .iter()
-            .map(|summary| (summary.title_id.as_str(), summary))
-            .collect();
+        title_payloads_from_titles(&app, &actor, titles).await
+    }
 
-        Ok(titles
-            .into_iter()
-            .map(|t| {
-                let id = t.id.clone();
-                let mut payload = from_title(t);
-                if let Some(s) = summary_map.get(id.as_str()) {
-                    payload.quality_tier = s.label.clone();
-                }
-                payload.size_bytes = media_size_map.get(id.as_str()).copied();
-                if let Some(summary) = episode_progress_map.get(id.as_str()) {
-                    payload.episodes_owned = Some(summary.owned_episodes);
-                    payload.episodes_monitored = Some(summary.monitored_episodes);
-                    payload.episodes_total = Some(summary.total_episodes);
-                }
-                payload
-            })
-            .collect())
+    async fn titles_by_external_ids(
+        &self,
+        ctx: &Context<'_>,
+        source: String,
+        values: Vec<String>,
+    ) -> GqlResult<Vec<TitlePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let titles = app
+            .list_titles_by_external_ids(&actor, &source, &values)
+            .await
+            .map_err(to_gql_error)?;
+
+        title_payloads_from_titles(&app, &actor, titles).await
     }
 
     async fn title(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<TitlePayload>> {
@@ -698,6 +746,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        activity_filter: Option<DownloadActivityFilterValue>,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -706,10 +755,38 @@ impl QueryRoot {
                 &actor,
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
+                activity_filter
+                    .unwrap_or(DownloadActivityFilterValue::All)
+                    .into_application(),
             )
             .await
             .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_download_queue_item).collect())
+    }
+
+    async fn download_import(
+        &self,
+        ctx: &Context<'_>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+        filter: Option<DownloadImportFilterValue>,
+    ) -> GqlResult<DownloadImportPagePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+        let offset = offset.unwrap_or(0).max(0) as usize;
+        let page = app
+            .list_download_import_page(
+                &actor,
+                limit,
+                offset,
+                filter
+                    .unwrap_or(DownloadImportFilterValue::All)
+                    .into_application(),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_download_import_page(page))
     }
 
     async fn download_history(
@@ -717,13 +794,37 @@ impl QueryRoot {
         ctx: &Context<'_>,
         limit: Option<i32>,
         offset: Option<i32>,
+        filters: Option<Vec<DownloadHistoryFilterValue>>,
+        client_ids: Option<Vec<String>>,
+        scryer_submitted_only: Option<bool>,
+        sort_key: Option<DownloadHistorySortKeyValue>,
+        sort_direction: Option<SortDirectionValue>,
     ) -> GqlResult<DownloadHistoryPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+        let limit = limit.unwrap_or(50).clamp(1, 50) as usize;
         let offset = offset.unwrap_or(0).max(0) as usize;
+        let sort = sort_key.map(|key| scryer_application::DownloadHistorySort {
+            key: key.into_application(),
+            direction: sort_direction
+                .unwrap_or(SortDirectionValue::Asc)
+                .into_application(),
+        });
         let page = app
-            .list_download_history_page(&actor, limit, offset)
+            .list_download_history_page(
+                &actor,
+                limit,
+                offset,
+                filters.map(|filters| {
+                    filters
+                        .into_iter()
+                        .map(DownloadHistoryFilterValue::into_application)
+                        .collect()
+                }),
+                client_ids,
+                scryer_submitted_only.unwrap_or(false),
+                sort,
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(from_download_history_page(page))
@@ -1827,6 +1928,7 @@ impl TitlePayload {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        activity_filter: Option<DownloadActivityFilterValue>,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1835,6 +1937,9 @@ impl TitlePayload {
                 &actor,
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
+                activity_filter
+                    .unwrap_or(DownloadActivityFilterValue::All)
+                    .into_application(),
             )
             .await
             .map_err(to_gql_error)?;

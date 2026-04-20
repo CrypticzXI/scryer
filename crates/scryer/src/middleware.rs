@@ -1,6 +1,5 @@
 use async_graphql::Data;
 use async_graphql::http::{ALL_WEBSOCKET_PROTOCOLS, GraphiQLSource};
-use async_graphql::parser::types::{DocumentOperations, OperationType, Selection};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
@@ -372,64 +371,8 @@ pub(crate) async fn graphql_handler(
 }
 
 fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
-    if let async_graphql::BatchRequest::Single(request) = batch
-        && let Some(status) = graphql_async_mutation_status(request)
-    {
-        return status;
-    }
-
+    let _ = batch;
     StatusCode::OK
-}
-
-fn graphql_async_mutation_status(request: &mut async_graphql::Request) -> Option<StatusCode> {
-    let operation_name = request.operation_name.clone();
-    let Ok(document) = request.parsed_query() else {
-        return None;
-    };
-
-    let operation = match (&document.operations, operation_name.as_deref()) {
-        (DocumentOperations::Single(operation), _) => operation,
-        (DocumentOperations::Multiple(operations), Some(operation_name)) => {
-            operations.get(operation_name)?
-        }
-        (DocumentOperations::Multiple(operations), None) => {
-            if operations.len() != 1 {
-                return None;
-            }
-
-            operations.values().next()?
-        }
-    };
-
-    if operation.node.ty != OperationType::Mutation {
-        return None;
-    }
-
-    let field_names = operation
-        .node
-        .selection_set
-        .node
-        .items
-        .iter()
-        .filter_map(|selection| match &selection.node {
-            Selection::Field(field) => Some(field.node.name.node.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if field_names.contains(&"rehydrateAllMetadata") {
-        return Some(StatusCode::ACCEPTED);
-    }
-
-    if field_names.contains(&"queueManualImport") {
-        return Some(StatusCode::ACCEPTED);
-    }
-
-    if field_names.contains(&"scanLibrary") {
-        return Some(StatusCode::CREATED);
-    }
-
-    None
 }
 
 async fn resolve_actor(state: &AuthState, headers: &HeaderMap) -> Option<scryer_domain::User> {
@@ -526,25 +469,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scan_library_mutation_returns_created_status() {
+    fn scan_library_mutation_returns_ok_status() {
         let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
             "mutation StartScan { scanLibrary(facet: movie) { sessionId } }",
         ));
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::CREATED);
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
     }
 
     #[test]
-    fn rehydrate_all_metadata_mutation_returns_accepted_status() {
+    fn rehydrate_all_metadata_mutation_returns_ok_status() {
         let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
             "mutation RehydrateAllMetadata { rehydrateAllMetadata(language: \"jpn\") }",
         ));
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::ACCEPTED);
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
     }
 
     #[test]
-    fn queue_manual_import_mutation_returns_accepted_status() {
+    fn queue_manual_import_mutation_returns_ok_status() {
         let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
             r#"mutation QueueManualImport {
                 queueManualImport(input: {
@@ -557,7 +500,7 @@ mod tests {
             }"#,
         ));
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::ACCEPTED);
+        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
     }
 
     #[test]

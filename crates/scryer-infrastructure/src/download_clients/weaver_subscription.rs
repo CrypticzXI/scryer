@@ -233,7 +233,7 @@ async fn run_fallback_poller(
                 return;
             }
             _ = interval.tick() => {
-                match app.list_download_queue(&actor, true, false).await {
+                match app.list_download_queue_snapshot(&actor).await {
                     Ok(items) => {
                         scryer_application::try_import_completed_downloads(
                             &app, &actor, &items,

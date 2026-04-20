@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClient } from "urql";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
-import type { Facet, Release, TitleRecord } from "@/lib/types";
+import type { ExternalId, Facet, Release, TitleRecord } from "@/lib/types";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { LocaleCode } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -13,6 +13,7 @@ import {
   searchMetadataMultiQuery,
   searchMetadataQuery,
   searchQuery,
+  titlesByExternalIdsQuery,
   titlesQuery,
 } from "@/lib/graphql/queries";
 import { scryerFetch } from "@/lib/graphql/urql-client";
@@ -74,6 +75,100 @@ function isMetadataEmpty(results: MetadataSearchResults): boolean {
   return Object.values(results).every((arr) => arr.length === 0);
 }
 
+function normalizeOrderedLookupValues(values: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function titleTvdbIds(title: TitleRecord): string[] {
+  return title.externalIds
+    .filter((externalId) => externalId.source.toLowerCase() === "tvdb")
+    .map((externalId) => externalId.value.trim())
+    .filter(Boolean);
+}
+
+function buildCatalogTitleLookupByTvdbId(titles: TitleRecord[]): Record<string, TitleRecord> {
+  const lookup: Record<string, TitleRecord> = {};
+  for (const title of titles) {
+    for (const tvdbId of titleTvdbIds(title)) {
+      if (!(tvdbId in lookup)) {
+        lookup[tvdbId] = title;
+      }
+    }
+  }
+  return lookup;
+}
+
+function metadataResultTvdbId(result: MetadataTvdbSearchItem): string {
+  return String(result.tvdbId).trim();
+}
+
+function isMetadataResultCataloged(
+  lookup: Record<string, TitleRecord>,
+  result: MetadataTvdbSearchItem,
+): boolean {
+  const tvdbId = metadataResultTvdbId(result);
+  return tvdbId !== "" && lookup[tvdbId] !== undefined;
+}
+
+function filterCatalogedMetadataResults(
+  results: MetadataTvdbSearchItem[],
+  lookup: Record<string, TitleRecord>,
+): MetadataTvdbSearchItem[] {
+  return results.filter((result) => !isMetadataResultCataloged(lookup, result));
+}
+
+function mergeCatalogResults(
+  prioritized: TitleRecord[],
+  fallback: TitleRecord[],
+): TitleRecord[] {
+  const merged: TitleRecord[] = [];
+  const seen = new Set<string>();
+  for (const title of [...prioritized, ...fallback]) {
+    if (seen.has(title.id)) {
+      continue;
+    }
+    seen.add(title.id);
+    merged.push(title);
+  }
+  return merged;
+}
+
+function sameTitleList(
+  previous: TitleRecord[],
+  next: TitleRecord[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every(
+      (item, index) =>
+        item.id === next[index]?.id &&
+        (item.posterUrl ?? null) === (next[index]?.posterUrl ?? null),
+    )
+  );
+}
+
+function sameCatalogLookup(
+  previous: Record<string, TitleRecord>,
+  next: Record<string, TitleRecord>,
+): boolean {
+  const previousKeys = Object.keys(previous);
+  const nextKeys = Object.keys(next);
+  return (
+    previousKeys.length === nextKeys.length &&
+    previousKeys.every((key) => previous[key]?.id === next[key]?.id)
+  );
+}
+
 const AUTOCOMPLETE_MIN_CHARS = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 250;
 const AUTOCOMPLETE_LIMIT = 10;
@@ -81,7 +176,6 @@ const AUTOCOMPLETE_LIMIT = 10;
 type UseGlobalSearchArgs = {
   queueFacet: Facet;
   uiLanguage: LocaleCode;
-  onCatalogChanged?: () => void;
 };
 
 export interface UseGlobalSearchResult {
@@ -142,16 +236,38 @@ function monitorTypeToMonitored(monitorType: MetadataCatalogMonitorType): boolea
   return monitorType !== "unmonitored" && monitorType !== "none";
 }
 
+function normalizeCatalogAddRequestKey(
+  facet: Facet,
+  externalIds: ExternalId[],
+): string {
+  const normalizedIds = [...externalIds]
+    .map((externalId) => ({
+      source: externalId.source.trim().toLowerCase(),
+      value: externalId.value.trim(),
+    }))
+    .filter((externalId) => externalId.source && externalId.value)
+    .sort((left, right) => {
+      const sourceCompare = left.source.localeCompare(right.source);
+      if (sourceCompare !== 0) {
+        return sourceCompare;
+      }
+      return left.value.localeCompare(right.value);
+    })
+    .map((externalId) => `${externalId.source}:${externalId.value}`)
+    .join("|");
+
+  return `${facet}|${normalizedIds}`;
+}
+
 export function useGlobalSearch({
   queueFacet: initialQueueFacet,
   uiLanguage,
-  onCatalogChanged,
 }: UseGlobalSearchArgs): UseGlobalSearchResult {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
   const [queueFacet, setQueueFacet] = useState<Facet>(initialQueueFacet);
-  const [catalogChangeSignal, setCatalogChangeSignal] = useState(0);
+  const catalogChangeSignal = 0;
   const sortByRelevance = useCallback((results: MetadataTvdbSearchItem[], query: string) => {
     const q = query.trim().toLowerCase();
 
@@ -181,6 +297,9 @@ export function useGlobalSearch({
   const [tvdbCandidates, setTvdbCandidates] = useState<MetadataTvdbSearchItem[]>([]);
   const [selectedTvdbId, setSelectedTvdbId] = useState<string | null>(null);
   const [catalogSearchResults, setCatalogSearchResults] = useState<TitleRecord[]>([]);
+  const [catalogTitlesByTvdbId, setCatalogTitlesByTvdbId] = useState<
+    Record<string, TitleRecord>
+  >({});
   const [metadataSearchResults, setMetadataSearchResults] = useState<MetadataSearchResults>(
     () => Object.fromEntries(FACET_REGISTRY.map((f) => [f.metadataKey, []])),
   );
@@ -206,33 +325,7 @@ export function useGlobalSearch({
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
-  const catalogTvdbIdsRef = useRef<Record<Facet, Set<string>>>({
-    movie: new Set<string>(),
-    series: new Set<string>(),
-    anime: new Set<string>(),
-  });
-
-  const isTitleInCatalogByFacet = useMemo(() => {
-    const buckets = Object.fromEntries(
-      FACET_REGISTRY.map((f) => [f.id, new Set<string>()]),
-    ) as Record<Facet, Set<string>>;
-
-    for (const title of catalogSearchResults) {
-      const facet = title.facet;
-      const tvdbIds = title.externalIds
-        .filter((externalId) => externalId.source.toLowerCase() === "tvdb")
-        .map((externalId) => externalId.value.trim())
-        .filter(Boolean);
-
-      tvdbIds.forEach((id) => buckets[facet].add(id));
-    }
-
-    return buckets;
-  }, [catalogSearchResults]);
-
-  useEffect(() => {
-    catalogTvdbIdsRef.current = isTitleInCatalogByFacet;
-  }, [isTitleInCatalogByFacet]);
+  const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
 
   const selectedTvdb = useMemo(() => {
     if (!selectedTvdbId) {
@@ -378,27 +471,13 @@ export function useGlobalSearch({
   );
 
   const isMetadataSearchResultInAnyCatalog = useCallback(
-    (result: MetadataTvdbSearchItem) => {
-      const tvdbId = String(result.tvdbId).trim();
-      if (!tvdbId) return false;
-      return Object.values(isTitleInCatalogByFacet).some((bucket) => bucket.has(tvdbId));
-    },
-    [isTitleInCatalogByFacet],
+    (result: MetadataTvdbSearchItem) => isMetadataResultCataloged(catalogTitlesByTvdbId, result),
+    [catalogTitlesByTvdbId],
   );
 
   const isMetadataSearchResultInCatalog = useCallback(
     (_facet: Facet, result: MetadataTvdbSearchItem) => isMetadataSearchResultInAnyCatalog(result),
     [isMetadataSearchResultInAnyCatalog],
-  );
-
-  const filterCatalogedMetadataResultsForAutocomplete = useCallback(
-    (results: MetadataTvdbSearchItem[]) =>
-      results.filter((result) => {
-        const tvdbId = String(result.tvdbId).trim();
-        if (!tvdbId) return true;
-        return !Object.values(catalogTvdbIdsRef.current).some((bucket) => bucket.has(tvdbId));
-      }),
-    [],
   );
 
   const mapFacetToTvdbType = useCallback((facet: Facet) => {
@@ -447,6 +526,40 @@ export function useGlobalSearch({
   const emptyMetadataSearchResults = useMemo<MetadataSearchResults>(
     () => Object.fromEntries(FACET_REGISTRY.map((f) => [f.metadataKey, []])),
     [],
+  );
+  const emptyCatalogTitlesByTvdbId = useMemo<Record<string, TitleRecord>>(() => ({}), []);
+
+  const lookupCatalogTitlesByExternalIds = useCallback(
+    async (
+      source: string,
+      values: string[],
+      fetchOverride?: typeof fetch,
+    ): Promise<TitleRecord[]> => {
+      const normalizedValues = normalizeOrderedLookupValues(values);
+      if (!source.trim() || normalizedValues.length === 0) {
+        return [];
+      }
+
+      const { data, error } = await client.query(
+        titlesByExternalIdsQuery,
+        {
+          source: source.trim(),
+          values: normalizedValues,
+        },
+        fetchOverride ? { fetch: fetchOverride } : undefined,
+      ).toPromise();
+      if (error) {
+        throw error;
+      }
+      return (data?.titlesByExternalIds ?? []) as TitleRecord[];
+    },
+    [client],
+  );
+
+  const lookupCatalogTitlesByTvdbIds = useCallback(
+    async (tvdbIds: string[], fetchOverride?: typeof fetch): Promise<TitleRecord[]> =>
+      lookupCatalogTitlesByExternalIds("tvdb", tvdbIds, fetchOverride),
+    [lookupCatalogTitlesByExternalIds],
   );
 
   const runNzbSearch = useCallback(
@@ -505,11 +618,17 @@ export function useGlobalSearch({
           language: uiLanguage,
         }).toPromise();
         if (searchError) throw searchError;
-        const matches = sortByRelevance(
-          (searchData.searchMetadata || []).filter(
-            (item: MetadataTvdbSearchItem) => !isMetadataSearchResultInAnyCatalog(item),
-          ),
+        const rankedMatches = sortByRelevance(
+          (searchData.searchMetadata || []) as MetadataTvdbSearchItem[],
           query,
+        );
+        const catalogLookup = buildCatalogTitleLookupByTvdbId(
+          await lookupCatalogTitlesByTvdbIds(
+            rankedMatches.map((item) => metadataResultTvdbId(item)),
+          ),
+        );
+        const matches = rankedMatches.filter(
+          (item: MetadataTvdbSearchItem) => !isMetadataResultCataloged(catalogLookup, item),
         );
         setTvdbCandidates(matches);
         setSelectedTvdbId(null);
@@ -524,7 +643,16 @@ export function useGlobalSearch({
         return [];
       }
     },
-    [client, isMetadataSearchResultInAnyCatalog, mapFacetToTvdbType, queueFacet, setGlobalStatus, t, uiLanguage, sortByRelevance],
+    [
+      client,
+      lookupCatalogTitlesByTvdbIds,
+      mapFacetToTvdbType,
+      queueFacet,
+      setGlobalStatus,
+      sortByRelevance,
+      t,
+      uiLanguage,
+    ],
   );
 
   const runMetadataAutocomplete = useCallback(
@@ -540,6 +668,9 @@ export function useGlobalSearch({
           }
           return emptyMetadataSearchResults;
         });
+        setCatalogTitlesByTvdbId((previous) =>
+          Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
+        );
         setGlobalStatus(t("label.ready"));
         return;
       }
@@ -557,6 +688,8 @@ export function useGlobalSearch({
       const { signal } = abortController;
       const abortableFetch: typeof fetch = (input, init) =>
         scryerFetch(input, { ...init, signal });
+      let directCatalogEntries: TitleRecord[] = [];
+      let promotedCatalogEntries: TitleRecord[] = [];
 
       // Fire both queries in parallel but render each result as it arrives
       // so the fast catalog query populates immediately while the metadata
@@ -569,21 +702,15 @@ export function useGlobalSearch({
         .then(async ({ data, error }) => {
           if (error) throw error;
           if (requestId !== autocompleteRequestId.current) return;
-          const catalogEntries = data.titles || [];
+          const catalogEntries = (data?.titles ?? []) as TitleRecord[];
           const enriched = await Promise.all(
             catalogEntries.map((title: TitleRecord) => resolveCatalogPosterUrl(title)),
           );
           if (requestId !== autocompleteRequestId.current) return;
-          const next = enriched.slice(0, AUTOCOMPLETE_LIMIT);
+          directCatalogEntries = enriched;
+          const next = directCatalogEntries.slice(0, AUTOCOMPLETE_LIMIT);
           setCatalogSearchResults((previous) =>
-            previous.length === next.length &&
-            previous.every(
-              (item, index) =>
-                item.id === next[index]?.id &&
-                (item.posterUrl ?? null) === (next[index]?.posterUrl ?? null),
-            )
-              ? previous
-              : next,
+            sameTitleList(previous, next) ? previous : next,
           );
         })
         .finally(() => {
@@ -596,31 +723,42 @@ export function useGlobalSearch({
         limit: AUTOCOMPLETE_LIMIT,
         language: uiLanguage,
       }, { fetch: abortableFetch }).toPromise()
-        .then(({ data, error }) => {
+        .then(async ({ data, error }) => {
           if (error) throw error;
           if (requestId !== autocompleteRequestId.current) return;
           const multi = data.searchMetadataMulti ?? { movies: [], series: [], anime: [] };
-          const movieResults = sortByRelevance(
-            filterCatalogedMetadataResultsForAutocomplete(
-              (multi.movies || []) as MetadataTvdbSearchItem[],
-            ),
+          const rankedMovies = sortByRelevance(
+            (multi.movies || []) as MetadataTvdbSearchItem[],
             trimmed,
           );
-          const animeResults = sortByRelevance(
-            filterCatalogedMetadataResultsForAutocomplete(
-              (multi.anime || []) as MetadataTvdbSearchItem[],
-            ),
+          const rankedAnime = sortByRelevance(
+            (multi.anime || []) as MetadataTvdbSearchItem[],
             trimmed,
           );
-          const animeTvdbIds = new Set(
-            animeResults.map((item) => String(item.tvdbId).trim()),
-          );
-          const seriesResults = sortByRelevance(
-            filterCatalogedMetadataResultsForAutocomplete(
-              (multi.series || []) as MetadataTvdbSearchItem[],
-            ).filter((item) => !animeTvdbIds.has(String(item.tvdbId).trim())),
+          const rankedSeries = sortByRelevance(
+            (multi.series || []) as MetadataTvdbSearchItem[],
             trimmed,
           );
+          promotedCatalogEntries = await lookupCatalogTitlesByTvdbIds(
+            [
+              ...rankedMovies.map((item) => metadataResultTvdbId(item)),
+              ...rankedAnime.map((item) => metadataResultTvdbId(item)),
+              ...rankedSeries.map((item) => metadataResultTvdbId(item)),
+            ],
+            abortableFetch,
+          );
+          if (requestId !== autocompleteRequestId.current) return;
+          const nextCatalogLookup = buildCatalogTitleLookupByTvdbId(promotedCatalogEntries);
+          setCatalogTitlesByTvdbId((previous) =>
+            sameCatalogLookup(previous, nextCatalogLookup) ? previous : nextCatalogLookup,
+          );
+          const movieResults = filterCatalogedMetadataResults(rankedMovies, nextCatalogLookup);
+          const animeResults = filterCatalogedMetadataResults(rankedAnime, nextCatalogLookup);
+          const animeTvdbIds = new Set(animeResults.map((item) => metadataResultTvdbId(item)));
+          const seriesResults = filterCatalogedMetadataResults(
+            rankedSeries,
+            nextCatalogLookup,
+          ).filter((item) => !animeTvdbIds.has(metadataResultTvdbId(item)));
           const nextMetadata: MetadataSearchResults = {
             movie: movieResults,
             series: seriesResults,
@@ -658,25 +796,41 @@ export function useGlobalSearch({
       if (catalogResult.status === "rejected" && !isAbortError(catalogResult.reason)) {
         const msg = catalogResult.reason instanceof Error ? catalogResult.reason.message : t("status.apiError");
         setGlobalStatus(msg);
-        setCatalogSearchResults((prev) => (prev.length === 0 ? prev : []));
       }
       if (metadataResult.status === "rejected" && !isAbortError(metadataResult.reason)) {
         const msg = metadataResult.reason instanceof Error ? metadataResult.reason.message : t("status.apiError");
         setGlobalStatus(msg);
         setMetadataSearchResults((prev) => (isMetadataEmpty(prev) ? prev : emptyMetadataSearchResults));
+        setCatalogTitlesByTvdbId((previous) =>
+          Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
+        );
+        promotedCatalogEntries = [];
       }
+
+      const mergedCatalogEntries = mergeCatalogResults(
+        promotedCatalogEntries,
+        directCatalogEntries,
+      );
+      const nextCatalogResults = (
+        await Promise.all(mergedCatalogEntries.map((title) => resolveCatalogPosterUrl(title)))
+      ).slice(0, AUTOCOMPLETE_LIMIT);
+      if (requestId !== autocompleteRequestId.current) return;
+      setCatalogSearchResults((previous) =>
+        sameTitleList(previous, nextCatalogResults) ? previous : nextCatalogResults,
+      );
 
       setSearching(false);
     },
     [
-      filterCatalogedMetadataResultsForAutocomplete,
       client,
-      t,
-      setGlobalStatus,
-      uiLanguage,
+      emptyCatalogTitlesByTvdbId,
       emptyMetadataSearchResults,
+      lookupCatalogTitlesByTvdbIds,
       resolveCatalogPosterUrl,
+      setGlobalStatus,
       sortByRelevance,
+      t,
+      uiLanguage,
     ],
   );
 
@@ -695,6 +849,9 @@ export function useGlobalSearch({
         }
         return emptyMetadataSearchResults;
       });
+      setCatalogTitlesByTvdbId((previous) =>
+        Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
+      );
       // Don't auto-close when the panel was force-opened (mobile overlay).
       if (!forcedOpenRef.current) {
         setIsGlobalSearchPanelOpen((isOpen) => (isOpen ? false : isOpen));
@@ -709,7 +866,12 @@ export function useGlobalSearch({
     return () => {
       window.clearTimeout(debounceTimer);
     };
-  }, [globalSearch, runMetadataAutocomplete, emptyMetadataSearchResults]);
+  }, [
+    emptyCatalogTitlesByTvdbId,
+    emptyMetadataSearchResults,
+    globalSearch,
+    runMetadataAutocomplete,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -835,6 +997,11 @@ export function useGlobalSearch({
         ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
         ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
       ];
+      const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
+      if (pendingCatalogAddKeysRef.current.has(requestKey)) {
+        return null;
+      }
+      pendingCatalogAddKeysRef.current.add(requestKey);
       try {
         const { data: addData, error: addError } = await client.mutation(addTitleMutation, {
           input: {
@@ -878,17 +1045,16 @@ export function useGlobalSearch({
           ),
         );
         await runMetadataAutocomplete(globalSearch.trim());
-        onCatalogChanged?.();
-        setCatalogChangeSignal((v) => v + 1);
         return addData.addTitle?.title?.id?.trim() || null;
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
         return null;
+      } finally {
+        pendingCatalogAddKeysRef.current.delete(requestKey);
       }
     },
     [
       globalSearch,
-      onCatalogChanged,
       resolveDefaultQualityProfileIdForFacet,
       runMetadataAutocomplete,
       client,

@@ -1,18 +1,32 @@
 
 import {
+  ArrowDown,
   ArrowDownToLine,
+  ArrowUp,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
   CircleOff,
+  CircleAlert,
+  Clock3,
+  Filter,
+  HardDrive,
   Link2,
   Loader2,
   Pause,
   Play,
   Trash2,
+  XCircle,
 } from "lucide-react";
-import { Fragment, type UIEvent, useCallback, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Fragment, type UIEvent, useCallback, useMemo, useRef, useState } from "react";
 
+import { DownloadClientTypeLogo } from "@/components/common/download-client-type-logo";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -25,36 +39,64 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { DownloadQueueItem } from "@/lib/types";
+import type {
+  ActivitySortKey,
+  DownloadActivityStatus,
+  DownloadClientFilterOption,
+  DownloadHistoryStatus,
+  DownloadImportStatus,
+  DownloadQueueItem,
+  SortConfig,
+} from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import {
-  buildQueueStatusDetail,
-  deriveDownloadQueueDisplayState,
-  normalizeQueueState,
-} from "@/lib/utils/download-queue";
+import { cn } from "@/lib/utils";
+import { buildQueueStatusDetail, normalizeQueueState } from "@/lib/utils/download-queue";
 
 type TranslateFn = ReturnType<typeof useTranslate>;
 
-type QueueMode = "scryer" | "all" | "history";
+type ActivityTab = "import" | "activity" | "history";
 
 type ActivityViewState = {
-  manualImportRequiredItems: DownloadQueueItem[];
   queueItems: DownloadQueueItem[];
   queueLoading: boolean;
+  queueLoadingMore: boolean;
   queueError: string | null;
-  lastRefreshedAt: Date | null;
   requestManualImport: (item: DownloadQueueItem) => Promise<void>;
   requestAssignTitle: (item: DownloadQueueItem) => Promise<void>;
   requestIgnore: (item: DownloadQueueItem) => Promise<void>;
   requestPause: (item: DownloadQueueItem) => Promise<void>;
   requestResume: (item: DownloadQueueItem) => Promise<void>;
   requestDelete: (item: DownloadQueueItem) => Promise<void>;
-  queueMode: QueueMode;
-  setQueueMode: (queueMode: QueueMode) => void;
-  historyHasMore: boolean;
-  historyLoadingMore: boolean;
-  requestMoreHistory: () => Promise<void>;
+  activeTab: ActivityTab;
+  setActiveTab: (tab: ActivityTab) => void;
+  importNotificationCount: number;
+  sortConfigByTab: Record<ActivityTab, SortConfig>;
+  toggleSort: (tab: ActivityTab, key: ActivitySortKey) => void;
+  activityScryerSubmittedOnly: boolean;
+  toggleActivityScryerSubmittedOnly: () => void;
+  historyScryerSubmittedOnly: boolean;
+  toggleHistoryScryerSubmittedOnly: () => void;
+  selectedImportStatuses: DownloadImportStatus[];
+  toggleImportStatus: (status: DownloadImportStatus) => void;
+  selectedActivityStatuses: DownloadActivityStatus[];
+  toggleActivityStatus: (status: DownloadActivityStatus) => void;
+  selectedHistoryStatuses: DownloadHistoryStatus[];
+  toggleHistoryStatus: (status: DownloadHistoryStatus) => void;
+  activityAvailableClients: DownloadClientFilterOption[];
+  selectedActivityClientIds: string[];
+  toggleActivityClientId: (clientId: string) => void;
+  historyAvailableClients: DownloadClientFilterOption[];
+  selectedHistoryClientIds: string[];
+  toggleHistoryClientId: (clientId: string) => void;
+  historyPage: number;
+  historyTotalPages: number;
+  goToPreviousHistoryPage: () => Promise<void>;
+  goToNextHistoryPage: () => Promise<void>;
+  historyHasPreviousPage: boolean;
+  historyHasNextPage: boolean;
+  visibleHasMore: boolean;
+  requestMoreItems: () => Promise<void>;
 };
 
 const queueStateClasses: Record<string, string> = {
@@ -64,9 +106,11 @@ const queueStateClasses: Record<string, string> = {
   paused: "border-purple-500/40 bg-purple-500/10 text-purple-200",
   completed: "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
   importing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
+  removing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
   import_pending: "border-indigo-500/40 bg-indigo-500/10 text-indigo-200",
   import_blocked: "border-amber-500/40 bg-amber-500/10 text-amber-200",
   import_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+  remove_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
   failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
 };
 
@@ -77,19 +121,145 @@ const queueStateLabels: Record<string, string> = {
   paused: "queue.state.paused",
   completed: "queue.state.completed",
   importing: "queue.manualImporting",
+  removing: "queue.deleting",
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
   import_failed: "queue.manualImportFailed",
+  remove_failed: "queue.removeFailed",
   failed: "queue.state.failed",
 };
 
 const queueStateAttention: Record<string, boolean> = {
   failed: true,
   importing: true,
+  removing: true,
   import_pending: true,
   import_blocked: true,
   import_failed: true,
+  remove_failed: true,
 };
+
+type ActivityFilterChipOption<T extends string> = {
+  value: T;
+  labelKey: string;
+  icon: LucideIcon;
+  iconClassName?: string;
+};
+
+const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
+  {
+    value: "importing",
+    labelKey: "activity.importFilter.importing",
+    icon: HardDrive,
+    iconClassName: "text-sky-400",
+  },
+  {
+    value: "pending",
+    labelKey: "activity.importFilter.pending",
+    icon: Clock3,
+    iconClassName: "text-indigo-400",
+  },
+  {
+    value: "blocked",
+    labelKey: "activity.importFilter.blocked",
+    icon: CircleAlert,
+    iconClassName: "text-amber-400",
+  },
+  {
+    value: "failed",
+    labelKey: "activity.importFilter.failed",
+    icon: XCircle,
+    iconClassName: "text-rose-400",
+  },
+];
+
+const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] = [
+  {
+    value: "downloading",
+    labelKey: "activity.activityFilter.downloading",
+    icon: ArrowDownToLine,
+    iconClassName: "text-sky-400",
+  },
+  {
+    value: "queued",
+    labelKey: "activity.activityFilter.queued",
+    icon: Clock3,
+    iconClassName: "text-amber-400",
+  },
+  {
+    value: "paused",
+    labelKey: "activity.activityFilter.paused",
+    icon: Pause,
+    iconClassName: "text-purple-400",
+  },
+  {
+    value: "post_processing",
+    labelKey: "activity.activityFilter.postProcessing",
+    icon: HardDrive,
+    iconClassName: "text-cyan-400",
+  },
+];
+
+const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = [
+  {
+    value: "success",
+    labelKey: "activity.historyFilter.success",
+    icon: CheckCircle2,
+    iconClassName: "text-emerald-400",
+  },
+  {
+    value: "failed",
+    labelKey: "activity.historyFilter.failed",
+    icon: XCircle,
+    iconClassName: "text-rose-400",
+  },
+];
+
+function compareStrings(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+}
+
+function activityStatusRank(tab: ActivityTab, displayState: string): number {
+  switch (tab) {
+    case "import":
+      switch (displayState) {
+        case "importing":
+          return 0;
+        case "import_pending":
+          return 1;
+        case "import_blocked":
+          return 2;
+        case "import_failed":
+          return 3;
+        default:
+          return 99;
+      }
+    case "history":
+      switch (displayState) {
+        case "completed":
+          return 0;
+        case "failed":
+        case "remove_failed":
+          return 1;
+        default:
+          return 99;
+      }
+    case "activity":
+    default:
+      switch (displayState) {
+        case "downloading":
+          return 0;
+        case "queued":
+          return 1;
+        case "paused":
+          return 2;
+        case "post_processing":
+          return 3;
+        default:
+          return 99;
+      }
+  }
+}
 
 type QueueRowPresentation = {
   stateKey: string;
@@ -121,7 +291,7 @@ function deriveQueueRowPresentation(
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
   const failureReason = buildQueueStatusDetail(queueItem);
-  const displayStateKey = deriveDownloadQueueDisplayState(queueItem);
+  const displayStateKey = queueItem.displayState;
   const percent = formatProgress(queueItem.progressPercent);
   const remainingLabel = formatRemainingDuration(queueItem.remainingSeconds);
   const needsManualImport =
@@ -138,6 +308,7 @@ function deriveQueueRowPresentation(
       : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
+      displayStateKey === "remove_failed" ||
       displayStateKey === "import_blocked" ||
       displayStateKey === "import_failed") &&
     failureReason.length > 0;
@@ -145,8 +316,13 @@ function deriveQueueRowPresentation(
   const canRetryManualImport =
     displayStateKey === "import_blocked" || displayStateKey === "import_failed";
   const canAssignTitle =
-    trackedStateKey === "import_blocked" && displayStateKey !== "importing";
-  const canIgnore = trackedStateKey === "import_blocked" && displayStateKey !== "importing";
+    trackedStateKey === "import_blocked" &&
+    displayStateKey !== "importing" &&
+    displayStateKey !== "removing";
+  const canIgnore =
+    trackedStateKey === "import_blocked" &&
+    displayStateKey !== "importing" &&
+    displayStateKey !== "removing";
   const canInteractiveManualImport =
     Boolean(queueItem.titleId) &&
     (queueItem.facet === "series" || queueItem.facet === "anime") &&
@@ -154,13 +330,16 @@ function deriveQueueRowPresentation(
   const canDirectManualImport =
     Boolean(queueItem.titleId) &&
     displayStateKey !== "importing" &&
+    displayStateKey !== "removing" &&
     ((isCompleted && needsManualImport) ||
       (canRetryManualImport && queueItem.facet === "movie"));
   const releaseTitle =
     queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "\u2014";
   const displayTitle = releaseTitle;
   const hasExpandableDetails =
-    (displayStateKey === "import_blocked" || displayStateKey === "import_failed") &&
+    (displayStateKey === "import_blocked" ||
+      displayStateKey === "import_failed" ||
+      displayStateKey === "remove_failed") &&
     (failureReason.length > 0 || releaseTitle !== "\u2014");
 
   return {
@@ -225,6 +404,107 @@ function ActivityQueueStatusBadge({
         <ChevronDown className="h-3.5 w-3.5 opacity-80" aria-hidden="true" />
       )}
     </button>
+  );
+}
+
+function ActivityFilterSection<T extends string>({
+  title,
+  options,
+  selectedValues,
+  onToggle,
+  t,
+}: {
+  title: string;
+  options: ActivityFilterChipOption<T>[];
+  selectedValues: string[];
+  onToggle: (value: T) => void;
+  t: TranslateFn;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <div className="flex flex-col gap-1">
+        {options.map((option) => {
+          const Icon = option.icon;
+          const isSelected = selectedValues.includes(option.value);
+          return (
+            <label
+              key={option.value}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50"
+            >
+              <Checkbox checked={isSelected} onCheckedChange={() => onToggle(option.value)} />
+              <Icon
+                className={cn(
+                  "h-[14px] w-[14px] shrink-0",
+                  option.iconClassName ?? "text-muted-foreground",
+                )}
+                aria-hidden="true"
+              />
+              <span>{t(option.labelKey)}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ActivityClientFilterSection({
+  title,
+  options,
+  selectedValues,
+  onToggle,
+}: {
+  title: string;
+  options: DownloadClientFilterOption[];
+  selectedValues: string[];
+  onToggle: (clientId: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <div className="flex flex-col gap-1">
+        {options.map((option) => {
+          const isSelected = selectedValues.includes(option.clientId);
+          return (
+            <label
+              key={option.clientId}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50"
+              title={`${option.clientName} • ${option.clientType}`}
+            >
+              <Checkbox checked={isSelected} onCheckedChange={() => onToggle(option.clientId)} />
+              <DownloadClientTypeLogo
+                typeValue={option.clientType}
+                className="h-[14px] w-[14px] shrink-0"
+              />
+              <span>{option.clientName || option.clientType}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ActivityBooleanFilterSection({
+  title,
+  label,
+  checked,
+  onToggle,
+}: {
+  title: string;
+  label: string;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <label className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-accent/50">
+        <Checkbox checked={checked} onCheckedChange={onToggle} />
+        <span>{label}</span>
+      </label>
+    </div>
   );
 }
 
@@ -355,12 +635,14 @@ function getProgressBarColor(stateKey: string): string {
     case "completed":
       return "bg-emerald-500";
     case "failed":
+    case "remove_failed":
       return "bg-rose-500";
     case "paused":
       return "bg-amber-500";
     case "import_pending":
       return "bg-indigo-500";
     case "downloading":
+    case "removing":
       return "bg-sky-500";
     case "post_processing":
       return "bg-cyan-500";
@@ -386,9 +668,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   const t = useTranslate();
   const isMobile = useIsMobile();
   const {
-    manualImportRequiredItems,
     queueItems,
     queueLoading,
+    queueLoadingMore,
     queueError,
     requestManualImport,
     requestAssignTitle,
@@ -396,17 +678,42 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     requestPause,
     requestResume,
     requestDelete,
-    queueMode,
-    setQueueMode,
-    historyHasMore,
-    historyLoadingMore,
-    requestMoreHistory,
+    activeTab,
+    setActiveTab,
+    importNotificationCount,
+    sortConfigByTab,
+    toggleSort,
+    activityScryerSubmittedOnly,
+    toggleActivityScryerSubmittedOnly,
+    historyScryerSubmittedOnly,
+    toggleHistoryScryerSubmittedOnly,
+    selectedImportStatuses,
+    toggleImportStatus,
+    selectedActivityStatuses,
+    toggleActivityStatus,
+    selectedHistoryStatuses,
+    toggleHistoryStatus,
+    activityAvailableClients,
+    selectedActivityClientIds,
+    toggleActivityClientId,
+    historyAvailableClients,
+    selectedHistoryClientIds,
+    toggleHistoryClientId,
+    historyPage,
+    historyTotalPages,
+    goToPreviousHistoryPage,
+    goToNextHistoryPage,
+    historyHasPreviousPage,
+    historyHasNextPage,
+    visibleHasMore,
+    requestMoreItems,
   } = state;
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<DownloadQueueItem | null>(null);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [rowActionBusy, setRowActionBusy] = useState<Record<string, true>>({});
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, true>>({});
+  const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
   const rowActionBusyRef = useRef<Record<string, true>>({});
   const scrollHeightClass = isMobile ? "max-h-[70vh]" : "max-h-[1700px]";
 
@@ -460,25 +767,223 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
   const handleResultsScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
-      if (
-        queueMode !== "history" ||
-        historyLoadingMore ||
-        !historyHasMore ||
-        queueLoading
-      ) {
+      if (activeTab !== "import" || queueLoadingMore || !visibleHasMore || queueLoading) {
         return;
       }
 
       const element = event.currentTarget;
       if (element.scrollHeight - element.scrollTop - element.clientHeight <= 160) {
-        void requestMoreHistory();
+        void requestMoreItems();
       }
     },
-    [historyHasMore, historyLoadingMore, queueLoading, queueMode, requestMoreHistory],
+    [activeTab, queueLoading, queueLoadingMore, requestMoreItems, visibleHasMore],
   );
 
-  const hasManualImportRequiredSection =
-    queueMode !== "history" && manualImportRequiredItems.length > 0;
+  const emptyStateLabel =
+    activeTab === "import"
+      ? t("activity.importEmpty")
+      : activeTab === "history"
+        ? t("activity.historyEmpty")
+        : t("activity.activityEmpty");
+  const activeSortConfig = sortConfigByTab[activeTab];
+
+  const handleSort = useCallback(
+    (nextKey: ActivitySortKey) => {
+      toggleSort(activeTab, nextKey);
+    },
+    [activeTab, toggleSort],
+  );
+
+  const renderSortIcon = useCallback(
+    (key: ActivitySortKey) => {
+      if (activeSortConfig.key !== key) {
+        return null;
+      }
+
+      return activeSortConfig.direction === "asc" ? (
+        <ArrowUp className="h-3.5 w-3.5" />
+      ) : (
+        <ArrowDown className="h-3.5 w-3.5" />
+      );
+    },
+    [activeSortConfig.direction, activeSortConfig.key],
+  );
+
+  const renderSortableHeader = useCallback(
+    (key: ActivitySortKey, label: string, className?: string) => (
+      <TableHead
+        className={className}
+        aria-sort={
+          activeSortConfig.key === key
+            ? activeSortConfig.direction === "asc"
+              ? "ascending"
+              : "descending"
+            : "none"
+        }
+      >
+        <button
+          type="button"
+          className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80"
+          onClick={() => handleSort(key)}
+        >
+          <span>{label}</span>
+          {renderSortIcon(key)}
+        </button>
+      </TableHead>
+    ),
+    [activeSortConfig.direction, activeSortConfig.key, handleSort, renderSortIcon],
+  );
+
+  const sortedQueueItems = useMemo(() => {
+    if (activeTab === "history") {
+      return queueItems;
+    }
+
+    const directionMultiplier = activeSortConfig.direction === "asc" ? 1 : -1;
+    const items = [...queueItems];
+
+    items.sort((leftItem, rightItem) => {
+      let comparison = 0;
+
+      switch (activeSortConfig.key) {
+        case "title": {
+          const leftTitle = leftItem.titleName.trim() || leftItem.downloadClientItemId.trim();
+          const rightTitle = rightItem.titleName.trim() || rightItem.downloadClientItemId.trim();
+          comparison = compareStrings(leftTitle, rightTitle);
+          break;
+        }
+        case "client": {
+          const leftClient = leftItem.clientName.trim() || leftItem.clientType.trim();
+          const rightClient = rightItem.clientName.trim() || rightItem.clientType.trim();
+          comparison = compareStrings(leftClient, rightClient);
+          if (comparison === 0) {
+            comparison = compareStrings(leftItem.clientType, rightItem.clientType);
+          }
+          break;
+        }
+        case "status": {
+          comparison =
+            activityStatusRank(activeTab, leftItem.displayState) -
+            activityStatusRank(activeTab, rightItem.displayState);
+          if (comparison === 0) {
+            const leftStatus = t(queueStateLabels[leftItem.displayState] ?? "queue.state.unknown");
+            const rightStatus = t(
+              queueStateLabels[rightItem.displayState] ?? "queue.state.unknown",
+            );
+            comparison = compareStrings(leftStatus, rightStatus);
+          }
+          break;
+        }
+        case "progress": {
+          comparison = formatProgress(leftItem.progressPercent) - formatProgress(rightItem.progressPercent);
+          break;
+        }
+        case "size": {
+          const leftSize = Number.parseFloat(leftItem.sizeBytes ?? "0");
+          const rightSize = Number.parseFloat(rightItem.sizeBytes ?? "0");
+          comparison = leftSize - rightSize;
+          break;
+        }
+      }
+
+      if (comparison === 0) {
+        const leftTitle = leftItem.titleName.trim() || leftItem.downloadClientItemId.trim();
+        const rightTitle = rightItem.titleName.trim() || rightItem.downloadClientItemId.trim();
+        comparison = compareStrings(leftTitle, rightTitle);
+      }
+
+      return comparison * directionMultiplier;
+    });
+
+    return items;
+  }, [activeSortConfig.direction, activeSortConfig.key, activeTab, queueItems, t]);
+
+  const renderFilterPopoverContent = useCallback(() => {
+    if (activeTab === "import") {
+      return (
+        <ActivityFilterSection
+          title={t("queue.status")}
+          options={importFilterOptions}
+          selectedValues={selectedImportStatuses}
+          onToggle={(value) => toggleImportStatus(value as DownloadImportStatus)}
+          t={t}
+        />
+      );
+    }
+
+    if (activeTab === "history") {
+      return (
+        <div className="flex flex-col gap-4">
+          <ActivityFilterSection
+            title={t("queue.status")}
+            options={historyFilterOptions}
+            selectedValues={selectedHistoryStatuses}
+            onToggle={(value) => toggleHistoryStatus(value as DownloadHistoryStatus)}
+            t={t}
+          />
+          <ActivityBooleanFilterSection
+            title={t("queue.source")}
+            label={t("activity.scryerSubmitted")}
+            checked={historyScryerSubmittedOnly}
+            onToggle={toggleHistoryScryerSubmittedOnly}
+          />
+          {historyAvailableClients.length > 0 ? (
+            <ActivityClientFilterSection
+              title={t("queue.client")}
+              options={historyAvailableClients}
+              selectedValues={selectedHistoryClientIds}
+              onToggle={toggleHistoryClientId}
+            />
+          ) : null}
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col gap-4">
+        <ActivityFilterSection
+          title={t("queue.status")}
+          options={activityFilterOptions}
+          selectedValues={selectedActivityStatuses}
+          onToggle={(value) => toggleActivityStatus(value as DownloadActivityStatus)}
+          t={t}
+        />
+        <ActivityBooleanFilterSection
+          title={t("queue.source")}
+          label={t("activity.scryerSubmitted")}
+          checked={activityScryerSubmittedOnly}
+          onToggle={toggleActivityScryerSubmittedOnly}
+        />
+        {activityAvailableClients.length > 0 ? (
+          <ActivityClientFilterSection
+            title={t("queue.client")}
+            options={activityAvailableClients}
+            selectedValues={selectedActivityClientIds}
+            onToggle={toggleActivityClientId}
+          />
+        ) : null}
+      </div>
+    );
+  }, [
+    activeTab,
+    activityAvailableClients,
+    activityScryerSubmittedOnly,
+    selectedActivityClientIds,
+    selectedActivityStatuses,
+    historyScryerSubmittedOnly,
+    selectedHistoryClientIds,
+    selectedHistoryStatuses,
+    selectedImportStatuses,
+    t,
+    toggleActivityClientId,
+    toggleActivityScryerSubmittedOnly,
+    toggleActivityStatus,
+    toggleHistoryClientId,
+    toggleHistoryScryerSubmittedOnly,
+    toggleHistoryStatus,
+    toggleImportStatus,
+    historyAvailableClients,
+  ]);
 
   const renderMobileQueueCards = (
     items: DownloadQueueItem[],
@@ -491,7 +996,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const isRowBusy =
           rowActionBusy[queueItem.id] ?? rowActionBusyRef.current[queueItem.id] ?? false;
         const isManualImportPending = row.displayStateKey === "importing";
-        const isRowBlocked = isRowBusy || isManualImportPending || isActionLoading;
+        const isDeletePending = row.displayStateKey === "removing";
+        const isRowBlocked =
+          isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
         const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
         const isExpanded = Boolean(expandedItemIds[queueItem.id]);
@@ -526,9 +1033,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 />
               </div>
             </div>
-            {queueItem.importErrorMessage && !row.hasStatusDetails ? (
+            {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
+            !row.hasStatusDetails ? (
               <p className="mt-2 break-words text-xs text-rose-400">
-                {queueItem.importErrorMessage}
+                {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
               </p>
             ) : null}
             {row.hasExpandableDetails && isExpanded ? (
@@ -749,7 +1257,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           rowActionBusyRef.current[queueItem.id] ??
           false;
         const isManualImportPending = row.displayStateKey === "importing";
-        const isRowBlocked = isRowBusy || isManualImportPending || isActionLoading;
+        const isDeletePending = row.displayStateKey === "removing";
+        const isRowBlocked =
+          isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
         const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
         const rowActionVisualClass = isRowFullyBusy
@@ -785,22 +1295,25 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   )}
                   onToggle={() => toggleExpandedDetails(queueItem.id)}
                 />
-                {queueItem.importErrorMessage && !row.hasStatusDetails && (
+                {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
+                  !row.hasStatusDetails && (
                   <p
                     className="mt-1 max-w-full break-words whitespace-normal text-xs text-rose-400"
-                    title={queueItem.importErrorMessage}
+                    title={queueItem.deleteErrorMessage ?? queueItem.importErrorMessage ?? ""}
                   >
-                    {queueItem.importErrorMessage}
+                    {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
                   </p>
                 )}
               </TableCell>
-              <TableCell className="w-52 min-w-52 align-middle">
-                <ActivityProgressBar
-                  percent={row.percent}
-                  remainingLabel={row.remainingLabel}
-                  colorClass={getProgressBarColor(row.displayStateKey)}
-                />
-              </TableCell>
+              {activeTab === "activity" ? (
+                <TableCell className="w-52 min-w-52 align-middle">
+                  <ActivityProgressBar
+                    percent={row.percent}
+                    remainingLabel={row.remainingLabel}
+                    colorClass={getProgressBarColor(row.displayStateKey)}
+                  />
+                </TableCell>
+              ) : null}
               <TableCell className="w-24 min-w-24 align-middle">
                 {formatBytes(queueItem.sizeBytes)}
               </TableCell>
@@ -995,7 +1508,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             </TableRow>
             {row.hasExpandableDetails && isExpanded ? (
               <TableRow>
-                <TableCell colSpan={6} className="bg-muted/10 p-3">
+                <TableCell colSpan={activeTab === "activity" ? 6 : 5} className="bg-muted/10 p-3">
                   <ActivityQueueDetailsPanel
                     detailId={detailId}
                     releaseTitle={row.releaseTitle}
@@ -1011,7 +1524,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       })}
       {showHistorySpinner ? (
         <TableRow>
-          <TableCell colSpan={6} className="py-4 text-center text-sm text-muted-foreground">
+          <TableCell
+            colSpan={activeTab === "activity" ? 6 : 5}
+            className="py-4 text-center text-sm text-muted-foreground"
+          >
             <span className="inline-flex items-center">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               {t("label.loading")}
@@ -1040,41 +1556,54 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         }}
       />
       <Card>
-        <CardHeader className="space-y-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-3">
             <CardTitle>{t("activity.title")}</CardTitle>
-            <div className="overflow-x-auto">
+            <div className="flex justify-center overflow-x-auto">
               <ToggleGroup
                 type="single"
-                value={queueMode}
+                value={activeTab}
                 onValueChange={(nextValue) => {
                   if (
-                    nextValue === "scryer" ||
-                    nextValue === "all" ||
+                    nextValue === "import" ||
+                    nextValue === "activity" ||
                     nextValue === "history"
                   ) {
-                    setQueueMode(nextValue);
-                    return;
+                    setFilterPopoverOpen(false);
+                    setActiveTab(nextValue);
                   }
-                  setQueueMode("scryer");
                 }}
-                aria-label={t("activity.filterToggleLabel")}
+                aria-label={t("activity.tabToggleLabel")}
                 size="lg"
                 className="h-14 min-w-max rounded-xl border-0 bg-card/80 divide-x divide-border/40"
               >
                 <ToggleGroupItem
-                  value="scryer"
+                  value="import"
                   size="lg"
-                  className="h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
+                  className="group h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
                 >
-                  {t("activity.scryerOnly")}
+                  <span className="inline-flex items-center gap-2">
+                    <span>{t("activity.import")}</span>
+                    {importNotificationCount > 0 ? (
+                      <span
+                        className={cn(
+                          "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none",
+                          activeTab === "import"
+                            ? "border border-sky-900/70 bg-sky-950 text-sky-100"
+                            : "border border-primary/70 bg-primary text-primary-foreground",
+                        )}
+                      >
+                        {importNotificationCount}
+                      </span>
+                    ) : null}
+                  </span>
                 </ToggleGroupItem>
                 <ToggleGroupItem
-                  value="all"
+                  value="activity"
                   size="lg"
                   className="h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
                 >
-                  {t("activity.allActivity")}
+                  {t("activity.activity")}
                 </ToggleGroupItem>
                 <ToggleGroupItem
                   value="history"
@@ -1093,112 +1622,120 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               {queueError}
             </p>
           ) : null}
-
-          {hasManualImportRequiredSection ? (
-            <section className="space-y-4 rounded-xl border border-primary/20 bg-primary/5 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1">
-                  <h2 className="text-sm font-semibold text-foreground">
-                    {t("activity.manualImportRequired")}
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    {t("activity.manualImportRequiredDescription")}
-                  </p>
-                </div>
-                <span className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-md bg-primary px-2 text-sm font-semibold text-primary-foreground">
-                  {manualImportRequiredItems.length}
-                </span>
-              </div>
-
-              {isMobile ? (
-                renderMobileQueueCards(manualImportRequiredItems)
-              ) : (
-                <div className="overflow-hidden rounded-xl border border-border/60 bg-card/30">
-                  <div className="overflow-x-auto">
-                    <Table className="table-fixed min-w-[820px]">
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-[34%] min-w-0">{t("queue.title")}</TableHead>
-                          <TableHead className="w-32 min-w-0">{t("queue.client")}</TableHead>
-                          <TableHead className="w-44 min-w-0">{t("queue.status")}</TableHead>
-                          <TableHead className="w-52 min-w-52">{t("queue.progress")}</TableHead>
-                          <TableHead className="w-24 min-w-24">{t("queue.size")}</TableHead>
-                          <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>{renderDesktopQueueRows(manualImportRequiredItems)}</TableBody>
-                    </Table>
-                  </div>
-                </div>
-              )}
-            </section>
-          ) : null}
+          <div className="flex justify-end">
+            <Popover open={filterPopoverOpen} onOpenChange={setFilterPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="inline-flex items-center gap-2"
+                  aria-label={t("activity.filterBarLabel")}
+                >
+                  <Filter className="h-4 w-4" />
+                  <span>{t("label.filters")}</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 p-4">
+                {renderFilterPopoverContent()}
+              </PopoverContent>
+            </Popover>
+          </div>
 
           {isMobile ? (
-            queueItems.length === 0 && hasManualImportRequiredSection ? null : queueItems.length ===
-                0 && !queueLoading ? (
-              <p className="text-sm text-muted-foreground">{t("queue.empty")}</p>
-            ) : queueItems.length === 0 ? (
+            sortedQueueItems.length === 0 && !queueLoading ? (
+              <p className="text-sm text-muted-foreground">{emptyStateLabel}</p>
+            ) : sortedQueueItems.length === 0 ? (
               <div className={`${scrollHeightClass} overflow-y-auto pr-1`}>
                 <div className="rounded-xl border border-border/60 bg-card/30">
                   <ActivityTableLoadingMask label={t("label.loading")} />
                 </div>
               </div>
             ) : (
-              <div
-                onScroll={handleResultsScroll}
-                className={`${scrollHeightClass} overflow-y-auto pr-1`}
-              >
-                {renderMobileQueueCards(
-                  queueItems,
-                  queueMode === "history" && historyLoadingMore,
-                )}
-              </div>
-            )
-          ) : (
-            queueItems.length === 0 && hasManualImportRequiredSection ? null : (
-              <div
-                onScroll={handleResultsScroll}
-                className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
-              >
-                <div className="overflow-x-auto">
-                  <Table className="table-fixed min-w-[820px]">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[34%] min-w-0">{t("queue.title")}</TableHead>
-                        <TableHead className="w-32 min-w-0">{t("queue.client")}</TableHead>
-                        <TableHead className="w-44 min-w-0">{t("queue.status")}</TableHead>
-                        <TableHead className="w-52 min-w-52">{t("queue.progress")}</TableHead>
-                        <TableHead className="w-24 min-w-24">{t("queue.size")}</TableHead>
-                        <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {queueItems.length === 0 ? (
-                        <TableRow>
-                          <TableCell
-                            colSpan={6}
-                            className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
-                          >
-                            {queueLoading ? (
-                              <ActivityTableLoadingMask label={t("label.loading")} />
-                            ) : (
-                              t("queue.empty")
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        renderDesktopQueueRows(
-                          queueItems,
-                          queueMode === "history" && historyLoadingMore,
-                        )
-                      )}
-                    </TableBody>
-                  </Table>
+                <div
+                  onScroll={handleResultsScroll}
+                  className={`${scrollHeightClass} overflow-y-auto pr-1`}
+                >
+                  {renderMobileQueueCards(sortedQueueItems, queueLoadingMore)}
                 </div>
+              )
+          ) : (
+            <div
+              onScroll={handleResultsScroll}
+              className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
+            >
+              <div className="overflow-x-auto">
+                <Table
+                  className={cn(
+                    "table-fixed",
+                    activeTab === "activity" ? "min-w-[820px]" : "min-w-[700px]",
+                  )}
+                >
+                  <TableHeader>
+                    <TableRow>
+                      {renderSortableHeader("title", t("queue.title"), "w-[34%] min-w-0")}
+                      {renderSortableHeader("client", t("queue.client"), "w-32 min-w-0")}
+                      {renderSortableHeader("status", t("queue.status"), "w-44 min-w-0")}
+                      {activeTab === "activity"
+                        ? renderSortableHeader("progress", t("queue.progress"), "w-52 min-w-52")
+                        : null}
+                      {renderSortableHeader("size", t("queue.size"), "w-24 min-w-24")}
+                      <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedQueueItems.length === 0 ? (
+                      <TableRow>
+                        <TableCell
+                          colSpan={activeTab === "activity" ? 6 : 5}
+                          className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
+                        >
+                          {queueLoading ? (
+                            <ActivityTableLoadingMask label={t("label.loading")} />
+                          ) : (
+                            emptyStateLabel
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      renderDesktopQueueRows(sortedQueueItems, queueLoadingMore)
+                    )}
+                  </TableBody>
+                </Table>
               </div>
-            )
+            </div>
           )}
+          {activeTab === "history" && historyTotalPages > 1 ? (
+            <div className="flex items-center justify-end gap-2 border-t border-border/60 pt-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={!historyHasPreviousPage || queueLoading}
+                onClick={() => {
+                  void goToPreviousHistoryPage();
+                }}
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {t("wanted.prev")}
+              </Button>
+              <span className="min-w-16 text-center text-xs text-muted-foreground">
+                {historyPage} / {historyTotalPages}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={!historyHasNextPage || queueLoading}
+                onClick={() => {
+                  void goToNextHistoryPage();
+                }}
+              >
+                {t("wanted.next")}
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </>

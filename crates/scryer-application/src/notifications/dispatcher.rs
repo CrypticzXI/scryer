@@ -66,7 +66,7 @@ macro_rules! notification_build_match {
 pub async fn start_notification_dispatcher(app: AppUseCase, cancel: CancellationToken) {
     info!("notification dispatcher started");
     let repo = app.services.events.domain_events.clone();
-    let mut rx = app.runtime.notification_event_broadcast.subscribe();
+    let mut rx = app.runtime.events.notification_event_broadcast.subscribe();
     let mut last_sequence = match repo.get_subscriber_offset(NOTIFICATION_SUBSCRIBER).await {
         Ok(sequence) => sequence,
         Err(error) => {

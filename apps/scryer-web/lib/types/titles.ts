@@ -11,6 +11,11 @@ export type TitleRecord = {
   facet: Facet;
   monitored: boolean;
   tags: string[];
+  createdAt?: string | null;
+  year?: number | null;
+  overview?: string | null;
+  sortTitle?: string | null;
+  slug?: string | null;
   imdbId?: string | null;
   externalIds: ExternalId[];
   qualityTier?: string | null;
@@ -25,6 +30,25 @@ export type TitleRecord = {
   bannerSourceUrl?: string | null;
   backgroundUrl?: string | null;
   backgroundSourceUrl?: string | null;
+  runtimeMinutes?: number | null;
+  genres?: string[];
+  language?: string | null;
+  firstAired?: string | null;
+  network?: string | null;
+  studio?: string | null;
+  country?: string | null;
+  aliases?: string[];
+  metadataLanguage?: string | null;
+  metadataFetchedAt?: string | null;
+  minAvailability?: string | null;
+  qualityProfileId?: string | null;
+  rootFolderPath?: string | null;
+  monitorType?: string | null;
+  useSeasonFolders?: boolean | null;
+  monitorSpecials?: boolean | null;
+  interSeasonMovies?: boolean | null;
+  fillerPolicy?: string | null;
+  recapPolicy?: string | null;
 };
 
 export type RootFolderOption = {

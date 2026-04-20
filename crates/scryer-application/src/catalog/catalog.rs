@@ -82,14 +82,29 @@ fn unique_episode_match(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HydrationCompletionOptions {
+pub(crate) struct HydrationCompletionOptions {
     sync_wanted_after_completion: bool,
 }
 
-impl HydrationCompletionOptions {
-    const ADD_TITLE: Self = Self {
-        sync_wanted_after_completion: true,
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HydrationSource {
+    BackgroundDue,
+    LibraryScanFull,
+    LibraryScanAdditive,
+    Interactive,
+    Maintenance,
+}
+
+impl HydrationSource {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::BackgroundDue => "background_due",
+            Self::LibraryScanFull => "library_scan_full",
+            Self::LibraryScanAdditive => "library_scan_additive",
+            Self::Interactive => "interactive",
+            Self::Maintenance => "maintenance",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -97,6 +112,7 @@ pub(crate) struct HydrationTarget {
     pub(crate) title: Title,
     pub(crate) requested_tvdb_id: Option<i64>,
     pub(crate) sync_wanted_after_completion: bool,
+    pub(crate) source: HydrationSource,
 }
 
 #[derive(Default)]
@@ -209,6 +225,42 @@ impl AppUseCase {
         self.services.catalog.titles.list(facet, query).await
     }
 
+    pub async fn list_titles_by_external_ids(
+        &self,
+        actor: &User,
+        source: &str,
+        values: &[String],
+    ) -> AppResult<Vec<Title>> {
+        require(actor, &Entitlement::ViewCatalog)?;
+
+        let normalized_source = source.trim();
+        if normalized_source.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen = HashSet::new();
+        let mut normalized_values = Vec::new();
+        for value in values {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if seen.insert(trimmed.to_string()) {
+                normalized_values.push(trimmed.to_string());
+            }
+        }
+
+        if normalized_values.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.services
+            .catalog
+            .titles
+            .list_by_external_ids(normalized_source, &normalized_values)
+            .await
+    }
+
     pub async fn list_title_release_blocklist(
         &self,
         actor: &User,
@@ -270,42 +322,53 @@ impl AppUseCase {
         }])
     }
 
-    pub async fn add_title(&self, actor: &User, request: NewTitle) -> AppResult<Title> {
+    pub async fn add_title_with_outcome(
+        &self,
+        actor: &User,
+        request: NewTitle,
+    ) -> AppResult<AddTitleOutcome> {
         require(actor, &Entitlement::ManageTitle)?;
 
-        let title = self.create_title_without_hydration(actor, request).await?;
-        if extract_tvdb_id(&title).is_none() {
-            self.notify_title_image_wakes(&title);
-            return Ok(title);
-        }
-        let mut hydration_outcome = self
-            .hydrate_titles_bulk(vec![HydrationTarget {
-                title: title.clone(),
-                requested_tvdb_id: None,
-                sync_wanted_after_completion: HydrationCompletionOptions::ADD_TITLE
-                    .sync_wanted_after_completion,
-            }])
-            .await?;
+        let created = self.create_title_without_hydration(actor, request).await?;
+        self.notify_title_image_wakes(&created.title);
 
-        if let Some(hydrated) = hydration_outcome.hydrated_titles.remove(&title.id) {
-            return Ok(hydrated);
-        }
+        let metadata_hydration_state = if created.title.metadata_fetched_at.is_some() {
+            AddTitleHydrationState::Complete
+        } else if extract_tvdb_id(&created.title).is_some() {
+            if created.reused_existing {
+                self.services
+                    .catalog
+                    .titles
+                    .mark_title_metadata_hydration_due_now(&created.title.id)
+                    .await?;
+            }
+            self.runtime.catalog.title_hydration_wake.notify_one();
+            AddTitleHydrationState::Pending
+        } else {
+            self.services
+                .catalog
+                .titles
+                .clear_title_metadata_hydration_retry_state(&created.title.id)
+                .await?;
+            AddTitleHydrationState::NotRequired
+        };
 
-        if let Some(reason) = hydration_outcome.failed_titles.remove(&title.id) {
-            return Err(AppError::Repository(format!(
-                "title metadata hydration failed for {}: {reason}",
-                title.id
-            )));
-        }
+        Ok(AddTitleOutcome {
+            title: created.title,
+            metadata_hydration_state,
+            reused_existing_title: created.reused_existing,
+        })
+    }
 
-        Ok(title)
+    pub async fn add_title(&self, actor: &User, request: NewTitle) -> AppResult<Title> {
+        Ok(self.add_title_with_outcome(actor, request).await?.title)
     }
 
     pub(crate) async fn create_title_without_hydration(
         &self,
         actor: &User,
         request: NewTitle,
-    ) -> AppResult<Title> {
+    ) -> AppResult<CreateTitleOutcome> {
         require(actor, &Entitlement::ManageTitle)?;
 
         if request.name.trim().is_empty() {
@@ -349,17 +412,24 @@ impl AppUseCase {
             folder_path: None,
         };
 
-        let title = self.services.catalog.titles.create(title).await?;
-        self.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
-            &title,
-            DomainEventPayload::TitleAdded(TitleAddedEventData {
-                title: title_context_snapshot(&title),
-            }),
-        ))
-        .await?;
+        let created = self
+            .services
+            .catalog
+            .titles
+            .create_or_get_existing(title)
+            .await?;
+        if !created.reused_existing {
+            self.append_domain_event(new_title_domain_event(
+                Some(actor.id.clone()),
+                &created.title,
+                DomainEventPayload::TitleAdded(TitleAddedEventData {
+                    title: title_context_snapshot(&created.title),
+                }),
+            ))
+            .await?;
+        }
 
-        Ok(title)
+        Ok(created)
     }
 
     fn notify_title_image_wakes(&self, title: &Title) {
@@ -368,22 +438,34 @@ impl AppUseCase {
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.poster_wake.notify_one();
+            self.runtime.catalog.poster_wake.notify_one();
         }
         if title
             .banner_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.banner_wake.notify_one();
+            self.runtime.catalog.banner_wake.notify_one();
         }
         if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.fanart_wake.notify_one();
+            self.runtime.catalog.fanart_wake.notify_one();
         }
+    }
+
+    async fn lock_download_submission_signature(
+        &self,
+        title_id: &str,
+        request_signature: Option<&str>,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.runtime
+            .acquisition
+            .download_submission_guards
+            .acquire(title_id, request_signature)
+            .await
     }
 
     async fn complete_title_hydration(&self, title: &Title, options: HydrationCompletionOptions) {
@@ -397,6 +479,7 @@ impl AppUseCase {
         );
 
         if title.metadata_fetched_at.is_some() {
+            self.notify_title_image_wakes(title);
             self.emit_hydration_completed(title).await;
             self.emit_title_updated_activity(None, title).await;
             if options.sync_wanted_after_completion {
@@ -435,6 +518,12 @@ impl AppUseCase {
                     .requested_tvdb_id
                     .or_else(|| extract_tvdb_id(&target.title))
                 else {
+                    warn!(
+                        hydration_source = target.source.as_str(),
+                        facet = target.title.facet.as_str(),
+                        title_id = %target.title.id,
+                        "title hydration failed: no tvdb external id found"
+                    );
                     self.emit_hydration_failed(&target.title, "no tvdb external id found")
                         .await;
                     outcome.failed_titles.insert(
@@ -484,6 +573,13 @@ impl AppUseCase {
                 Err(error) => {
                     let reason = error.to_string();
                     for (target, _) in movie_targets.iter().chain(series_targets.iter()) {
+                        warn!(
+                            hydration_source = target.source.as_str(),
+                            facet = target.title.facet.as_str(),
+                            title_id = %target.title.id,
+                            error = %error,
+                            "title hydration bulk metadata request failed"
+                        );
                         self.emit_hydration_failed(&target.title, &reason).await;
                         outcome
                             .failed_titles
@@ -498,9 +594,13 @@ impl AppUseCase {
                     break 'chunks;
                 }
                 let title_id = target.title.id.clone();
+                let title_facet = target.title.facet.clone();
+                let title_source = target.source;
                 if let Some(movie) = bulk_result.movies.get(&tvdb_id) {
                     let result = super::movie_to_hydration_result(movie.clone(), &language);
-                    let hydrated = self.apply_hydration_result(target.title, result).await;
+                    let hydrated = self
+                        .apply_hydration_result(target.title, result, title_source)
+                        .await;
                     self.complete_title_hydration(
                         &hydrated,
                         HydrationCompletionOptions {
@@ -520,11 +620,23 @@ impl AppUseCase {
                             .hydrated_titles
                             .insert(refreshed.id.clone(), refreshed);
                     } else {
+                        warn!(
+                            hydration_source = title_source.as_str(),
+                            facet = title_facet.as_str(),
+                            title_id = %title_id,
+                            "title hydration failed: metadata could not be persisted"
+                        );
                         outcome
                             .failed_titles
                             .insert(title_id, "metadata could not be persisted".to_string());
                     }
                 } else {
+                    warn!(
+                        hydration_source = title_source.as_str(),
+                        facet = title_facet.as_str(),
+                        title_id = %title_id,
+                        "title hydration failed: bulk metadata response missing movie title"
+                    );
                     self.emit_hydration_failed(
                         &target.title,
                         "bulk metadata response missing title",
@@ -541,9 +653,13 @@ impl AppUseCase {
                     break 'chunks;
                 }
                 let title_id = target.title.id.clone();
+                let title_facet = target.title.facet.clone();
+                let title_source = target.source;
                 if let Some(series) = bulk_result.series.get(&tvdb_id) {
                     let result = super::series_to_hydration_result(series.clone(), &language);
-                    let hydrated = self.apply_hydration_result(target.title, result).await;
+                    let hydrated = self
+                        .apply_hydration_result(target.title, result, title_source)
+                        .await;
                     self.complete_title_hydration(
                         &hydrated,
                         HydrationCompletionOptions {
@@ -563,11 +679,23 @@ impl AppUseCase {
                             .hydrated_titles
                             .insert(refreshed.id.clone(), refreshed);
                     } else {
+                        warn!(
+                            hydration_source = title_source.as_str(),
+                            facet = title_facet.as_str(),
+                            title_id = %title_id,
+                            "title hydration failed: metadata could not be persisted"
+                        );
                         outcome
                             .failed_titles
                             .insert(title_id, "metadata could not be persisted".to_string());
                     }
                 } else {
+                    warn!(
+                        hydration_source = title_source.as_str(),
+                        facet = title_facet.as_str(),
+                        title_id = %title_id,
+                        "title hydration failed: bulk metadata response missing series title"
+                    );
                     self.emit_hydration_failed(
                         &target.title,
                         "bulk metadata response missing title",
@@ -592,7 +720,12 @@ impl AppUseCase {
 
     /// Apply a [`HydrationResult`] to a title: persist metadata, create
     /// seasons/episodes, and enrich with anime mapping data.
-    async fn apply_hydration_result(&self, title: Title, result: super::HydrationResult) -> Title {
+    async fn apply_hydration_result(
+        &self,
+        title: Title,
+        result: super::HydrationResult,
+        source: HydrationSource,
+    ) -> Title {
         let has_episodes = self
             .facet_registry
             .get(&title.facet)
@@ -600,6 +733,8 @@ impl AppUseCase {
 
         if has_episodes {
             info!(
+                hydration_source = source.as_str(),
+                facet = title.facet.as_str(),
                 title_id = %title.id,
                 seasons = result.seasons.len(),
                 episodes = result.episodes.len(),
@@ -678,6 +813,8 @@ impl AppUseCase {
             Ok(updated) => updated,
             Err(err) => {
                 warn!(
+                    hydration_source = source.as_str(),
+                    facet = title.facet.as_str(),
                     title_id = %title.id,
                     error = %err,
                     "failed to persist metadata"
@@ -702,21 +839,21 @@ impl AppUseCase {
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.poster_wake.notify_one();
+            self.runtime.catalog.poster_wake.notify_one();
         }
         if title
             .banner_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.banner_wake.notify_one();
+            self.runtime.catalog.banner_wake.notify_one();
         }
         if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            self.runtime.fanart_wake.notify_one();
+            self.runtime.catalog.fanart_wake.notify_one();
         }
 
         title
@@ -1424,20 +1561,26 @@ impl AppUseCase {
         }
     }
 
-    pub async fn add_title_and_queue_download(
+    pub async fn add_title_and_queue_download_with_outcome(
         &self,
         actor: &User,
         request: NewTitle,
         queued_release: QueuedReleaseSelection,
-    ) -> AppResult<(Title, String)> {
+    ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
         let QueuedReleaseSelection {
             source_hint,
             source_kind,
             source_title,
         } = queued_release;
-        let title = self.add_title(actor, request).await?;
+        let add_outcome = self.add_title_with_outcome(actor, request).await?;
+        let title = add_outcome.title.clone();
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
+        let request_signature = normalize_release_selection_signature(
+            source_hint_for_attempt.as_deref(),
+            source_title_for_attempt.as_deref(),
+            source_kind,
+        );
         let source_password: Option<String> = None;
         let _ = self
             .services
@@ -1452,6 +1595,27 @@ impl AppUseCase {
                 source_password.clone(),
             )
             .await;
+
+        let dedupe_guard = self
+            .lock_download_submission_signature(&title.id, request_signature.as_deref())
+            .await;
+        if let Some(signature) = request_signature.as_deref()
+            && let Some(existing) = self
+                .services
+                .workflow
+                .download_submissions
+                .find_by_title_and_request_signature(&title.id, signature)
+                .await?
+        {
+            drop(dedupe_guard);
+            return Ok(AddTitleAndQueueDownloadOutcome {
+                title,
+                metadata_hydration_state: add_outcome.metadata_hydration_state,
+                reused_existing_title: add_outcome.reused_existing_title,
+                download_job_id: existing.download_client_item_id,
+                reused_queued_download: true,
+            });
+        }
 
         let category = self.derive_download_category(&title.facet).await;
         let is_recent = self.is_recent_for_queue_priority(
@@ -1517,7 +1681,11 @@ impl AppUseCase {
                         facet: facet_str.trim_matches('"').to_string(),
                         download_client_type: grab.client_type.clone(),
                         download_client_item_id: grab.job_id.clone(),
+                        source_hint: source_hint_for_attempt.clone(),
+                        source_kind,
                         source_title: source_title_for_attempt.clone(),
+                        request_signature: request_signature.clone(),
+                        episode_id: None,
                         collection_id: None,
                     })
                     .await;
@@ -1538,9 +1706,12 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                drop(dedupe_guard);
                 return Err(error);
             }
         };
+
+        drop(dedupe_guard);
 
         self.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
@@ -1555,7 +1726,25 @@ impl AppUseCase {
         ))
         .await?;
 
-        Ok((title, grab.job_id))
+        Ok(AddTitleAndQueueDownloadOutcome {
+            title,
+            metadata_hydration_state: add_outcome.metadata_hydration_state,
+            reused_existing_title: add_outcome.reused_existing_title,
+            download_job_id: grab.job_id,
+            reused_queued_download: false,
+        })
+    }
+
+    pub async fn add_title_and_queue_download(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        queued_release: QueuedReleaseSelection,
+    ) -> AppResult<(Title, String)> {
+        let outcome = self
+            .add_title_and_queue_download_with_outcome(actor, request, queued_release)
+            .await?;
+        Ok((outcome.title, outcome.download_job_id))
     }
 
     pub async fn queue_existing_title_download(
@@ -1581,6 +1770,11 @@ impl AppUseCase {
 
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
+        let request_signature = normalize_release_selection_signature(
+            source_hint_for_attempt.as_deref(),
+            source_title_for_attempt.as_deref(),
+            source_kind,
+        );
         let source_password: Option<String> = None;
         let _ = self
             .services
@@ -1595,6 +1789,21 @@ impl AppUseCase {
                 source_password.clone(),
             )
             .await;
+
+        let dedupe_guard = self
+            .lock_download_submission_signature(&title.id, request_signature.as_deref())
+            .await;
+        if let Some(signature) = request_signature.as_deref()
+            && let Some(existing) = self
+                .services
+                .workflow
+                .download_submissions
+                .find_by_title_and_request_signature(&title.id, signature)
+                .await?
+        {
+            drop(dedupe_guard);
+            return Ok(existing.download_client_item_id);
+        }
 
         let category = self.derive_download_category(&title.facet).await;
         let is_recent = self.is_recent_for_queue_priority(
@@ -1660,7 +1869,11 @@ impl AppUseCase {
                         facet: facet_str.trim_matches('"').to_string(),
                         download_client_type: grab.client_type.clone(),
                         download_client_item_id: grab.job_id.clone(),
+                        source_hint: None,
+                        source_kind: None,
                         source_title: source_title_for_attempt.clone(),
+                        request_signature: request_signature.clone(),
+                        episode_id: None,
                         collection_id: None,
                     })
                     .await;
@@ -1681,9 +1894,12 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                drop(dedupe_guard);
                 return Err(error);
             }
         };
+
+        drop(dedupe_guard);
 
         self.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
@@ -1747,7 +1963,7 @@ impl AppUseCase {
             } else {
                 self.sync_wanted_movie_inner(title, &now, true).await;
             }
-            self.runtime.acquisition_wake.notify_one();
+            self.runtime.acquisition.acquisition_wake.notify_one();
         }
     }
 
@@ -2343,7 +2559,11 @@ impl AppUseCase {
                             .services
                             .integrations
                             .download_client
-                            .delete_queue_item(&item.download_client_item_id, false)
+                            .delete_queue_item_for_client(
+                                &item.client_type,
+                                &item.download_client_item_id,
+                                false,
+                            )
                             .await
                     {
                         warn!(
@@ -2550,7 +2770,7 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .find_by_external_id("tvdb", target_tvdb_id)
+            .find_by_external_id_in_facet(existing_title.facet.clone(), "tvdb", target_tvdb_id)
             .await?
             .filter(|title| title.id != existing_title.id);
         if let Some(duplicate) = duplicate {
@@ -2668,6 +2888,7 @@ impl AppUseCase {
                 title: reset_title.clone(),
                 requested_tvdb_id: Some(target_tvdb_numeric),
                 sync_wanted_after_completion: false,
+                source: HydrationSource::Interactive,
             }])
             .await?;
         let hydrated_title = hydration_outcome
@@ -3167,6 +3388,7 @@ impl AppUseCase {
                 title,
                 requested_tvdb_id: None,
                 sync_wanted_after_completion: false,
+                source: HydrationSource::Maintenance,
             })
             .collect::<Vec<_>>();
 
@@ -3189,6 +3411,7 @@ impl AppUseCase {
                 title,
                 requested_tvdb_id: None,
                 sync_wanted_after_completion: false,
+                source: HydrationSource::Maintenance,
             })
             .collect::<Vec<_>>();
         let _ = self.hydrate_titles_bulk(targets).await?;
@@ -3361,7 +3584,7 @@ fn derive_episode_type(
     }
 }
 
-fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
+pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
     title
         .external_ids
         .iter()

@@ -681,6 +681,8 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
         is_scryer_origin: is_scryer,
         tracked_state: None,
         tracked_status: None,

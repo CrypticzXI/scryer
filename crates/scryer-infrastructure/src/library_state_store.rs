@@ -20,6 +20,7 @@ use crate::queries::housekeeping::{
     delete_download_import_artifacts_older_than_query, delete_history_events_older_than_query,
     delete_media_files_by_ids_query, delete_release_attempts_older_than_query,
     delete_release_decisions_older_than_query, delete_rule_set_history_older_than_query,
+    delete_terminal_download_queue_commands_older_than_query,
     delete_terminal_imports_older_than_query, delete_title_history_older_than_query,
     list_all_media_file_paths_query,
 };
@@ -41,6 +42,7 @@ use crate::queries::subtitle::{
     is_blacklisted as is_subtitle_blacklisted, list_subtitle_downloads_for_media_file,
     list_subtitle_downloads_for_title, update_subtitle_download_synced,
 };
+use crate::queries::wanted::complete_wanted_item_for_title_query;
 use crate::queries::workflow::{
     get_library_probe_signature_query, upsert_library_probe_signature_query,
 };
@@ -269,6 +271,23 @@ impl WantedItemRepository for SqliteLibraryStateStore {
             .await
     }
 
+    async fn complete_wanted_item_for_title(
+        &self,
+        title_id: &str,
+        episode_id: Option<&str>,
+        last_search_at: Option<&str>,
+        current_score: Option<i32>,
+    ) -> AppResult<bool> {
+        complete_wanted_item_for_title_query(
+            self.db.pool(),
+            title_id,
+            episode_id,
+            last_search_at,
+            current_score,
+        )
+        .await
+    }
+
     async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
         self.db.delete_wanted_items_for_title(title_id).await
     }
@@ -376,6 +395,13 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
 
     async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32> {
         delete_terminal_imports_older_than_query(self.db.pool(), days).await
+    }
+
+    async fn delete_terminal_download_queue_commands_older_than(
+        &self,
+        days: i64,
+    ) -> AppResult<u32> {
+        delete_terminal_download_queue_commands_older_than_query(self.db.pool(), days).await
     }
 
     async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32> {

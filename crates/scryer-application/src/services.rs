@@ -1,27 +1,92 @@
 use super::*;
 
+/// In-process guard table for request-signature download dedupe.
+///
+/// Scryer is intentionally single-instance, so the database lookup remains the
+/// authoritative duplicate check while this table serializes same-process races.
+#[derive(Clone, Default)]
+pub struct DownloadSubmissionGuardTable {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl DownloadSubmissionGuardTable {
+    pub async fn acquire(
+        &self,
+        title_id: &str,
+        request_signature: Option<&str>,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let signature = request_signature?;
+        let key = format!("{title_id}:{signature}");
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(existing) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&created));
+                created
+            }
+        };
+
+        Some(lock.lock_owned().await)
+    }
+}
+
 #[derive(Clone)]
-pub struct AppRuntimeState {
+pub struct AppRuntimeEventState {
     pub domain_event_broadcast: broadcast::Sender<i64>,
     /// Wake-only high-water hints for the notification dispatcher. Send-side filtering keeps
     /// operational bursts from waking it, while persisted filtered replay remains authoritative.
     pub notification_event_broadcast: broadcast::Sender<i64>,
     pub import_history_broadcast: broadcast::Sender<()>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeCatalogState {
     pub(crate) monitored_title_matcher:
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
-    pub library_scan_tracker: LibraryScanTracker,
-    pub library_scan_cancellation_tokens:
-        Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
-    pub job_run_tracker: JobRunTracker,
-    pub acquisition_wake: Arc<tokio::sync::Notify>,
+    pub title_hydration_wake: Arc<tokio::sync::Notify>,
     pub poster_wake: Arc<tokio::sync::Notify>,
     pub banner_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
-    pub health_check_results: Arc<tokio::sync::RwLock<Vec<HealthCheckResult>>>,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeAcquisitionState {
+    pub acquisition_wake: Arc<tokio::sync::Notify>,
+    pub download_submission_guards: DownloadSubmissionGuardTable,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
-    pub library_scan_analysis_limit: Arc<Semaphore>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeLibraryState {
+    pub library_scan_tracker: LibraryScanTracker,
+    pub library_scan_cancellation_tokens:
+        Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    pub library_scan_analysis_limit: Arc<Semaphore>,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeJobState {
+    pub job_run_tracker: JobRunTracker,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeHealthState {
+    pub results: Arc<tokio::sync::RwLock<Vec<HealthCheckResult>>>,
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeState {
+    pub events: AppRuntimeEventState,
+    pub catalog: AppRuntimeCatalogState,
+    pub acquisition: AppRuntimeAcquisitionState,
+    pub library: AppRuntimeLibraryState,
+    pub jobs: AppRuntimeJobState,
+    pub health: AppRuntimeHealthState,
 }
 
 impl Default for AppRuntimeState {
@@ -34,26 +99,40 @@ impl Default for AppRuntimeState {
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
-            domain_event_broadcast: domain_event_tx,
-            notification_event_broadcast: notification_event_tx,
-            import_history_broadcast: import_history_tx,
-            settings_changed_broadcast: settings_changed_tx,
-            monitored_title_matcher: Arc::new(RwLock::new(
-                crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
-            )),
-            library_scan_tracker: LibraryScanTracker::new(),
-            library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
-            job_run_tracker: JobRunTracker::new(),
-            acquisition_wake: Arc::new(tokio::sync::Notify::new()),
-            poster_wake: Arc::new(tokio::sync::Notify::new()),
-            banner_wake: Arc::new(tokio::sync::Notify::new()),
-            fanart_wake: Arc::new(tokio::sync::Notify::new()),
-            health_check_results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-            library_scan_analysis_limit: Arc::new(Semaphore::new(
-                GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,
-            )),
-            tracked_download_handle: None,
+            events: AppRuntimeEventState {
+                domain_event_broadcast: domain_event_tx,
+                notification_event_broadcast: notification_event_tx,
+                import_history_broadcast: import_history_tx,
+                settings_changed_broadcast: settings_changed_tx,
+            },
+            catalog: AppRuntimeCatalogState {
+                monitored_title_matcher: Arc::new(RwLock::new(
+                    crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
+                )),
+                title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
+                poster_wake: Arc::new(tokio::sync::Notify::new()),
+                banner_wake: Arc::new(tokio::sync::Notify::new()),
+                fanart_wake: Arc::new(tokio::sync::Notify::new()),
+            },
+            acquisition: AppRuntimeAcquisitionState {
+                acquisition_wake: Arc::new(tokio::sync::Notify::new()),
+                download_submission_guards: DownloadSubmissionGuardTable::default(),
+                rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+                tracked_download_handle: None,
+            },
+            library: AppRuntimeLibraryState {
+                library_scan_tracker: LibraryScanTracker::new(),
+                library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
+                library_scan_analysis_limit: Arc::new(Semaphore::new(
+                    GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,
+                )),
+            },
+            jobs: AppRuntimeJobState {
+                job_run_tracker: JobRunTracker::new(),
+            },
+            health: AppRuntimeHealthState {
+                results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            },
         }
     }
 }
@@ -130,6 +209,7 @@ pub struct AppIntegrationServices {
 pub struct AppWorkflowServices {
     pub(crate) imports: Arc<dyn ImportRepository>,
     pub(crate) external_import_monitor_snapshots: Arc<dyn ExternalImportMonitorSnapshotRepository>,
+    pub(crate) download_queue_commands: Arc<dyn DownloadQueueCommandRepository>,
     pub(crate) workflow_operations: Arc<dyn WorkflowOperationRepository>,
     pub(crate) file_importer: Arc<dyn FileImporter>,
     pub(crate) import_artifacts: Arc<dyn ImportArtifactRepository>,
@@ -316,6 +396,9 @@ impl AppServices {
                 imports: Arc::new(NullImportRepository),
                 external_import_monitor_snapshots: Arc::new(
                     null_repositories::NullExternalImportMonitorSnapshotRepository,
+                ),
+                download_queue_commands: Arc::new(
+                    null_repositories::NullDownloadQueueCommandRepository,
                 ),
                 workflow_operations: Arc::new(NullWorkflowOperationRepository),
                 file_importer: Arc::new(NullFileImporter),
@@ -615,6 +698,11 @@ impl AppServicesBuilder {
         workflow.external_import_monitor_snapshots,
         Arc<dyn ExternalImportMonitorSnapshotRepository>
     );
+    app_services_builder_setter!(
+        with_download_queue_commands,
+        workflow.download_queue_commands,
+        Arc<dyn DownloadQueueCommandRepository>
+    );
     app_services_builder_required_setter!(
         with_workflow_operations,
         workflow.workflow_operations,
@@ -794,7 +882,7 @@ impl AppServicesBuilder {
         mut self,
         value: tracked_downloads::TrackedDownloadHandle,
     ) -> Self {
-        self.runtime.tracked_download_handle = Some(value);
+        self.runtime.acquisition.tracked_download_handle = Some(value);
         self
     }
 
@@ -834,7 +922,7 @@ pub struct AppUseCase {
 
 impl AppUseCase {
     async fn invalidate_monitored_title_matcher(&self) {
-        let mut state = self.runtime.monitored_title_matcher.write().await;
+        let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
         state.dirty = true;
     }
 
@@ -842,7 +930,7 @@ impl AppUseCase {
         &self,
     ) -> AppResult<Arc<crate::import_title_resolution::MonitoredTitleMatcher>> {
         {
-            let state = self.runtime.monitored_title_matcher.read().await;
+            let state = self.runtime.catalog.monitored_title_matcher.read().await;
             if !state.dirty
                 && let Some(matcher) = state.matcher.clone()
             {
@@ -860,7 +948,7 @@ impl AppUseCase {
             titles,
         ));
 
-        let mut state = self.runtime.monitored_title_matcher.write().await;
+        let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
         if state.dirty || state.matcher.is_none() {
             state.matcher = Some(matcher.clone());
             state.dirty = false;
@@ -900,7 +988,11 @@ impl AppUseCase {
         if should_invalidate_monitored_title_matcher(&stored.payload) {
             self.invalidate_monitored_title_matcher().await;
         }
-        let _ = self.runtime.domain_event_broadcast.send(stored.sequence);
+        let _ = self
+            .runtime
+            .events
+            .domain_event_broadcast
+            .send(stored.sequence);
         if crate::notifications::dispatcher::notification_event_type(&stored.payload).is_some() {
             tracing::debug!(
                 sequence = stored.sequence,
@@ -909,6 +1001,7 @@ impl AppUseCase {
             );
             let _ = self
                 .runtime
+                .events
                 .notification_event_broadcast
                 .send(stored.sequence);
         }
@@ -932,7 +1025,11 @@ impl AppUseCase {
             self.invalidate_monitored_title_matcher().await;
         }
         if let Some(last) = stored.last() {
-            let _ = self.runtime.domain_event_broadcast.send(last.sequence);
+            let _ = self
+                .runtime
+                .events
+                .domain_event_broadcast
+                .send(last.sequence);
         }
         let notification_count = stored
             .iter()
@@ -951,6 +1048,7 @@ impl AppUseCase {
             );
             let _ = self
                 .runtime
+                .events
                 .notification_event_broadcast
                 .send(last.sequence);
         }
@@ -969,7 +1067,7 @@ impl AppUseCase {
             .update_import_status(import_id, status, result_json.clone())
             .await?;
         if matches!(status, ImportStatus::Completed | ImportStatus::Failed) {
-            let _ = self.runtime.import_history_broadcast.send(());
+            let _ = self.runtime.events.import_history_broadcast.send(());
         }
 
         if let Some(ref json) = result_json
@@ -1036,7 +1134,11 @@ impl AppUseCase {
     }
 
     pub fn publish_settings_changed(&self, changed_keys: Vec<String>) {
-        let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
+        let _ = self
+            .runtime
+            .events
+            .settings_changed_broadcast
+            .send(changed_keys);
     }
 
     pub fn indexer_query_stats(&self, actor: &User) -> AppResult<Vec<IndexerQueryStats>> {
@@ -1049,7 +1151,7 @@ impl AppUseCase {
         actor: &User,
     ) -> AppResult<Vec<HealthCheckResult>> {
         require(actor, &Entitlement::ManageConfig)?;
-        Ok(self.runtime.health_check_results.read().await.clone())
+        Ok(self.runtime.health.results.read().await.clone())
     }
 
     pub async fn list_import_history(
@@ -1264,15 +1366,16 @@ impl AppUseCase {
 
     pub async fn connect_library_scan_tracker(&self) {
         self.runtime
+            .library
             .library_scan_tracker
-            .set_job_run_tracker(self.runtime.job_run_tracker.clone())
+            .set_job_run_tracker(self.runtime.jobs.job_run_tracker.clone())
             .await;
     }
 
     pub fn wake_title_image_loops(&self) {
-        self.runtime.poster_wake.notify_one();
-        self.runtime.banner_wake.notify_one();
-        self.runtime.fanart_wake.notify_one();
+        self.runtime.catalog.poster_wake.notify_one();
+        self.runtime.catalog.banner_wake.notify_one();
+        self.runtime.catalog.fanart_wake.notify_one();
     }
 
     pub async fn primary_enabled_download_client_config(
@@ -1290,7 +1393,11 @@ impl AppUseCase {
     }
 
     pub async fn active_library_scan_sessions(&self) -> Vec<LibraryScanSession> {
-        self.runtime.library_scan_tracker.list_active().await
+        self.runtime
+            .library
+            .library_scan_tracker
+            .list_active()
+            .await
     }
 
     pub fn user_rules_engine_snapshot(&self) -> scryer_rules::UserRulesEngine {

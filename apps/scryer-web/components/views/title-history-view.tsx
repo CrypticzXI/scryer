@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FilterChipButton } from "@/components/common/filter-chip-button";
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventTable } from "@/components/common/history-event-table";
@@ -50,29 +51,24 @@ export function TitleHistoryView({
           </span>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant={activeFilters.length === 0 ? "default" : "secondary"}
+          <FilterChipButton
+            selected={activeFilters.length === 0}
             onClick={onClearFilters}
             className="text-xs"
           >
             {t("history.allEvents")}
-          </Button>
+          </FilterChipButton>
           {availableFilters.map((eventType) => {
             const isActive = activeFilters.includes(eventType);
             return (
-              <Button
+              <FilterChipButton
                 key={eventType}
-                type="button"
-                size="sm"
-                variant={isActive ? "default" : "secondary"}
+                selected={isActive}
                 onClick={() => onToggleFilter(eventType)}
-                className="gap-1.5 text-xs"
+                icon={<HistoryEventIcon eventType={eventType} size={14} />}
               >
-                <HistoryEventIcon eventType={eventType} size={14} />
                 {t(filterI18nKeys[eventType] ?? eventType)}
-              </Button>
+              </FilterChipButton>
             );
           })}
         </div>

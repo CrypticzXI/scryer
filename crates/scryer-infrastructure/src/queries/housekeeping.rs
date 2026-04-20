@@ -165,6 +165,29 @@ pub(crate) async fn delete_terminal_imports_older_than_query(
     Ok(result.rows_affected() as u32)
 }
 
+pub(crate) async fn delete_terminal_download_queue_commands_older_than_query(
+    pool: &SqlitePool,
+    days: i64,
+) -> AppResult<u32> {
+    let modifier = format!("-{days} days");
+    let result = sqlx::query(
+        "DELETE FROM download_queue_commands
+         WHERE action = 'delete'
+           AND status IN ('completed', 'failed')
+           AND updated_at < datetime('now', ?)",
+    )
+    .bind(&modifier)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        AppError::Repository(format!(
+            "housekeeping: download_queue_commands cleanup failed: {e}"
+        ))
+    })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn delete_rule_set_history_older_than_query(
     pool: &SqlitePool,
     days: i64,

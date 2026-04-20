@@ -1,6 +1,6 @@
 
-import { memo, useCallback, useMemo, useState } from "react";
-import { useMutation } from "urql";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useClient, useMutation } from "urql";
 
 import { AssignTrackedDownloadTitleDialog } from "@/components/dialogs/assign-tracked-download-title-dialog";
 import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
@@ -15,22 +15,88 @@ import {
   resumeDownloadMutation,
   deleteDownloadMutation,
 } from "@/lib/graphql/mutations";
+import { downloadClientsQuery } from "@/lib/graphql/queries";
 import { useDownloadHistory } from "@/lib/hooks/use-download-history";
+import { useDownloadImport } from "@/lib/hooks/use-download-import";
 import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
-import type { DownloadQueueItem } from "@/lib/types";
+import type {
+  DownloadClientRecord,
+  DownloadActivityStatus,
+  DownloadClientFilterOption,
+  DownloadHistoryStatus,
+  DownloadImportStatus,
+  DownloadQueueItem,
+  SortConfig,
+} from "@/lib/types";
 import {
-  isActiveQueueState,
-  isHistoryQueueState,
-  isManualImportRequiredQueueItem,
+  collectDownloadClientFilterOptions,
+  downloadQueueClientFilterKey,
+  downloadQueueItemIdentityKey,
+  matchesActivityStatuses,
+  matchesImportStatuses,
 } from "@/lib/utils/download-queue";
 
 const HISTORY_STATES = new Set(["completed", "failed", "import_pending", "importpending"]);
-type QueueMode = "scryer" | "all" | "history";
+type ActivityTab = "import" | "activity" | "history";
+type SortConfigByTab = Record<ActivityTab, SortConfig>;
+
+const IMPORT_STATUS_OPTIONS: DownloadImportStatus[] = [
+  "importing",
+  "pending",
+  "blocked",
+  "failed",
+];
+const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
+  "downloading",
+  "queued",
+  "paused",
+  "post_processing",
+];
+const HISTORY_STATUS_OPTIONS: DownloadHistoryStatus[] = ["success", "failed"];
+const DEFAULT_SORT_CONFIG_BY_TAB: SortConfigByTab = {
+  import: { key: "status", direction: "asc" },
+  activity: { key: "status", direction: "asc" },
+  history: { key: "status", direction: "asc" },
+};
+
+function arraysEqual<T>(left: T[], right: T[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function toggleSelectedValue<T extends string>(current: T[], nextValue: T): T[] {
+  return current.includes(nextValue)
+    ? current.filter((value) => value !== nextValue)
+    : [...current, nextValue];
+}
+
+function mergeDownloadClientFilterOptions(
+  configuredOptions: DownloadClientFilterOption[],
+  visibleOptions: DownloadClientFilterOption[],
+): DownloadClientFilterOption[] {
+  const merged = new Map<string, DownloadClientFilterOption>();
+
+  for (const option of visibleOptions) {
+    merged.set(option.clientId, option);
+  }
+
+  for (const option of configuredOptions) {
+    if (!merged.has(option.clientId)) {
+      merged.set(option.clientId, option);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    (left.clientName || left.clientType).localeCompare(right.clientName || right.clientType, undefined, {
+      sensitivity: "base",
+    }),
+  );
+}
 
 export const ActivityContainer = memo(function ActivityContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const client = useClient();
   const [, executeQueueManualImport] = useMutation(queueManualImportMutation);
   const [, executeAssignTrackedDownloadTitle] = useMutation(assignTrackedDownloadTitleMutation);
   const [, executeIgnoreTrackedDownload] = useMutation(ignoreTrackedDownloadMutation);
@@ -38,75 +104,246 @@ export const ActivityContainer = memo(function ActivityContainer() {
   const [, executeResumeDownload] = useMutation(resumeDownloadMutation);
   const [, executeDeleteDownload] = useMutation(deleteDownloadMutation);
 
-  const [queueMode, setQueueMode] = useState<QueueMode>("scryer");
+  const [activeTab, setActiveTab] = useState<ActivityTab>("import");
+  const [selectedImportStatuses, setSelectedImportStatuses] = useState<DownloadImportStatus[]>([
+    ...IMPORT_STATUS_OPTIONS,
+  ]);
+  const [selectedActivityStatuses, setSelectedActivityStatuses] = useState<
+    DownloadActivityStatus[]
+  >([...ACTIVITY_STATUS_OPTIONS]);
+  const [selectedHistoryStatuses, setSelectedHistoryStatuses] = useState<DownloadHistoryStatus[]>(
+    [...HISTORY_STATUS_OPTIONS],
+  );
+  const [activityScryerSubmittedOnly, setActivityScryerSubmittedOnly] = useState(true);
+  const [historyScryerSubmittedOnly, setHistoryScryerSubmittedOnly] = useState(true);
+  const [selectedActivityClientIds, setSelectedActivityClientIds] = useState<string[] | null>(
+    null,
+  );
+  const [selectedHistoryClientIds, setSelectedHistoryClientIds] = useState<string[] | null>(
+    null,
+  );
+  const [sortConfigByTab, setSortConfigByTab] =
+    useState<SortConfigByTab>(DEFAULT_SORT_CONFIG_BY_TAB);
+  const [configuredClientOptions, setConfiguredClientOptions] = useState<
+    DownloadClientFilterOption[]
+  >([]);
+  const [historyPage, setHistoryPage] = useState(1);
   const [manualImportItem, setManualImportItem] = useState<DownloadQueueItem | null>(null);
   const [assignTitleItem, setAssignTitleItem] = useState<DownloadQueueItem | null>(null);
+  const [optimisticallyRemovedKeys, setOptimisticallyRemovedKeys] = useState<
+    Record<string, true>
+  >({});
 
   const {
     queueItems: activityQueueItems,
     queueLoading,
     queueError,
-    lastRefreshedAt,
     refreshQueue,
   } = useDownloadQueue({
-    enabled: queueMode !== "history",
-    includeAllActivity: true,
+    enabled: true,
+    includeAllActivity: !activityScryerSubmittedOnly,
     includeHistoryOnly: false,
+    activityFilter: "all",
+  });
+  const {
+    importItems,
+    importLoading,
+    importLoadingMore,
+    importError,
+    importHasMore,
+    importTotalCount,
+    refreshImport,
+    loadMoreImport,
+  } = useDownloadImport({
+    enabled: true,
+    filter: "all",
   });
   const {
     historyItems,
     historyLoading,
-    historyLoadingMore,
     historyError,
-    historyHasMore,
-    lastRefreshedAt: historyLastRefreshedAt,
+    historyTotalPages,
+    historyAvailableClients,
     refreshHistory,
-    loadMoreHistory,
   } = useDownloadHistory({
-    enabled: queueMode === "history",
+    enabled: true,
+    filters: selectedHistoryStatuses,
+    clientIds: selectedHistoryClientIds,
+    scryerSubmittedOnly: historyScryerSubmittedOnly,
+    page: historyPage,
+    sort: sortConfigByTab.history,
   });
 
-  const manualImportRequiredItems = useMemo(
-    () =>
-      queueMode === "history"
-        ? []
-        : activityQueueItems.filter((item) => isManualImportRequiredQueueItem(item)),
-    [activityQueueItems, queueMode],
-  );
-
-  const visibleItems = useMemo(() => {
-    if (queueMode === "history") {
-      return historyItems;
+  const filteredImportItems = useMemo(() => {
+    return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
+  }, [importItems, selectedImportStatuses]);
+  const statusFilteredActivityItems = useMemo(() => {
+    return activityQueueItems.filter((item) => matchesActivityStatuses(item, selectedActivityStatuses));
+  }, [activityQueueItems, selectedActivityStatuses]);
+  const activityAvailableClients = useMemo<DownloadClientFilterOption[]>(() => {
+    return mergeDownloadClientFilterOptions(
+      configuredClientOptions,
+      collectDownloadClientFilterOptions(statusFilteredActivityItems),
+    );
+  }, [configuredClientOptions, statusFilteredActivityItems]);
+  const mergedHistoryAvailableClients = useMemo<DownloadClientFilterOption[]>(() => {
+    return mergeDownloadClientFilterOptions(configuredClientOptions, historyAvailableClients);
+  }, [configuredClientOptions, historyAvailableClients]);
+  const filteredActivityItems = useMemo(() => {
+    if (selectedActivityClientIds === null) {
+      return statusFilteredActivityItems;
     }
+    if (selectedActivityClientIds.length === 0) {
+      return [];
+    }
+    const selectedClientIds = new Set(selectedActivityClientIds);
+    return statusFilteredActivityItems.filter((item) =>
+      selectedClientIds.has(downloadQueueClientFilterKey(item)),
+    );
+  }, [selectedActivityClientIds, statusFilteredActivityItems]);
+  const visibleItems = useMemo(() => {
+    const sourceItems =
+      activeTab === "import"
+        ? filteredImportItems
+        : activeTab === "history"
+          ? historyItems
+          : filteredActivityItems;
+    return sourceItems.filter(
+      (item) => !optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)],
+    );
+  }, [
+    activeTab,
+    filteredActivityItems,
+    filteredImportItems,
+    historyItems,
+    optimisticallyRemovedKeys,
+  ]);
+  const visibleLoading =
+    activeTab === "import"
+      ? importLoading
+      : activeTab === "history"
+        ? historyLoading
+        : queueLoading;
+  const visibleLoadingMore = activeTab === "import" ? importLoadingMore : false;
+  const visibleHasMore = activeTab === "import" ? importHasMore : false;
+  const visibleError =
+    activeTab === "import"
+      ? importError
+      : activeTab === "history"
+      ? historyError
+      : queueError;
+  const historyHasPreviousPage = historyPage > 1;
+  const historyHasNextPage = historyPage < historyTotalPages;
 
-    const blockedIds = new Set(manualImportRequiredItems.map((item) => item.id));
-    const filteredQueueItems = activityQueueItems.filter((item) => {
-      if (blockedIds.has(item.id)) {
-        return false;
+  const refreshConfiguredClients = useCallback(async () => {
+    try {
+      const { data, error } = await client.query(downloadClientsQuery, {}).toPromise();
+      if (error) {
+        throw error;
       }
+      const configuredClients: DownloadClientRecord[] = data?.downloadClientConfigs || [];
+      setConfiguredClientOptions(
+        configuredClients
+          .filter((downloadClient) => downloadClient.isEnabled)
+          .map((downloadClient) => ({
+            clientId: downloadClient.id,
+            clientName: downloadClient.name,
+            clientType: downloadClient.clientType,
+          })),
+      );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    }
+  }, [client, setGlobalStatus, t]);
 
-      if (queueMode === "scryer") {
-        return item.isScryerOrigin && isActiveQueueState(item.state);
+  useEffect(() => {
+    void refreshConfiguredClients();
+  }, [refreshConfiguredClients]);
+
+  useEffect(() => {
+    const availableClientIds = activityAvailableClients.map((client) => client.clientId);
+    setSelectedActivityClientIds((current) => {
+      if (availableClientIds.length === 0) {
+        if (current === null || current.length === 0) {
+          return current;
+        }
+        return [];
       }
-
-      return !isHistoryQueueState(item.state);
+      if (current === null) {
+        return availableClientIds;
+      }
+      const next = current.filter((clientId) => availableClientIds.includes(clientId));
+      return arraysEqual(current, next) ? current : next;
     });
+  }, [activityAvailableClients]);
 
-    return filteredQueueItems;
-  }, [activityQueueItems, historyItems, manualImportRequiredItems, queueMode]);
-  const visibleLoading = queueMode === "history" ? historyLoading : queueLoading;
-  const visibleError = queueMode === "history" ? historyError : queueError;
-  const visibleLastRefreshedAt =
-    queueMode === "history" ? historyLastRefreshedAt : lastRefreshedAt;
+  useEffect(() => {
+    const availableClientIds = mergedHistoryAvailableClients.map((client) => client.clientId);
+    setSelectedHistoryClientIds((current) => {
+      if (availableClientIds.length === 0) {
+        if (current === null || current.length === 0) {
+          return current;
+        }
+        return [];
+      }
+      if (current === null) {
+        return availableClientIds;
+      }
+      const next = current.filter((clientId) => availableClientIds.includes(clientId));
+      return arraysEqual(current, next) ? current : next;
+    });
+  }, [mergedHistoryAvailableClients]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [
+    selectedHistoryStatuses,
+    selectedHistoryClientIds,
+    historyScryerSubmittedOnly,
+    sortConfigByTab.history.direction,
+    sortConfigByTab.history.key,
+  ]);
+
+  useEffect(() => {
+    if (historyTotalPages > 0 && historyPage > historyTotalPages) {
+      setHistoryPage(historyTotalPages);
+    }
+  }, [historyPage, historyTotalPages]);
 
   const refreshActivityViews = useCallback(async () => {
-    await Promise.all([refreshQueue(), refreshHistory()]);
+    await Promise.all([refreshQueue(), refreshImport(), refreshHistory(), refreshConfiguredClients()]);
     window.dispatchEvent(new CustomEvent("scryer:activityQueueRefresh"));
-  }, [refreshHistory, refreshQueue]);
+  }, [refreshConfiguredClients, refreshHistory, refreshImport, refreshQueue]);
 
   useImportHistorySubscription(() => {
     void refreshActivityViews();
   });
+
+  useEffect(() => {
+    if (Object.keys(optimisticallyRemovedKeys).length === 0) {
+      return;
+    }
+
+    const authoritativeItems = [...activityQueueItems, ...importItems, ...historyItems];
+    const authoritativeByKey = new Map(
+      authoritativeItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+    );
+
+    setOptimisticallyRemovedKeys((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([key]) => {
+          const item = authoritativeByKey.get(key);
+          if (!item) {
+            return false;
+          }
+
+          return item.deleteStatus !== "failed";
+        }),
+      );
+
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [activityQueueItems, historyItems, importItems, optimisticallyRemovedKeys]);
 
   const requestManualImport = useCallback(
     async (item: DownloadQueueItem) => {
@@ -215,6 +452,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
       const isHistory = HISTORY_STATES.has(stateNormalized);
       const result = await executeDeleteDownload({
         input: {
+          clientType: item.clientType,
           downloadClientItemId: item.downloadClientItemId,
           isHistory,
         },
@@ -224,21 +462,26 @@ export const ActivityContainer = memo(function ActivityContainer() {
         setGlobalStatus(message);
         throw result.error;
       }
-      setGlobalStatus(t("queue.deleteSuccess"));
-      await refreshActivityViews();
+      setOptimisticallyRemovedKeys((current) => ({
+        ...current,
+        [downloadQueueItemIdentityKey(item)]: true,
+      }));
+      setGlobalStatus(t("queue.deleteQueued"));
+      void refreshQueue();
+      void refreshImport();
+      void refreshHistory();
     },
-    [refreshActivityViews, executeDeleteDownload, setGlobalStatus, t],
+    [executeDeleteDownload, refreshHistory, refreshImport, refreshQueue, setGlobalStatus, t],
   );
 
   return (
     <>
       <ActivityView
         state={{
-          manualImportRequiredItems,
           queueItems: visibleItems,
           queueLoading: visibleLoading,
+          queueLoadingMore: visibleLoadingMore,
           queueError: visibleError,
-          lastRefreshedAt: visibleLastRefreshedAt,
           requestManualImport,
           requestAssignTitle: async (item) => {
             setAssignTitleItem(item);
@@ -247,11 +490,80 @@ export const ActivityContainer = memo(function ActivityContainer() {
           requestPause,
           requestResume,
           requestDelete,
-          queueMode,
-          setQueueMode,
-          historyHasMore,
-          historyLoadingMore,
-          requestMoreHistory: loadMoreHistory,
+          activeTab,
+          setActiveTab,
+          importNotificationCount: importTotalCount,
+          sortConfigByTab,
+          toggleSort: (tab, nextKey) => {
+            setSortConfigByTab((current) => {
+              const currentConfig = current[tab];
+              return {
+                ...current,
+                [tab]:
+                  currentConfig.key === nextKey
+                    ? {
+                        key: nextKey,
+                        direction: currentConfig.direction === "asc" ? "desc" : "asc",
+                      }
+                    : DEFAULT_SORT_CONFIG_BY_TAB[tab].key === nextKey
+                      ? DEFAULT_SORT_CONFIG_BY_TAB[tab]
+                      : { key: nextKey, direction: "asc" },
+              };
+            });
+          },
+          activityScryerSubmittedOnly,
+          toggleActivityScryerSubmittedOnly: () => {
+            setActivityScryerSubmittedOnly((current) => !current);
+          },
+          historyScryerSubmittedOnly,
+          toggleHistoryScryerSubmittedOnly: () => {
+            setHistoryScryerSubmittedOnly((current) => !current);
+          },
+          selectedImportStatuses,
+          toggleImportStatus: (status) => {
+            setSelectedImportStatuses((current) => toggleSelectedValue(current, status));
+          },
+          selectedActivityStatuses,
+          toggleActivityStatus: (status) => {
+            setSelectedActivityStatuses((current) => toggleSelectedValue(current, status));
+          },
+          selectedHistoryStatuses,
+          toggleHistoryStatus: (status) => {
+            setSelectedHistoryStatuses((current) => toggleSelectedValue(current, status));
+          },
+          activityAvailableClients,
+          selectedActivityClientIds:
+            selectedActivityClientIds ?? activityAvailableClients.map((client) => client.clientId),
+          toggleActivityClientId: (clientId) => {
+            setSelectedActivityClientIds((current) =>
+              toggleSelectedValue(current ?? activityAvailableClients.map((client) => client.clientId), clientId),
+            );
+          },
+          historyAvailableClients: mergedHistoryAvailableClients,
+          selectedHistoryClientIds:
+            selectedHistoryClientIds ??
+            mergedHistoryAvailableClients.map((client) => client.clientId),
+          toggleHistoryClientId: (clientId) => {
+            setSelectedHistoryClientIds((current) =>
+              toggleSelectedValue(
+                current ?? mergedHistoryAvailableClients.map((client) => client.clientId),
+                clientId,
+              ),
+            );
+          },
+          historyPage,
+          historyTotalPages,
+          goToPreviousHistoryPage: async () => {
+            setHistoryPage((current) => Math.max(1, current - 1));
+          },
+          goToNextHistoryPage: async () => {
+            setHistoryPage((current) => Math.min(historyTotalPages, current + 1));
+          },
+          historyHasPreviousPage,
+          historyHasNextPage,
+          visibleHasMore,
+          requestMoreItems:
+            activeTab === "import" ? loadMoreImport : async () => {},
         }}
       />
       {manualImportItem?.titleId ? (

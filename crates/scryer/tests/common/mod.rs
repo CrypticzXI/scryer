@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use async_graphql::parser::types::{DocumentOperations, OperationType, Selection};
 use async_graphql_axum::GraphQLRequest;
 use axum::Router;
 use axum::extract::State;
@@ -143,6 +142,7 @@ impl TestContext {
         .with_customization_store(Arc::new(customization_store.clone()))
         .with_acquisition_state(workflow_store.clone())
         .with_domain_events(workflow_store.clone())
+        .with_download_queue_commands(workflow_store.clone())
         .with_download_submissions(workflow_store.clone())
         .with_import_artifacts(workflow_store.clone())
         .with_imports(workflow_store.clone())
@@ -349,56 +349,6 @@ async fn test_graphql_handler(
 }
 
 fn graphql_response_status(request: &mut async_graphql::Request) -> StatusCode {
-    graphql_async_mutation_status(request).unwrap_or(StatusCode::OK)
-}
-
-fn graphql_async_mutation_status(request: &mut async_graphql::Request) -> Option<StatusCode> {
-    let operation_name = request.operation_name.clone();
-    let Ok(document) = request.parsed_query() else {
-        return None;
-    };
-
-    let operation = match (&document.operations, operation_name.as_deref()) {
-        (DocumentOperations::Single(operation), _) => operation,
-        (DocumentOperations::Multiple(operations), Some(operation_name)) => {
-            operations.get(operation_name)?
-        }
-        (DocumentOperations::Multiple(operations), None) => {
-            if operations.len() != 1 {
-                return None;
-            }
-
-            operations.values().next()?
-        }
-    };
-
-    if operation.node.ty != OperationType::Mutation {
-        return None;
-    }
-
-    let field_names = operation
-        .node
-        .selection_set
-        .node
-        .items
-        .iter()
-        .filter_map(|selection| match &selection.node {
-            Selection::Field(field) => Some(field.node.name.node.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if field_names.contains(&"rehydrateAllMetadata") {
-        return Some(StatusCode::ACCEPTED);
-    }
-
-    if field_names.contains(&"queueManualImport") {
-        return Some(StatusCode::ACCEPTED);
-    }
-
-    if field_names.contains(&"scanLibrary") {
-        return Some(StatusCode::CREATED);
-    }
-
-    None
+    let _ = request;
+    StatusCode::OK
 }

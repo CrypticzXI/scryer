@@ -726,16 +726,10 @@ pub fn evaluate_against_profile_for_category(
     }
 
     if !c.required_audio_languages.is_empty() {
-        let release_langs: Vec<String> = release
-            .languages_audio
-            .iter()
-            .map(|l| l.trim().to_ascii_uppercase())
-            .collect();
-        let all_present = c
-            .required_audio_languages
-            .iter()
-            .all(|req| release_langs.iter().any(|rl| rl == req));
-        if !all_present {
+        if !crate::required_audio_languages_match(
+            &c.required_audio_languages,
+            &release.languages_audio,
+        ) {
             d.log("required_audio_language_missing", BLOCK_SCORE);
         } else {
             d.log("required_audio_languages_match", 80);

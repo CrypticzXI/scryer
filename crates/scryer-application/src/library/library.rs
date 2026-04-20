@@ -268,7 +268,12 @@ impl AppUseCase {
             return None;
         }
 
-        let mut tokens = self.runtime.library_scan_cancellation_tokens.lock().await;
+        let mut tokens = self
+            .runtime
+            .library
+            .library_scan_cancellation_tokens
+            .lock()
+            .await;
         if let Some(existing) = tokens.get(session_id).cloned() {
             return Some(existing);
         }
@@ -280,6 +285,7 @@ impl AppUseCase {
 
     async fn library_scan_cancellation_token(&self, session_id: &str) -> Option<CancellationToken> {
         self.runtime
+            .library
             .library_scan_cancellation_tokens
             .lock()
             .await
@@ -289,6 +295,7 @@ impl AppUseCase {
 
     pub(crate) async fn clear_library_scan_cancellation_token(&self, session_id: &str) {
         self.runtime
+            .library
             .library_scan_cancellation_tokens
             .lock()
             .await
@@ -304,6 +311,7 @@ impl AppUseCase {
 
         let session = self
             .runtime
+            .library
             .library_scan_tracker
             .get_session(session_id)
             .await
@@ -463,6 +471,7 @@ impl AppUseCase {
                     "Imported Sonarr/Radarr monitored state could not be applied after this scan. Scryer will retry on the next full scan.".to_string();
                 let _ = self
                     .runtime
+                    .library
                     .library_scan_tracker
                     .set_warning_message(session_id, Some(warning_message))
                     .await;

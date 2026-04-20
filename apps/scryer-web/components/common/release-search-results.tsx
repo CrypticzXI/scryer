@@ -64,10 +64,12 @@ function SearchResultRow({
   result,
   onQueue,
   blocked,
+  mobile = false,
 }: {
   result: Release;
   onQueue: (r: Release) => Promise<void> | void;
   blocked: boolean;
+  mobile?: boolean;
 }) {
   const t = useTranslate();
   const [expanded, setExpanded] = React.useState(false);
@@ -129,6 +131,74 @@ function SearchResultRow({
       setQueueRequested(false);
     }
   }, [blocked, onQueue, queueRequested, result]);
+
+  if (mobile) {
+    return (
+      <div className="rounded-lg border border-border bg-background/40 p-3">
+        <div className="space-y-2">
+          <p className="min-w-0 whitespace-normal break-words text-sm font-semibold leading-snug text-foreground">
+            {result.title}
+          </p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span>{result.source ?? t("label.unknown")}</span>
+            <span aria-hidden="true">•</span>
+            <span>{result.publishedAt ?? t("label.unknown")}</span>
+            <span aria-hidden="true">•</span>
+            <span className="font-medium text-foreground/80">{bytesToWholeReadable(result.sizeBytes)}</span>
+          </div>
+          {parsedBits.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {parsedBits.map((metadataBit) => (
+                <span
+                  key={metadataBit}
+                  className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                >
+                  {metadataBit}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {parsedMetadata.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {parsedMetadata.map((metadataBit) => (
+                <span
+                  key={metadataBit.label}
+                  className={`inline-flex items-center rounded-full border border-transparent px-2 py-0.5 text-[11px] font-medium ${metadataBit.className}`}
+                >
+                  {metadataBit.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {decision && decision.blockCodes.length > 0 ? (
+            <p className="text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
+          ) : null}
+          <Button
+            size="sm"
+            onClick={handleQueueClick}
+            disabled={blocked || queueRequested}
+            className={
+              blocked
+                ? "mt-1 w-full"
+                : queueRequested
+                  ? "mt-1 w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
+                  : "mt-1 w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+            }
+            variant={blocked ? "ghost" : "default"}
+          >
+            {queueRequested ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Check className="h-3.5 w-3.5" />
+                {t("queue.state.queued")}
+              </span>
+            ) : (
+              t("nzb.queue")
+            )}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -320,47 +390,80 @@ export function SearchResultBuckets({
   const renderTable = React.useCallback(
     (entries: Release[], isBlocked: boolean) => {
       return (
-        <div className="overflow-x-auto rounded-md border border-border bg-background/30">
-          <table className="w-full table-fixed text-left">
-            <thead className="bg-card/80">
-              <tr>
-                <th className="w-[68%] px-4 py-3 text-base font-bold text-foreground">Release</th>
-                <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
-                  <button
-                    type="button"
-                    className="inline-flex w-full items-center justify-center gap-1"
-                    onClick={() => handleSort("score")}
-                  >
-                    Score {renderSortIcon("score")}
-                  </button>
-                </th>
-                <th className="w-[10%] px-4 py-3 text-center text-base font-bold text-foreground">
-                  <button
-                    type="button"
-                    className="inline-flex w-full items-center justify-center gap-1"
-                    onClick={() => handleSort("size")}
-                  >
-                    Size {renderSortIcon("size")}
-                  </button>
-                </th>
-                <th className="w-[14%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((result) => (
-                <SearchResultRow
-                  key={`${result.source}-${result.title}-${result.link}`}
-                  result={result}
-                  onQueue={onQueue}
-                  blocked={isBlocked}
-                />
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 md:hidden">
+            <Button
+              type="button"
+              size="xs"
+              variant={sortKey === "score" ? "secondary" : "outline"}
+              onClick={() => handleSort("score")}
+            >
+              Score {renderSortIcon("score")}
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              variant={sortKey === "size" ? "secondary" : "outline"}
+              onClick={() => handleSort("size")}
+            >
+              Size {renderSortIcon("size")}
+            </Button>
+          </div>
+
+          <div className="space-y-2 md:hidden">
+            {entries.map((result) => (
+              <SearchResultRow
+                key={`${result.source}-${result.title}-${result.link}`}
+                result={result}
+                onQueue={onQueue}
+                blocked={isBlocked}
+                mobile
+              />
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-md border border-border bg-background/30 md:block">
+            <table className="w-full table-fixed text-left">
+              <thead className="bg-card/80">
+                <tr>
+                  <th className="w-[68%] px-4 py-3 text-base font-bold text-foreground">Release</th>
+                  <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
+                    <button
+                      type="button"
+                      className="inline-flex w-full items-center justify-center gap-1"
+                      onClick={() => handleSort("score")}
+                    >
+                      Score {renderSortIcon("score")}
+                    </button>
+                  </th>
+                  <th className="w-[10%] px-4 py-3 text-center text-base font-bold text-foreground">
+                    <button
+                      type="button"
+                      className="inline-flex w-full items-center justify-center gap-1"
+                      onClick={() => handleSort("size")}
+                    >
+                      Size {renderSortIcon("size")}
+                    </button>
+                  </th>
+                  <th className="w-[14%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((result) => (
+                  <SearchResultRow
+                    key={`${result.source}-${result.title}-${result.link}`}
+                    result={result}
+                    onQueue={onQueue}
+                    blocked={isBlocked}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       );
     },
-    [handleSort, onQueue, renderSortIcon],
+    [handleSort, onQueue, renderSortIcon, sortKey],
   );
 
   return (

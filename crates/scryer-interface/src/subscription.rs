@@ -13,8 +13,8 @@ use crate::mappers::{
     from_library_scan_session,
 };
 use crate::types::{
-    ActivityEventPayload, DomainEventEnvelopePayload, DownloadQueueItemPayload, JobRunPayload,
-    LibraryScanProgressPayload,
+    ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
+    DownloadQueueItemPayload, JobRunPayload, LibraryScanProgressPayload,
 };
 
 pub struct SubscriptionRoot;
@@ -79,6 +79,7 @@ fn download_queue_state_stream_from_snapshots(
     receiver: tokio::sync::broadcast::Receiver<Vec<DownloadQueueItem>>,
     include_all_activity: bool,
     include_history_only: bool,
+    activity_filter: DownloadActivityFilterValue,
 ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
     let stream = unfold(
         (receiver, VecDeque::<Vec<DownloadQueueItemPayload>>::new()),
@@ -94,6 +95,7 @@ fn download_queue_state_stream_from_snapshots(
                             snapshot,
                             include_all_activity,
                             include_history_only,
+                            activity_filter,
                         )
                         .into_iter()
                         .map(from_download_queue_item)
@@ -292,6 +294,7 @@ impl SubscriptionRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        activity_filter: Option<DownloadActivityFilterValue>,
     ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
@@ -330,6 +333,7 @@ impl SubscriptionRoot {
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
+            activity_filter.unwrap_or(DownloadActivityFilterValue::All),
         )
     }
 
@@ -338,6 +342,7 @@ impl SubscriptionRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        activity_filter: Option<DownloadActivityFilterValue>,
     ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
@@ -371,6 +376,7 @@ impl SubscriptionRoot {
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
+            activity_filter.unwrap_or(DownloadActivityFilterValue::All),
         )
     }
 
@@ -680,14 +686,11 @@ fn filter_download_queue_items(
     items: Vec<scryer_domain::DownloadQueueItem>,
     include_all_activity: bool,
     include_history_only: bool,
+    activity_filter: DownloadActivityFilterValue,
 ) -> Vec<scryer_domain::DownloadQueueItem> {
     dedupe_download_queue_items(items)
         .into_iter()
         .filter(|item| {
-            if include_all_activity {
-                return true;
-            }
-
             if include_history_only {
                 return matches!(
                     item.state,
@@ -697,16 +700,15 @@ fn filter_download_queue_items(
                 );
             }
 
-            item.is_scryer_origin
-                && matches!(
-                    item.state,
-                    DownloadQueueState::Downloading
-                        | DownloadQueueState::Queued
-                        | DownloadQueueState::Paused
-                        | DownloadQueueState::Verifying
-                        | DownloadQueueState::Repairing
-                        | DownloadQueueState::Extracting
-                )
+            let matches_activity = scryer_application::matches_download_activity_filter(
+                item,
+                activity_filter.into_application(),
+            );
+            if include_all_activity {
+                return matches_activity;
+            }
+
+            item.is_scryer_origin && matches_activity
         })
         .collect()
 }
@@ -735,6 +737,7 @@ fn dedupe_download_queue_items(
 #[cfg(test)]
 mod tests {
     use super::{dedupe_download_queue_items, filter_download_queue_items};
+    use crate::types::DownloadActivityFilterValue;
     use chrono::Utc;
     use scryer_domain::{DownloadQueueItem, DownloadQueueState};
 
@@ -760,6 +763,8 @@ mod tests {
             import_error_code: None,
             import_error_message: None,
             imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
             is_scryer_origin,
             tracked_state: None,
             tracked_status: None,
@@ -793,7 +798,8 @@ mod tests {
             item("job-4", DownloadQueueState::Queued, false),
         ];
 
-        let filtered = filter_download_queue_items(items, false, false);
+        let filtered =
+            filter_download_queue_items(items, false, false, DownloadActivityFilterValue::All);
 
         assert_eq!(filtered.len(), 1);
         assert!(filtered.iter().all(|item| item.is_scryer_origin));
@@ -816,7 +822,8 @@ mod tests {
             item("job-4", DownloadQueueState::Extracting, false),
         ];
 
-        let filtered = filter_download_queue_items(items, false, false);
+        let filtered =
+            filter_download_queue_items(items, false, false, DownloadActivityFilterValue::All);
 
         assert_eq!(filtered.len(), 3);
         assert!(filtered.iter().all(|item| item.is_scryer_origin));

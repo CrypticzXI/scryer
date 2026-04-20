@@ -160,7 +160,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .send()
         .await
         .expect("request should succeed");
-    assert_eq!(start_resp.status(), 201);
+    assert_eq!(start_resp.status(), 200);
     let start: serde_json::Value = start_resp.json().await.expect("should be valid JSON");
     assert_no_errors(&start);
     let session_id = start["data"]["scanLibrary"]["sessionId"]
@@ -227,7 +227,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
 }
 
 #[tokio::test]
-async fn scan_library_mutation_returns_created_status_and_started_session() {
+async fn scan_library_mutation_returns_ok_status_and_started_session() {
     let ctx = TestContext::new().await;
 
     let resp = ctx
@@ -248,7 +248,7 @@ async fn scan_library_mutation_returns_created_status_and_started_session() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.expect("should be valid JSON");
     assert_no_errors(&body);
@@ -299,7 +299,7 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.expect("should be valid JSON");
     assert_no_errors(&body);
@@ -365,7 +365,7 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
         .send()
         .await
         .expect("request should succeed");
-    assert_eq!(start_resp.status(), 201);
+    assert_eq!(start_resp.status(), 200);
 
     let start_body: serde_json::Value = start_resp.json().await.expect("should be valid JSON");
     assert_no_errors(&start_body);

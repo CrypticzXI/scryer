@@ -1121,7 +1121,11 @@ impl AppUseCase {
         }
 
         if !changed_keys.is_empty() {
-            let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
+            let _ = self
+                .runtime
+                .events
+                .settings_changed_broadcast
+                .send(changed_keys);
         }
 
         self.services
@@ -2708,7 +2712,11 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Updated,
         )
         .await;
-        let _ = self.runtime.settings_changed_broadcast.send(changed_keys);
+        let _ = self
+            .runtime
+            .events
+            .settings_changed_broadcast
+            .send(changed_keys);
 
         self.load_subtitle_settings().await
     }
@@ -2796,7 +2804,7 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Updated,
         )
         .await;
-        let _ = self.runtime.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.events.settings_changed_broadcast.send(vec![
             ACQUISITION_ENABLED_KEY.to_string(),
             ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY.to_string(),
             ACQUISITION_SAME_TIER_MIN_DELTA_KEY.to_string(),
@@ -2806,7 +2814,7 @@ impl AppUseCase {
             ACQUISITION_SYNC_INTERVAL_SECONDS_KEY.to_string(),
             ACQUISITION_BATCH_SIZE_KEY.to_string(),
         ]);
-        self.runtime.acquisition_wake.notify_one();
+        self.runtime.acquisition.acquisition_wake.notify_one();
 
         self.load_acquisition_settings().await
     }
@@ -2850,10 +2858,10 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Saved,
         )
         .await;
-        let _ = self.runtime.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.events.settings_changed_broadcast.send(vec![
             crate::delay_profile::DELAY_PROFILE_CATALOG_KEY.to_string(),
         ]);
-        self.runtime.acquisition_wake.notify_one();
+        self.runtime.acquisition.acquisition_wake.notify_one();
 
         Ok(profile)
     }
@@ -2891,10 +2899,10 @@ impl AppUseCase {
             scryer_domain::ConfigurationChangeAction::Deleted,
         )
         .await;
-        let _ = self.runtime.settings_changed_broadcast.send(vec![
+        let _ = self.runtime.events.settings_changed_broadcast.send(vec![
             crate::delay_profile::DELAY_PROFILE_CATALOG_KEY.to_string(),
         ]);
-        self.runtime.acquisition_wake.notify_one();
+        self.runtime.acquisition.acquisition_wake.notify_one();
 
         Ok(profile_id)
     }

@@ -432,6 +432,9 @@ pub(crate) fn from_download_client_config(
 }
 
 pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPayload {
+    let display_state = DownloadDisplayStateValue::from_application(
+        scryer_application::derive_download_queue_display_state(&item),
+    );
     DownloadQueueItemPayload {
         id: item.id,
         title_id: item.title_id,
@@ -452,6 +455,7 @@ pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueue
         client_name: item.client_name,
         client_type: item.client_type,
         state: DownloadQueueStateValue::from_domain(item.state),
+        display_state,
         progress_percent: i32::from(item.progress_percent),
         size_bytes: item.size_bytes.map(|value| value.to_string()),
         remaining_seconds: item
@@ -468,6 +472,10 @@ pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueue
             .map(ImportErrorCodeValue::from_domain),
         import_error_message: item.import_error_message,
         imported_at: item.imported_at,
+        delete_status: item
+            .delete_status
+            .map(DownloadQueueDeleteStatusValue::from_domain),
+        delete_error_message: item.delete_error_message,
     }
 }
 

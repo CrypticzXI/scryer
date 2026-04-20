@@ -85,6 +85,33 @@ pub(crate) fn normalize_release_password(raw: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+pub(crate) fn normalize_release_selection_signature(
+    source_hint: Option<&str>,
+    source_title: Option<&str>,
+    source_kind: Option<DownloadSourceKind>,
+) -> Option<String> {
+    let source_hint = source_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let source_title = source_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let source_kind = source_kind.map(|value| value.as_str().to_string());
+
+    if source_hint.is_none() && source_title.is_none() && source_kind.is_none() {
+        return None;
+    }
+
+    Some(format!(
+        "{}|{}|{}",
+        source_kind.unwrap_or_default(),
+        source_hint.unwrap_or_default(),
+        source_title.unwrap_or_default()
+    ))
+}
+
 pub(crate) fn require(actor: &User, entitlement: &Entitlement) -> AppResult<()> {
     if actor.has_entitlement(entitlement) {
         Ok(())

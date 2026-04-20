@@ -1,4 +1,5 @@
 use scryer_application::{AppError, AppResult};
+use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 
@@ -59,12 +60,92 @@ pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> Ap
         MigrationMode::Apply => {}
     }
 
-    MIGRATOR
-        .run(pool)
-        .await
-        .map_err(|error| AppError::Repository(error.to_string()))?;
+    if let Err(error) = MIGRATOR.run(pool).await {
+        let error_message = error.to_string();
+        let error_message = if is_title_external_id_projection_conflict_error(&error_message) {
+            if let Some(hint) = title_external_id_projection_conflict_hint(pool).await {
+                format!(
+                    "{error_message}. Conflicting faceted external IDs detected while rebuilding title_external_ids: {hint}. Resolve the duplicate entries in titles.external_ids and rerun startup."
+                )
+            } else {
+                error_message
+            }
+        } else {
+            error_message
+        };
+        return Err(AppError::Repository(error_message));
+    }
 
     Ok(())
+}
+
+fn is_title_external_id_projection_conflict_error(message: &str) -> bool {
+    message.contains("UNIQUE constraint failed")
+        && (message.contains("_title_external_id_projection_check")
+            || message.contains("title_external_ids.facet")
+            || message.contains("idx_title_external_ids_facet_lookup"))
+}
+
+pub(crate) async fn title_external_id_projection_conflict_hint(
+    pool: &SqlitePool,
+) -> Option<String> {
+    let rows = sqlx::query(
+        "SELECT
+             facet,
+             source,
+             external_id,
+             GROUP_CONCAT(DISTINCT title_id) AS title_ids
+         FROM (
+             SELECT
+                 t.id AS title_id,
+                 t.facet AS facet,
+                 LOWER(TRIM(json_extract(external_id.value, '$.source'))) AS source,
+                 TRIM(json_extract(external_id.value, '$.value')) AS external_id
+             FROM titles AS t
+             JOIN json_each(t.external_ids) AS external_id
+             WHERE TRIM(COALESCE(json_extract(external_id.value, '$.source'), '')) != ''
+               AND TRIM(COALESCE(json_extract(external_id.value, '$.value'), '')) != ''
+             GROUP BY
+                 t.id,
+                 t.facet,
+                 LOWER(TRIM(json_extract(external_id.value, '$.source'))),
+                 TRIM(json_extract(external_id.value, '$.value'))
+         ) AS canonical
+         GROUP BY facet, source, external_id
+         HAVING COUNT(DISTINCT title_id) > 1
+         ORDER BY facet, source, external_id
+         LIMIT 5",
+    )
+    .fetch_all(pool)
+    .await
+    .ok()?;
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    let collisions = rows
+        .into_iter()
+        .filter_map(|row| {
+            let facet: String = row.try_get("facet").ok()?;
+            let source: String = row.try_get("source").ok()?;
+            let external_id: String = row.try_get("external_id").ok()?;
+            let title_ids: Option<String> = row.try_get("title_ids").ok();
+            let title_ids = title_ids.unwrap_or_default();
+
+            Some(if title_ids.is_empty() {
+                format!("{facet}/{source}/{external_id}")
+            } else {
+                format!("{facet}/{source}/{external_id} (titles: {title_ids})")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if collisions.is_empty() {
+        None
+    } else {
+        Some(collisions.join("; "))
+    }
 }
 
 async fn migration_table_exists(pool: &SqlitePool) -> AppResult<bool> {

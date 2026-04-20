@@ -1,4 +1,10 @@
-import type { DownloadQueueItem } from "@/lib/types";
+import type {
+  DownloadActivityStatus,
+  DownloadClientFilterOption,
+  DownloadHistoryStatus,
+  DownloadImportStatus,
+  DownloadQueueItem,
+} from "@/lib/types";
 
 export type DownloadQueueDisplayStateInput = Pick<
   DownloadQueueItem,
@@ -6,6 +12,8 @@ export type DownloadQueueDisplayStateInput = Pick<
   | "attentionReason"
   | "importStatus"
   | "importErrorMessage"
+  | "deleteStatus"
+  | "deleteErrorMessage"
   | "trackedState"
   | "trackedStatusMessages"
 >;
@@ -122,6 +130,7 @@ export function buildQueueStatusDetail(
   const messages = [
     ...(queueItem.trackedStatusMessages ?? []),
     queueItem.attentionReason,
+    queueItem.deleteErrorMessage,
     queueItem.importErrorMessage,
   ]
     .map((value) => value?.trim())
@@ -152,6 +161,15 @@ export function deriveDownloadQueueDisplayState(
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const failureReason = buildQueueStatusDetail(queueItem);
   const importStatusKey = normalizeQueueState(queueItem.importStatus);
+  const deleteStatusKey = normalizeQueueState(queueItem.deleteStatus);
+
+  if (deleteStatusKey === "queued" || deleteStatusKey === "running") {
+    return "removing";
+  }
+
+  if (deleteStatusKey === "failed") {
+    return "remove_failed";
+  }
 
   if (
     importStatusKey === "pending" ||
@@ -207,4 +225,114 @@ export function isManualImportRequiredQueueItem(
 ): boolean {
   const state = deriveDownloadQueueDisplayState(queueItem);
   return state === "import_blocked" || state === "importing" || state === "import_failed";
+}
+
+export function downloadQueueClientFilterKey(
+  item: Pick<DownloadQueueItem, "id" | "clientId" | "clientType">,
+): string {
+  const clientId = item.clientId.trim();
+  if (clientId.length > 0) {
+    return clientId;
+  }
+
+  const clientType = item.clientType.trim();
+  if (clientType.length > 0) {
+    return clientType.toLowerCase();
+  }
+
+  return item.id;
+}
+
+export function collectDownloadClientFilterOptions(
+  items: DownloadQueueItem[],
+): DownloadClientFilterOption[] {
+  const seen = new Set<string>();
+  const clients: DownloadClientFilterOption[] = [];
+
+  for (const item of items) {
+    const clientId = downloadQueueClientFilterKey(item);
+    if (seen.has(clientId)) {
+      continue;
+    }
+    seen.add(clientId);
+
+    const clientName = item.clientName.trim();
+    const clientType = item.clientType.trim();
+    clients.push({
+      clientId,
+      clientName: clientName.length > 0 ? clientName : clientType,
+      clientType,
+    });
+  }
+
+  return clients.sort((left, right) => {
+    return (
+      left.clientName.localeCompare(right.clientName, undefined, { sensitivity: "base" }) ||
+      left.clientType.localeCompare(right.clientType, undefined, { sensitivity: "base" }) ||
+      left.clientId.localeCompare(right.clientId, undefined, { sensitivity: "base" })
+    );
+  });
+}
+
+export function matchesImportStatuses(
+  item: Pick<DownloadQueueItem, "displayState">,
+  statuses: DownloadImportStatus[],
+): boolean {
+  if (statuses.length === 0) {
+    return false;
+  }
+
+  switch (item.displayState) {
+    case "importing":
+      return statuses.includes("importing");
+    case "import_pending":
+      return statuses.includes("pending");
+    case "import_blocked":
+      return statuses.includes("blocked");
+    case "import_failed":
+      return statuses.includes("failed");
+    default:
+      return false;
+  }
+}
+
+export function matchesActivityStatuses(
+  item: Pick<DownloadQueueItem, "displayState">,
+  statuses: DownloadActivityStatus[],
+): boolean {
+  if (statuses.length === 0) {
+    return false;
+  }
+
+  switch (item.displayState) {
+    case "downloading":
+      return statuses.includes("downloading");
+    case "queued":
+      return statuses.includes("queued");
+    case "paused":
+      return statuses.includes("paused");
+    case "post_processing":
+      return statuses.includes("post_processing");
+    default:
+      return false;
+  }
+}
+
+export function matchesHistoryStatuses(
+  item: Pick<DownloadQueueItem, "displayState">,
+  statuses: DownloadHistoryStatus[],
+): boolean {
+  if (statuses.length === 0) {
+    return false;
+  }
+
+  switch (item.displayState) {
+    case "completed":
+      return statuses.includes("success");
+    case "failed":
+    case "remove_failed":
+      return statuses.includes("failed");
+    default:
+      return false;
+  }
 }

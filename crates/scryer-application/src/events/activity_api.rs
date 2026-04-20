@@ -631,7 +631,7 @@ impl AppUseCase {
         let app = self.clone();
         let actor = actor.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.events.domain_event_broadcast.subscribe();
             let mut cursor = 0_i64;
 
             loop {
@@ -676,17 +676,22 @@ impl AppUseCase {
         actor: &User,
     ) -> AppResult<broadcast::Receiver<i64>> {
         require(actor, &Entitlement::ViewHistory)?;
-        Ok(self.runtime.domain_event_broadcast.subscribe())
+        Ok(self.runtime.events.domain_event_broadcast.subscribe())
     }
 
     pub fn subscribe_import_history(&self, actor: &User) -> AppResult<broadcast::Receiver<()>> {
         require(actor, &Entitlement::ViewHistory)?;
-        Ok(self.runtime.import_history_broadcast.subscribe())
+        Ok(self.runtime.events.import_history_broadcast.subscribe())
     }
 
     pub async fn active_library_scans(&self, actor: &User) -> AppResult<Vec<LibraryScanSession>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        Ok(self.runtime.library_scan_tracker.list_active().await)
+        Ok(self
+            .runtime
+            .library
+            .library_scan_tracker
+            .list_active()
+            .await)
     }
 
     pub fn subscribe_library_scan_progress(
@@ -699,6 +704,7 @@ impl AppUseCase {
         tokio::spawn(async move {
             let (initial_sessions, mut receiver) = app
                 .runtime
+                .library
                 .library_scan_tracker
                 .subscribe_with_initial_snapshot()
                 .await;
@@ -737,7 +743,7 @@ impl AppUseCase {
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<String>>> {
         require(actor, &Entitlement::ViewCatalog)?;
-        Ok(self.runtime.settings_changed_broadcast.subscribe())
+        Ok(self.runtime.events.settings_changed_broadcast.subscribe())
     }
 
     pub fn subscribe_download_queue_state(

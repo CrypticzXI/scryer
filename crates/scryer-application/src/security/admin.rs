@@ -146,7 +146,7 @@ impl AppUseCase {
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
-            let mut wake_rx = app.runtime.domain_event_broadcast.subscribe();
+            let mut wake_rx = app.runtime.events.domain_event_broadcast.subscribe();
             let mut cursor = 0_i64;
 
             loop {

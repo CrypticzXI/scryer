@@ -1,13 +1,15 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AcquisitionStateRepository, AppError, AppResult, DomainEventRepository, DownloadSubmission,
+    AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
+    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSubmission,
     DownloadSubmissionRepository, ExternalImportMonitorSnapshot,
     ExternalImportMonitorSnapshotRepository, ImportArtifact, ImportArtifactRepository,
     ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
     SuccessfulGrabCommit, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 use scryer_domain::{
-    DomainEvent, DomainEventFilter, ImportRecord, ImportStatus, ImportType, NewDomainEvent,
+    DomainEvent, DomainEventFilter, DownloadQueueDeleteStatus, ImportRecord, ImportStatus,
+    ImportType, NewDomainEvent,
 };
 
 use crate::SqliteServices;
@@ -119,16 +121,7 @@ impl DomainEventRepository for SqliteWorkflowStore {
 #[async_trait]
 impl DownloadSubmissionRepository for SqliteWorkflowStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
-        crate::queries::workflow::record_download_submission_query(
-            &self.pool,
-            &submission.title_id,
-            &submission.facet,
-            &submission.download_client_type,
-            &submission.download_client_item_id,
-            submission.source_title.as_deref(),
-            submission.collection_id.as_deref(),
-        )
-        .await
+        crate::queries::workflow::record_download_submission_query(&self.pool, &submission).await
     }
 
     async fn find_by_client_item_id(
@@ -147,6 +140,19 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
         crate::queries::workflow::list_download_submissions_for_title_query(&self.pool, title_id)
             .await
+    }
+
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        crate::queries::workflow::find_download_submission_by_title_and_request_signature_query(
+            &self.pool,
+            title_id,
+            request_signature,
+        )
+        .await
     }
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
@@ -445,6 +451,87 @@ impl ExternalImportMonitorSnapshotRepository for SqliteWorkflowStore {
         facet: &scryer_domain::MediaFacet,
     ) -> AppResult<()> {
         crate::queries::workflow::delete_external_import_monitor_snapshot_query(&self.pool, facet)
+            .await
+    }
+}
+
+#[async_trait]
+impl DownloadQueueCommandRepository for SqliteWorkflowStore {
+    async fn queue_delete_command(
+        &self,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord> {
+        crate::queries::workflow::queue_delete_download_command_query(
+            &self.pool,
+            client_type,
+            download_client_item_id,
+            is_history,
+            requested_by_user_id,
+        )
+        .await
+    }
+
+    async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64> {
+        crate::queries::workflow::recover_stale_running_delete_download_commands_query(
+            &self.pool,
+            stale_seconds,
+        )
+        .await
+    }
+
+    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        crate::queries::workflow::list_pending_delete_download_commands_query(&self.pool).await
+    }
+
+    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()> {
+        crate::queries::workflow::update_delete_download_command_status_query(
+            &self.pool,
+            id,
+            DownloadQueueDeleteStatus::Running,
+            None,
+        )
+        .await
+    }
+
+    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()> {
+        crate::queries::workflow::update_delete_download_command_status_query(
+            &self.pool,
+            id,
+            DownloadQueueDeleteStatus::Completed,
+            None,
+        )
+        .await
+    }
+
+    async fn mark_delete_command_failed(
+        &self,
+        id: &str,
+        error_text: Option<&str>,
+    ) -> AppResult<()> {
+        crate::queries::workflow::update_delete_download_command_status_query(
+            &self.pool,
+            id,
+            DownloadQueueDeleteStatus::Failed,
+            error_text,
+        )
+        .await
+    }
+
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        sources: &[(String, String, bool)],
+    ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        crate::queries::workflow::list_latest_delete_download_commands_for_sources_query(
+            &self.pool, sources,
+        )
+        .await
+    }
+
+    async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32> {
+        crate::queries::workflow::prune_terminal_delete_download_commands_query(&self.pool, days)
             .await
     }
 }

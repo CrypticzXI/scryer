@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use scryer_domain::DownloadQueueCommandAction;
 use scryer_domain::ExternalId;
+use scryer_domain::Title;
 use serde::{Deserialize, Serialize};
 
 use crate::library_scan::LibraryScanSummary;
@@ -35,6 +37,47 @@ pub struct TitleMetadataUpdate {
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).
     pub extra_tags: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AddTitleHydrationState {
+    Pending,
+    Complete,
+    NotRequired,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateTitleOutcome {
+    pub title: Title,
+    pub reused_existing: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AddTitleOutcome {
+    pub title: Title,
+    pub metadata_hydration_state: AddTitleHydrationState,
+    pub reused_existing_title: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AddTitleAndQueueDownloadOutcome {
+    pub title: Title,
+    pub metadata_hydration_state: AddTitleHydrationState,
+    pub reused_existing_title: bool,
+    pub download_job_id: String,
+    pub reused_queued_download: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingTitleHydration {
+    /// Title queued for background metadata hydration.
+    ///
+    /// The queue only contains titles whose metadata is still incomplete and whose
+    /// persistence-layer retry marker says they are due now. Once hydration succeeds
+    /// or retry state is cleared, the title falls out of this queue.
+    pub title: Title,
+    pub attempt_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +127,22 @@ pub struct ExternalImportMonitorSnapshot {
     pub facet: scryer_domain::MediaFacet,
     pub payload: ExternalImportMonitorSnapshotPayload,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadQueueCommandRecord {
+    pub id: String,
+    pub action: DownloadQueueCommandAction,
+    pub client_type: String,
+    pub download_client_item_id: String,
+    pub is_history: bool,
+    pub status: scryer_domain::DownloadQueueDeleteStatus,
+    pub error_text: Option<String>,
+    pub requested_by_user_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +294,84 @@ pub struct TitleMediaFile {
 pub struct DownloadHistoryPage {
     pub items: Vec<scryer_domain::DownloadQueueItem>,
     pub has_more: bool,
+    pub total_count: usize,
+    pub available_clients: Vec<DownloadClientFilterOption>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DownloadImportPage {
+    pub items: Vec<scryer_domain::DownloadQueueItem>,
+    pub has_more: bool,
+    pub total_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadClientFilterOption {
+    pub client_id: String,
+    pub client_name: String,
+    pub client_type: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadDisplayState {
+    Queued,
+    Downloading,
+    Paused,
+    PostProcessing,
+    Completed,
+    Failed,
+    Importing,
+    ImportPending,
+    ImportBlocked,
+    ImportFailed,
+    Removing,
+    RemoveFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadActivityFilter {
+    All,
+    Downloading,
+    Queued,
+    Paused,
+    PostProcessing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadImportFilter {
+    All,
+    Importing,
+    Pending,
+    Blocked,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadHistoryFilter {
+    All,
+    Success,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadHistorySortKey {
+    Title,
+    Client,
+    Status,
+    Progress,
+    Size,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownloadHistorySort {
+    pub key: DownloadHistorySortKey,
+    pub direction: SortDirection,
 }
 
 #[derive(Clone, Debug)]

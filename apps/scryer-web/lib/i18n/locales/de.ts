@@ -39,6 +39,7 @@ const de: LocaleDictionary = {
   "label.no": "Nein",
   "label.category": "Kategorie",
   "label.filter": "Filter",
+  "label.filters": "Filter",
   "label.for": "für",
   "label.enabled": "Aktiviert",
   "label.disabled": "Deaktiviert",
@@ -661,9 +662,11 @@ const de: LocaleDictionary = {
   "activity.scryerOnly": "Nur Scryer",
   "activity.allActivity": "Alle Aktivitäten",
   "activity.history": "Verlauf",
+  "activity.scryerSubmitted": "Von Scryer gesendet",
   "queue.title": "Titel",
   "queue.client": "Client",
   "queue.status": "Status",
+  "queue.source": "Quelle",
   "queue.progress": "Fortschritt",
   "queue.size": "Größe",
   "queue.state.queued": "In Warteschlange",
@@ -686,6 +689,7 @@ const de: LocaleDictionary = {
   "queue.manualImportQueued": "Manueller Import eingereiht.",
   "queue.manualImportFailed":
     "Manueller Import konnte nicht eingereiht werden.",
+  "queue.removeFailed": "Entfernen fehlgeschlagen",
   "queue.manualImportTooltip":
     "Manueller Import ist für Warteschlangenelemente verfügbar, die Aufmerksamkeit erfordern.",
   "queue.releaseTitle": "Veröffentlichung",
@@ -718,6 +722,7 @@ const de: LocaleDictionary = {
   "queue.resumeFailed": "Download konnte nicht fortgesetzt werden.",
   "queue.deleting": "Wird gelöscht…",
   "queue.deleteSuccess": "Download entfernt.",
+  "queue.deleteQueued": "Entfernung eingereiht.",
   "queue.deleteFailed": "Download konnte nicht gelöscht werden.",
   "queue.deleteConfirmTitle": "Download entfernen",
   "queue.deleteConfirmDescription":

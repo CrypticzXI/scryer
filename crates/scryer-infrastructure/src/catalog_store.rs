@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, EpisodeUpdate, PrimaryCollectionSummary, ShowRepository,
-    TitleMetadataUpdate, TitleRepository, UserRepository,
+    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
+    PendingTitleHydration, PrimaryCollectionSummary, ShowRepository, TitleMetadataUpdate,
+    TitleRepository, UserRepository,
 };
 use scryer_domain::{CalendarEpisode, Collection, Entitlement, Episode, MediaFacet, Title, User};
 use std::collections::HashMap;
@@ -32,6 +33,10 @@ impl TitleRepository for SqliteCatalogStore {
         title::list_titles_query(&self.pool, facet, query).await
     }
 
+    async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
+        title::list_titles_by_external_ids_query(&self.pool, source, values).await
+    }
+
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,
@@ -48,8 +53,52 @@ impl TitleRepository for SqliteCatalogStore {
         title::get_title_by_external_id_query(&self.pool, source, value).await
     }
 
+    async fn find_by_external_id_in_facet(
+        &self,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>> {
+        title::get_title_by_external_id_in_facet_query(&self.pool, facet, source, value).await
+    }
+
+    async fn create_or_get_existing(&self, title_record: Title) -> AppResult<CreateTitleOutcome> {
+        title::create_or_get_existing_title_query(&self.pool, &title_record).await
+    }
+
     async fn create(&self, title_record: Title) -> AppResult<Title> {
         title::create_title_query(&self.pool, &title_record).await
+    }
+
+    async fn list_titles_due_for_hydration(
+        &self,
+        limit: usize,
+        excluded_facets: &[MediaFacet],
+    ) -> AppResult<Vec<PendingTitleHydration>> {
+        title::list_titles_due_for_hydration_query(&self.pool, limit, excluded_facets).await
+    }
+
+    async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
+        title::mark_title_metadata_hydration_due_now_query(&self.pool, id).await
+    }
+
+    async fn schedule_title_metadata_hydration_retry(
+        &self,
+        id: &str,
+        next_attempt_at: &str,
+        attempt_count: i64,
+    ) -> AppResult<()> {
+        title::schedule_title_metadata_hydration_retry_query(
+            &self.pool,
+            id,
+            next_attempt_at,
+            attempt_count,
+        )
+        .await
+    }
+
+    async fn clear_title_metadata_hydration_retry_state(&self, id: &str) -> AppResult<()> {
+        title::clear_title_metadata_hydration_retry_state_query(&self.pool, id).await
     }
 
     async fn update_monitored(&self, id: &str, monitored: bool) -> AppResult<Title> {

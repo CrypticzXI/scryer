@@ -17,6 +17,6 @@ impl AppUseCaseTestExt for AppUseCase {
     }
 
     fn notification_wake_receiver(&self) -> tokio::sync::broadcast::Receiver<i64> {
-        self.runtime.notification_event_broadcast.subscribe()
+        self.runtime.events.notification_event_broadcast.subscribe()
     }
 }

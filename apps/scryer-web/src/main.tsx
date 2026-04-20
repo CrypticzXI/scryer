@@ -6,9 +6,9 @@ import { ThemeProvider } from "next-themes";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { SELECTABLE_THEMES } from "@/lib/theme";
 
-import "@fontsource/inter/latin-400.css";
-import "@fontsource/inter/latin-600.css";
-import "@fontsource/space-grotesk/latin-600.css";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/space-grotesk/600.css";
 
 import "@/app/globals.css";
 

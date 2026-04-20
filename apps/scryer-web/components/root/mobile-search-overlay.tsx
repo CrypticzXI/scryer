@@ -266,7 +266,7 @@ export function MobileSearchOverlay({
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
       {/* Sticky search header */}
-      <div className="flex items-center gap-2 border-b border-border bg-background px-3 py-3 pb-safe">
+      <div className="flex items-center gap-2 border-b border-border bg-background px-3 pt-safe-comfort py-3 pb-safe">
         <button
           type="button"
           onClick={onClose}

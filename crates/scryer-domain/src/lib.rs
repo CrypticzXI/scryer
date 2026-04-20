@@ -532,6 +532,10 @@ pub struct DownloadQueueItem {
     pub import_error_code: Option<ImportErrorCode>,
     pub import_error_message: Option<String>,
     pub imported_at: Option<String>,
+    #[serde(default)]
+    pub delete_status: Option<DownloadQueueDeleteStatus>,
+    #[serde(default)]
+    pub delete_error_message: Option<String>,
     pub is_scryer_origin: bool,
     /// Scryer's tracked workflow state (populated by TrackedDownloadService).
     #[serde(default)]
@@ -545,6 +549,40 @@ pub struct DownloadQueueItem {
     /// How the title was resolved for tracking.
     #[serde(default)]
     pub tracked_match_type: Option<TitleMatchType>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadQueueDeleteStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl DownloadQueueDeleteStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
 }
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
@@ -1405,6 +1443,25 @@ pub enum DownloadQueueCommandAction {
     Pause,
     Resume,
     Delete,
+}
+
+impl DownloadQueueCommandAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pause" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

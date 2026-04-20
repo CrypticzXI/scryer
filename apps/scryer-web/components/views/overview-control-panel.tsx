@@ -6,9 +6,6 @@ import {
   Edit,
   Loader2,
   RefreshCw,
-  Search,
-  Trash2,
-  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,20 +24,12 @@ type ActionButtonProps = {
 
 type Props = {
   monitored: boolean;
-  searchMonitoredLabel?: string;
   monitoredUpdating?: boolean;
-  searchMonitoredLoading?: boolean;
-  interactiveSearchLoading?: boolean;
   refreshAndScanLoading?: boolean;
-  deleteLoading?: boolean;
   onToggleMonitoring?: () => void;
-  onSearchMonitored?: () => void;
-  onInteractiveSearch?: () => void;
   onRefreshAndScan?: () => void;
-  onRequestDelete?: () => void;
   onHistory?: () => void;
   settingsPanel?: React.ReactNode;
-  interactiveSearchPanel?: React.ReactNode;
 };
 
 function ActionButton({
@@ -79,48 +68,26 @@ function ActionButton({
 
 export function OverviewControlPanel({
   monitored,
-  searchMonitoredLabel,
   monitoredUpdating = false,
-  searchMonitoredLoading = false,
-  interactiveSearchLoading = false,
   refreshAndScanLoading = false,
-  deleteLoading = false,
   onToggleMonitoring,
-  onSearchMonitored,
-  onInteractiveSearch,
   onRefreshAndScan,
-  onRequestDelete,
   onHistory,
   settingsPanel,
-  interactiveSearchPanel,
 }: Props) {
   const t = useTranslate();
-  const [expandedPanel, setExpandedPanel] = React.useState<"settings" | "interactive" | null>(null);
-  const hasInteractiveSearch = Boolean(interactiveSearchPanel);
-  const resolvedSearchMonitoredLabel =
-    searchMonitoredLabel ?? t("title.searchMonitoredAction");
+  const [expandedPanel, setExpandedPanel] = React.useState<"settings" | null>(null);
 
   const handleToggleSettings = React.useCallback(() => {
     setExpandedPanel((current) => (current === "settings" ? null : "settings"));
   }, []);
-
-  const handleToggleInteractiveSearch = React.useCallback(() => {
-    setExpandedPanel((current) => {
-      const next = current === "interactive" ? null : "interactive";
-      if (next === "interactive") {
-        onInteractiveSearch?.();
-      }
-      return next;
-    });
-  }, [onInteractiveSearch]);
 
   return (
     <Card className="overflow-hidden p-0">
       <CardContent className="space-y-0 p-0">
         <div
           className={cn(
-            "grid grid-cols-2 gap-px bg-border/70 sm:grid-cols-3",
-            hasInteractiveSearch ? "lg:grid-cols-7" : "lg:grid-cols-6",
+            "grid grid-cols-2 gap-px bg-border/70 sm:grid-cols-4 lg:grid-cols-4",
           )}
         >
           <ActionButton
@@ -132,23 +99,6 @@ export function OverviewControlPanel({
             disabled={!onToggleMonitoring}
             onClick={onToggleMonitoring}
           />
-          <ActionButton
-            label={resolvedSearchMonitoredLabel}
-            icon={Zap}
-            loading={searchMonitoredLoading}
-            disabled={!onSearchMonitored}
-            onClick={onSearchMonitored}
-          />
-          {hasInteractiveSearch ? (
-            <ActionButton
-              label={t("label.interactiveSearch")}
-              icon={Search}
-              active={expandedPanel === "interactive"}
-              loading={interactiveSearchLoading}
-              disabled={!onInteractiveSearch}
-              onClick={handleToggleInteractiveSearch}
-            />
-          ) : null}
           <ActionButton
             label={t("title.refreshAndScanAction")}
             icon={RefreshCw}
@@ -169,25 +119,11 @@ export function OverviewControlPanel({
             disabled={!settingsPanel}
             onClick={handleToggleSettings}
           />
-          <ActionButton
-            label={t("label.delete")}
-            icon={Trash2}
-            destructive
-            loading={deleteLoading}
-            disabled={!onRequestDelete}
-            onClick={onRequestDelete}
-          />
         </div>
 
         {expandedPanel === "settings" && settingsPanel ? (
           <div className="border-t border-border bg-card/70">
             {settingsPanel}
-          </div>
-        ) : null}
-
-        {expandedPanel === "interactive" && interactiveSearchPanel ? (
-          <div className="border-t border-border bg-card/70">
-            {interactiveSearchPanel}
           </div>
         ) : null}
       </CardContent>

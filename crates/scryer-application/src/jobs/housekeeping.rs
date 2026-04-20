@@ -12,6 +12,7 @@ const MEDIA_ROOT_KEYS: [(&str, &str); 3] = [
 ];
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
 const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
+const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
 
 impl AppUseCase {
     /// Resolve media root paths and their recycle configs.
@@ -80,9 +81,10 @@ impl AppUseCase {
             stale_title_history,
             stale_download_import_artifacts,
             stale_import_history,
+            stale_download_queue_deletes,
             stale_rule_set_history,
         ) = if general_settings.keep_history_forever {
-            (0, 0, 0, 0, 0, 0)
+            (0, 0, 0, 0, 0, 0, 0)
         } else {
             (
                 self.services
@@ -116,6 +118,13 @@ impl AppUseCase {
                 self.services
                     .workflow
                     .housekeeping
+                    .delete_terminal_download_queue_commands_older_than(
+                        DOWNLOAD_DELETE_RETENTION_DAYS,
+                    )
+                    .await?,
+                self.services
+                    .workflow
+                    .housekeeping
                     .delete_rule_set_history_older_than(history_retention_days)
                     .await?,
             )
@@ -138,6 +147,7 @@ impl AppUseCase {
             + stale_title_history
             + stale_download_import_artifacts
             + stale_import_history
+            + stale_download_queue_deletes
             + stale_rule_set_history;
 
         // 3. Expired event outboxes (dispatched > 7 days ago)
@@ -188,6 +198,7 @@ impl AppUseCase {
             stale_title_history,
             stale_download_import_artifacts,
             stale_import_history,
+            stale_download_queue_deletes,
             stale_rule_set_history,
             stale_history_records,
             staged_nzb_artifacts_pruned,

@@ -11,14 +11,15 @@ import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscript
 import {
   downloadQueueItemIdentityKey,
   isActiveQueueState,
-  isManualImportRequiredQueueItem,
   sortDownloadQueueItems,
 } from "@/lib/utils/download-queue";
+import type { DownloadActivityFilter } from "@/lib/types";
 
 type UseDownloadQueueArgs = {
   enabled: boolean;
   includeAllActivity: boolean;
   includeHistoryOnly: boolean;
+  activityFilter: DownloadActivityFilter;
   onErrorStatus?: (message: string) => void;
 };
 
@@ -34,6 +35,7 @@ export function useDownloadQueue({
   enabled,
   includeAllActivity,
   includeHistoryOnly,
+  activityFilter,
   onErrorStatus,
 }: UseDownloadQueueArgs): UseDownloadQueueResult {
   const contextGlobalStatus = useContext(GlobalStatusContext);
@@ -62,10 +64,10 @@ export function useDownloadQueue({
   // result that the user is already looking at.
   useDeferredWsSubscription<{ data?: { downloadQueue?: DownloadQueueItem[] } }>({
     enabled: enabled && !includeHistoryOnly && initialFetchDone,
-    requestKey: `downloadQueue:${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}`,
+    requestKey: `downloadQueue:${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}:${activityFilter}`,
     request: {
       query: downloadQueueSubscription,
-      variables: { includeAllActivity, includeHistoryOnly },
+      variables: { includeAllActivity, includeHistoryOnly, activityFilter },
     },
     onNext(result) {
       const items = result.data?.downloadQueue;
@@ -74,25 +76,13 @@ export function useDownloadQueue({
       }
 
       // Merge: the subscription only carries live jobs from the
-      // download client — it does NOT include terminal/historical
-      // items (completed, failed, import_pending). Preserve those
-      // from the existing state so the table doesn't flash empty.
+      // download client. Preserve active items that are missing from the
+      // latest broadcast until the next authoritative query refresh catches up.
       setQueueItems((prev) => {
-        if (!includeAllActivity) {
-          return sortDownloadQueueItems(items);
-        }
-
-        const TERMINAL_STATES = new Set([
-          "completed",
-          "failed",
-          "import_pending",
-          "importpending",
-        ]);
         const liveIds = new Set(items.map((item) => downloadQueueItemIdentityKey(item)));
         const kept = prev.filter(
           (item) =>
-            (TERMINAL_STATES.has(item.state.toLowerCase()) ||
-              isManualImportRequiredQueueItem(item)) &&
+            isActiveQueueState(item.state) &&
             !liveIds.has(downloadQueueItemIdentityKey(item)),
         );
         return sortDownloadQueueItems([...items, ...kept]);
@@ -126,6 +116,7 @@ export function useDownloadQueue({
         .query(downloadQueueQuery, {
           includeAllActivity,
           includeHistoryOnly,
+          activityFilter,
         })
         .toPromise();
       if (error) throw error;
@@ -167,7 +158,15 @@ export function useDownloadQueue({
     } finally {
       setQueueLoading(false);
     }
-  }, [client, contextGlobalStatus, enabled, includeAllActivity, includeHistoryOnly, onErrorStatus]);
+  }, [
+    activityFilter,
+    client,
+    contextGlobalStatus,
+    enabled,
+    includeAllActivity,
+    includeHistoryOnly,
+    onErrorStatus,
+  ]);
 
   // --- Initial fetch + polling for history-only mode ---
   useEffect(() => {
@@ -191,7 +190,7 @@ export function useDownloadQueue({
         }
       };
     }
-  }, [enabled, includeAllActivity, includeHistoryOnly, refreshQueue]);
+  }, [activityFilter, enabled, includeAllActivity, includeHistoryOnly, refreshQueue]);
 
   return {
     queueItems,
