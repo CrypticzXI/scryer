@@ -13,6 +13,7 @@ import type {
   SystemSection,
   Translate,
   ViewId,
+  WantedSection,
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import type { PendingImportCounts } from "@/lib/types";
@@ -35,6 +36,7 @@ type BuildRouteCommandsArgs = {
     nextSettingsSection?: SettingsSection,
     nextContentSection?: ContentSettingsSection,
     nextSystemSection?: SystemSection,
+    nextWantedSection?: WantedSection,
   ) => void;
 };
 
@@ -44,9 +46,10 @@ function buildNavigate(
   settingsSection?: SettingsSection,
   contentSection?: ContentSettingsSection,
   systemSection?: SystemSection,
+  wantedSection?: WantedSection,
 ): () => void {
   return () => {
-    onNavigate(view, settingsSection, contentSection, systemSection);
+    onNavigate(view, settingsSection, contentSection, systemSection, wantedSection);
   };
 }
 
@@ -92,6 +95,30 @@ export function buildRouteCommands({
 
   return [
     ...mediaCommands,
+    {
+      id: "wanted-items",
+      label: "Wanted / Wanted Items",
+      description: t("wanted.tabWanted"),
+      keywords: ["wanted", "missing", "wanted items", "acquisition", "search"],
+      icon: ActivitySquare,
+      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "wanted"),
+    },
+    {
+      id: "wanted-cutoff",
+      label: "Wanted / Cutoff Unmet",
+      description: t("wanted.tabCutoff"),
+      keywords: ["wanted", "cutoff", "upgrade", "quality", "unmet"],
+      icon: ActivitySquare,
+      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "cutoff"),
+    },
+    {
+      id: "wanted-pending",
+      label: "Wanted / Pending",
+      description: t("wanted.tabPending"),
+      keywords: ["wanted", "pending", "delayed", "releases"],
+      icon: ActivitySquare,
+      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
+    },
     {
       id: "activity",
       label: t("nav.activity"),

@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { WantedSection } from "@/components/root/types";
 import { useClient, useMutation } from "urql";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
@@ -33,10 +34,8 @@ import type {
   WantedStatus,
 } from "@/lib/types";
 import type { ParsedQualityProfileEntry } from "@/lib/types/quality-profiles";
-import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-
-export type WantedTab = "wanted" | "cutoff" | "pending";
+import { useTranslate } from "@/lib/context/translate-context";
 
 function computeCutoffUnmetItems(
   titles: TitleRecord[],
@@ -46,7 +45,13 @@ function computeCutoffUnmetItems(
 ): CutoffUnmetItem[] {
   const profileMap = new Map(profileEntries.map((e) => [e.id, e]));
 
-  const resolveProfile = (scopeId: string): ParsedQualityProfileEntry | null => {
+  const resolveProfile = (title: TitleRecord): ParsedQualityProfileEntry | null => {
+    const scopeId = title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime";
+    const titleProfileId = title.qualityProfileId?.trim();
+    if (titleProfileId && titleProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
+      const p = profileMap.get(titleProfileId);
+      if (p) return p;
+    }
     const scopeProfileId = profileIdByScope[scopeId];
     if (scopeProfileId && scopeProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
       const p = profileMap.get(scopeProfileId);
@@ -55,72 +60,52 @@ function computeCutoffUnmetItems(
     if (globalProfileId && globalProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
       return profileMap.get(globalProfileId) ?? null;
     }
-    return profileEntries[0] ?? null;
+    return null;
   };
 
   const result: CutoffUnmetItem[] = [];
 
   for (const title of titles) {
-    if (!title.monitored || !title.qualityTier) continue;
+    const currentQualityTier = title.currentQualityTier?.trim().toUpperCase();
+    if (!title.monitored || !currentQualityTier) continue;
 
-    const scopeId = title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime";
-    const profile = resolveProfile(scopeId);
+    const profile = resolveProfile(title);
     if (!profile || !profile.criteria.allow_upgrades) continue;
 
     const tiers = profile.criteria.quality_tiers;
-    if (tiers.length === 0) continue;
+    const cutoffTier = profile.criteria.cutoff_tier?.trim().toUpperCase();
+    if (tiers.length === 0 || !cutoffTier) continue;
 
-    const targetTier = tiers[0];
-    const currentIndex = tiers.findIndex(
-      (t) => t.toUpperCase() === title.qualityTier!.toUpperCase(),
-    );
+    const currentIndex = tiers.findIndex((tier) => tier.toUpperCase() === currentQualityTier);
+    const cutoffIndex = tiers.findIndex((tier) => tier.toUpperCase() === cutoffTier);
+    if (currentIndex === -1 || cutoffIndex === -1) continue;
 
-    // Already at best tier
-    if (currentIndex === 0) continue;
+    // Already at or above the configured cutoff tier.
+    if (currentIndex <= cutoffIndex) continue;
 
     result.push({
       id: title.id,
       name: title.name,
       facet: title.facet,
       posterUrl: title.posterUrl,
-      currentTier: title.qualityTier,
-      targetTier,
+      currentTier: currentQualityTier,
+      targetTier: cutoffTier,
     });
   }
 
   return result;
 }
 
-const VALID_TABS = new Set<WantedTab>(["wanted", "cutoff", "pending"]);
+type WantedContainerProps = {
+  wantedSection: WantedSection;
+};
 
-function readTabFromUrl(): WantedTab {
-  if (typeof window === "undefined") return "wanted";
-  const params = new URLSearchParams(window.location.search);
-  const t = params.get("tab") as WantedTab | null;
-  return t && VALID_TABS.has(t) ? t : "wanted";
-}
-
-export const WantedContainer = memo(function WantedContainer() {
+export const WantedContainer = memo(function WantedContainer({
+  wantedSection,
+}: WantedContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-
-  // --- Tab state (synced with URL ?tab= param) ---
-  const [tab, setTabRaw] = useState<WantedTab>(readTabFromUrl);
-
-  const setTab = useCallback((next: WantedTab) => {
-    setTabRaw(next);
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    if (next === "wanted") {
-      params.delete("tab");
-    } else {
-      params.set("tab", next);
-    }
-    const query = params.toString();
-    const path = `${window.location.pathname}${query ? `?${query}` : ""}`;
-    window.history.replaceState({}, "", path);
-  }, []);
 
   // --- Wanted items state ---
   const [items, setItems] = useState<WantedItem[]>([]);
@@ -172,10 +157,10 @@ export const WantedContainer = memo(function WantedContainer() {
   }, [client, t, setGlobalStatus]);
 
   useEffect(() => {
-    if (tab === "pending") {
+    if (wantedSection === "pending") {
       void refreshPending();
     }
-  }, [tab, refreshPending]);
+  }, [refreshPending, wantedSection]);
 
   const forceGrabPending = useCallback(
     async (id: string) => {
@@ -228,10 +213,10 @@ export const WantedContainer = memo(function WantedContainer() {
   }, [client, statusFilter, mediaTypeFilter, offset, t, setGlobalStatus]);
 
   useEffect(() => {
-    if (tab === "wanted") {
+    if (wantedSection === "wanted") {
       void refreshItems();
     }
-  }, [tab, refreshItems]);
+  }, [refreshItems, wantedSection]);
 
   // --- Cutoff data fetching ---
 
@@ -261,10 +246,10 @@ export const WantedContainer = memo(function WantedContainer() {
   }, [client, t, setGlobalStatus]);
 
   useEffect(() => {
-    if (tab === "cutoff") {
+    if (wantedSection === "cutoff") {
       void refreshCutoff();
     }
-  }, [tab, refreshCutoff]);
+  }, [refreshCutoff, wantedSection]);
 
   // --- Wanted actions ---
 
@@ -449,8 +434,7 @@ export const WantedContainer = memo(function WantedContainer() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <WantedView
-        tab={tab}
-        onTabChange={setTab}
+        section={wantedSection}
         wantedState={{
           items,
           total,

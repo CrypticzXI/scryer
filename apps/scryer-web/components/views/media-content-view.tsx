@@ -624,6 +624,7 @@ export function MediaContentView({
                       isMovieView={isMovieView}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
+                      qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       onDelete={handleDeleteCatalogTitle}
                       onAutoQueue={queueExisting}
@@ -640,6 +641,7 @@ export function MediaContentView({
                     titleLoading={titleLoading}
                     resolvedProfileName={resolvedProfileName}
                     qualityProfiles={qualityProfiles}
+                    qualityProfilesLoading={mediaSettingsLoading}
                     onOpenOverview={onOpenOverview}
                     onDelete={handleDeleteCatalogTitle}
                     onAutoQueue={queueExisting}

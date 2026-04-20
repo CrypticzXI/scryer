@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
@@ -1558,7 +1558,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       <Card>
         <CardHeader className="space-y-4">
           <div className="flex flex-col gap-3">
-            <CardTitle>{t("activity.title")}</CardTitle>
             <div className="flex justify-center overflow-x-auto">
               <ToggleGroup
                 type="single"

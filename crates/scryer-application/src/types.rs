@@ -860,6 +860,14 @@ pub struct TitleMediaSizeSummary {
     pub total_size_bytes: i64,
 }
 
+/// Aggregated current quality tier per title, based on the lowest-quality live
+/// media file linked to the title.
+#[derive(Clone, Debug)]
+pub struct TitleQualitySummary {
+    pub title_id: String,
+    pub quality_tier: String,
+}
+
 /// Aggregated episode progress counts per title, excluding specials.
 #[derive(Clone, Debug)]
 pub struct TitleEpisodeProgressSummary {

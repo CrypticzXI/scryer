@@ -45,6 +45,7 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
 
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
 const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
+const SERIES_PATH_KEY: &str = "series.path";
 
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
@@ -194,7 +195,6 @@ pub async fn retry_failed_import(
     let completed: CompletedDownload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
 
-    // Reset to processing
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
@@ -221,22 +221,16 @@ pub async fn retry_failed_import(
                 completed_at: Utc::now(),
             };
             let result_json = serde_json::to_string(&result).ok();
-            let _ = app
-                .update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)
-                .await;
+            app.update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)
+                .await?;
             Ok(result)
         }
     }
 }
 
-const SERIES_PATH_KEY: &str = "series.path";
-
-/// Called from the download queue poller on every tick (currently 2 seconds).
-/// Filters completed items, checks dedup, fetches CompletedDownload data, and triggers import.
-///
-/// Returns the set of `download_client_item_id`s that were actually processed
-/// (imported, already-imported, or permanently non-importable). Callers should
-/// only suppress future retries for these IDs — items skipped due to transient
+/// Attempts to import completed items from the current queue/history snapshot.
+/// Returns the set of `download_client_item_id`s that were conclusively processed
+/// (imported, failed permanently, or intentionally ignored). Temporary defer
 /// conditions (e.g. no matching CompletedDownload yet, empty dest_dir) are NOT
 /// included so they can be retried on the next snapshot.
 pub async fn try_import_completed_downloads(
@@ -286,7 +280,6 @@ pub async fn try_import_completed_downloads(
         "import: found completed items to evaluate"
     );
 
-    // Fetch completed downloads from the download client (single RPC call)
     let completed_downloads = match app
         .services
         .integrations
@@ -309,7 +302,6 @@ pub async fn try_import_completed_downloads(
     };
 
     for item in completed_items {
-        // Check dedup
         let source_ref = &item.download_client_item_id;
         match app
             .services
@@ -943,17 +935,86 @@ async fn import_movie_download(
     let (media_root, rename_template) = resolve_import_paths(app, title).await?;
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
+    let existing_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap_or_default();
+    let quality_profile = resolve_import_quality_profile(app, title).await;
+    let existing_score = existing_files
+        .iter()
+        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
+        .and_then(|file| file.acquisition_score);
+    let prepared = match crate::post_download_gate::prepare_import_candidate(
+        app,
+        title,
+        &parsed,
+        &quality_profile,
+        &source_video,
+        source_size,
+        !existing_files.is_empty(),
+        existing_score,
+        false,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(rejection) => {
+            crate::post_download_gate::reject_source_file_before_import(
+                app,
+                Some(&actor.id),
+                title,
+                &completed.name,
+                &source_video,
+                &[],
+                &rejection,
+            )
+            .await;
+            persist_file_import_artifact(
+                app,
+                import_id,
+                completed,
+                title.id.as_str(),
+                &source_video,
+                "movie",
+                "rejected",
+                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                None,
+                &[],
+            )
+            .await;
+            let result = ImportResult {
+                import_id: import_id.to_string(),
+                decision: ImportDecision::Rejected,
+                skip_reason: rejection.skip_reason.clone(),
+                title_id: Some(title.id.clone()),
+                source_path: source_video.to_string_lossy().to_string(),
+                dest_path: None,
+                file_size_bytes: Some(source_size),
+                link_type: None,
+                error_message: Some(rejection.message),
+                started_at,
+                completed_at: Utc::now(),
+            };
+            let result_json = serde_json::to_string(&result).ok();
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+                .await?;
+            return Ok(result);
+        }
+    };
 
     let ext = source_video
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("mkv")
         .to_string();
-
-    let tokens = build_rename_tokens(title, &parsed, &ext);
+    let tokens = build_rename_tokens(title, &prepared.parsed, &ext);
     let rendered_filename = render_rename_template(&rename_template, &tokens);
 
-    let year_str = parsed
+    let year_str = prepared
+        .parsed
         .year
         .or(title.year.and_then(|year| u32::try_from(year).ok()))
         .map(|y| format!(" ({})", y))
@@ -961,7 +1022,6 @@ async fn import_movie_download(
     let title_folder = format!("{}{}", title.name, year_str);
     let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
 
-    // Persist the folder path on the title so delete can find it deterministically.
     if title.folder_path.is_none() {
         let _ = app
             .services
@@ -972,25 +1032,16 @@ async fn import_movie_download(
     }
 
     let dest_path = full_folder_path.join(&rendered_filename);
-
-    // Pre-import checks
-    let existing_files = app
-        .services
-        .library
-        .media_files
-        .list_media_files_for_title(&title.id)
-        .await
-        .unwrap_or_default();
-    let quality_profile = resolve_import_quality_profile(app, title).await;
     let check_ctx = crate::import_checks::ImportCheckContext {
         source_path: &source_video,
         dest_path: &dest_path,
         source_size: source_size as u64,
-        parsed: &parsed,
+        parsed: &prepared.parsed,
         existing_files: &existing_files,
     };
-    let verdict = crate::import_checks::run_import_checks(&check_ctx);
-    if let crate::import_checks::ImportVerdict::Reject { reason, code } = verdict {
+    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
+        crate::import_checks::run_import_checks(&check_ctx)
+    {
         persist_file_import_artifact(
             app,
             import_id,
@@ -1031,14 +1082,13 @@ async fn import_movie_download(
         return Ok(result);
     }
 
-    // Upgrade check: if there are existing files, score and compare
     if !existing_files.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             &quality_profile,
             &required_audio_languages,
             &persona,
-            &parsed,
+            &prepared.parsed,
             crate::post_download_gate::facet_to_category_hint(&title.facet),
             title.runtime_minutes,
             Some(source_size),
@@ -1046,7 +1096,6 @@ async fn import_movie_download(
         );
         let new_score = new_decision.preference_score;
 
-        // Find the best existing file by acquisition_score
         if let Some(existing_file) = existing_files
             .iter()
             .max_by_key(|file| file.acquisition_score.unwrap_or(0))
@@ -1065,13 +1114,10 @@ async fn import_movie_download(
                     existing_file,
                     &source_video,
                     &dest_path,
-                    &parsed,
-                    &quality_profile,
-                    completed,
+                    &prepared,
                     new_score,
                     old_score,
                     &[],
-                    false,
                     &recycle_config,
                 )
                 .await
@@ -1166,7 +1212,6 @@ async fn import_movie_download(
         }
     }
 
-    // Import file
     let file_result = app
         .services
         .workflow
@@ -1174,251 +1219,182 @@ async fn import_movie_download(
         .import_file(&source_video, &dest_path)
         .await?;
 
-    let existing_score = existing_files
-        .iter()
-        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
-        .and_then(|file| file.acquisition_score);
-    match crate::post_download_gate::evaluate_imported_file_gate(
-        app,
-        title,
-        &parsed,
-        &quality_profile,
-        &dest_path,
-        file_result.size_bytes as i64,
-        !existing_files.is_empty(),
-        existing_score,
-        false,
-    )
-    .await
-    {
-        crate::post_download_gate::ImportedFileGateDecision::Rejected(rejection) => {
-            crate::post_download_gate::reject_imported_file(
-                app,
-                Some(&actor.id),
-                title,
-                &completed.name,
-                &dest_path,
-                &[],
-                &rejection,
-            )
-            .await;
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                &source_video,
-                "movie",
-                "already_present",
-                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
-                None,
-                &[],
-            )
-            .await;
-            let result = ImportResult {
-                import_id: import_id.to_string(),
-                decision: ImportDecision::Rejected,
-                skip_reason: rejection.skip_reason.clone(),
-                title_id: Some(title.id.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
-                file_size_bytes: Some(file_result.size_bytes as i64),
-                link_type: Some(file_result.strategy),
-                error_message: Some(rejection.message),
-                started_at,
-                completed_at: Utc::now(),
-            };
-            let result_json = serde_json::to_string(&result).ok();
-            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
-                .await?;
-            Ok(result)
-        }
-        crate::post_download_gate::ImportedFileGateDecision::Accepted(accepted) => {
-            // Write NFO sidecar (non-fatal, opt-in)
-            let nfo_enabled = app
-                .read_setting_string_value("nfo.write_on_import.movie", None)
-                .await
-                .ok()
-                .flatten()
-                .as_deref()
-                == Some("true");
-
-            if nfo_enabled {
-                let nfo_path = dest_path.with_extension("nfo");
-                let nfo_content = render_movie_nfo(title);
-                if let Err(err) = tokio::fs::write(&nfo_path, nfo_content.as_bytes()).await {
-                    tracing::warn!(
-                        error = %err,
-                        path = %nfo_path.display(),
-                        "failed to write movie NFO sidecar"
-                    );
-                }
-            }
-
-            // Compute acquisition score with mediainfo rescore
-            let acq_score = crate::post_download_gate::compute_acquisition_score(
-                app,
-                &parsed,
-                &accepted,
-                &quality_profile,
-                title,
-                file_result.size_bytes as i64,
-                !existing_files.is_empty(),
-            )
-            .await;
-
-            // Record media file with rich metadata
-            let media_file_input = crate::InsertMediaFileInput {
-                title_id: title.id.clone(),
-                file_path: dest_path.to_string_lossy().to_string(),
-                size_bytes: file_result.size_bytes as i64,
-                quality_label: parsed.quality.clone(),
-                scene_name: Some(parsed.raw_title.clone()),
-                release_group: parsed.release_group.clone(),
-                source_type: parsed.source.clone(),
-                resolution: parsed.quality.clone(),
-                video_codec_parsed: parsed.video_codec.clone(),
-                audio_codec_parsed: parsed.audio.clone(),
-                audio_channels_parsed: parsed.audio_channels.clone(),
-                original_file_path: Some(source_video.to_string_lossy().to_string()),
-                acquisition_score: Some(acq_score),
-                ..Default::default()
-            };
-            let imported_media_file_id = match app
-                .services
-                .library
-                .media_files
-                .insert_media_file(&media_file_input)
-                .await
-            {
-                Ok(file_id) => {
-                    crate::post_download_gate::persist_media_analysis_result(
-                        &app.services.library.media_files,
-                        &file_id,
-                        &accepted,
-                    )
-                    .await;
-                    maybe_trigger_subtitle_search(app, &title.id, &file_id);
-                    Some(file_id)
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        title_id = %title.id,
-                        dest_path = %dest_path.display(),
-                        "failed to insert media_files record (import will still succeed)"
-                    );
-                    None
-                }
-            };
-
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                &source_video,
-                "movie",
-                "imported",
-                None,
-                imported_media_file_id.as_deref(),
-                &[],
-            )
-            .await;
-
-            // Create collection record (so the movie overview UI can show the file)
-            let collection = Collection {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                collection_type: CollectionType::Movie,
-                collection_index: "1".to_string(),
-                label: parsed.quality.clone(),
-                ordered_path: Some(dest_path.to_string_lossy().to_string()),
-                narrative_order: None,
-                first_episode_number: None,
-                last_episode_number: None,
-                interstitial_movie: None,
-                specials_movies: vec![],
-                interstitial_season_episode: None,
-                monitored: true,
-                created_at: Utc::now(),
-            };
-            if let Err(err) = app
-                .services
-                .catalog
-                .shows
-                .create_collection(collection)
-                .await
-            {
-                tracing::warn!(
-                    error = %err,
-                    title_id = %title.id,
-                    "failed to create collection record"
-                );
-            }
-
-            // Spawn post-processing script (non-blocking)
-            spawn_post_processing(PostProcessingContext {
-                app: app.clone(),
-                actor_id: Some(actor.id.clone()),
-                title_id: title.id.clone(),
-                title_name: title.name.clone(),
-                facet: title.facet.clone(),
-                dest_path: dest_path.clone(),
-                year: title.year,
-                imdb_id: title
-                    .external_ids
-                    .iter()
-                    .find(|e| e.source == "imdb")
-                    .map(|e| e.value.clone()),
-                tvdb_id: title
-                    .external_ids
-                    .iter()
-                    .find(|e| e.source == "tvdb")
-                    .map(|e| e.value.clone()),
-                season: None,
-                episode: None,
-                quality: parsed.quality.clone(),
-            });
-
-            // Reconcile wanted item state
-            mark_wanted_completed(app, &title.id, None, None).await;
-
-            // Finalize import record
-            let result = ImportResult {
-                import_id: import_id.to_string(),
-                decision: ImportDecision::Imported,
-                skip_reason: None,
-                title_id: Some(title.id.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
-                file_size_bytes: Some(file_result.size_bytes as i64),
-                link_type: Some(file_result.strategy),
-                error_message: None,
-                started_at,
-                completed_at: Utc::now(),
-            };
-            let result_json = serde_json::to_string(&result).ok();
-            app.update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
-                .await?;
-
-            app.append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                title,
-                DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                    title: title_context_snapshot(title),
-                    media_updates: vec![created_media_update(
-                        dest_path.to_string_lossy().to_string(),
-                    )],
-                    imported_count: 1,
-                    episode_ids: Vec::new(),
-                }),
-            ))
-            .await?;
-
-            Ok(result)
+    let nfo_enabled = app
+        .read_setting_string_value("nfo.write_on_import.movie", None)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("true");
+    if nfo_enabled {
+        let nfo_path = dest_path.with_extension("nfo");
+        let nfo_content = render_movie_nfo(title);
+        if let Err(err) = tokio::fs::write(&nfo_path, nfo_content.as_bytes()).await {
+            tracing::warn!(
+                error = %err,
+                path = %nfo_path.display(),
+                "failed to write movie NFO sidecar"
+            );
         }
     }
+
+    let acq_score = crate::post_download_gate::compute_acquisition_score(
+        app,
+        &prepared.parsed,
+        prepared.accepted.as_ref(),
+        &quality_profile,
+        title,
+        file_result.size_bytes as i64,
+        !existing_files.is_empty(),
+    )
+    .await;
+
+    let media_file_input = crate::InsertMediaFileInput {
+        title_id: title.id.clone(),
+        file_path: dest_path.to_string_lossy().to_string(),
+        size_bytes: file_result.size_bytes as i64,
+        quality_label: prepared.parsed.quality.clone(),
+        scene_name: Some(prepared.parsed.raw_title.clone()),
+        release_group: prepared.parsed.release_group.clone(),
+        source_type: prepared.parsed.source.clone(),
+        resolution: prepared.parsed.quality.clone(),
+        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_channels_parsed: prepared.parsed.audio_channels.clone(),
+        original_file_path: Some(source_video.to_string_lossy().to_string()),
+        acquisition_score: Some(acq_score),
+        ..Default::default()
+    };
+    let imported_media_file_id = match app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&media_file_input)
+        .await
+    {
+        Ok(file_id) => {
+            crate::post_download_gate::persist_media_analysis_result(
+                &app.services.library.media_files,
+                &file_id,
+                prepared.accepted.as_ref(),
+            )
+            .await;
+            maybe_trigger_subtitle_search(app, &title.id, &file_id);
+            Some(file_id)
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                title_id = %title.id,
+                dest_path = %dest_path.display(),
+                "failed to insert media_files record (import will still succeed)"
+            );
+            None
+        }
+    };
+
+    persist_file_import_artifact(
+        app,
+        import_id,
+        completed,
+        title.id.as_str(),
+        &source_video,
+        "movie",
+        "imported",
+        None,
+        imported_media_file_id.as_deref(),
+        &[],
+    )
+    .await;
+
+    let collection = Collection {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_type: CollectionType::Movie,
+        collection_index: "1".to_string(),
+        label: prepared.parsed.quality.clone(),
+        ordered_path: Some(dest_path.to_string_lossy().to_string()),
+        narrative_order: None,
+        first_episode_number: None,
+        last_episode_number: None,
+        interstitial_movie: None,
+        specials_movies: vec![],
+        interstitial_season_episode: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    if let Err(err) = app
+        .services
+        .catalog
+        .shows
+        .create_collection(collection)
+        .await
+    {
+        tracing::warn!(
+            error = %err,
+            title_id = %title.id,
+            "failed to create collection record"
+        );
+    }
+
+    spawn_post_processing(PostProcessingContext {
+        app: app.clone(),
+        actor_id: Some(actor.id.clone()),
+        title_id: title.id.clone(),
+        title_name: title.name.clone(),
+        facet: title.facet.clone(),
+        dest_path: dest_path.clone(),
+        year: title.year,
+        imdb_id: title
+            .external_ids
+            .iter()
+            .find(|e| e.source == "imdb")
+            .map(|e| e.value.clone()),
+        tvdb_id: title
+            .external_ids
+            .iter()
+            .find(|e| e.source == "tvdb")
+            .map(|e| e.value.clone()),
+        season: None,
+        episode: None,
+        quality: prepared.parsed.quality.clone(),
+    });
+
+    mark_wanted_completed(app, &title.id, None, None).await;
+
+    let result = ImportResult {
+        import_id: import_id.to_string(),
+        decision: ImportDecision::Imported,
+        skip_reason: None,
+        title_id: Some(title.id.clone()),
+        source_path: source_video.to_string_lossy().to_string(),
+        dest_path: Some(dest_path.to_string_lossy().to_string()),
+        file_size_bytes: Some(file_result.size_bytes as i64),
+        link_type: Some(file_result.strategy),
+        error_message: None,
+        started_at,
+        completed_at: Utc::now(),
+    };
+    let result_json = serde_json::to_string(&result).ok();
+    app.update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
+        .await?;
+
+    let _ = app
+        .append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            title,
+            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: title_context_snapshot(title),
+                media_updates: vec![created_media_update(
+                    dest_path.to_string_lossy().to_string(),
+                )],
+                imported_count: 1,
+                episode_ids: Vec::new(),
+            }),
+        ))
+        .await;
+
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,7 +1479,9 @@ async fn import_interstitial_movie_download(
         .unwrap_or("mkv")
         .to_string();
 
-    // Build Season 00 filename using the TVDB episode number from the collection
+    // Interstitial imports intentionally bypass facet rename templates today and always land as
+    // <series>/<Season 00>/<series - S00E## - interstitial movie.ext>; if this ever becomes
+    // token-driven, move dest_path construction below prepare_import_candidate per the import/rename lesson.
     let season_episode = collection
         .interstitial_season_episode
         .as_deref()
@@ -1541,6 +1519,67 @@ async fn import_interstitial_movie_download(
         .cloned()
         .collect();
     let quality_profile = resolve_import_quality_profile(app, title).await;
+    let existing_score = collection_files
+        .iter()
+        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
+        .and_then(|file| file.acquisition_score);
+    let prepared = match crate::post_download_gate::prepare_import_candidate(
+        app,
+        title,
+        &parsed,
+        &quality_profile,
+        &source_video,
+        source_size,
+        !collection_files.is_empty(),
+        existing_score,
+        false,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(rejection) => {
+            crate::post_download_gate::reject_source_file_before_import(
+                app,
+                Some(&actor.id),
+                title,
+                &completed.name,
+                &source_video,
+                &[],
+                &rejection,
+            )
+            .await;
+            persist_file_import_artifact(
+                app,
+                import_id,
+                completed,
+                title.id.as_str(),
+                &source_video,
+                "movie",
+                "rejected",
+                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                None,
+                &[],
+            )
+            .await;
+            let result = ImportResult {
+                import_id: import_id.to_string(),
+                decision: ImportDecision::Rejected,
+                skip_reason: rejection.skip_reason.clone(),
+                title_id: Some(title.id.clone()),
+                source_path: source_video.to_string_lossy().to_string(),
+                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                file_size_bytes: Some(source_size),
+                link_type: None,
+                error_message: Some(rejection.message),
+                started_at,
+                completed_at: Utc::now(),
+            };
+            let result_json = serde_json::to_string(&result).ok();
+            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+                .await?;
+            return Ok(result);
+        }
+    };
 
     // Upgrade check: if there's an existing file for this interstitial, score and compare
     if !collection_files.is_empty() {
@@ -1549,7 +1588,7 @@ async fn import_interstitial_movie_download(
             &quality_profile,
             &required_audio_languages,
             &persona,
-            &parsed,
+            &prepared.parsed,
             crate::post_download_gate::facet_to_category_hint(&title.facet),
             Some(movie.runtime_minutes),
             Some(source_size),
@@ -1575,13 +1614,10 @@ async fn import_interstitial_movie_download(
                     existing_file,
                     &source_video,
                     &dest_path,
-                    &parsed,
-                    &quality_profile,
-                    completed,
+                    &prepared,
                     new_score,
                     old_score,
                     &[],
-                    false,
                     &recycle_config,
                 )
                 .await
@@ -1726,127 +1762,64 @@ async fn import_interstitial_movie_download(
         .import_file(&source_video, &dest_path)
         .await?;
 
-    // Post-download gate (quality profile check)
-    match crate::post_download_gate::evaluate_imported_file_gate(
+    let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
-        title,
-        &parsed,
+        &prepared.parsed,
+        prepared.accepted.as_ref(),
         &quality_profile,
-        &dest_path,
+        title,
         file_result.size_bytes as i64,
         !collection_files.is_empty(),
-        collection_files
-            .iter()
-            .max_by_key(|f| f.acquisition_score.unwrap_or(0))
-            .and_then(|f| f.acquisition_score),
-        false,
     )
-    .await
+    .await;
+
+    let imported_media_file_id = if let Ok(file_id) = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&crate::InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: dest_path.to_string_lossy().to_string(),
+            size_bytes: file_result.size_bytes as i64,
+            quality_label: prepared.parsed.quality.clone(),
+            scene_name: Some(prepared.parsed.raw_title.clone()),
+            release_group: prepared.parsed.release_group.clone(),
+            source_type: prepared.parsed.source.clone(),
+            resolution: prepared.parsed.quality.clone(),
+            video_codec_parsed: prepared.parsed.video_codec.clone(),
+            audio_codec_parsed: prepared.parsed.audio.clone(),
+            audio_channels_parsed: prepared.parsed.audio_channels.clone(),
+            original_file_path: Some(source_video.to_string_lossy().to_string()),
+            acquisition_score: Some(acq_score),
+            ..Default::default()
+        })
+        .await
     {
-        crate::post_download_gate::ImportedFileGateDecision::Rejected(rejection) => {
-            crate::post_download_gate::reject_imported_file(
-                app,
-                Some(&actor.id),
-                title,
-                &completed.name,
-                &dest_path,
-                &[],
-                &rejection,
-            )
-            .await;
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                &source_video,
-                "movie",
-                "already_present",
-                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
-                None,
-                &[],
-            )
-            .await;
-            let result = ImportResult {
-                import_id: import_id.to_string(),
-                decision: ImportDecision::Rejected,
-                skip_reason: rejection.skip_reason.clone(),
-                title_id: Some(title.id.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
-                file_size_bytes: Some(file_result.size_bytes as i64),
-                link_type: Some(file_result.strategy),
-                error_message: Some(rejection.message),
-                started_at,
-                completed_at: Utc::now(),
-            };
-            let result_json = serde_json::to_string(&result).ok();
-            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
-                .await?;
-            return Ok(result);
-        }
-        crate::post_download_gate::ImportedFileGateDecision::Accepted(accepted) => {
-            let acq_score = crate::post_download_gate::compute_acquisition_score(
-                app,
-                &parsed,
-                &accepted,
-                &quality_profile,
-                title,
-                file_result.size_bytes as i64,
-                !collection_files.is_empty(),
-            )
-            .await;
+        crate::post_download_gate::persist_media_analysis_result(
+            &app.services.library.media_files,
+            &file_id,
+            prepared.accepted.as_ref(),
+        )
+        .await;
+        maybe_trigger_subtitle_search(app, &title.id, &file_id);
+        Some(file_id)
+    } else {
+        None
+    };
 
-            // Persist media analysis from the gate
-            let imported_media_file_id = if let Ok(file_id) = app
-                .services
-                .library
-                .media_files
-                .insert_media_file(&crate::InsertMediaFileInput {
-                    title_id: title.id.clone(),
-                    file_path: dest_path.to_string_lossy().to_string(),
-                    size_bytes: file_result.size_bytes as i64,
-                    quality_label: parsed.quality.clone(),
-                    scene_name: Some(parsed.raw_title.clone()),
-                    release_group: parsed.release_group.clone(),
-                    source_type: parsed.source.clone(),
-                    resolution: parsed.quality.clone(),
-                    video_codec_parsed: parsed.video_codec.clone(),
-                    audio_codec_parsed: parsed.audio.clone(),
-                    audio_channels_parsed: parsed.audio_channels.clone(),
-                    original_file_path: Some(source_video.to_string_lossy().to_string()),
-                    acquisition_score: Some(acq_score),
-                    ..Default::default()
-                })
-                .await
-            {
-                crate::post_download_gate::persist_media_analysis_result(
-                    &app.services.library.media_files,
-                    &file_id,
-                    &accepted,
-                )
-                .await;
-                maybe_trigger_subtitle_search(app, &title.id, &file_id);
-                Some(file_id)
-            } else {
-                None
-            };
-
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                &source_video,
-                "movie",
-                "imported",
-                None,
-                imported_media_file_id.as_deref(),
-                &[],
-            )
-            .await;
-        }
-    }
+    persist_file_import_artifact(
+        app,
+        import_id,
+        completed,
+        title.id.as_str(),
+        &source_video,
+        "movie",
+        "imported",
+        None,
+        imported_media_file_id.as_deref(),
+        &[],
+    )
+    .await;
 
     // Update the interstitial collection with the file path
     if let Err(err) = app
@@ -1917,7 +1890,7 @@ async fn import_interstitial_movie_download(
             .map(|e| e.value.clone()),
         season: None,
         episode: None,
-        quality: parsed.quality.clone(),
+        quality: prepared.parsed.quality.clone(),
     });
 
     let result = ImportResult {
@@ -2241,6 +2214,61 @@ async fn import_single_episode_file(
         .map(|episode| episode.id.clone())
         .collect();
     let is_filler = target_episodes.iter().any(|episode| episode.is_filler);
+    let existing_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap_or_default();
+    let existing_score = existing_files
+        .iter()
+        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
+        .and_then(|file| file.acquisition_score);
+    let prepared = match crate::post_download_gate::prepare_import_candidate(
+        app,
+        title,
+        &parsed,
+        quality_profile,
+        source_video,
+        source_size,
+        !existing_files.is_empty(),
+        existing_score,
+        is_filler,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(rejection) => {
+            crate::post_download_gate::reject_source_file_before_import(
+                app,
+                Some(&actor.id),
+                title,
+                &completed.name,
+                source_video,
+                &target_episode_ids,
+                &rejection,
+            )
+            .await;
+            persist_file_import_artifact(
+                app,
+                import_id,
+                completed,
+                title.id.as_str(),
+                source_video,
+                "episode",
+                "rejected",
+                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                None,
+                &target_episodes,
+            )
+            .await;
+            return Ok(EpisodeImportOutcome::Rejected {
+                message: rejection.message,
+                skip_reason: rejection.skip_reason,
+            });
+        }
+    };
 
     // Build rename tokens and destination path
     let ep_num_str = ep_meta
@@ -2256,7 +2284,7 @@ async fn import_single_episode_file(
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
     let dest_path = episode_import_dest_path(
         title,
-        &parsed,
+        &prepared.parsed,
         &ext,
         media_root,
         title_folder,
@@ -2265,22 +2293,15 @@ async fn import_single_episode_file(
         &ep_num_str,
         abs_str.as_deref(),
         episode_title,
-        None,
+        prepared.parsed.quality.as_deref(),
     );
 
     // Pre-import checks
-    let existing_files = app
-        .services
-        .library
-        .media_files
-        .list_media_files_for_title(&title.id)
-        .await
-        .unwrap_or_default();
     let check_ctx = crate::import_checks::ImportCheckContext {
         source_path: source_video,
         dest_path: &dest_path,
         source_size: source_size as u64,
-        parsed: &parsed,
+        parsed: &prepared.parsed,
         existing_files: &existing_files,
     };
     if let crate::import_checks::ImportVerdict::Reject { reason, code } =
@@ -2310,7 +2331,7 @@ async fn import_single_episode_file(
             quality_profile,
             &required_audio_languages,
             &persona,
-            &parsed,
+            &prepared.parsed,
             crate::post_download_gate::facet_to_category_hint(&title.facet),
             title.runtime_minutes,
             Some(source_size),
@@ -2336,13 +2357,10 @@ async fn import_single_episode_file(
                     existing_file,
                     source_video,
                     &dest_path,
-                    &parsed,
-                    quality_profile,
-                    completed,
+                    &prepared,
                     new_score,
                     old_score,
                     &target_episode_ids,
-                    is_filler,
                     &recycle_config,
                 )
                 .await
@@ -2414,57 +2432,6 @@ async fn import_single_episode_file(
         .await?;
 
     let existing_dest_path = dest_path.to_string_lossy().to_string();
-    let existing_score = existing_files
-        .iter()
-        .find(|file| file.file_path == existing_dest_path.as_str())
-        .and_then(|file| file.acquisition_score);
-    let gate_result = crate::post_download_gate::evaluate_imported_file_gate(
-        app,
-        title,
-        &parsed,
-        quality_profile,
-        &dest_path,
-        file_result.size_bytes as i64,
-        existing_files
-            .iter()
-            .any(|file| file.file_path == existing_dest_path.as_str()),
-        existing_score,
-        is_filler,
-    )
-    .await;
-
-    let accepted = match gate_result {
-        crate::post_download_gate::ImportedFileGateDecision::Rejected(rejection) => {
-            crate::post_download_gate::reject_imported_file(
-                app,
-                Some(&actor.id),
-                title,
-                &completed.name,
-                &dest_path,
-                &target_episode_ids,
-                &rejection,
-            )
-            .await;
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                source_video,
-                "episode",
-                "already_present",
-                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
-                None,
-                &target_episodes,
-            )
-            .await;
-            return Ok(EpisodeImportOutcome::Rejected {
-                message: rejection.message,
-                skip_reason: rejection.skip_reason,
-            });
-        }
-        crate::post_download_gate::ImportedFileGateDecision::Accepted(accepted) => accepted,
-    };
 
     if nfo_enabled {
         let nfo_path = dest_path.with_extension("nfo");
@@ -2485,8 +2452,8 @@ async fn import_single_episode_file(
         .any(|file| file.file_path == existing_dest_path.as_str());
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
-        &parsed,
-        &accepted,
+        &prepared.parsed,
+        prepared.accepted.as_ref(),
         quality_profile,
         title,
         file_result.size_bytes as i64,
@@ -2498,14 +2465,14 @@ async fn import_single_episode_file(
         title_id: title.id.clone(),
         file_path: dest_path.to_string_lossy().to_string(),
         size_bytes: file_result.size_bytes as i64,
-        quality_label: parsed.quality.clone(),
-        scene_name: Some(parsed.raw_title.clone()),
-        release_group: parsed.release_group.clone(),
-        source_type: parsed.source.clone(),
-        resolution: parsed.quality.clone(),
-        video_codec_parsed: parsed.video_codec.clone(),
-        audio_codec_parsed: parsed.audio.clone(),
-        audio_channels_parsed: parsed.audio_channels.clone(),
+        quality_label: prepared.parsed.quality.clone(),
+        scene_name: Some(prepared.parsed.raw_title.clone()),
+        release_group: prepared.parsed.release_group.clone(),
+        source_type: prepared.parsed.source.clone(),
+        resolution: prepared.parsed.quality.clone(),
+        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(source_video.to_string_lossy().to_string()),
         acquisition_score: Some(acq_score),
         ..Default::default()
@@ -2519,7 +2486,7 @@ async fn import_single_episode_file(
     crate::post_download_gate::persist_media_analysis_result(
         &app.services.library.media_files,
         &media_file_id,
-        &accepted,
+        prepared.accepted.as_ref(),
     )
     .await;
     persist_file_import_artifact(
@@ -2570,7 +2537,7 @@ async fn import_single_episode_file(
             .map(|e| e.value.clone()),
         season: Some(season),
         episode: ep_meta.episode_numbers.first().copied(),
-        quality: parsed.quality.clone(),
+        quality: prepared.parsed.quality.clone(),
     });
 
     Ok(EpisodeImportOutcome::Imported {
@@ -3400,6 +3367,16 @@ fn build_augmented_movie_import_metadata(
     parsed
 }
 
+fn non_empty_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Manual import: preview & execute
 // ---------------------------------------------------------------------------
@@ -3760,6 +3737,8 @@ pub async fn execute_manual_import(
             })
             .unwrap_or_else(|| parsed_release_from_file_stem(source));
         let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+        let quality_label = non_empty_string(mapping.quality.clone())
+            .or_else(|| non_empty_string(parsed.quality.clone()));
 
         let season_num: u32 = episode
             .season_number
@@ -3779,7 +3758,7 @@ pub async fn execute_manual_import(
             &ep_num_str,
             episode.absolute_number.as_deref(),
             episode.title.as_deref(),
-            mapping.quality.as_deref(),
+            quality_label.as_deref(),
         );
 
         // Import file
@@ -3791,8 +3770,6 @@ pub async fn execute_manual_import(
             .await
         {
             Ok(file_result) => {
-                let quality_label = mapping.quality.clone().or_else(|| parsed.quality.clone());
-
                 // Record media file with rich metadata
                 let media_file_input = crate::InsertMediaFileInput {
                     title_id: title.id.clone(),

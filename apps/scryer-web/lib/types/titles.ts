@@ -19,6 +19,7 @@ export type TitleRecord = {
   imdbId?: string | null;
   externalIds: ExternalId[];
   qualityTier?: string | null;
+  currentQualityTier?: string | null;
   sizeBytes?: number | null;
   episodesOwned?: number | null;
   episodesMonitored?: number | null;

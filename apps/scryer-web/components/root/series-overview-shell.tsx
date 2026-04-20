@@ -16,6 +16,7 @@ import type {
   SettingsSection,
   ContentSettingsSection,
   SystemSection,
+  WantedSection,
 } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
 
@@ -77,6 +78,7 @@ export function SeriesOverviewShell() {
       nextSettingsSection?: SettingsSection,
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
+      nextWantedSection?: WantedSection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
@@ -87,6 +89,7 @@ export function SeriesOverviewShell() {
           ? nextContentSection
           : undefined,
         nextView === "system" ? nextSystemSection : undefined,
+        nextView === "wanted" ? nextWantedSection : undefined,
       );
       navigate(targetPath);
     },
@@ -128,6 +131,7 @@ export function SeriesOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  wantedSection="wanted"
                   entitlements={[]}
                   pendingImportCounts={null}
                   manualImportRequiredCount={0}

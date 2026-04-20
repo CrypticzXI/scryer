@@ -560,6 +560,7 @@ pub(crate) fn from_title(title: Title) -> TitlePayload {
         filler_policy,
         recap_policy,
         quality_tier: None,
+        current_quality_tier: None,
         size_bytes: None,
         episodes_owned: None,
         episodes_monitored: None,

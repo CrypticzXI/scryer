@@ -264,6 +264,60 @@ pub(crate) async fn upsert_setting_value_query(
         .ok_or_else(|| AppError::Repository("setting write did not persist".to_string()))
 }
 
+pub(crate) async fn delete_setting_value_query(
+    pool: &SqlitePool,
+    scope: &str,
+    key_name: &str,
+    scope_id: Option<String>,
+) -> AppResult<()> {
+    let scope = scope.trim().to_string();
+    let key_name = key_name.trim().to_string();
+    if scope.is_empty() || key_name.is_empty() {
+        return Err(AppError::Validation(
+            "scope and key_name are required to delete a setting override".to_string(),
+        ));
+    }
+
+    let (definition_id, _is_sensitive) = get_setting_definition_meta_query(pool, &scope, &key_name)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!("unknown setting key: {}.{}", scope, key_name))
+        })?;
+
+    let normalized_scope_id = scope_id.and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() { None } else { Some(value) }
+    });
+
+    let query = if normalized_scope_id.is_some() {
+        sqlx::query(
+            "DELETE FROM settings_values
+             WHERE setting_definition_id = ?
+               AND scope = ?
+               AND scope_id = ?",
+        )
+    } else {
+        sqlx::query(
+            "DELETE FROM settings_values
+             WHERE setting_definition_id = ?
+               AND scope = ?
+               AND scope_id IS NULL",
+        )
+    };
+
+    let mut query = query.bind(&definition_id).bind(&scope);
+    if let Some(scope_id) = normalized_scope_id {
+        query = query.bind(scope_id);
+    }
+
+    query
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(())
+}
+
 /// Returns (definition_id, is_sensitive) for a setting definition.
 pub(crate) async fn get_setting_definition_meta_query(
     pool: &SqlitePool,

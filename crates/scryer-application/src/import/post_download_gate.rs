@@ -24,6 +24,12 @@ pub(crate) struct ImportedFileAcceptance {
     pub scan_error: Option<String>,
 }
 
+pub(crate) struct PreparedImportCandidate {
+    pub parsed: crate::ParsedReleaseMetadata,
+    pub accepted: Box<ImportedFileAcceptance>,
+    pub rescore_changes: Vec<String>,
+}
+
 pub struct ImportedFileRejection {
     pub message: String,
     pub recycle_reason: &'static str,
@@ -297,6 +303,54 @@ pub(crate) async fn probe_and_validate(
     }))
 }
 
+/// Probe a source file once, apply the existing gate, and merge detected media
+/// facts back into parsed metadata so downstream rename and scoring decisions
+/// use the same resolved view that will later be persisted.
+pub(crate) async fn prepare_import_candidate(
+    app: &AppUseCase,
+    title: &Title,
+    parsed: &crate::ParsedReleaseMetadata,
+    quality_profile: &crate::QualityProfile,
+    path: &Path,
+    size_bytes: i64,
+    has_existing_file: bool,
+    existing_score: Option<i32>,
+    is_filler: bool,
+) -> Result<PreparedImportCandidate, ImportedFileRejection> {
+    match probe_and_validate(
+        app,
+        title,
+        parsed,
+        quality_profile,
+        path,
+        size_bytes,
+        has_existing_file,
+        existing_score,
+        is_filler,
+    )
+    .await
+    {
+        ImportedFileGateDecision::Rejected(rejection) => Err(rejection),
+        ImportedFileGateDecision::Accepted(accepted) => {
+            let (parsed, rescore_changes) = rescore_from_mediainfo(parsed, accepted.as_ref());
+            if !rescore_changes.is_empty() {
+                tracing::debug!(
+                    title = %title.name,
+                    path = %path.display(),
+                    changes = ?rescore_changes,
+                    "mediainfo rescore prepared import candidate"
+                );
+            }
+
+            Ok(PreparedImportCandidate {
+                parsed,
+                accepted,
+                rescore_changes,
+            })
+        }
+    }
+}
+
 /// Merge mediainfo-detected values into a release-name-parsed metadata struct.
 /// Prefers mediainfo when it detects a concrete value that differs from the release name.
 /// Returns the merged metadata and a log of what changed.
@@ -451,33 +505,6 @@ pub(crate) async fn compute_acquisition_score(
     score
 }
 
-/// Convenience wrapper: probe and validate a file that is already at its final destination.
-/// Used by non-upgrade import paths where the file has already been moved.
-pub(crate) async fn evaluate_imported_file_gate(
-    app: &AppUseCase,
-    title: &Title,
-    parsed: &crate::ParsedReleaseMetadata,
-    quality_profile: &crate::QualityProfile,
-    path: &Path,
-    size_bytes: i64,
-    has_existing_file: bool,
-    existing_score: Option<i32>,
-    is_filler: bool,
-) -> ImportedFileGateDecision {
-    probe_and_validate(
-        app,
-        title,
-        parsed,
-        quality_profile,
-        path,
-        size_bytes,
-        has_existing_file,
-        existing_score,
-        is_filler,
-    )
-    .await
-}
-
 pub(crate) async fn persist_media_analysis_result(
     media_files: &std::sync::Arc<dyn crate::MediaFileRepository>,
     file_id: &str,
@@ -501,7 +528,7 @@ pub(crate) async fn persist_media_analysis_result(
     }
 }
 
-pub(crate) async fn reject_imported_file(
+pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
     actor_user_id: Option<&str>,
     title: &Title,
@@ -510,8 +537,27 @@ pub(crate) async fn reject_imported_file(
     episode_ids: &[String],
     rejection: &ImportedFileRejection,
 ) {
-    recycle_imported_file(path, &title.id, rejection.recycle_reason).await;
+    finalize_import_rejection(
+        app,
+        actor_user_id,
+        title,
+        completed_name,
+        path,
+        episode_ids,
+        rejection,
+    )
+    .await;
+}
 
+async fn finalize_import_rejection(
+    app: &AppUseCase,
+    actor_user_id: Option<&str>,
+    title: &Title,
+    completed_name: &str,
+    path: &Path,
+    episode_ids: &[String],
+    rejection: &ImportedFileRejection,
+) {
     let _ = app
         .services
         .workflow
@@ -550,27 +596,6 @@ pub(crate) async fn reject_imported_file(
             }),
         ))
         .await;
-}
-
-async fn recycle_imported_file(path: &Path, title_id: &str, reason: &str) {
-    let recycle_config = crate::recycle_bin::config_from_file_path(path);
-    let manifest = crate::recycle_bin::RecycleManifest {
-        recycled_at: Utc::now().to_rfc3339(),
-        original_path: path.display().to_string(),
-        size_bytes: tokio::fs::metadata(path)
-            .await
-            .map(|metadata| metadata.len())
-            .unwrap_or(0),
-        title_id: Some(title_id.to_string()),
-        reason: reason.to_string(),
-    };
-    if let Err(error) = crate::recycle_bin::recycle_file(&recycle_config, path, manifest).await {
-        warn!(
-            error = %error,
-            path = %path.display(),
-            "failed to recycle rejected file from disk"
-        );
-    }
 }
 
 async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {

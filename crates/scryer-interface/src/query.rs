@@ -175,6 +175,10 @@ async fn title_payloads_from_titles(
         .list_title_media_size_summaries(actor, &title_ids)
         .await
         .map_err(to_gql_error)?;
+    let quality_summaries = app
+        .list_title_quality_summaries(actor, &title_ids)
+        .await
+        .map_err(to_gql_error)?;
     let episode_progress_summaries = app
         .list_title_episode_progress_summaries(actor, &title_ids)
         .await
@@ -184,6 +188,10 @@ async fn title_payloads_from_titles(
     let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
         .iter()
         .map(|summary| (summary.title_id.as_str(), summary.total_size_bytes))
+        .collect();
+    let quality_map: std::collections::HashMap<&str, &String> = quality_summaries
+        .iter()
+        .map(|summary| (summary.title_id.as_str(), &summary.quality_tier))
         .collect();
     let episode_progress_map: std::collections::HashMap<&str, _> = episode_progress_summaries
         .iter()
@@ -197,6 +205,9 @@ async fn title_payloads_from_titles(
             let mut payload = from_title(t);
             if let Some(s) = summary_map.get(id.as_str()) {
                 payload.quality_tier = s.label.clone();
+            }
+            if let Some(quality_tier) = quality_map.get(id.as_str()) {
+                payload.current_quality_tier = Some((*quality_tier).clone());
             }
             payload.size_bytes = media_size_map.get(id.as_str()).copied();
             if let Some(summary) = episode_progress_map.get(id.as_str()) {
@@ -212,6 +223,10 @@ async fn title_payloads_from_titles(
 #[derive(Copy, Clone)]
 pub struct QueryRoot;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "async-graphql's Object macro generates resolver wrappers that exceed clippy's argument threshold"
+)]
 #[Object]
 impl QueryRoot {
     async fn titles(
@@ -250,12 +265,11 @@ impl QueryRoot {
     async fn title(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
+        let Some(title) = app.get_title(&actor, &id).await.map_err(to_gql_error)? else {
+            return Ok(None);
+        };
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        Ok(payloads.pop())
     }
 
     async fn media_rename_preview(
@@ -1933,8 +1947,9 @@ impl TitlePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let items = app
-            .list_download_queue(
+            .list_download_queue_for_title(
                 &actor,
+                &self.id,
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
                 activity_filter
@@ -1943,11 +1958,7 @@ impl TitlePayload {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(items
-            .into_iter()
-            .filter(|item| item.title_id.as_deref() == Some(self.id.as_str()))
-            .map(from_download_queue_item)
-            .collect())
+        Ok(items.into_iter().map(from_download_queue_item).collect())
     }
 }
 

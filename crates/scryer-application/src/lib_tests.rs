@@ -433,6 +433,53 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(Vec::new())
     }
 
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        let rank = |value: &str| match value.trim().to_ascii_uppercase().as_str() {
+            "4320P" => 0,
+            "2160P" => 1,
+            "1440P" => 2,
+            "1080P" => 3,
+            "1080I" => 4,
+            "720P" => 5,
+            "480P" => 6,
+            "360P" => 7,
+            _ => 999,
+        };
+
+        let store = self.store.lock().await;
+        let mut out = Vec::new();
+        for title_id in title_ids {
+            let mut selected: Option<(i32, String)> = None;
+            for entry in store.iter().filter(|entry| &entry.title_id == title_id) {
+                let Some(label) = entry.quality_label.as_ref() else {
+                    continue;
+                };
+                let normalized = label.trim().to_ascii_uppercase();
+                if normalized.is_empty() {
+                    continue;
+                }
+                let candidate = (rank(&normalized), normalized);
+                if selected
+                    .as_ref()
+                    .is_none_or(|current| candidate.0 > current.0)
+                {
+                    selected = Some(candidate);
+                }
+            }
+            if let Some((_, quality_tier)) = selected {
+                out.push(TitleQualitySummary {
+                    title_id: title_id.clone(),
+                    quality_tier,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
     async fn list_title_episode_progress_summaries(
         &self,
         _title_ids: &[String],
@@ -2547,8 +2594,11 @@ struct StubDownloadClient {
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
+    queue_calls: Arc<Mutex<usize>>,
+    queue_for_title_calls: Arc<Mutex<Vec<String>>>,
     history_calls: Arc<Mutex<usize>>,
     recent_activity_calls: Arc<Mutex<Vec<usize>>>,
+    recent_activity_for_title_calls: Arc<Mutex<Vec<(String, usize)>>>,
 }
 
 impl StubDownloadClient {
@@ -2576,6 +2626,15 @@ impl DownloadClient for StubDownloadClient {
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+        *self.queue_calls.lock().await += 1;
+        Ok(self.queue_items.lock().await.clone())
+    }
+
+    async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
+        self.queue_for_title_calls
+            .lock()
+            .await
+            .push(title_id.to_string());
         Ok(self.queue_items.lock().await.clone())
     }
 
@@ -2586,6 +2645,25 @@ impl DownloadClient for StubDownloadClient {
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.recent_activity_calls.lock().await.push(limit);
+        Ok(self
+            .history_items
+            .lock()
+            .await
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_recent_activity_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.recent_activity_for_title_calls
+            .lock()
+            .await
+            .push((title_id.to_string(), limit));
         Ok(self
             .history_items
             .lock()
@@ -5679,6 +5757,102 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
     assert!(
         download_client
             .recent_activity_calls
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn list_download_queue_for_title_uses_title_scoped_client_query() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: "title-1".to_string(),
+            facet: "series".to_string(),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "job-1".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Title Scoped Download".to_string()),
+            request_signature: None,
+            episode_id: None,
+            collection_id: None,
+        })
+        .await
+        .expect("record submission");
+
+    *download_client.queue_items.lock().await = vec![DownloadQueueItem {
+        id: "job-1".to_string(),
+        title_id: None,
+        title_name: "Title Scoped Download".to_string(),
+        facet: None,
+        client_id: "primary".to_string(),
+        client_name: "Primary".to_string(),
+        client_type: "nzbget".to_string(),
+        state: DownloadQueueState::Queued,
+        progress_percent: 0,
+        size_bytes: None,
+        remaining_seconds: None,
+        queued_at: None,
+        last_updated_at: None,
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: "job-1".to_string(),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: false,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }];
+
+    let items = app
+        .list_download_queue_for_title(&user, "title-1", false, false, DownloadActivityFilter::All)
+        .await
+        .expect("title-scoped queue should load");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].download_client_item_id, "job-1");
+    assert_eq!(items[0].title_id.as_deref(), Some("title-1"));
+    assert_eq!(*download_client.queue_calls.lock().await, 0);
+    assert_eq!(
+        download_client
+            .queue_for_title_calls
+            .lock()
+            .await
+            .as_slice(),
+        &["title-1".to_string()]
+    );
+    assert!(
+        download_client
+            .recent_activity_for_title_calls
             .lock()
             .await
             .is_empty()

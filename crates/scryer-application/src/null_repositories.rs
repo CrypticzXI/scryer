@@ -28,8 +28,9 @@ use crate::{
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository,
     TitleImageBlob, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
-    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
-    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary, WantedItem, WantedItemRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -223,6 +224,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
         Ok(Vec::new())
     }
 

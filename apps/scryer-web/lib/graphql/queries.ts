@@ -217,8 +217,6 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
     wantedItems {${WANTED_ITEM_FIELDS}
-    }
-    downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
     }`;
 
   const TITLE_EVENT_FIELDS = `
@@ -341,6 +339,14 @@ export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $bl
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
   subtitleDownloads(titleId: $id) {${SUBTITLE_DOWNLOAD_FIELDS}
+  }
+}`;
+
+export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: String!) {
+  title(id: $id) {
+    id
+    downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }
   }
 }`;
 
@@ -1189,7 +1195,12 @@ export const wantedCutoffInitQuery = `query WantedCutoffInit {
     monitored
     facet
     posterUrl
-    qualityTier
+    externalIds {
+      source
+      value
+    }
+    qualityProfileId
+    currentQualityTier
   }
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }

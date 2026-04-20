@@ -737,6 +737,41 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         Ok(all_items)
     }
 
+    async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
+        let clients = self.list_enabled_clients_by_priority().await?;
+        if clients.is_empty() {
+            return self.fallback_client.list_queue_for_title(title_id).await;
+        }
+        let mut all_items = Vec::new();
+        for config in clients {
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for title-scoped queue listing");
+                    continue;
+                }
+            };
+            match client.list_queue_for_title(title_id).await {
+                Ok(mut items) => {
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                        item.client_name = config.name.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped queue");
+                }
+            }
+        }
+        Ok(all_items)
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
@@ -806,6 +841,58 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
                 Err(error) => {
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
+                }
+            }
+        }
+
+        let mut seen = HashSet::with_capacity(all_items.len());
+        all_items.retain(|item| seen.insert(download_queue_history_key(item)));
+        all_items.sort_by(compare_history_items_desc);
+        all_items.truncate(limit);
+        Ok(all_items)
+    }
+
+    async fn list_recent_activity_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let clients = self.list_enabled_clients_by_priority().await?;
+        if clients.is_empty() {
+            return self
+                .fallback_client
+                .list_recent_activity_for_title(title_id, limit)
+                .await;
+        }
+
+        let mut all_items = Vec::new();
+        for config in clients {
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for title-scoped recent activity listing");
+                    continue;
+                }
+            };
+            match client.list_recent_activity_for_title(title_id, limit).await {
+                Ok(mut items) => {
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                        item.client_name = config.name.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped recent activity");
                 }
             }
         }

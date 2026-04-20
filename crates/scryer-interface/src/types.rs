@@ -974,8 +974,10 @@ pub struct TitlePayload {
     pub inter_season_movies: Option<bool>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
-    /// Primary collection label (quality tier), populated in list queries.
+    /// Legacy title quality label, populated in list queries.
     pub quality_tier: Option<String>,
+    /// Lowest live media-file quality tier for the title, populated in list queries.
+    pub current_quality_tier: Option<String>,
     /// Aggregated media-file size in bytes for the title, populated in list queries.
     pub size_bytes: Option<i64>,
     /// Owned-vs-total episode progress, excluding specials, populated in list queries.

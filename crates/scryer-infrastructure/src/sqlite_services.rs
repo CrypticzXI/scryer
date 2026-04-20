@@ -284,6 +284,13 @@ impl DbRuntime {
             .await
     }
 
+    pub async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<scryer_application::TitleQualitySummary>> {
+        crate::queries::media_file::list_title_quality_summaries_query(&self.pool, title_ids).await
+    }
+
     pub async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],

@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import type { WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   ChevronDown,
   ChevronRight,
@@ -40,7 +40,6 @@ import type {
   WantedSearchPhase,
   WantedStatus,
 } from "@/lib/types";
-import type { WantedTab } from "@/components/containers/wanted-container";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 type CutoffUnmetViewState = {
@@ -176,46 +175,18 @@ type PendingViewState = {
 };
 
 type WantedViewProps = {
-  tab: WantedTab;
-  onTabChange: (tab: WantedTab) => void;
+  section: WantedSection;
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
   pendingState: PendingViewState;
 };
 
-const TOGGLE_ITEM_CLASS =
-  "h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none";
-
-export function WantedView({ tab, onTabChange, wantedState, cutoffState, pendingState }: WantedViewProps) {
-  const t = useTranslate();
-
+export function WantedView({ section, wantedState, cutoffState, pendingState }: WantedViewProps) {
   return (
     <div className="space-y-4 md:flex md:h-full md:min-h-0 md:flex-col md:gap-4 md:space-y-0">
-      <div className="overflow-x-auto">
-        <ToggleGroup
-          type="single"
-          value={tab}
-          onValueChange={(v) => {
-            if (v) onTabChange(v as WantedTab);
-          }}
-          size="lg"
-          className="mx-auto h-14 min-w-max rounded-xl border-0 bg-card/80 divide-x divide-border/40"
-        >
-          <ToggleGroupItem value="wanted" size="lg" className={TOGGLE_ITEM_CLASS}>
-            {t("wanted.tabWanted")}
-          </ToggleGroupItem>
-          <ToggleGroupItem value="cutoff" size="lg" className={TOGGLE_ITEM_CLASS}>
-            {t("wanted.tabCutoff")}
-          </ToggleGroupItem>
-          <ToggleGroupItem value="pending" size="lg" className={TOGGLE_ITEM_CLASS}>
-            {t("wanted.tabPending")}
-          </ToggleGroupItem>
-        </ToggleGroup>
-      </div>
-
-      {tab === "cutoff" ? (
+      {section === "cutoff" ? (
         <CutoffUnmetView state={cutoffState} />
-      ) : tab === "pending" ? (
+      ) : section === "pending" ? (
         <PendingReleasesCard state={pendingState} />
       ) : (
         <WantedItemsCard state={wantedState} />
@@ -702,7 +673,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto rounded-xl border border-border/60">
             <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow>

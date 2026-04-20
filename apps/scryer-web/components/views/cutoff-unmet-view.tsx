@@ -191,7 +191,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto rounded-xl border border-border/60">
             <Table className="min-w-[720px]">
               <TableHeader>
                 <TableRow>

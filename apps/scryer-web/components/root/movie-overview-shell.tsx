@@ -16,6 +16,7 @@ import type {
   SettingsSection,
   ContentSettingsSection,
   SystemSection,
+  WantedSection,
 } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
 
@@ -68,12 +69,14 @@ export function MovieOverviewShell() {
       nextSettingsSection?: SettingsSection,
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
+      nextWantedSection?: WantedSection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
         nextView === "settings" ? nextSettingsSection : undefined,
         nextView === "movies" || nextView === "series" || nextView === "anime" ? nextContentSection : undefined,
         nextView === "system" ? nextSystemSection : undefined,
+        nextView === "wanted" ? nextWantedSection : undefined,
       );
       navigate(targetPath);
     },
@@ -115,6 +118,7 @@ export function MovieOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  wantedSection="wanted"
                   entitlements={[]}
                   pendingImportCounts={null}
                   manualImportRequiredCount={0}

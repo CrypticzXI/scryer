@@ -136,6 +136,8 @@ struct HistoryItemsPayload {
     history_items: Vec<WeaverQueueItem>,
 }
 
+const SCRYER_TITLE_ID_ATTRIBUTE_KEY: &str = "*scryer_title_id";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublishedJobsPayload {
@@ -445,10 +447,10 @@ impl WeaverDownloadClient {
         Ok("weaver".to_string())
     }
 
-    async fn query_queue_items(&self) -> AppResult<Vec<WeaverQueueItem>> {
+    async fn query_queue_items(&self, title_id: Option<&str>) -> AppResult<Vec<WeaverQueueItem>> {
         let query = r#"
-            query {
-                queueItems {
+            query($filter: QueueFilterInput) {
+                queueItems(filter: $filter) {
                     id
                     name
                     state
@@ -468,7 +470,12 @@ impl WeaverDownloadClient {
             }
         "#;
         match self
-            .graphql_request::<QueueItemsPayload>(query, json!({}))
+            .graphql_request::<QueueItemsPayload>(
+                query,
+                json!({
+                    "filter": title_attribute_filter(title_id),
+                }),
+            )
             .await
         {
             Ok(data) => Ok(data.queue_items),
@@ -499,10 +506,11 @@ impl WeaverDownloadClient {
         &self,
         limit: Option<usize>,
         offset: Option<usize>,
+        title_id: Option<&str>,
     ) -> AppResult<Vec<WeaverQueueItem>> {
         let query = r#"
-            query($first: Int, $after: String) {
-                historyItems(first: $first, after: $after) {
+            query($filter: QueueFilterInput, $first: Int, $after: String) {
+                historyItems(filter: $filter, first: $first, after: $after) {
                     id
                     name
                     state
@@ -529,6 +537,7 @@ impl WeaverDownloadClient {
             .graphql_request(
                 query,
                 json!({
+                    "filter": title_attribute_filter(title_id),
                     "first": limit.and_then(|value| i32::try_from(value).ok()),
                     "after": after,
                 }),
@@ -689,6 +698,24 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
     }
+}
+
+fn filter_items_by_title(items: Vec<DownloadQueueItem>, title_id: &str) -> Vec<DownloadQueueItem> {
+    items
+        .into_iter()
+        .filter(|item| item.title_id.as_deref() == Some(title_id))
+        .collect()
+}
+
+fn title_attribute_filter(title_id: Option<&str>) -> Option<Value> {
+    title_id.map(|title_id| {
+        json!({
+            "attributeEquals": {
+                "key": SCRYER_TITLE_ID_ATTRIBUTE_KEY,
+                "value": title_id,
+            }
+        })
+    })
 }
 
 fn weaver_item_to_completed_download(job: &WeaverQueueItem) -> Option<CompletedDownload> {
@@ -1008,12 +1035,20 @@ impl DownloadClient for WeaverDownloadClient {
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let jobs = self.query_queue_items().await?;
+        let jobs = self.query_queue_items(None).await?;
         Ok(jobs.iter().map(weaver_item_to_queue_item).collect())
     }
 
+    async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
+        let jobs = self.query_queue_items(Some(title_id)).await?;
+        Ok(filter_items_by_title(
+            jobs.iter().map(weaver_item_to_queue_item).collect(),
+            title_id,
+        ))
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let jobs = match self.query_history_items(None, None).await {
+        let jobs = match self.query_history_items(None, None, None).await {
             Ok(items) => items,
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
                 self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(200), Some(0))
@@ -1029,7 +1064,7 @@ impl DownloadClient for WeaverDownloadClient {
             return Ok(Vec::new());
         }
 
-        let jobs = match self.query_history_items(Some(limit), Some(0)).await {
+        let jobs = match self.query_history_items(Some(limit), Some(0), None).await {
             Ok(items) => items,
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
                 self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(0))
@@ -1040,12 +1075,41 @@ impl DownloadClient for WeaverDownloadClient {
         Ok(jobs.iter().map(weaver_item_to_queue_item).collect())
     }
 
+    async fn list_recent_activity_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let jobs = match self
+            .query_history_items(Some(limit), Some(0), Some(title_id))
+            .await
+        {
+            Ok(items) => items,
+            Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
+                self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(0))
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(filter_items_by_title(
+            jobs.iter().map(weaver_item_to_queue_item).collect(),
+            title_id,
+        ))
+    }
+
     async fn list_history_page(
         &self,
         offset: usize,
         limit: usize,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        let jobs = match self.query_history_items(Some(limit), Some(offset)).await {
+        let jobs = match self
+            .query_history_items(Some(limit), Some(offset), None)
+            .await
+        {
             Ok(items) => items,
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
                 self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(offset))
@@ -1064,7 +1128,7 @@ impl DownloadClient for WeaverDownloadClient {
             return Ok(Vec::new());
         }
 
-        let jobs = match self.query_history_items(Some(limit), Some(0)).await {
+        let jobs = match self.query_history_items(Some(limit), Some(0), None).await {
             Ok(items) => items,
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
                 self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(limit), Some(0))
@@ -1079,7 +1143,7 @@ impl DownloadClient for WeaverDownloadClient {
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
-        let jobs = match self.query_history_items(None, None).await {
+        let jobs = match self.query_history_items(None, None, None).await {
             Ok(items) => items,
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"historyItems\"") => {
                 self.query_jobs_compat(Some(&["COMPLETE", "FAILED"]), Some(200), Some(0))
@@ -1475,5 +1539,107 @@ mod tests {
 
         assert_eq!(downloads.len(), 1);
         assert_eq!(downloads[0].download_client_item_id, "10002");
+    }
+
+    #[tokio::test]
+    async fn list_queue_for_title_uses_exact_attribute_filter() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains(
+                "\"attributeEquals\":{\"key\":\"*scryer_title_id\",\"value\":\"title-42\"}",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "queueItems": [
+                        {
+                            "id": 42,
+                            "name": "Title Scoped Queue",
+                            "state": "DOWNLOADING",
+                            "error": null,
+                            "progressPercent": 50.0,
+                            "totalBytes": 1000,
+                            "downloadedBytes": 500,
+                            "failedBytes": 0,
+                            "health": 1000,
+                            "category": null,
+                            "outputDir": null,
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "clientRequestId": null,
+                            "attributes": [
+                                { "key": "*scryer_title_id", "value": "title-42" },
+                                { "key": "*scryer_facet", "value": "series" }
+                            ],
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let items = client
+            .list_queue_for_title("title-42")
+            .await
+            .expect("title-scoped queue should load");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title_id.as_deref(), Some("title-42"));
+    }
+
+    #[tokio::test]
+    async fn list_recent_activity_for_title_uses_exact_attribute_filter() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("\"first\":2"))
+            .and(body_string_contains(
+                "\"attributeEquals\":{\"key\":\"*scryer_title_id\",\"value\":\"title-42\"}",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItems": [
+                        {
+                            "id": 142,
+                            "name": "Title Scoped History",
+                            "state": "COMPLETE",
+                            "error": null,
+                            "progressPercent": 100.0,
+                            "totalBytes": 1000,
+                            "downloadedBytes": 1000,
+                            "failedBytes": 0,
+                            "health": 1000,
+                            "category": null,
+                            "outputDir": "/downloads/title-42",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:10:00Z",
+                            "clientRequestId": null,
+                            "attributes": [
+                                { "key": "*scryer_title_id", "value": "title-42" },
+                                { "key": "*scryer_facet", "value": "series" }
+                            ],
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let items = client
+            .list_recent_activity_for_title("title-42", 2)
+            .await
+            .expect("title-scoped recent activity should load");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title_id.as_deref(), Some("title-42"));
     }
 }

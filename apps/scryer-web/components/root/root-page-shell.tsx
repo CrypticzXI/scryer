@@ -26,6 +26,7 @@ import type {
   SettingsSection,
   ContentSettingsSection,
   SystemSection,
+  WantedSection,
 } from "@/components/root/types";
 import type { Facet } from "@/lib/types";
 import {
@@ -43,6 +44,7 @@ import {
   parseSettingsSectionFromPath,
   parseSystemSectionFromPath,
   parseViewFromPath,
+  parseWantedSectionFromPath,
 } from "@/lib/utils/routing";
 import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
@@ -122,6 +124,7 @@ function MainContent({
   setLanguagePreferenceFromShell,
   contentSettingsSection,
   systemSection,
+  wantedSection,
   handleOpenOverview,
 }: {
   view: ViewId;
@@ -137,6 +140,7 @@ function MainContent({
   setLanguagePreferenceFromShell: (code: string) => void;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  wantedSection: WantedSection;
   handleOpenOverview: (targetView: ViewId, titleId: string, episodeId?: string) => void;
 }) {
   if (view === "activity") {
@@ -146,7 +150,7 @@ function MainContent({
     return <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />;
   }
   if (view === "wanted") {
-    return <WantedContainer key="wanted" />;
+    return <WantedContainer key={`wanted-${wantedSection}`} wantedSection={wantedSection} />;
   }
   if (view === "history") {
     return <ImportHistoryContainer key="history" />;
@@ -271,6 +275,7 @@ function AuthenticatedHomePage({
     parsedSettingsSection: settingsSection,
     parsedContentSection: contentSettingsSection,
     parsedSystemSection: systemSection,
+    parsedWantedSection: wantedSection,
   } =
     useMemo(() => {
       const trimmed = pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
@@ -285,7 +290,16 @@ function AuthenticatedHomePage({
       const parsedSystemSection: SystemSection = parsedView === "system"
         ? parseSystemSectionFromPath(segments[1] ?? null)
         : "overview";
-      return { parsedView, parsedSettingsSection, parsedContentSection, parsedSystemSection };
+      const parsedWantedSection: WantedSection = parsedView === "wanted"
+        ? parseWantedSectionFromPath(segments[1] ?? null)
+        : "wanted";
+      return {
+        parsedView,
+        parsedSettingsSection,
+        parsedContentSection,
+        parsedSystemSection,
+        parsedWantedSection,
+      };
     }, [pathname]);
 
   const overviewTitleId = useMemo(() => {
@@ -379,7 +393,18 @@ function AuthenticatedHomePage({
   }, [refreshSidebarCounts]);
 
   useEffect(() => {
-    const handleSidebarCountsRefresh = () => {
+    const handleSidebarCountsRefresh = (event: Event) => {
+      const delta =
+        event instanceof CustomEvent && typeof event.detail?.delta === "number"
+          ? event.detail.delta
+          : 0;
+      if (delta !== 0) {
+        setManualImportRequiredCount((current) => Math.max(0, current + delta));
+        window.setTimeout(() => {
+          void refreshSidebarCounts();
+        }, 2_000);
+        return;
+      }
       void refreshSidebarCounts();
     };
     window.addEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
@@ -401,6 +426,7 @@ function AuthenticatedHomePage({
       nextSettingsSection?: SettingsSection,
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
+      nextWantedSection?: WantedSection,
       nextOverviewTitleId?: string | null,
       nextEpisodeId?: string | null,
     ) => {
@@ -410,6 +436,7 @@ function AuthenticatedHomePage({
         nextView === "settings" ? nextSettingsSection : undefined,
         isMedia ? nextContentSection : undefined,
         nextView === "system" ? nextSystemSection : undefined,
+        nextView === "wanted" ? nextWantedSection : undefined,
       );
       const normalizedContentSection = isMedia
         ? (nextContentSection ?? "overview")
@@ -423,6 +450,7 @@ function AuthenticatedHomePage({
       nextParams.delete(URL_PARAM_SETTINGS_SECTION_DEPRECATED);
       nextParams.delete(URL_PARAM_CONTENT_SECTION_DEPRECATED);
       nextParams.delete(URL_PARAM_LANGUAGE);
+      nextParams.delete("tab");
       if (
         normalizedOverviewTitleId &&
         isMedia &&
@@ -455,7 +483,7 @@ function AuthenticatedHomePage({
         return;
       }
 
-      navigateTo(targetView, undefined, "overview", undefined, titleId, episodeId);
+      navigateTo(targetView, undefined, "overview", undefined, undefined, titleId, episodeId);
     },
     [navigateTo],
   );
@@ -497,12 +525,12 @@ function AuthenticatedHomePage({
   const entitlements = useMemo(() => user?.entitlements ?? [], [user?.entitlements]);
 
   const handleBackToList = useCallback(
-    () => navigateTo(view, undefined, "overview"),
+    () => navigateTo(view, undefined, "overview", undefined, undefined),
     [navigateTo, view],
   );
 
   const handleTitleNotFound = useCallback(
-    () => navigateTo(view, undefined, "overview"),
+    () => navigateTo(view, undefined, "overview", undefined, undefined),
     [navigateTo, view],
   );
 
@@ -515,7 +543,7 @@ function AuthenticatedHomePage({
       return;
     }
 
-    navigateTo(view, undefined, "overview");
+    navigateTo(view, undefined, "overview", undefined, undefined);
   }, [contentSettingsSection, navigateTo, pendingImportCounts, view]);
 
   return (
@@ -578,6 +606,7 @@ function AuthenticatedHomePage({
                     settingsSection={settingsSection}
                     contentSettingsSection={contentSettingsSection}
                     systemSection={systemSection}
+                    wantedSection={wantedSection}
                     entitlements={entitlements}
                     pendingImportCounts={pendingImportCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
@@ -599,6 +628,7 @@ function AuthenticatedHomePage({
                           setLanguagePreferenceFromShell={setLanguagePreferenceFromShell}
                           contentSettingsSection={contentSettingsSection}
                           systemSection={systemSection}
+                          wantedSection={wantedSection}
                           handleOpenOverview={handleOpenOverview}
                         />
                       </Suspense>

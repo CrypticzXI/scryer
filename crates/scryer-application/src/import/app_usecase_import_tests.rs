@@ -405,6 +405,79 @@ fn build_rename_tokens_includes_quality() {
     assert_eq!(tokens.get("quality").map(String::as_str), Some("1080p"));
 }
 
+fn test_media_analysis(video_height: Option<i32>) -> crate::MediaFileAnalysis {
+    crate::MediaFileAnalysis {
+        video_codec: Some("h264".to_string()),
+        video_width: Some(1920),
+        video_height,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: Some("aac".to_string()),
+        audio_profile: None,
+        audio_channels: Some(2),
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format: None,
+        raw_json: "{}".to_string(),
+    }
+}
+
+#[test]
+fn rescore_from_mediainfo_updates_quality_when_parsed_quality_is_missing() {
+    let parsed = crate::parse_release_metadata("obfuscated.release.name");
+    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(test_media_analysis(Some(1080))),
+        scan_error: None,
+    };
+
+    let (rescored, changes) =
+        crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
+
+    assert_eq!(rescored.quality.as_deref(), Some("1080p"));
+    assert!(changes.iter().any(|change| change.contains("resolution")));
+}
+
+#[test]
+fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
+    let mut title = test_title(MediaFacet::Series);
+    title.name = "Test Show".to_string();
+    let parsed = crate::parse_release_metadata("obfuscated.release.name");
+    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(test_media_analysis(Some(1080))),
+        scan_error: None,
+    };
+    let (rescored, _) = crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
+
+    let dest_path = episode_import_dest_path(
+        &title,
+        &rescored,
+        "mkv",
+        "/library",
+        "Test Show",
+        "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        8,
+        "7",
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(
+        dest_path,
+        std::path::PathBuf::from("/library/Test Show/Season 08/Test Show - S08E07 - 1080p.mkv")
+    );
+}
+
 #[test]
 fn build_rename_tokens_episode_is_empty_for_movie() {
     let title = test_title(MediaFacet::Movie);

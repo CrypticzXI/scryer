@@ -1,7 +1,7 @@
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, InsertMediaFileInput, MediaFileAnalysis, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
 };
 use scryer_domain::Id;
 use sqlx::sqlite::SqliteRow;
@@ -11,6 +11,31 @@ const RECYCLE_BIN_PATH_SEGMENT: &str = "/.scryer-recycle/";
 
 fn live_media_file_predicate(alias: &str) -> String {
     format!("instr({alias}.file_path, '{RECYCLE_BIN_PATH_SEGMENT}') = 0")
+}
+
+fn normalized_quality_expression(alias: &str) -> String {
+    format!(
+        "CASE
+            WHEN trim(COALESCE({alias}.quality_id, '')) = '' THEN NULL
+            ELSE upper(trim({alias}.quality_id))
+         END"
+    )
+}
+
+fn quality_rank_expression(alias: &str) -> String {
+    format!(
+        "CASE upper(trim(COALESCE({alias}.quality_id, '')))
+            WHEN '4320P' THEN 0
+            WHEN '2160P' THEN 1
+            WHEN '1440P' THEN 2
+            WHEN '1080P' THEN 3
+            WHEN '1080I' THEN 4
+            WHEN '720P' THEN 5
+            WHEN '480P' THEN 6
+            WHEN '360P' THEN 7
+            ELSE 999
+         END"
+    )
 }
 
 pub(crate) async fn insert_media_file_query(
@@ -187,6 +212,63 @@ pub(crate) async fn list_title_media_size_summaries_query(
                 .map_err(|err| AppError::Repository(err.to_string()))?,
             total_size_bytes: row
                 .try_get("total_size_bytes")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        });
+    }
+
+    Ok(out)
+}
+
+pub(crate) async fn list_title_quality_summaries_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<Vec<TitleQualitySummary>> {
+    if title_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = title_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let normalized_quality = normalized_quality_expression("media_files");
+    let quality_rank = quality_rank_expression("media_files");
+    let sql = format!(
+        "SELECT title_id, quality_tier
+         FROM (
+            SELECT media_files.title_id AS title_id,
+                   {normalized_quality} AS quality_tier,
+                   ROW_NUMBER() OVER (
+                      PARTITION BY media_files.title_id
+                      ORDER BY {quality_rank} DESC,
+                               media_files.created_at DESC,
+                               media_files.id DESC
+                   ) AS quality_row
+              FROM media_files
+             WHERE media_files.title_id IN ({placeholders})
+               AND {}
+               AND trim(COALESCE(media_files.quality_id, '')) <> ''
+         ) ranked
+         WHERE quality_row = 1
+           AND quality_tier IS NOT NULL",
+        live_media_file_predicate("media_files"),
+    );
+
+    let mut query = sqlx::query(&sql);
+    for title_id in title_ids {
+        query = query.bind(title_id);
+    }
+
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(TitleQualitySummary {
+            title_id: row
+                .try_get("title_id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            quality_tier: row
+                .try_get("quality_tier")
                 .map_err(|err| AppError::Repository(err.to_string()))?,
         });
     }
@@ -823,6 +905,70 @@ mod tests {
         assert_eq!(episode_progress[0].total_episodes, 2);
         assert_eq!(episode_progress[0].monitored_episodes, 2);
         assert_eq!(episode_progress[0].owned_episodes, 1);
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn title_quality_summaries_use_lowest_live_quality_and_ignore_recycled_files() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_title_quality_summary_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let catalog = catalog_store(&services);
+        let library_state = library_state_store(&services);
+
+        let title = make_test_series_title("title-quality-summary");
+        catalog
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E01.mkv".to_string(),
+                size_bytes: 1_000,
+                quality_label: Some("2160p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("high quality file should insert");
+
+        library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E02.mkv".to_string(),
+                size_bytes: 1_000,
+                quality_label: Some("720p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("lower quality file should insert");
+
+        library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path:
+                    "/library/Show/.scryer-recycle/20260404_000000_deadbeef/Show - S01E03.mkv"
+                        .to_string(),
+                size_bytes: 1_000,
+                quality_label: Some("360p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("recycled file should insert");
+
+        let quality_summaries = library_state
+            .list_title_quality_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("quality summaries should succeed");
+        assert_eq!(quality_summaries.len(), 1);
+        assert_eq!(quality_summaries[0].title_id, title.id);
+        assert_eq!(quality_summaries[0].quality_tier, "720P");
 
         let _ = std::fs::remove_file(db);
     }

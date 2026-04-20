@@ -53,6 +53,7 @@ type PosterGridProps = {
   isMovieView: boolean;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
+  qualityProfilesLoading: boolean;
   onOpenOverview: (targetView: ViewId, titleId: string) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
@@ -65,6 +66,7 @@ export function PosterGrid({
   isMovieView,
   resolvedProfileName,
   qualityProfiles,
+  qualityProfilesLoading,
   onOpenOverview,
   onDelete,
   onAutoQueue,
@@ -106,6 +108,7 @@ export function PosterGrid({
           isMovieView={isMovieView}
           resolvedProfileName={resolvedProfileName}
           qualityProfiles={qualityProfiles}
+          qualityProfilesLoading={qualityProfilesLoading}
           onOpenOverview={onOpenOverview}
           onDelete={onDelete}
           onAutoQueue={handleAutoQueue}
@@ -124,6 +127,7 @@ type PosterCardProps = {
   isMovieView: boolean;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
+  qualityProfilesLoading: boolean;
   onOpenOverview: (targetView: ViewId, titleId: string) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
@@ -138,6 +142,7 @@ function PosterCard({
   isMovieView,
   resolvedProfileName,
   qualityProfiles,
+  qualityProfilesLoading,
   onOpenOverview,
   onDelete,
   onAutoQueue,
@@ -148,11 +153,9 @@ function PosterCard({
 }: PosterCardProps) {
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const qualityLabel = resolveDisplayedQualityLabel(
-    title,
-    qualityProfiles,
-    resolvedProfileName,
-  );
+  const qualityLabel = qualityProfilesLoading
+    ? null
+    : resolveDisplayedQualityLabel(title, qualityProfiles, resolvedProfileName);
 
   return (
     <div className="cv-auto-poster group">

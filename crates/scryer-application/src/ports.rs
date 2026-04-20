@@ -619,6 +619,11 @@ pub trait MediaFileRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>>;
 
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>>;
+
     async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],
@@ -1208,6 +1213,10 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn list_queue_for_title(&self, _title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_queue().await
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         Err(AppError::Repository(
             "download history listing is not supported for this client".to_string(),
@@ -1229,6 +1238,14 @@ pub trait DownloadClient: Send + Sync {
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.list_history_page(0, limit).await
+    }
+
+    async fn list_recent_activity_for_title(
+        &self,
+        _title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_recent_activity(limit).await
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {

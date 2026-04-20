@@ -1091,6 +1091,48 @@ impl AppUseCase {
             .await)
     }
 
+    async fn collect_download_snapshot_items_for_title(
+        &self,
+        title_id: &str,
+        include_queue: bool,
+        include_recent_history: bool,
+        use_tracked_runtime_snapshot: bool,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let primary_client = match self.primary_download_client().await? {
+            Some(client) => client,
+            None => return Ok(Vec::new()),
+        };
+
+        let queue_items = if include_queue {
+            self.services
+                .integrations
+                .download_client
+                .list_queue_for_title(title_id)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let history_items = if include_recent_history {
+            self.services
+                .integrations
+                .download_client
+                .list_recent_activity_for_title(title_id, DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT)
+                .await?
+        } else {
+            Vec::new()
+        };
+
+        let mut items: Vec<DownloadQueueItem> = queue_items;
+        items.extend(history_items);
+
+        Ok(self
+            .enrich_download_queue_items(Some(&primary_client), items, use_tracked_runtime_snapshot)
+            .await
+            .into_iter()
+            .filter(|item| item.title_id.as_deref() == Some(title_id))
+            .collect())
+    }
+
     async fn collect_download_queue_items(
         &self,
         include_all_activity: bool,
@@ -1126,6 +1168,52 @@ impl AppUseCase {
         Ok(items)
     }
 
+    async fn collect_download_queue_items_for_title(
+        &self,
+        title_id: &str,
+        include_all_activity: bool,
+        include_history_only: bool,
+        activity_filter: DownloadActivityFilter,
+        use_tracked_runtime_snapshot: bool,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if include_history_only {
+            let mut items = self
+                .collect_download_snapshot_items_for_title(
+                    title_id,
+                    false,
+                    true,
+                    use_tracked_runtime_snapshot,
+                )
+                .await?
+                .into_iter()
+                .filter(|item| is_history_download_state(&item.state))
+                .collect::<Vec<_>>();
+            items.sort_by(|left, right| {
+                parse_sort_value(
+                    right.last_updated_at.as_deref(),
+                    left.last_updated_at.as_deref(),
+                )
+            });
+            items.truncate(50);
+            return Ok(items);
+        }
+
+        let mut items = self
+            .collect_download_snapshot_items_for_title(
+                title_id,
+                true,
+                false,
+                use_tracked_runtime_snapshot,
+            )
+            .await?
+            .into_iter()
+            .filter(|item| include_all_activity || item.is_scryer_origin)
+            .filter(|item| matches_download_activity_filter(item, activity_filter))
+            .collect::<Vec<_>>();
+        sort_download_queue_items(&mut items);
+        Ok(items)
+    }
+
     pub async fn list_download_queue(
         &self,
         actor: &User,
@@ -1135,6 +1223,25 @@ impl AppUseCase {
     ) -> AppResult<Vec<DownloadQueueItem>> {
         require(actor, &Entitlement::ManageConfig)?;
         self.collect_download_queue_items(
+            include_all_activity,
+            include_history_only,
+            activity_filter,
+            true,
+        )
+        .await
+    }
+
+    pub async fn list_download_queue_for_title(
+        &self,
+        actor: &User,
+        title_id: &str,
+        include_all_activity: bool,
+        include_history_only: bool,
+        activity_filter: DownloadActivityFilter,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        require(actor, &Entitlement::ManageConfig)?;
+        self.collect_download_queue_items_for_title(
+            title_id,
             include_all_activity,
             include_history_only,
             activity_filter,

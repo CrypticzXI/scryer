@@ -83,3 +83,6 @@
 
 ## Library Query Extraction
 - When the user wants movie scan queries to prefer filenames, do not invent a separate filename parser. Reuse the release parser's normalized movie title output and only adjust precedence between parser output and folder fallback.
+
+## Import / Rename Boundary
+- When rename tokens depend on facts already produced by the import gate or media probe, move rename/path selection below that existing probe/rescore boundary instead of adding a second pre-rename scan. Fix the staging/order of the pipeline before introducing another analyzer call.

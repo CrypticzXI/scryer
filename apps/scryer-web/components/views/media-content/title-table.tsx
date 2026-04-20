@@ -157,6 +157,7 @@ type TitleTableProps = {
   titleLoading: boolean;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
+  qualityProfilesLoading: boolean;
   onOpenOverview: (targetView: ViewId, titleId: string) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
@@ -240,6 +241,7 @@ export function TitleTable({
   titleLoading,
   resolvedProfileName,
   qualityProfiles,
+  qualityProfilesLoading,
   onOpenOverview,
   onDelete,
   onAutoQueue,
@@ -302,6 +304,9 @@ export function TitleTable({
           case "monitored":
             return compareBooleans(left.monitored, right.monitored);
           case "quality":
+            if (qualityProfilesLoading) {
+              return 0;
+            }
             return compareMaybeText(
               resolveDisplayedQualityLabel(left, qualityProfiles, resolvedProfileName, t("label.unknown")),
               resolveDisplayedQualityLabel(right, qualityProfiles, resolvedProfileName, t("label.unknown")),
@@ -323,7 +328,7 @@ export function TitleTable({
 
       return compareTitleText(left.name, right.name);
     });
-  }, [qualityProfiles, resolvedProfileName, sortDirection, sortKey, t, titles]);
+  }, [qualityProfiles, qualityProfilesLoading, resolvedProfileName, sortDirection, sortKey, t, titles]);
 
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
@@ -512,12 +517,14 @@ export function TitleTable({
             </span>
           </TableCell>
           <TableCell className="align-middle whitespace-nowrap">
-            {resolveDisplayedQualityLabel(
-              item,
-              qualityProfiles,
-              resolvedProfileName,
-              t("label.unknown"),
-            )}
+            {qualityProfilesLoading
+              ? null
+              : resolveDisplayedQualityLabel(
+                  item,
+                  qualityProfiles,
+                  resolvedProfileName,
+                  t("label.unknown"),
+                )}
           </TableCell>
           {!isMovieView ? (
               <TableCell className="align-middle whitespace-nowrap tabular-nums">

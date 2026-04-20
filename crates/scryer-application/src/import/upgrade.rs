@@ -11,11 +11,10 @@ use crate::domain_events::{
     title_context_snapshot,
 };
 use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
-use crate::release_parser::ParsedReleaseMetadata;
 use crate::types::TitleMediaFile;
-use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput, ReleaseDownloadAttemptOutcome};
+use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
 use scryer_domain::{
-    CompletedDownload, DomainEventPayload, MediaFileDeletedEventData, MediaFileDeletedReason,
+    DomainEventPayload, MediaFileDeletedEventData, MediaFileDeletedReason,
     MediaFileUpgradedEventData, Title, User,
 };
 
@@ -36,137 +35,30 @@ pub enum UpgradeResult {
 ///
 /// If the new file import fails, the old file is restored from the recycle bin
 /// so that we never lose both copies.
-pub async fn execute_upgrade(
+pub(crate) async fn execute_upgrade(
     app: &AppUseCase,
     _actor: &User,
     title: &Title,
     existing_file: &TitleMediaFile,
     source_path: &std::path::Path,
     dest_path: &std::path::Path,
-    parsed: &ParsedReleaseMetadata,
-    quality_profile: &crate::QualityProfile,
-    completed: &CompletedDownload,
-    new_score: i32,
+    prepared: &crate::post_download_gate::PreparedImportCandidate,
+    final_score: i32,
     old_score: i32,
     target_episode_ids: &[String],
-    is_filler: bool,
     recycle_config: &RecycleBinConfig,
 ) -> AppResult<UpgradeResult> {
     let old_path = PathBuf::from(&existing_file.file_path);
-
-    // 1. Probe source file in-place BEFORE any file moves.
-    let source_size = std::fs::metadata(source_path)
-        .map(|m| m.len() as i64)
-        .unwrap_or(0);
-
-    let gate_result = crate::post_download_gate::probe_and_validate(
-        app,
-        title,
-        parsed,
-        quality_profile,
-        source_path,
-        source_size,
-        true,
-        Some(old_score),
-        is_filler,
-    )
-    .await;
-
-    // 2. If probe rejects, bail immediately with zero file moves.
-    let accepted = match gate_result {
-        crate::post_download_gate::ImportedFileGateDecision::Rejected(rejection) => {
-            tracing::info!(
-                title = %title.name,
-                reason = %rejection.message,
-                "upgrade probe rejected source file — no files moved"
-            );
-            // Record failed attempt + blocklist so this release isn't re-downloaded.
-            let _ = app
-                .services
-                .workflow
-                .release_attempts
-                .record_release_attempt(
-                    Some(title.id.clone()),
-                    crate::normalize_release_attempt_hint(None),
-                    crate::normalize_release_attempt_title(Some(&completed.name)),
-                    ReleaseDownloadAttemptOutcome::Failed,
-                    Some(rejection.message.clone()),
-                    None,
-                )
-                .await;
-            return Ok(UpgradeResult::Rejected(rejection));
-        }
-        crate::post_download_gate::ImportedFileGateDecision::Accepted(accepted) => accepted,
-    };
-
-    // 3. Rescore from mediainfo: merge detected values into parsed metadata and re-evaluate.
-    let (rescored_parsed, rescore_changes) =
-        crate::post_download_gate::rescore_from_mediainfo(parsed, &accepted);
-    let original_candidate_score = new_score;
-    let final_score = if rescore_changes.is_empty() {
-        new_score
-    } else {
-        let category = crate::post_download_gate::facet_to_category_hint(&title.facet);
-        let required_audio_languages = app
-            .resolve_required_audio_languages(Some(&title.id), Some(category))
-            .await
-            .unwrap_or_default();
-        let persona = app
-            .resolve_scoring_persona(Some(category))
-            .await
-            .unwrap_or_default();
-        let decision = crate::post_download_gate::build_import_profile_decision(
-            quality_profile,
-            &required_audio_languages,
-            &persona,
-            &rescored_parsed,
-            category,
-            title.runtime_minutes,
-            Some(source_size),
-            true,
-        );
-        let rescored = decision.preference_score;
-        tracing::info!(
-            title = %title.name,
-            original_score = original_candidate_score,
-            rescored = rescored,
-            changes = ?rescore_changes,
-            "mediainfo rescore applied"
-        );
-        rescored
-    };
-
-    // If rescored score no longer beats the existing file, abort upgrade.
-    if final_score <= old_score {
-        tracing::info!(
-            title = %title.name,
-            original_score = original_candidate_score,
-            rescored = final_score,
-            old_score,
-            "mediainfo rescore eliminated upgrade advantage — aborting"
-        );
-        return Ok(UpgradeResult::Rejected(
-            crate::post_download_gate::ImportedFileRejection {
-                message: format!(
-                    "mediainfo rescore reduced score from {} to {} (existing: {})",
-                    original_candidate_score, final_score, old_score
-                ),
-                recycle_reason: "rescore_eliminated_advantage",
-                skip_reason: None,
-                blocking_rule_codes: Vec::new(),
-            },
-        ));
-    }
 
     let scoring_log = format!(
         "upgrade {} → {} (delta {}){}",
         old_score,
         final_score,
         final_score - old_score,
-        if rescore_changes.is_empty() {
+        if prepared.rescore_changes.is_empty() {
             String::new()
         } else {
-            format!("; rescore: {}", rescore_changes.join(", "))
+            format!("; rescore: {}", prepared.rescore_changes.join(", "))
         }
     );
 
@@ -222,14 +114,14 @@ pub async fn execute_upgrade(
         title_id: title.id.clone(),
         file_path: dest_path.to_string_lossy().to_string(),
         size_bytes: file_result.size_bytes as i64,
-        quality_label: parsed.quality.clone(),
-        scene_name: Some(parsed.raw_title.clone()),
-        release_group: parsed.release_group.clone(),
-        source_type: parsed.source.clone(),
-        resolution: parsed.quality.clone(),
-        video_codec_parsed: parsed.video_codec.clone(),
-        audio_codec_parsed: parsed.audio.clone(),
-        audio_channels_parsed: parsed.audio_channels.clone(),
+        quality_label: prepared.parsed.quality.clone(),
+        scene_name: Some(prepared.parsed.raw_title.clone()),
+        release_group: prepared.parsed.release_group.clone(),
+        source_type: prepared.parsed.source.clone(),
+        resolution: prepared.parsed.quality.clone(),
+        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(source_path.to_string_lossy().to_string()),
         acquisition_score: Some(final_score),
         scoring_log: Some(scoring_log.clone()),
@@ -244,7 +136,7 @@ pub async fn execute_upgrade(
     crate::post_download_gate::persist_media_analysis_result(
         &app.services.library.media_files,
         &new_file_id,
-        &accepted,
+        prepared.accepted.as_ref(),
     )
     .await;
 

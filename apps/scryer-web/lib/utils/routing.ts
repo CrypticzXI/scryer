@@ -1,5 +1,11 @@
 import type { LocaleCode } from "@/lib/i18n";
-import type { ContentSettingsSection, SettingsSection, SystemSection, ViewId } from "@/components/root/types";
+import type {
+  ContentSettingsSection,
+  SettingsSection,
+  SystemSection,
+  ViewId,
+  WantedSection,
+} from "@/components/root/types";
 import { normalizeLocale } from "@/lib/i18n";
 import { AVAILABLE_LANGUAGES } from "@/lib/i18n";
 import { URL_PATH_SEGMENTS } from "@/lib/constants/settings";
@@ -8,6 +14,7 @@ import {
   CONTENT_SECTION_PATH_TO_ID,
   CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID,
   SYSTEM_SECTION_PATH_TO_ID,
+  WANTED_SECTION_PATH_TO_ID,
 } from "@/lib/constants/settings";
 import { isMediaView } from "@/lib/facets/registry";
 
@@ -38,11 +45,18 @@ export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   routing: "settings/routing",
 };
 
+export const WANTED_SECTION_PATH: Record<WantedSection, string> = {
+  wanted: "wanted-items",
+  cutoff: "cutoff-unmet",
+  pending: "pending",
+};
+
 export function buildViewPath(
   nextView: ViewId,
   nextSettingsSection?: SettingsSection,
   nextContentSection?: ContentSettingsSection,
   nextSystemSection?: SystemSection,
+  nextWantedSection?: WantedSection,
 ) {
   const base = `/${nextView}`;
   if (nextView === "settings" && nextSettingsSection && nextSettingsSection !== "profile") {
@@ -50,6 +64,9 @@ export function buildViewPath(
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {
     return `${base}/${nextSystemSection}`;
+  }
+  if (nextView === "wanted") {
+    return `${base}/${WANTED_SECTION_PATH[nextWantedSection ?? "wanted"]}`;
   }
   if (isMediaView(nextView)) {
     if (nextContentSection && nextContentSection !== "overview") {
@@ -97,6 +114,13 @@ export function parseSystemSectionFromPath(value: string | null): SystemSection 
     return "overview";
   }
   return SYSTEM_SECTION_PATH_TO_ID[value] ?? "overview";
+}
+
+export function parseWantedSectionFromPath(value: string | null): WantedSection {
+  if (!value) {
+    return "wanted";
+  }
+  return WANTED_SECTION_PATH_TO_ID[value] ?? "wanted";
 }
 
 export function parseLanguageFromParam(value: string | null): LocaleCode | null {

@@ -6,6 +6,7 @@ import {
   searchQuery,
   searchForEpisodeQuery,
   seriesOverviewSettingsInitQuery,
+  titleDownloadQueueItemsQuery,
 } from "@/lib/graphql/queries";
 import {
   deleteMediaFileMutation,
@@ -77,7 +78,6 @@ export type TitleDetail = {
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
-  downloadQueueItems?: DownloadQueueItem[];
   createdAt: string;
 };
 
@@ -271,6 +271,32 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
+  const activeTitleIdRef = React.useRef(titleId);
+
+  React.useEffect(() => {
+    activeTitleIdRef.current = titleId;
+  }, [titleId]);
+
+  const fetchCompletedDownloads = React.useCallback(async () => {
+    const { data, error } = await client
+      .query(
+        titleDownloadQueueItemsQuery,
+        { id: titleId },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise();
+
+    if (error) {
+      throw error;
+    }
+
+    const items = (data?.title?.downloadQueueItems ?? []) as DownloadQueueItem[];
+    return items.filter(
+      (item: DownloadQueueItem) =>
+        item.state === "completed" || item.state === "import_pending",
+    );
+  }, [client, titleId]);
+
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       title && deleteDialogOpen && deleteFilesOnDisk
@@ -316,7 +342,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextMediaFiles = nextTitle?.mediaFiles ?? [];
-      const nextDownloadQueueItems = nextTitle?.downloadQueueItems ?? [];
       setTitle(nextTitle);
       setCollections(nextCollections);
       setEpisodesByCollection(
@@ -331,14 +356,27 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
       setSubtitleDownloads(snapshot.subtitleDownloads);
-      setCompletedDownloads(
-        nextDownloadQueueItems.filter(
-          (item: DownloadQueueItem) =>
-            item.state === "completed" || item.state === "import_pending",
-        ),
-      );
+
+      if (!nextTitle) {
+        setCompletedDownloads([]);
+        return;
+      }
+
+      const expectedTitleId = nextTitle.id;
+      void fetchCompletedDownloads()
+        .then((items) => {
+          if (activeTitleIdRef.current === expectedTitleId) {
+            setCompletedDownloads(items);
+          }
+        })
+        .catch((error: unknown) => {
+          console.error(
+            "[series-overview] completed downloads refresh failed:",
+            error,
+          );
+        });
     },
-    [],
+    [fetchCompletedDownloads],
   );
 
   const refreshTitleDetail = React.useCallback(async () => {

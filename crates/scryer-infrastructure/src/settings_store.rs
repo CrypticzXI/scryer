@@ -126,6 +126,20 @@ impl SqliteSettingsStore {
         .await
     }
 
+    pub async fn delete_setting_value(
+        &self,
+        scope: impl Into<String>,
+        key_name: impl Into<String>,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        let scope = scope.into();
+        let key_name = key_name.into();
+        crate::queries::settings::delete_setting_value_query(
+            &self.pool, &scope, &key_name, scope_id,
+        )
+        .await
+    }
+
     pub async fn list_applied_migrations(&self) -> AppResult<Vec<MigrationStatus>> {
         crate::migrations::list_applied_migrations(&self.pool).await
     }

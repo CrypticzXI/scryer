@@ -1118,7 +1118,7 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     );
     let infra_services = env_list(
         "SCRYER_DOCKER_INFRA_SERVICES",
-        &["nzbget", "sabnzbd", "weaver", "prometheus", "grafana"],
+        &["nzbget", "sabnzbd", "weaver"],
     );
     let force_infra_restart = std::env::var("SCRYER_DOCKER_FORCE_INFRA_RESTART")
         .map(|value| value == "1")

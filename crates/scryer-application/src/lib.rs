@@ -293,9 +293,9 @@ pub use types::{
     ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
     SortDirection, SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleReleaseBlocklistEntry,
-    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
-    WantedSearchTransition, WantedStatus,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
+    TitleReleaseBlocklistEntry, WantedCompleteTransition, WantedGrabTransition, WantedItem,
+    WantedPauseTransition, WantedSearchTransition, WantedStatus,
 };
 pub use types::{
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,

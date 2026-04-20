@@ -2992,6 +2992,19 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_title_quality_summaries(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        require(actor, &Entitlement::ViewCatalog)?;
+        self.services
+            .library
+            .media_files
+            .list_title_quality_summaries(title_ids)
+            .await
+    }
+
     pub async fn list_title_episode_progress_summaries(
         &self,
         actor: &User,

@@ -177,6 +177,11 @@ export const ActivityContainer = memo(function ActivityContainer() {
   const filteredImportItems = useMemo(() => {
     return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
   }, [importItems, selectedImportStatuses]);
+  const hiddenImportItemCount = useMemo(() => {
+    return importItems.filter((item) => optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)])
+      .length;
+  }, [importItems, optimisticallyRemovedKeys]);
+  const importNotificationCount = Math.max(0, importTotalCount - hiddenImportItemCount);
   const statusFilteredActivityItems = useMemo(() => {
     return activityQueueItems.filter((item) => matchesActivityStatuses(item, selectedActivityStatuses));
   }, [activityQueueItems, selectedActivityStatuses]);
@@ -345,6 +350,14 @@ export const ActivityContainer = memo(function ActivityContainer() {
     });
   }, [activityQueueItems, historyItems, importItems, optimisticallyRemovedKeys]);
 
+  const decrementImportBadges = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent("scryer:pendingImportsRefresh", {
+        detail: { delta: -1 },
+      }),
+    );
+  }, []);
+
   const requestManualImport = useCallback(
     async (item: DownloadQueueItem) => {
       if (!item.titleId) {
@@ -466,12 +479,23 @@ export const ActivityContainer = memo(function ActivityContainer() {
         ...current,
         [downloadQueueItemIdentityKey(item)]: true,
       }));
+      if (matchesImportStatuses(item, IMPORT_STATUS_OPTIONS)) {
+        decrementImportBadges();
+      }
       setGlobalStatus(t("queue.deleteQueued"));
       void refreshQueue();
       void refreshImport();
       void refreshHistory();
     },
-    [executeDeleteDownload, refreshHistory, refreshImport, refreshQueue, setGlobalStatus, t],
+    [
+      decrementImportBadges,
+      executeDeleteDownload,
+      refreshHistory,
+      refreshImport,
+      refreshQueue,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   return (
@@ -492,7 +516,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
           requestDelete,
           activeTab,
           setActiveTab,
-          importNotificationCount: importTotalCount,
+          importNotificationCount,
           sortConfigByTab,
           toggleSort: (tab, nextKey) => {
             setSortConfigByTab((current) => {
@@ -578,7 +602,14 @@ export const ActivityContainer = memo(function ActivityContainer() {
           titleName={manualImportItem.titleName}
           clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
-          onImportComplete={() => void refreshActivityViews()}
+          onImportComplete={() => {
+            setOptimisticallyRemovedKeys((current) => ({
+              ...current,
+              [downloadQueueItemIdentityKey(manualImportItem)]: true,
+            }));
+            decrementImportBadges();
+            void refreshActivityViews();
+          }}
         />
       ) : null}
       <AssignTrackedDownloadTitleDialog

@@ -9,6 +9,7 @@ import type {
   SystemSection,
   Translate,
   ViewId,
+  WantedSection,
 } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
@@ -50,6 +51,7 @@ type RootSidebarProps = {
   settingsSection: SettingsSection;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  wantedSection: WantedSection;
   entitlements: string[];
   pendingImportCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
@@ -59,6 +61,7 @@ type RootSidebarProps = {
     nextSettingsSection?: SettingsSection,
     nextContentSection?: ContentSettingsSection,
     nextSystemSection?: SystemSection,
+    nextWantedSection?: WantedSection,
   ) => void;
 };
 
@@ -145,6 +148,12 @@ const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "jobs", labelKey: "system.jobsTitle" },
 ];
 
+const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
+  { id: "wanted", labelKey: "wanted.tabWanted" },
+  { id: "cutoff", labelKey: "wanted.tabCutoff" },
+  { id: "pending", labelKey: "wanted.tabPending" },
+];
+
 function isSettingsSubPage(section: ContentSettingsSection): boolean {
   return section === "settings" || section === "general" || section === "quality" || section === "renaming" || section === "routing";
 }
@@ -163,6 +172,7 @@ function RootSidebarContent({
   settingsSection,
   contentSettingsSection,
   systemSection,
+  wantedSection,
   entitlements,
   pendingImportCounts,
   manualImportRequiredCount,
@@ -215,9 +225,16 @@ function RootSidebarContent({
       nextSettingsSection?: SettingsSection,
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
+      nextWantedSection?: WantedSection,
     ) => {
       event.preventDefault();
-      onNavigate(nextView, nextSettingsSection, nextContentSection, nextSystemSection);
+      onNavigate(
+        nextView,
+        nextSettingsSection,
+        nextContentSection,
+        nextSystemSection,
+        nextWantedSection,
+      );
       if (isMobile) {
         setOpenMobile(false);
       }
@@ -258,8 +275,22 @@ function RootSidebarContent({
         : null;
     }
 
+    if (view === "wanted") {
+      return WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)?.labelKey
+        ? t(WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)!.labelKey)
+        : null;
+    }
+
     return null;
-  }, [contentSettingsSection, settingsSection, systemSection, t, view, visibleSettingsEntries]);
+  }, [
+    contentSettingsSection,
+    settingsSection,
+    systemSection,
+    t,
+    view,
+    visibleSettingsEntries,
+    wantedSection,
+  ]);
 
   return (
     <>
@@ -276,13 +307,18 @@ function RootSidebarContent({
                 const isMediaSection = ["movies", "series", "anime"].includes(item.id);
                 const isSettingsTop = item.id === "settings";
                 const isSystemTop = item.id === "system";
+                const isWantedTop = item.id === "wanted";
                 const isActiveMediaSection = isMediaSection && view === item.id;
                 const isActiveSettingsSection = isSettingsTop && view === "settings";
                 const isActiveSystemSection = isSystemTop && view === "system";
+                const isActiveWantedSection = isWantedTop && view === "wanted";
                 const shouldShowChildren =
-                  isActiveMediaSection || isActiveSettingsSection || isActiveSystemSection;
+                  isActiveMediaSection ||
+                  isActiveSettingsSection ||
+                  isActiveSystemSection ||
+                  isActiveWantedSection;
                 const showSeparator = index < topNav.length - 1;
-                if (!isMediaSection && !isSettingsTop && !isSystemTop) {
+                if (!isMediaSection && !isSettingsTop && !isSystemTop && !isWantedTop) {
                   return (
                     <React.Fragment key={item.id}>
                       <SidebarMenuItem>
@@ -319,6 +355,10 @@ function RootSidebarContent({
                             }
                             if (isSystemTop) {
                               handleNavigate(event, "system", undefined, undefined, systemSection);
+                              return;
+                            }
+                            if (isWantedTop) {
+                              handleNavigate(event, "wanted", undefined, undefined, undefined, wantedSection);
                               return;
                             }
                             const nextContentSection =
@@ -366,6 +406,26 @@ function RootSidebarContent({
                                     isActive={systemSection === entry.id}
                                     onClick={(event) => {
                                       handleNavigate(event, "system", undefined, undefined, entry.id);
+                                    }}
+                                  >
+                                    {t(entry.labelKey)}
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              ))
+                            ) : isWantedTop ? (
+                              WANTED_SUB_PAGES.map((entry) => (
+                                <SidebarMenuSubItem key={entry.id}>
+                                  <SidebarMenuSubButton
+                                    isActive={wantedSection === entry.id}
+                                    onClick={(event) => {
+                                      handleNavigate(
+                                        event,
+                                        "wanted",
+                                        undefined,
+                                        undefined,
+                                        undefined,
+                                        entry.id,
+                                      );
                                     }}
                                   >
                                     {t(entry.labelKey)}

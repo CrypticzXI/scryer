@@ -327,9 +327,8 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    let version_lifecycle = check_version_upgrade(&bootstrap_settings_store).await;
-    preserve_history_retention_defaults_for_upgrades(&bootstrap_settings_store, version_lifecycle)
-        .await;
+    let _version_lifecycle = check_version_upgrade(&bootstrap_settings_store).await;
+    clear_legacy_history_retention_forever_override(&bootstrap_settings_store).await;
 
     let t = std::time::Instant::now();
     if let Err(error) = seed_service_settings_from_environment(&bootstrap_settings_store).await {
@@ -1128,14 +1127,7 @@ async fn check_version_upgrade(settings_store: &SqliteSettingsStore) -> VersionL
     lifecycle
 }
 
-async fn preserve_history_retention_defaults_for_upgrades(
-    settings_store: &SqliteSettingsStore,
-    lifecycle: VersionLifecycle,
-) {
-    if lifecycle != VersionLifecycle::Upgraded {
-        return;
-    }
-
+async fn clear_legacy_history_retention_forever_override(settings_store: &SqliteSettingsStore) {
     let keep_forever = settings_store
         .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
         .await
@@ -1147,31 +1139,28 @@ async fn preserve_history_retention_defaults_for_upgrades(
         .ok()
         .flatten();
 
-    if keep_forever
-        .as_ref()
-        .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
-        || retention_days
-            .as_ref()
-            .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
-    {
+    let should_clear = keep_forever.as_ref().is_some_and(|record| {
+        record.source.as_deref() == Some("migration")
+            && record.value_json.as_deref() == Some("true")
+            && !retention_days
+                .as_ref()
+                .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
+    });
+
+    if !should_clear {
         return;
     }
 
     if let Err(error) = settings_store
-        .upsert_setting_value(
-            "system",
-            HISTORY_KEEP_FOREVER_KEY,
-            None,
-            "true",
-            "migration",
-            None,
-        )
+        .delete_setting_value("system", HISTORY_KEEP_FOREVER_KEY, None)
         .await
     {
         tracing::warn!(
             error = %error,
-            "failed to preserve history retention defaults for upgraded install"
+            "failed to clear legacy history retention override"
         );
+    } else {
+        tracing::info!("cleared legacy history retention forever override");
     }
 }
 
@@ -1267,13 +1256,16 @@ async fn seed_builtin_plugin_installations(
 mod tests {
     use super::{
         AuthModeConfig, VersionLifecycle, check_version_upgrade,
-        preserve_history_retention_defaults_for_upgrades, resolve_auth_mode,
+        clear_legacy_history_retention_forever_override, resolve_auth_mode,
         seed_service_setting_definitions, title_image_handler,
     };
     use std::sync::Arc;
 
     use crate::base_path::{BasePath, mount_router};
-    use crate::{HISTORY_KEEP_FOREVER_KEY, settings_bootstrap::SETTINGS_SCOPE_SYSTEM};
+    use crate::{
+        HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
+        settings_bootstrap::SETTINGS_SCOPE_SYSTEM,
+    };
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -1511,7 +1503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgraded_install_without_history_overrides_preserves_history_forever() {
+    async fn legacy_migration_history_override_is_cleared_back_to_default() {
         let (_temp, store) = bootstrap_settings_store().await;
         store
             .upsert_setting_value(
@@ -1528,7 +1520,71 @@ mod tests {
         let lifecycle = check_version_upgrade(&store).await;
         assert_eq!(lifecycle, VersionLifecycle::Upgraded);
 
-        preserve_history_retention_defaults_for_upgrades(&store, lifecycle).await;
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                HISTORY_KEEP_FOREVER_KEY,
+                None,
+                "true",
+                "migration",
+                None,
+            )
+            .await
+            .expect("seed legacy migration override");
+
+        clear_legacy_history_retention_forever_override(&store).await;
+
+        let keep_forever = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
+            .await
+            .expect("load keep forever")
+            .expect("setting exists");
+        assert_eq!(keep_forever.effective_value_json, "false");
+        assert_eq!(keep_forever.value_json, None);
+        assert_eq!(keep_forever.source, None);
+    }
+
+    #[tokio::test]
+    async fn legacy_migration_history_override_is_preserved_when_user_has_retention_override() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                "last_run_version",
+                None,
+                "\"0.10.0\"",
+                "test",
+                None,
+            )
+            .await
+            .expect("seed previous version");
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                HISTORY_RETENTION_DAYS_KEY,
+                None,
+                "30",
+                "ui",
+                Some("user-1".to_string()),
+            )
+            .await
+            .expect("seed explicit retention override");
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                HISTORY_KEEP_FOREVER_KEY,
+                None,
+                "true",
+                "migration",
+                None,
+            )
+            .await
+            .expect("seed legacy migration override");
+
+        let lifecycle = check_version_upgrade(&store).await;
+        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
+
+        clear_legacy_history_retention_forever_override(&store).await;
 
         let keep_forever = store
             .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
@@ -1538,46 +1594,5 @@ mod tests {
         assert_eq!(keep_forever.effective_value_json, "true");
         assert_eq!(keep_forever.value_json.as_deref(), Some("true"));
         assert_eq!(keep_forever.source.as_deref(), Some("migration"));
-    }
-
-    #[tokio::test]
-    async fn upgraded_install_respects_existing_history_retention_choice() {
-        let (_temp, store) = bootstrap_settings_store().await;
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                "last_run_version",
-                None,
-                "\"0.10.0\"",
-                "test",
-                None,
-            )
-            .await
-            .expect("seed previous version");
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_KEEP_FOREVER_KEY,
-                None,
-                "false",
-                "ui",
-                Some("user-1".to_string()),
-            )
-            .await
-            .expect("seed explicit history setting");
-
-        let lifecycle = check_version_upgrade(&store).await;
-        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
-
-        preserve_history_retention_defaults_for_upgrades(&store, lifecycle).await;
-
-        let keep_forever = store
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
-            .await
-            .expect("load keep forever")
-            .expect("setting exists");
-        assert_eq!(keep_forever.effective_value_json, "false");
-        assert_eq!(keep_forever.value_json.as_deref(), Some("false"));
-        assert_eq!(keep_forever.source.as_deref(), Some("ui"));
     }
 }

@@ -6,8 +6,8 @@ use scryer_application::{
     NewTitleHistoryEvent, PendingRelease, PendingReleaseRepository, ReleaseDecision,
     SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage,
     TitleHistoryRepository, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, WantedItem,
-    WantedItemRepository,
+    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary, WantedItem, WantedItemRepository,
 };
 use scryer_domain::{
     BlocklistEntry, DomainEventType, MediaFacet, TitleHistoryEventType, TitleHistoryRecord,
@@ -33,8 +33,8 @@ use crate::queries::media_file::{
     delete_media_file_query, get_media_file_by_id_query, get_media_file_by_path_query,
     insert_media_file_query, link_file_to_episode_query, list_media_files_for_title_query,
     list_title_episode_progress_summaries_query, list_title_media_size_summaries_query,
-    mark_scan_failed_query, update_media_file_analysis_query, update_media_file_path_query,
-    update_media_file_source_signature_query,
+    list_title_quality_summaries_query, mark_scan_failed_query, update_media_file_analysis_query,
+    update_media_file_path_query, update_media_file_source_signature_query,
 };
 use crate::queries::subtitle::{
     delete_subtitle_download, get_subtitle_download,
@@ -165,6 +165,13 @@ impl MediaFileRepository for SqliteLibraryStateStore {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
         list_title_media_size_summaries_query(&self.db.pool, title_ids).await
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        list_title_quality_summaries_query(&self.db.pool, title_ids).await
     }
 
     async fn list_title_episode_progress_summaries(

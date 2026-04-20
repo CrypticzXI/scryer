@@ -9,7 +9,8 @@ use scryer_application::{
     AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate,
     InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
     ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
+    TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
+    start_background_download_delete_poller,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title};
 use scryer_infrastructure::{
@@ -117,6 +118,17 @@ impl MediaFileRepository for FailingMediaFileRepo {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
         <SqliteLibraryStateStore as MediaFileRepository>::list_title_media_size_summaries(
+            &self.inner,
+            title_ids,
+        )
+        .await
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        <SqliteLibraryStateStore as MediaFileRepository>::list_title_quality_summaries(
             &self.inner,
             title_ids,
         )
