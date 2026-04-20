@@ -1741,13 +1741,20 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
     .expect("load delete rows after stale recovery");
 
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].0, fresh.id);
-    assert_eq!(rows[0].1, "running");
+    let fresh_row = rows
+        .iter()
+        .find(|row| row.0 == fresh.id)
+        .expect("fresh row should exist");
+    assert_eq!(fresh_row.1, "running");
     assert!(
-        rows[0].2.is_some(),
+        fresh_row.2.is_some(),
         "fresh running delete should remain running"
     );
-    assert_eq!(rows[1], (stale.id, "queued".to_string(), None));
+    let stale_row = rows
+        .iter()
+        .find(|row| row.0 == stale.id)
+        .expect("stale row should exist");
+    assert_eq!(stale_row, &(stale.id, "queued".to_string(), None));
 
     let _ = std::fs::remove_file(db);
 }

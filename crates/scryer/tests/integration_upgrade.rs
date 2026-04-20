@@ -6,13 +6,12 @@ use std::sync::Arc;
 
 use common::TestContext;
 use scryer_application::recycle_bin::RecycleBinConfig;
-use scryer_application::testing::AppUseCaseTestExt;
-use scryer_application::upgrade::{UpgradeResult, execute_upgrade};
+use scryer_application::testing::{AppUseCaseTestExt, execute_upgrade_for_test};
+use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, QualityProfile,
-    TitleRepository,
+    ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
 };
-use scryer_domain::{CompletedDownload, MediaFacet, Title, User};
+use scryer_domain::{MediaFacet, Title, User};
 use scryer_infrastructure::FsFileImporter;
 
 // ---------------------------------------------------------------------------
@@ -115,20 +114,6 @@ fn test_actor() -> User {
     User::new_admin("admin")
 }
 
-fn test_completed_download() -> CompletedDownload {
-    CompletedDownload {
-        client_type: "nzbget".to_string(),
-        client_id: "client-1".to_string(),
-        download_client_item_id: "download-1".to_string(),
-        name: "Test Movie".to_string(),
-        dest_dir: "/downloads".to_string(),
-        category: Some("movie".to_string()),
-        size_bytes: Some(1024),
-        completed_at: Some(chrono::Utc::now()),
-        parameters: vec![],
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
@@ -139,8 +124,6 @@ async fn upgrade_replaces_old_file_with_new() {
     let app = app_with_real_fs(&ctx);
     let title = seed_title(&ctx, "title-1").await;
     let actor = test_actor();
-    let completed = test_completed_download();
-    let quality_profile = QualityProfile::default();
 
     // Set up directories
     let media_dir = tempfile::tempdir().expect("media dir");
@@ -163,20 +146,16 @@ async fn upgrade_replaces_old_file_with_new() {
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
     let recycle_config = make_recycle_config(recycle_dir.path());
 
-    let outcome = execute_upgrade(
+    let outcome = execute_upgrade_for_test(
         &app,
         &actor,
         &title,
         &existing,
         &new_source,
         &new_dest,
-        &parsed,
-        &quality_profile,
-        &completed,
+        parsed,
         650,
-        400,
         &[],
-        false,
         &recycle_config,
     )
     .await
@@ -234,8 +213,6 @@ async fn upgrade_restores_old_file_on_import_failure() {
     let app = app_with_real_fs(&ctx);
     let title = seed_title(&ctx, "title-2").await;
     let actor = test_actor();
-    let completed = test_completed_download();
-    let quality_profile = QualityProfile::default();
 
     let media_dir = tempfile::tempdir().expect("media dir");
     let recycle_dir = tempfile::tempdir().expect("recycle dir");
@@ -252,20 +229,16 @@ async fn upgrade_restores_old_file_on_import_failure() {
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
     let recycle_config = make_recycle_config(recycle_dir.path());
 
-    let result = execute_upgrade(
+    let result = execute_upgrade_for_test(
         &app,
         &actor,
         &title,
         &existing,
         &bad_source,
         &new_dest,
-        &parsed,
-        &quality_profile,
-        &completed,
+        parsed,
         700,
-        400,
         &[],
-        false,
         &recycle_config,
     )
     .await;
@@ -297,8 +270,6 @@ async fn upgrade_with_disabled_recycle_bin() {
     let app = app_with_real_fs(&ctx);
     let title = seed_title(&ctx, "title-3").await;
     let actor = test_actor();
-    let completed = test_completed_download();
-    let quality_profile = QualityProfile::default();
 
     let media_dir = tempfile::tempdir().expect("media dir");
     let source_dir = tempfile::tempdir().expect("source dir");
@@ -320,20 +291,16 @@ async fn upgrade_with_disabled_recycle_bin() {
         retention_days: 7,
     };
 
-    let outcome = execute_upgrade(
+    let outcome = execute_upgrade_for_test(
         &app,
         &actor,
         &title,
         &existing,
         &new_source,
         &new_dest,
-        &parsed,
-        &quality_profile,
-        &completed,
+        parsed,
         600,
-        300,
         &[],
-        false,
         &disabled_config,
     )
     .await

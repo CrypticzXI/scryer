@@ -535,7 +535,7 @@ async fn import_movie_second_attempt_is_deduped() {
 }
 
 #[tokio::test]
-async fn import_movie_rejected_by_post_download_rule_recycles_file_and_blocklists_release() {
+async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_blocklists_release() {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
@@ -592,10 +592,16 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         result.skip_reason,
         Some(ImportSkipReason::PostDownloadRuleBlocked)
     );
-    let dest_path = result.dest_path.expect("dest path");
     assert!(
-        !Path::new(&dest_path).exists(),
-        "rejected file should have been recycled"
+        result.dest_path.is_none(),
+        "rejected import should not report a finalized destination path"
+    );
+    assert!(
+        std::fs::read_dir(dest_root.path())
+            .expect("read destination root")
+            .next()
+            .is_none(),
+        "rejected movie should not create library artifacts"
     );
     assert!(
         ctx.library_state

@@ -123,13 +123,12 @@ pub(crate) async fn get_title_by_external_id_query(
     value: &str,
 ) -> AppResult<Option<Title>> {
     let sql = format!(
-        "SELECT {columns} FROM titles
+        "SELECT titles.* FROM titles
          JOIN title_external_ids ON title_external_ids.title_id = titles.id
          WHERE LOWER(title_external_ids.source) = LOWER(?)
            AND title_external_ids.external_id = ?
          ORDER BY titles.id ASC
-         LIMIT 1",
-        columns = TITLE_COLUMNS
+         LIMIT 1"
     );
 
     let row = sqlx::query(&sql)
@@ -192,9 +191,8 @@ pub(crate) async fn list_titles_by_external_ids_query(
             WHERE title_id IS NOT NULL
             GROUP BY title_id
         )
-        SELECT ",
+        SELECT titles.*",
     );
-    builder.push(TITLE_COLUMNS);
     builder.push(
         " FROM deduped
           JOIN titles ON titles.id = deduped.title_id
@@ -222,15 +220,14 @@ pub(crate) async fn get_title_by_external_id_in_facet_query(
     value: &str,
 ) -> AppResult<Option<Title>> {
     let sql = format!(
-        "SELECT {columns}
+        "SELECT titles.*
          FROM titles
          JOIN title_external_ids ON title_external_ids.title_id = titles.id
          WHERE title_external_ids.facet = ?
            AND LOWER(title_external_ids.source) = LOWER(?)
            AND title_external_ids.external_id = ?
          ORDER BY titles.id ASC
-         LIMIT 1",
-        columns = TITLE_COLUMNS
+         LIMIT 1"
     );
 
     let row = sqlx::query(&sql)

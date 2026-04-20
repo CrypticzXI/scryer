@@ -5079,7 +5079,7 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
         &ctx,
         r#"
         {
-          downloadHistory(limit: 100, offset: 0, filter: all) {
+                    downloadHistory(limit: 100, offset: 0, filters: [all]) {
             items {
               downloadClientItemId
               state
@@ -5643,7 +5643,7 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
         true,
     )
     .await;
-    create_catalog_title(
+    let duplicate = create_catalog_title(
         &ctx,
         "Mario Duplicate",
         MediaFacet::Series,
@@ -5689,8 +5689,13 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
     let titles = body["data"]["titlesByExternalIds"]
         .as_array()
         .expect("titles array");
+    let expected_first_match = if first.id <= duplicate.id {
+        first.id.as_str()
+    } else {
+        duplicate.id.as_str()
+    };
     assert_eq!(titles.len(), 2);
-    assert_eq!(titles[0]["id"].as_str(), Some(first.id.as_str()));
+    assert_eq!(titles[0]["id"].as_str(), Some(expected_first_match));
     assert_eq!(titles[1]["id"].as_str(), Some(second.id.as_str()));
 }
 
@@ -5874,7 +5879,8 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
 #[tokio::test]
 async fn graphql_get_title_by_id() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Specific Movie", "movie").await;
+    let expected_name = "Specific Movie";
+    let id = add_test_title(&ctx, expected_name, "movie").await;
 
     let body = gql(
         &ctx,
@@ -5883,7 +5889,7 @@ async fn graphql_get_title_by_id() {
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["title"]["name"], "Test Movie Title");
+    assert_eq!(body["data"]["title"]["name"], expected_name);
     assert_eq!(body["data"]["title"]["monitored"], true);
 }
 
@@ -8068,7 +8074,8 @@ async fn graphql_filter_titles_by_facet() {
 #[tokio::test]
 async fn graphql_series_titles_expose_series_facet() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "Series A", "series").await;
+    let expected_name = "Series A";
+    add_test_title(&ctx, expected_name, "series").await;
 
     let body = gql(&ctx, "{ titles { name facet } }", json!({})).await;
     assert_no_errors(&body);
@@ -8076,7 +8083,7 @@ async fn graphql_series_titles_expose_series_facet() {
     let titles = body["data"]["titles"].as_array().unwrap();
     assert_eq!(titles.len(), 1);
     let title = &titles[0];
-    assert_eq!(title["name"], "Test Show Name");
+    assert_eq!(title["name"], expected_name);
     assert_eq!(title["facet"], "series");
 }
 
