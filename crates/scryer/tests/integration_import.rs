@@ -535,7 +535,8 @@ async fn import_movie_second_attempt_is_deduped() {
 }
 
 #[tokio::test]
-async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_blocklists_release() {
+async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_blocklists_release(
+) {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
