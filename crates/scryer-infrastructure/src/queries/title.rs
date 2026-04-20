@@ -130,11 +130,11 @@ pub(crate) async fn get_title_by_external_id_query(
          ORDER BY titles.id ASC
          LIMIT 1",
     )
-        .bind(source)
-        .bind(value)
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+    .bind(source)
+    .bind(value)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
         Some(row) => Ok(Some(row_to_title(
@@ -227,12 +227,12 @@ pub(crate) async fn get_title_by_external_id_in_facet_query(
          ORDER BY titles.id ASC
          LIMIT 1",
     )
-        .bind(facet.as_str())
-        .bind(source)
-        .bind(value)
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+    .bind(facet.as_str())
+    .bind(source)
+    .bind(value)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
         Some(row) => Ok(Some(row_to_title(
