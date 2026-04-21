@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use scryer_application::{AppError, AppResult, IndexerConfigUpdate};
 use scryer_domain::IndexerConfig;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::encryption::EncryptionKey;
 
@@ -191,6 +191,26 @@ pub(crate) async fn get_indexer_config_query(
         .transpose()
 }
 
+async fn get_indexer_config_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<Option<IndexerConfig>> {
+    let row = sqlx::query(
+        "SELECT id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
+                rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
+                enable_auto_search, last_health_status, last_error_at, config_json, created_at, updated_at
+         FROM indexers WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    row.map(|row| row_to_indexer_config(&row, encryption_key))
+        .transpose()
+}
+
 pub(crate) async fn create_indexer_config_query(
     pool: &SqlitePool,
     config: &IndexerConfig,
@@ -331,8 +351,12 @@ pub(crate) async fn update_indexer_config_query(
 
     statement = statement.bind(&update.id);
 
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let result = statement
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -340,9 +364,13 @@ pub(crate) async fn update_indexer_config_query(
         return Err(AppError::NotFound(format!("indexer config {}", update.id)));
     }
 
-    get_indexer_config_query(pool, &update.id, encryption_key)
+    let config = get_indexer_config_tx(&mut tx, &update.id, encryption_key)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("indexer config {}", update.id)))
+        .ok_or_else(|| AppError::NotFound(format!("indexer config {}", update.id)))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(config)
 }
 
 pub(crate) async fn touch_indexer_last_error_query(

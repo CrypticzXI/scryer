@@ -1,5 +1,57 @@
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmissionScope {
+    Episode { episode_id: String },
+    Collection { collection_id: String },
+    Title,
+    Orphan,
+}
+
+impl SubmissionScope {
+    pub fn from_persisted(
+        title_id: &str,
+        episode_id: Option<String>,
+        collection_id: Option<String>,
+    ) -> Self {
+        if let Some(episode_id) = episode_id {
+            return Self::Episode { episode_id };
+        }
+
+        if let Some(collection_id) = collection_id {
+            return Self::Collection { collection_id };
+        }
+
+        if title_id.trim().is_empty() {
+            Self::Orphan
+        } else {
+            Self::Title
+        }
+    }
+
+    pub fn episode_id(&self) -> Option<&str> {
+        match self {
+            Self::Episode { episode_id } => Some(episode_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn collection_id(&self) -> Option<&str> {
+        match self {
+            Self::Collection { collection_id } => Some(collection_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn persisted_episode_id(&self) -> Option<&str> {
+        self.episode_id()
+    }
+
+    pub fn persisted_collection_id(&self) -> Option<&str> {
+        self.collection_id()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DownloadSubmission {
     pub title_id: String,
@@ -10,8 +62,7 @@ pub struct DownloadSubmission {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub request_signature: Option<String>,
-    pub episode_id: Option<String>,
-    pub collection_id: Option<String>,
+    pub scope: SubmissionScope,
 }
 
 #[derive(Clone, Debug)]

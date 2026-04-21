@@ -21,7 +21,7 @@ import {
   viewToFacet,
 } from "@/lib/constants/settings";
 import { useClient } from "urql";
-import type { ContentSettingsSection, ViewId } from "@/components/root/types";
+import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
 import {
   toProfileOptions,
 } from "@/lib/utils/quality-profiles";
@@ -45,7 +45,7 @@ import { toast } from "sonner";
 type MediaContentContainerProps = {
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
-  onOpenOverview: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
 function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
@@ -642,6 +642,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
+              scope: { title: true },
               release: {
                 sourceHint,
                 sourceKind: top.sourceKind ?? null,
@@ -708,6 +709,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
+              scope: { title: true },
               release: {
                 sourceHint,
                 sourceKind: release.sourceKind ?? null,

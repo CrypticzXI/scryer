@@ -96,6 +96,13 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const browserTitle = editingIndex !== null
     ? t("settings.rootFolderEdit")
     : t("settings.rootFolderAdd");
+  const libraryScanSummaryText = scanSummary
+    ? t("settings.libraryScanSummary", {
+        imported: scanSummary.imported,
+        skipped: scanSummary.skipped,
+        unmatched: scanSummary.unmatched,
+      })
+    : null;
 
   return (
     <>
@@ -185,11 +192,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
             </Button>
             {scanSummary ? (
               <span className="text-xs text-muted-foreground">
-                {t("settings.libraryScanSummary", {
-                  imported: scanSummary.imported,
-                  skipped: scanSummary.skipped,
-                  unmatched: scanSummary.unmatched,
-                })}
+                {libraryScanSummaryText}
               </span>
             ) : null}
           </div>

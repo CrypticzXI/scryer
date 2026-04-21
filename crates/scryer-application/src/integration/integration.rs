@@ -1741,6 +1741,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
         title_id: &str,
+        scope: SubmissionScope,
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
         let title = self
@@ -1762,8 +1763,7 @@ impl AppUseCase {
                 source_kind: None,
                 source_title: Some(title.name.clone()),
                 request_signature: None,
-                episode_id: None,
-                collection_id: None,
+                scope,
             })
             .await?;
         let handle = self

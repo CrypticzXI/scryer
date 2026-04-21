@@ -161,7 +161,7 @@ const ja: LocaleDictionary = {
   "settings.libraryScanCanceled":
     "ライブラリのスキャンがキャンセルされました。",
   "settings.libraryScanCanceledSummary":
-    "ライブラリのスキャンがキャンセルされました。 {{imported}} はインポートされました、{{skipped}} はスキップされました、{{unmatched}} は一致しませんでした。",
+    "ライブラリのスキャンがキャンセルされました。{{imported}}件インポート、{{skipped}}件スキップ、{{unmatched}}件未一致。",
   "settings.libraryScanToastTitle": "{{facet}} ライブラリスキャン",
   "settings.libraryScanFoundTitles": "{{count}}件のタイトルを検出",
   "settings.libraryScanDiscovering": "タイトルを検出中…",
@@ -552,6 +552,10 @@ const ja: LocaleDictionary = {
   "title.noReleasesFound": "{{name}} のリリースは見つかりませんでした。",
   "title.interactiveSearchHint":
     "インタラクティブ検索を使って、設定済みのインデクサーから {{name}} のリリースを検索します。",
+  "title.searchNeedsDownloadClientTitle": "検索にはダウンロードクライアントが必要です",
+  "title.searchNeedsDownloadClientDescription":
+    "このタイトルページで検索またはインタラクティブ検索を使う前に、少なくとも 1 つのダウンロードクライアントを設定してください。",
+  "title.searchNeedsDownloadClientAction": "ダウンロードクライアントを開く",
   "title.blockedReleases": "ブロック済みリリース",
   "title.noBlockedReleases":
     "この映画に記録されたブロック済みリリースはありません。",

@@ -113,6 +113,8 @@ pub(crate) fn build_movie_unmatched_scan_item(
     library_path: &str,
     candidate: &PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
+    reason_override: Option<&str>,
+    error_message: Option<String>,
 ) -> LibraryScanUnmatchedItem {
     let record = build_movie_unmatched_scan_record(candidate, batch_search_results);
     build_library_scan_unmatched_item(
@@ -123,8 +125,8 @@ pub(crate) fn build_movie_unmatched_scan_item(
         record.display_name,
         record.query,
         record.year_hint,
-        record.reason,
-        None,
+        reason_override.unwrap_or(record.reason),
+        error_message,
         record.search_attempts,
     )
 }

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
-import type { ViewId } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Release, TitleRecord } from "@/lib/types";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
@@ -50,7 +50,7 @@ type AddTitleFormProps = {
   titleLoading: boolean;
   titleStatus: string;
   monitoredTitles: TitleRecord[];
-  onOpenOverview: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   queueExisting: (title: TitleRecord) => Promise<void> | void;
 };
 
@@ -333,7 +333,7 @@ export function AddTitleForm({
                         {overviewTargetView ? (
                           <button
                             type="button"
-                            onClick={() => onOpenOverview(overviewTargetView, item.id)}
+                            onClick={() => onOpenOverview(overviewTargetView, item)}
                             className="block text-left text-sm font-medium text-foreground hover:underline"
                           >
                             {item.name}
@@ -384,7 +384,7 @@ export function AddTitleForm({
                         {overviewTargetView ? (
                           <button
                             type="button"
-                            onClick={() => onOpenOverview(overviewTargetView, item.id)}
+                            onClick={() => onOpenOverview(overviewTargetView, item)}
                             className="hover:text-foreground hover:underline"
                           >
                             {item.name}

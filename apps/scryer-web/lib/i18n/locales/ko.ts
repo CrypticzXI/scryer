@@ -541,6 +541,10 @@ const ko: LocaleDictionary = {
   "title.noReleasesFound": "{{name}}에 대한 릴리스를 찾지 못했습니다.",
   "title.interactiveSearchHint":
     "대화형 검색으로 설정된 인덱서에서 {{name}} 릴리스를 조회하세요.",
+  "title.searchNeedsDownloadClientTitle": "검색에는 다운로드 클라이언트가 필요합니다",
+  "title.searchNeedsDownloadClientDescription":
+    "이 제목 페이지에서 검색 또는 대화형 검색을 사용하기 전에 다운로드 클라이언트를 하나 이상 구성하세요.",
+  "title.searchNeedsDownloadClientAction": "다운로드 클라이언트 열기",
   "title.blockedReleases": "차단된 릴리스",
   "title.noBlockedReleases":
     "이 영화에 기록된 차단된 릴리스가 없습니다.",

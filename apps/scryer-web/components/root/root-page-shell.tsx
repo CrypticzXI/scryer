@@ -25,6 +25,7 @@ import type {
   ViewId,
   SettingsSection,
   ContentSettingsSection,
+  OverviewTitleTarget,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
@@ -39,8 +40,10 @@ import { AVAILABLE_LANGUAGES } from "@/lib/i18n";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 
 import {
+  buildOverviewDetailPath,
   buildViewPath,
   parseContentSectionFromPath,
+  parseOverviewSlugFromPath,
   parseSettingsSectionFromPath,
   parseSystemSectionFromPath,
   parseViewFromPath,
@@ -54,6 +57,7 @@ import {
 } from "@/lib/graphql/queries";
 import type { PendingImportCounts } from "@/lib/types";
 import { pendingImportCountForView } from "@/lib/types";
+import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -99,12 +103,30 @@ const PendingImportsContainer = lazy(() =>
 
 const INSTALL_BANNER_DISMISSED_KEY = "scryer.pwa.installBannerDismissed";
 
-function OverviewContainerForView({ view, initialEpisodeId, ...props }: { view: ViewId; titleId: string; onBackToList: () => void; onTitleNotFound: () => void; initialEpisodeId?: string | null }) {
+function OverviewContainerForView({
+  view,
+  initialEpisodeId,
+  onTitleResolved,
+  ...props
+}: {
+  view: ViewId;
+  titleId: string;
+  onBackToList: () => void;
+  onTitleNotFound: () => void;
+  onTitleResolved?: (title: OverviewTitleTarget) => void;
+  initialEpisodeId?: string | null;
+}) {
   const facet = facetForView(view);
   if (facet?.hasEpisodes) {
-    return <SeriesOverviewContainer {...props} initialEpisodeId={initialEpisodeId} />;
+    return (
+      <SeriesOverviewContainer
+        {...props}
+        initialEpisodeId={initialEpisodeId}
+        onTitleResolved={onTitleResolved}
+      />
+    );
   }
-  return <MovieOverviewContainer {...props} />;
+  return <MovieOverviewContainer {...props} onTitleResolved={onTitleResolved} />;
 }
 
 /**
@@ -113,9 +135,11 @@ function OverviewContainerForView({ view, initialEpisodeId, ...props }: { view: 
 function MainContent({
   view,
   overviewTitleId,
+  overviewLoading,
   overviewEpisodeId,
   handleBackToList,
   handleTitleNotFound,
+  handleOverviewTitleResolved,
   settingsSection,
   userId,
   username,
@@ -129,9 +153,11 @@ function MainContent({
 }: {
   view: ViewId;
   overviewTitleId: string | null;
+  overviewLoading: boolean;
   overviewEpisodeId: string | null;
   handleBackToList: () => void;
   handleTitleNotFound: () => void;
+  handleOverviewTitleResolved: (title: OverviewTitleTarget) => void;
   settingsSection: SettingsSection;
   userId: string | undefined;
   username: string | undefined;
@@ -141,7 +167,11 @@ function MainContent({
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
   wantedSection: WantedSection;
-  handleOpenOverview: (targetView: ViewId, titleId: string, episodeId?: string) => void;
+  handleOpenOverview: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
 }) {
   if (view === "activity") {
     return <ActivityContainer key="activity" />;
@@ -161,6 +191,9 @@ function MainContent({
   if (isMediaView(view) && contentSettingsSection === "import") {
     return <PendingImportsContainer key={`${view}-imports`} view={view} />;
   }
+  if (isMediaView(view) && contentSettingsSection === "overview" && overviewLoading) {
+    return <ViewLoadingFallback />;
+  }
   if (isMediaView(view) && overviewTitleId) {
     return (
       <OverviewContainerForView
@@ -170,6 +203,7 @@ function MainContent({
         initialEpisodeId={overviewEpisodeId}
         onBackToList={handleBackToList}
         onTitleNotFound={handleTitleNotFound}
+        onTitleResolved={handleOverviewTitleResolved}
       />
     );
   }
@@ -276,36 +310,42 @@ function AuthenticatedHomePage({
     parsedContentSection: contentSettingsSection,
     parsedSystemSection: systemSection,
     parsedWantedSection: wantedSection,
+    parsedOverviewSlug,
   } =
     useMemo(() => {
-      const trimmed = pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
+      const trimmed = pathname.replace(/^\/+|\/+$/g, "");
       const segments = trimmed ? trimmed.split("/") : [];
-      const parsedView = parseViewFromPath(segments[0]);
+      const normalizedSegments = segments.map((segment) => segment.toLowerCase());
+      const parsedView = parseViewFromPath(normalizedSegments[0]);
       const parsedSettingsSection: SettingsSection = parsedView === "settings"
-        ? parseSettingsSectionFromPath(segments[1] ?? null)
+        ? parseSettingsSectionFromPath(normalizedSegments[1] ?? null)
         : "general";
       const parsedContentSection: ContentSettingsSection = isMediaView(parsedView)
-        ? parseContentSectionFromPath(segments[1] ?? null, segments[2] ?? null)
+        ? parseContentSectionFromPath(normalizedSegments[1] ?? null, normalizedSegments[2] ?? null)
         : "overview";
       const parsedSystemSection: SystemSection = parsedView === "system"
-        ? parseSystemSectionFromPath(segments[1] ?? null)
+        ? parseSystemSectionFromPath(normalizedSegments[1] ?? null)
         : "overview";
       const parsedWantedSection: WantedSection = parsedView === "wanted"
-        ? parseWantedSectionFromPath(segments[1] ?? null)
+        ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
         : "wanted";
+      const parsedOverviewSlug = isMediaView(parsedView) && parsedContentSection === "overview"
+        ? parseOverviewSlugFromPath(segments[1] ?? null, segments[2] ?? null)
+        : null;
       return {
         parsedView,
         parsedSettingsSection,
         parsedContentSection,
         parsedSystemSection,
         parsedWantedSection,
+        parsedOverviewSlug,
       };
     }, [pathname]);
 
-  const overviewTitleId = useMemo(() => {
-    if (!isMediaView(view) || contentSettingsSection !== "overview") return null;
+  const legacyOverviewTitleId = useMemo(() => {
+    if (!isMediaView(view) || contentSettingsSection !== "overview" || parsedOverviewSlug) return null;
     return searchParams.get("id")?.trim() || null;
-  }, [view, contentSettingsSection, searchParams]);
+  }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
 
   const overviewEpisodeId = useMemo(() =>
     searchParams.get("episodeId")?.trim() || null, [searchParams]);
@@ -324,6 +364,8 @@ function AuthenticatedHomePage({
   });
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
+  const [resolvedOverviewTarget, setResolvedOverviewTarget] = useState<OverviewTitleTarget | null>(null);
+  const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -477,15 +519,166 @@ function AuthenticatedHomePage({
     [navigate, searchParams, pathname],
   );
 
-  const handleOpenOverview = useCallback(
-    (targetView: ViewId, titleId: string, episodeId?: string) => {
+  const navigateToOverview = useCallback(
+    (
+      targetView: ViewId,
+      overviewTarget: OverviewTitleTarget,
+      episodeId?: string | null,
+      replace = false,
+    ) => {
       if (!isMediaView(targetView)) {
         return;
       }
 
-      navigateTo(targetView, undefined, "overview", undefined, undefined, titleId, episodeId);
+      const normalizedTitleId = overviewTarget.id.trim();
+      if (!normalizedTitleId) {
+        return;
+      }
+
+      const normalizedSlug = overviewTarget.slug?.trim() || null;
+      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const nextParams = new URLSearchParams(searchParams.toString());
+      nextParams.delete(URL_PARAM_VIEW_DEPRECATED);
+      nextParams.delete(URL_PARAM_SETTINGS_SECTION_DEPRECATED);
+      nextParams.delete(URL_PARAM_CONTENT_SECTION_DEPRECATED);
+      nextParams.delete(URL_PARAM_LANGUAGE);
+      nextParams.delete("tab");
+      if (!normalizedSlug) {
+        nextParams.set("id", normalizedTitleId);
+      } else {
+        nextParams.delete("id");
+      }
+      if (episodeId) {
+        nextParams.set("episodeId", episodeId);
+      } else {
+        nextParams.delete("episodeId");
+      }
+
+      const nextQuery = nextParams.toString();
+      const nextPathWithQuery = `${targetPath}${nextQuery ? `?${nextQuery}` : ""}`;
+      const currentPathWithQuery = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
+
+      if (nextPathWithQuery !== currentPathWithQuery) {
+        navigate(nextPathWithQuery, { replace });
+      }
     },
-    [navigateTo],
+    [navigate, pathname, searchParams],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!isMediaView(view) || contentSettingsSection !== "overview" || !parsedOverviewSlug) {
+      setResolvedOverviewTarget(null);
+      setOverviewSlugLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const facet = facetForView(view)?.id;
+    if (!facet) {
+      setResolvedOverviewTarget(null);
+      setOverviewSlugLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setResolvedOverviewTarget(null);
+    setOverviewSlugLoading(true);
+
+    void resolveTitleOverviewTargetBySlug(backendClient, facet, parsedOverviewSlug)
+      .then((target) => {
+        if (cancelled) {
+          return;
+        }
+
+        setResolvedOverviewTarget(target);
+        if (!target) {
+          navigateTo(view, undefined, "overview", undefined, undefined);
+          return;
+        }
+
+        if (target.slug && target.slug !== parsedOverviewSlug) {
+          navigateToOverview(view, target, overviewEpisodeId, true);
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        setResolvedOverviewTarget(null);
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+        navigateTo(view, undefined, "overview", undefined, undefined);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setOverviewSlugLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    contentSettingsSection,
+    navigateTo,
+    navigateToOverview,
+    overviewEpisodeId,
+    parsedOverviewSlug,
+    setGlobalStatus,
+    t,
+    view,
+  ]);
+
+  const overviewTitleId = parsedOverviewSlug
+    ? resolvedOverviewTarget?.id ?? null
+    : legacyOverviewTitleId;
+  const overviewLoading = Boolean(parsedOverviewSlug) && (overviewSlugLoading || overviewTitleId === null);
+
+  const handleOpenOverview = useCallback(
+    (targetView: ViewId, overviewTarget: OverviewTitleTarget, episodeId?: string) => {
+      if (!isMediaView(targetView)) {
+        return;
+      }
+
+      navigateToOverview(targetView, overviewTarget, episodeId);
+    },
+    [navigateToOverview],
+  );
+
+  const handleOverviewTitleResolved = useCallback(
+    (overviewTarget: OverviewTitleTarget) => {
+      if (!isMediaView(view) || contentSettingsSection !== "overview") {
+        return;
+      }
+
+      const normalizedSlug = overviewTarget.slug?.trim() || null;
+      if (!normalizedSlug) {
+        return;
+      }
+
+      if (parsedOverviewSlug) {
+        if (normalizedSlug !== parsedOverviewSlug) {
+          navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
+        }
+        return;
+      }
+
+      if (legacyOverviewTitleId) {
+        navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
+      }
+    },
+    [
+      contentSettingsSection,
+      legacyOverviewTitleId,
+      navigateToOverview,
+      overviewEpisodeId,
+      parsedOverviewSlug,
+      view,
+    ],
   );
 
   const topNav = useMemo(
@@ -617,9 +810,11 @@ function AuthenticatedHomePage({
                         <MainContent
                           view={view}
                           overviewTitleId={overviewTitleId}
+                          overviewLoading={overviewLoading}
                           overviewEpisodeId={overviewEpisodeId}
                           handleBackToList={handleBackToList}
                           handleTitleNotFound={handleTitleNotFound}
+                          handleOverviewTitleResolved={handleOverviewTitleResolved}
                           settingsSection={settingsSection}
                           userId={user?.id}
                           username={user?.username}

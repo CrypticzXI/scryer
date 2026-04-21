@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -98,6 +99,7 @@ export function SeasonSection({
   releaseBlocklistEntries,
   searchResultsByEpisode,
   searchLoadingByEpisode,
+  searchBlockedByEpisode,
   onToggleEpisodeSearch,
   onToggleEpisodeDetails,
   onEpisodeTabChange,
@@ -109,6 +111,7 @@ export function SeasonSection({
   onSetEpisodeMonitored,
   seasonSearchResults,
   seasonSearchLoading,
+  searchBlocked = false,
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
   onDeleteFile,
@@ -127,19 +130,21 @@ export function SeasonSection({
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchResultsByEpisode: Record<string, Release[]>;
   searchLoadingByEpisode: Record<string, boolean>;
+  searchBlockedByEpisode: Record<string, boolean>;
   autoSearchLoadingByEpisode: Record<string, boolean>;
   onToggleEpisodeSearch: (episode: CollectionEpisode) => void;
   onToggleEpisodeDetails: (episode: CollectionEpisode) => void;
   onEpisodeTabChange: (episodeId: string, tab: EpisodePanelTab, episode: CollectionEpisode) => void;
   onRunEpisodeSearch: (episode: CollectionEpisode) => void;
-  onQueueFromEpisodeSearch: (release: Release) => Promise<void> | void;
+  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
   onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
   seasonSearchResults?: Release[];
   seasonSearchLoading?: boolean;
+  searchBlocked?: boolean;
   onRunSeasonSearch?: () => void;
-  onQueueFromSeasonSearch?: (release: Release) => Promise<void> | void;
+  onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
   onAutoSearchInterstitialMovie?: (collection: TitleCollection) => void;
   autoSearchInterstitialMovieLoading?: boolean;
@@ -311,22 +316,26 @@ export function SeasonSection({
           />
         </TabsContent>
         <TabsContent value="search">
-          <div className="mb-2 flex items-center justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => onRunEpisodeSearch(episode)}
-              disabled={episodeLoading}
-              aria-label={t("label.search")}
-            >
-              <Search className="h-4 w-4" />
-              <span className="ml-1">
-                {episodeLoading ? t("label.searching") : t("label.refresh")}
-              </span>
-            </Button>
-          </div>
-          {episodeLoading ? (
+          {searchBlockedByEpisode[episode.id] ? (
+            <TitleSearchDownloadClientNotice />
+          ) : (
+            <div className="mb-2 flex items-center justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => onRunEpisodeSearch(episode)}
+                disabled={episodeLoading}
+                aria-label={t("label.search")}
+              >
+                <Search className="h-4 w-4" />
+                <span className="ml-1">
+                  {episodeLoading ? t("label.searching") : t("label.refresh")}
+                </span>
+              </Button>
+            </div>
+          )}
+          {searchBlockedByEpisode[episode.id] ? null : episodeLoading ? (
             <div className="flex flex-col items-center justify-center gap-4 py-16">
               <Loader2 className="h-10 w-10 animate-spin text-emerald-500" />
               <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
@@ -336,7 +345,7 @@ export function SeasonSection({
           ) : (
             <SearchResultBuckets
               results={episodeResults}
-              onQueue={onQueueFromEpisodeSearch}
+              onQueue={(release) => onQueueFromEpisodeSearch(episode, release)}
             />
           )}
         </TabsContent>
@@ -347,7 +356,7 @@ export function SeasonSection({
         </TabsContent>
       </Tabs>
     ),
-    [collection, linkedMovieByEpisodeId, onDeleteFile, onEpisodeTabChange, onQueueFromEpisodeSearch, onRunEpisodeSearch, releaseBlocklistEntries, t],
+    [collection, linkedMovieByEpisodeId, onDeleteFile, onEpisodeTabChange, onQueueFromEpisodeSearch, onRunEpisodeSearch, releaseBlocklistEntries, searchBlockedByEpisode, t],
   );
 
   return (
@@ -449,6 +458,12 @@ export function SeasonSection({
         </div>
       </div>
 
+      {searchBlocked && onRunSeasonSearch && !isSpecialsCollection(collection) && collection.collectionType !== "interstitial" ? (
+        <div className="border-t border-border bg-card/40 p-4">
+          <TitleSearchDownloadClientNotice />
+        </div>
+      ) : null}
+
       {expanded ? (
         collection.collectionType === "interstitial" ? (
           <div className="border-t border-border px-4 py-3 text-sm text-muted-foreground">
@@ -460,15 +475,18 @@ export function SeasonSection({
                   monitored={collection.monitored}
                 />
                 {collection.monitored && !collection.orderedPath && onAutoSearchInterstitialMovie ? (
-                  <button
-                    type="button"
-                    disabled={autoSearchInterstitialMovieLoading}
-                    onClick={() => onAutoSearchInterstitialMovie(collection)}
-                    className="inline-flex items-center gap-1.5 self-start rounded-md border border-border bg-card/45 px-3 py-1.5 text-xs text-card-foreground transition hover:bg-muted disabled:opacity-50"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                    {autoSearchInterstitialMovieLoading ? "Searching..." : "Search Movie"}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={autoSearchInterstitialMovieLoading}
+                      onClick={() => onAutoSearchInterstitialMovie(collection)}
+                      className="inline-flex items-center gap-1.5 self-start rounded-md border border-border bg-card/45 px-3 py-1.5 text-xs text-card-foreground transition hover:bg-muted disabled:opacity-50"
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      {autoSearchInterstitialMovieLoading ? "Searching..." : "Search Movie"}
+                    </button>
+                    {searchBlocked ? <TitleSearchDownloadClientNotice /> : null}
+                  </>
                 ) : null}
               </div>
             ) : (
@@ -496,7 +514,7 @@ export function SeasonSection({
                 <p className="mb-2 text-xs font-medium text-muted-foreground">Season pack results</p>
                 <SearchResultBuckets
                   results={seasonSearchResults}
-                  onQueue={onQueueFromSeasonSearch}
+                  onQueue={(release) => onQueueFromSeasonSearch(collection, release)}
                 />
               </div>
             ) : null}
@@ -597,18 +615,13 @@ export function SeasonSection({
                                   </span>
                                 ) : null}
                               </div>
-                              <div
-                                className={cn(
-                                  "mt-3 gap-2",
-                                  onAutoSearchEpisode ? "grid grid-cols-2" : "grid grid-cols-1",
-                                )}
-                              >
+                              <div className="mt-3 flex flex-col gap-2">
                                 {onAutoSearchEpisode ? (
                                   <Button
                                     type="button"
                                     size="sm"
                                     variant="secondary"
-                                    className="w-full"
+                                    className={cn("w-full", boxedActionButtonToneClass.auto)}
                                     onClick={() => onAutoSearchEpisode(episode)}
                                     disabled={autoSearching}
                                   >

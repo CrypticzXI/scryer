@@ -12,6 +12,7 @@ use crate::queries::{download_client, indexer};
 
 #[derive(Clone)]
 pub struct SqliteConfigStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
     encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
@@ -19,6 +20,7 @@ pub struct SqliteConfigStore {
 impl SqliteConfigStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
             encryption_key: db.encryption_key_state(),
         }
@@ -46,21 +48,19 @@ impl IndexerConfigRepository for SqliteConfigStore {
     }
 
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
-        let encryption_key = self.encryption_key();
-        indexer::create_indexer_config_query(&self.pool, &config, encryption_key.as_ref()).await
+        self.db.create_indexer_config(config).await
     }
 
     async fn touch_last_error(&self, provider_type: &str) -> AppResult<()> {
-        indexer::touch_indexer_last_error_query(&self.pool, provider_type).await
+        self.db.touch_indexer_last_error(provider_type).await
     }
 
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig> {
-        let encryption_key = self.encryption_key();
-        indexer::update_indexer_config_query(&self.pool, &update, encryption_key.as_ref()).await
+        self.db.update_indexer_config(update).await
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
-        indexer::delete_indexer_config_query(&self.pool, id).await
+        self.db.delete_indexer_config(id).await
     }
 }
 
@@ -83,30 +83,18 @@ impl DownloadClientConfigRepository for SqliteConfigStore {
     }
 
     async fn create(&self, config: DownloadClientConfig) -> AppResult<DownloadClientConfig> {
-        let encryption_key = self.encryption_key();
-        download_client::create_download_client_config_query(
-            &self.pool,
-            &config,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db.create_download_client_config(config).await
     }
 
     async fn update(&self, update: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig> {
-        let encryption_key = self.encryption_key();
-        download_client::update_download_client_config_query(
-            &self.pool,
-            &update,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db.update_download_client_config(update).await
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
-        download_client::delete_download_client_config_query(&self.pool, id).await
+        self.db.delete_download_client_config(id).await
     }
 
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()> {
-        download_client::reorder_download_client_configs_query(&self.pool, &ordered_ids).await
+        self.db.reorder_download_client_configs(ordered_ids).await
     }
 }

@@ -1,7 +1,7 @@
 use scryer_application::{AppError, AppResult};
 use scryer_domain::{Entitlement, User};
 use serde_json;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub(crate) async fn create_user_query(pool: &SqlitePool, user: &User) -> AppResult<User> {
     let entitlements_json = serde_json::to_string(&user.entitlements)
@@ -27,6 +27,30 @@ pub(crate) async fn get_user_by_id_query(pool: &SqlitePool, id: &str) -> AppResu
     )
     .bind(id)
     .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match row {
+        Some((id, username, entitlements_raw, password_hash)) => {
+            let entitlements: Vec<Entitlement> = serde_json::from_str(&entitlements_raw)
+                .map_err(|err| AppError::Repository(err.to_string()))?;
+            Ok(Some(User {
+                id,
+                username,
+                password_hash,
+                entitlements,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn get_user_by_id_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> AppResult<Option<User>> {
+    let row = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT id, username, entitlements, password_hash FROM users WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -99,10 +123,14 @@ pub(crate) async fn update_user_entitlements_query(
     id: &str,
     entitlements_json: &str,
 ) -> AppResult<User> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let result = sqlx::query("UPDATE users SET entitlements = ? WHERE id = ?")
         .bind(entitlements_json)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -110,9 +138,13 @@ pub(crate) async fn update_user_entitlements_query(
         return Err(AppError::NotFound(format!("user {}", id)));
     }
 
-    get_user_by_id_query(pool, id)
+    let user = get_user_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(user)
 }
 
 pub(crate) async fn update_user_password_query(
@@ -120,10 +152,14 @@ pub(crate) async fn update_user_password_query(
     id: &str,
     password_hash: &str,
 ) -> AppResult<User> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let result = sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
         .bind(password_hash)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -131,9 +167,13 @@ pub(crate) async fn update_user_password_query(
         return Err(AppError::NotFound(format!("user {}", id)));
     }
 
-    get_user_by_id_query(pool, id)
+    let user = get_user_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(user)
 }
 
 pub(crate) async fn delete_user_query(pool: &SqlitePool, id: &str) -> AppResult<()> {

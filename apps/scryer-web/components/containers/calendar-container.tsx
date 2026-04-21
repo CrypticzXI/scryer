@@ -3,7 +3,7 @@ import { useClient } from "urql";
 import { Card, CardContent } from "@/components/ui/card";
 import { calendarEpisodesQuery } from "@/lib/graphql/queries";
 import { FACETS_BY_ID } from "@/lib/facets/registry";
-import type { ViewId } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type { CalendarEpisodeItem } from "@/components/views/calendar-view";
@@ -13,7 +13,11 @@ const CalendarView = lazy(() =>
 );
 
 type CalendarContainerProps = {
-  onOpenOverview?: (targetView: ViewId, titleId: string, episodeId?: string) => void;
+  onOpenOverview?: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
 };
 
 export const CalendarContainer = memo(function CalendarContainer({
@@ -48,7 +52,7 @@ export const CalendarContainer = memo(function CalendarContainer({
     (episode: CalendarEpisodeItem) => {
       const facet = FACETS_BY_ID.get(episode.titleFacet as import("@/lib/types/titles").Facet);
       if (!facet || !onOpenOverview) return;
-      onOpenOverview(facet.viewId as ViewId, episode.titleId, episode.id);
+      onOpenOverview(facet.viewId as ViewId, { id: episode.titleId }, episode.id);
     },
     [onOpenOverview],
   );

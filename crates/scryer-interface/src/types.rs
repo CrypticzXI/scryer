@@ -1,4 +1,4 @@
-use async_graphql::{Enum, InputObject, Json, SimpleObject};
+use async_graphql::{Enum, InputObject, Json, OneofObject, SimpleObject};
 use scryer_application::{
     ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
     ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
@@ -8,7 +8,7 @@ use scryer_application::{
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
     PendingReleaseStatus as AppPendingReleaseStatus, ScoringOverrides as AppScoringOverrides,
     ScoringPersona as AppScoringPersona, SortDirection as AppSortDirection,
-    WantedStatus as AppWantedStatus,
+    SubmissionScope as AppSubmissionScope, WantedStatus as AppWantedStatus,
 };
 use scryer_domain::{
     DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason,
@@ -1737,11 +1737,29 @@ pub struct RetryTrackedDownloadImportInput {
     pub download_client_item_id: String,
 }
 
+#[derive(OneofObject, Clone)]
+pub enum QueueDownloadScopeInput {
+    Episode(String),
+    Collection(String),
+    Title(bool),
+}
+
+impl QueueDownloadScopeInput {
+    pub fn into_application(self) -> AppSubmissionScope {
+        match self {
+            Self::Episode(episode_id) => AppSubmissionScope::Episode { episode_id },
+            Self::Collection(collection_id) => AppSubmissionScope::Collection { collection_id },
+            Self::Title(_) => AppSubmissionScope::Title,
+        }
+    }
+}
+
 #[derive(InputObject)]
 pub struct AssignTrackedDownloadTitleInput {
     pub client_type: String,
     pub download_client_item_id: String,
     pub title_id: String,
+    pub scope: QueueDownloadScopeInput,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2182,6 +2200,7 @@ pub struct ReleaseSelectionInput {
 pub struct QueueDownloadInput {
     pub title_id: String,
     pub release: ReleaseSelectionInput,
+    pub scope: QueueDownloadScopeInput,
 }
 
 #[derive(SimpleObject, Clone)]

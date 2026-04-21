@@ -4,7 +4,7 @@ use crate::catalog_workflow::{
 };
 use crate::polling_worker::PollingWorker;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const TITLE_HYDRATION_MAX_BATCH: usize = HYDRATION_BULK_BATCH_SIZE;
 const TITLE_HYDRATION_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -70,7 +70,7 @@ pub async fn start_background_title_hydration_loop(
             } else {
                 metrics::counter!("scryer_title_metadata_hydration_scan_owned_yields_total")
                     .increment(1);
-                info!(
+                debug!(
                     blocked_facets = ?active_scan_facet_labels(&blocked_facets),
                     "title hydration loop: yielding while library scan owns active facet"
                 );

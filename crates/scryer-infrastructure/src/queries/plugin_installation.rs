@@ -1,6 +1,6 @@
 use scryer_application::AppResult;
 use scryer_domain::PluginInstallation;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 fn row_to_plugin_installation(row: &sqlx::sqlite::SqliteRow) -> PluginInstallation {
     use chrono::{DateTime, Utc};
@@ -68,11 +68,33 @@ pub(crate) async fn get_plugin_installation_query(
     Ok(row.as_ref().map(row_to_plugin_installation))
 }
 
+async fn get_plugin_installation_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    plugin_id: &str,
+) -> AppResult<Option<PluginInstallation>> {
+    let row = sqlx::query(
+        "SELECT id, plugin_id, name, description, version, plugin_type, provider_type,
+                is_enabled, is_builtin, wasm_sha256, source_url, installed_at, updated_at
+         FROM plugin_installations
+         WHERE plugin_id = ?",
+    )
+    .bind(plugin_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+
+    Ok(row.as_ref().map(row_to_plugin_installation))
+}
+
 pub(crate) async fn create_plugin_installation_query(
     pool: &SqlitePool,
     installation: &PluginInstallation,
     wasm_bytes: Option<&[u8]>,
 ) -> AppResult<PluginInstallation> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
     sqlx::query(
         "INSERT INTO plugin_installations
             (id, plugin_id, name, description, version, plugin_type, provider_type,
@@ -93,17 +115,21 @@ pub(crate) async fn create_plugin_installation_query(
     .bind(&installation.source_url)
     .bind(installation.installed_at.to_rfc3339())
     .bind(installation.updated_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
 
-    get_plugin_installation_query(pool, &installation.plugin_id)
+    let installation = get_plugin_installation_tx(&mut tx, &installation.plugin_id)
         .await?
         .ok_or_else(|| {
             scryer_application::AppError::Repository(
                 "failed to read back created plugin installation".to_string(),
             )
-        })
+        })?;
+    tx.commit()
+        .await
+        .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(installation)
 }
 
 pub(crate) async fn update_plugin_installation_query(
@@ -111,6 +137,10 @@ pub(crate) async fn update_plugin_installation_query(
     installation: &PluginInstallation,
     wasm_bytes: Option<&[u8]>,
 ) -> AppResult<PluginInstallation> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
     sqlx::query(
         "UPDATE plugin_installations
          SET name = ?, description = ?, version = ?, is_enabled = ?,
@@ -127,17 +157,21 @@ pub(crate) async fn update_plugin_installation_query(
     .bind(&installation.wasm_sha256)
     .bind(installation.updated_at.to_rfc3339())
     .bind(&installation.plugin_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
 
-    get_plugin_installation_query(pool, &installation.plugin_id)
+    let installation = get_plugin_installation_tx(&mut tx, &installation.plugin_id)
         .await?
         .ok_or_else(|| {
             scryer_application::AppError::Repository(
                 "failed to read back updated plugin installation".to_string(),
             )
-        })
+        })?;
+    tx.commit()
+        .await
+        .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(installation)
 }
 
 pub(crate) async fn delete_plugin_installation_query(

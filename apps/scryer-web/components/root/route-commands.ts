@@ -1,10 +1,17 @@
 import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
+  Bell,
   CalendarDays,
+  Captions,
+  FolderCog,
   History,
   MonitorCog,
+  Puzzle,
+  Search,
   Settings,
+  Trash2,
+  User,
   Users,
 } from "lucide-react";
 import type {
@@ -90,6 +97,38 @@ export function buildRouteCommands({
       onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "general"),
     });
 
+    const facetSubSections: Array<{
+      section: ContentSettingsSection;
+      labelKey: string;
+      extraKeywords: string[];
+    }> = [
+      {
+        section: "quality",
+        labelKey: "facetSettings.quality",
+        extraKeywords: ["quality", "profiles"],
+      },
+      {
+        section: "renaming",
+        labelKey: "facetSettings.renaming",
+        extraKeywords: ["renaming", "naming", "format"],
+      },
+      {
+        section: "routing",
+        labelKey: "facetSettings.routing",
+        extraKeywords: ["routing", "paths", "folders", "root"],
+      },
+    ];
+    for (const sub of facetSubSections) {
+      commands.push({
+        id: `${f.viewId}-settings-${sub.section}`,
+        label: `${t(f.settingsLabelKey)} / ${t(sub.labelKey)}`,
+        description: t(sub.labelKey),
+        keywords: [f.viewId, f.id, "settings", ...sub.extraKeywords],
+        icon: Settings,
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, sub.section),
+      });
+    }
+
     return commands;
   });
 
@@ -148,8 +187,16 @@ export function buildRouteCommands({
       label: `${t("nav.settings")} / ${t("settings.general")}`,
       description: t("nav.settings"),
       keywords: ["settings", "general", "preferences", "configuration", "system"],
-      icon: Users,
+      icon: Settings,
       onSelect: buildNavigate(onNavigate, "settings", "general"),
+    },
+    {
+      id: "settings-profile",
+      label: `${t("nav.settings")} / ${t("settings.profile")}`,
+      description: t("settings.profile"),
+      keywords: ["settings", "profile", "account", "me"],
+      icon: User,
+      onSelect: buildNavigate(onNavigate, "settings", "profile"),
     },
     {
       id: "settings-users",
@@ -198,6 +245,54 @@ export function buildRouteCommands({
       keywords: ["settings", "rules", "rego", "opa", "scoring", "custom"],
       icon: Settings,
       onSelect: buildNavigate(onNavigate, "settings", "rules"),
+    },
+    {
+      id: "settings-acquisition",
+      label: t("settings.acquisition"),
+      description: t("settings.acquisition"),
+      keywords: ["settings", "acquisition", "search", "grab", "release"],
+      icon: Search,
+      onSelect: buildNavigate(onNavigate, "settings", "acquisition"),
+    },
+    {
+      id: "settings-post-processing",
+      label: t("settings.postProcessing"),
+      description: t("settings.postProcessing"),
+      keywords: ["settings", "post", "processing", "import", "rename", "move"],
+      icon: FolderCog,
+      onSelect: buildNavigate(onNavigate, "settings", "post-processing"),
+    },
+    {
+      id: "settings-subtitles",
+      label: t("settings.subtitles"),
+      description: t("settings.subtitles"),
+      keywords: ["settings", "subtitles", "captions", "srt", "opensubtitles"],
+      icon: Captions,
+      onSelect: buildNavigate(onNavigate, "settings", "subtitles"),
+    },
+    {
+      id: "settings-notifications",
+      label: t("settings.notifications"),
+      description: t("settings.notifications"),
+      keywords: ["settings", "notifications", "alerts", "discord", "webhook"],
+      icon: Bell,
+      onSelect: buildNavigate(onNavigate, "settings", "notifications"),
+    },
+    {
+      id: "settings-plugins",
+      label: t("settings.plugins"),
+      description: t("settings.plugins"),
+      keywords: ["settings", "plugins", "wasm", "extensions"],
+      icon: Puzzle,
+      onSelect: buildNavigate(onNavigate, "settings", "plugins"),
+    },
+    {
+      id: "settings-recycle-bin",
+      label: t("settings.recycleBin"),
+      description: t("settings.recycleBin"),
+      keywords: ["settings", "recycle", "bin", "trash", "deleted"],
+      icon: Trash2,
+      onSelect: buildNavigate(onNavigate, "settings", "recycleBin"),
     },
     {
       id: "system",

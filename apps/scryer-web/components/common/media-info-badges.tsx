@@ -1,5 +1,6 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ChevronDown } from "lucide-react";
 
 export type AudioStreamDetail = {
   codec: string | null;
@@ -116,6 +117,22 @@ function resolveSubtitleCodec(codec: string | null): string {
   return codec.toUpperCase();
 }
 
+function formatSingleAudioTrack(stream: AudioStreamDetail): string {
+  const parts = [
+    formatLanguage(stream.language),
+    resolveAudioCodec(stream.codec),
+    resolveAudioChannels(stream.channels),
+  ].filter((value): value is string => Boolean(value && value !== "?"));
+  return parts.length > 0 ? parts.join(" ") : "Audio";
+}
+
+function formatSingleSubtitleTrack(track: SubtitleStreamDetail): string {
+  const parts = [formatLanguage(track.language)];
+  if (track.forced) parts.push("Forced");
+  else if (track.default) parts.push("Default");
+  return parts.filter(Boolean).join(" ");
+}
+
 function resolveSourceType(source: string): string | null {
   const s = source.toLowerCase();
   if (s === "bluray" || s === "blu-ray") return "BluRay";
@@ -147,7 +164,7 @@ function Badge({
     red: "border-red-500/40 bg-red-500/20 text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300",
   };
   return (
-    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${colorClasses[color]}`}>
+    <span className={`rounded border px-1.5 py-0.5 text-[11px] font-medium ${colorClasses[color]}`}>
       {children}
     </span>
   );
@@ -155,14 +172,18 @@ function Badge({
 
 function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
   const t = useTranslate();
+  if (streams.length === 1) {
+    return <Badge color="purple">{formatSingleAudioTrack(streams[0])}</Badge>;
+  }
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="cursor-pointer rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 hover:bg-violet-500/30 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25"
+          className="inline-flex cursor-pointer items-center gap-1 rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-500/30 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25"
         >
           {t("mediaFile.audioCount", { count: streams.length })}
+          <ChevronDown className="h-3 w-3 opacity-70" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-auto max-w-xs p-2" align="start">
@@ -185,14 +206,18 @@ function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
 
 function SubtitleTracksPopover({ streams }: { streams: SubtitleStreamDetail[] }) {
   const t = useTranslate();
+  if (streams.length === 1) {
+    return <Badge color="amber">{formatSingleSubtitleTrack(streams[0])}</Badge>;
+  }
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="cursor-pointer rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted dark:hover:bg-muted/80"
+          className="inline-flex cursor-pointer items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted dark:hover:bg-muted/80"
         >
           {t("mediaFile.subtitleCount", { count: streams.length })}
+          <ChevronDown className="h-3 w-3 opacity-70" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-auto max-w-md p-2" align="start">

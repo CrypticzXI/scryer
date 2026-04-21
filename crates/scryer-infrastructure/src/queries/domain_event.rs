@@ -4,7 +4,7 @@ use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventStream, MediaFacet,
     NewDomainEvent,
 };
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use super::common::parse_utc_datetime;
 
@@ -89,8 +89,8 @@ fn row_to_domain_event(row: &sqlx::sqlite::SqliteRow) -> AppResult<DomainEvent> 
     })
 }
 
-async fn get_domain_event_by_sequence_query(
-    pool: &SqlitePool,
+async fn get_domain_event_by_sequence_tx(
+    tx: &mut Transaction<'_, Sqlite>,
     sequence: i64,
 ) -> AppResult<Option<DomainEvent>> {
     let row = sqlx::query(
@@ -100,7 +100,7 @@ async fn get_domain_event_by_sequence_query(
          WHERE sequence = ?",
     )
     .bind(sequence)
-    .fetch_optional(pool)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -111,6 +111,10 @@ pub(crate) async fn append_domain_event_query(
     pool: &SqlitePool,
     event: &NewDomainEvent,
 ) -> AppResult<DomainEvent> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let payload_json = serde_json::to_string(&event.payload)
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let result = sqlx::query(
@@ -131,14 +135,18 @@ pub(crate) async fn append_domain_event_query(
     .bind(event.stream.identifier())
     .bind(event.payload.event_type().as_str())
     .bind(payload_json)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let sequence = result.last_insert_rowid();
-    get_domain_event_by_sequence_query(pool, sequence)
+    let stored = get_domain_event_by_sequence_tx(&mut tx, sequence)
         .await?
-        .ok_or_else(|| AppError::Repository("failed to reload inserted domain event".into()))
+        .ok_or_else(|| AppError::Repository("failed to reload inserted domain event".into()))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(stored)
 }
 
 pub(crate) async fn append_domain_events_query(
@@ -178,20 +186,19 @@ pub(crate) async fn append_domain_events_query(
         sequences.push(result.last_insert_rowid());
     }
 
-    tx.commit()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
     let mut stored = Vec::with_capacity(sequences.len());
     for sequence in sequences {
         stored.push(
-            get_domain_event_by_sequence_query(pool, sequence)
+            get_domain_event_by_sequence_tx(&mut tx, sequence)
                 .await?
                 .ok_or_else(|| {
                     AppError::Repository("failed to reload inserted domain event batch".into())
                 })?,
         );
     }
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     Ok(stored)
 }
 

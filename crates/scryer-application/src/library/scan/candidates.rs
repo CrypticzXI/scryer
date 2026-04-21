@@ -205,8 +205,14 @@ fn find_existing_series_title_index(
 
 enum MovieCandidateResolution {
     Ready(Title),
-    ReadyCreated { index: usize, title: Title },
-    CreateFailed(AppError),
+    ReadyCreated {
+        index: usize,
+        title: Title,
+    },
+    CreateFailed {
+        candidate: Box<PreparedMovieLibraryScanCandidate>,
+        error: AppError,
+    },
     Skipped,
     Unresolved(Box<PreparedMovieLibraryScanCandidate>),
 }
@@ -216,6 +222,14 @@ enum MovieMetadataResolution {
     ReadyCreated { index: usize, title: Title },
     CreateFailed(AppError),
     Unmatched,
+}
+
+async fn create_title_without_hydration_for_library_scan(
+    app: &AppUseCase,
+    actor: &User,
+    request: NewTitle,
+) -> AppResult<CreateTitleOutcome> {
+    app.create_title_without_hydration(actor, request).await
 }
 
 pub(super) fn movie_title_work(
@@ -295,7 +309,7 @@ async fn scan_title_files_for_library_scan_session(
 
     let files_count = pre_scan.files.len();
 
-    info!(
+    debug!(
         title_id = %title_id,
         path = %folder_path_display,
         files = files_count,
@@ -402,7 +416,7 @@ async fn resolve_movie_scan_candidate(
     }
 
     if let Some(new_title) = build_new_movie_title_from_nfo(&candidate, facet) {
-        match app.create_title_without_hydration(actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 let created_title = created.title;
@@ -423,7 +437,12 @@ async fn resolve_movie_scan_candidate(
                     MovieCandidateResolution::Ready(created_title)
                 });
             }
-            Err(error) => return Ok(MovieCandidateResolution::CreateFailed(error)),
+            Err(error) => {
+                return Ok(MovieCandidateResolution::CreateFailed {
+                    candidate: Box::new(candidate),
+                    error,
+                });
+            }
         }
     }
 
@@ -462,12 +481,12 @@ async fn resolve_movie_metadata_match(
         ));
     }
 
-    match app
-        .create_title_without_hydration(
-            actor,
-            build_new_title_from_metadata_match(facet, &selected),
-        )
-        .await
+    match create_title_without_hydration_for_library_scan(
+        app,
+        actor,
+        build_new_title_from_metadata_match(facet, &selected),
+    )
+    .await
     {
         Ok(created) => {
             let was_created = !created.reused_existing;
@@ -497,6 +516,8 @@ pub(super) async fn process_movie_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_path: &str,
+    session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
@@ -506,6 +527,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
+    unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
     let discovered_files = candidate.discovered_files.clone();
     let item_path = normalize_library_scan_item_path(&candidate.file.path);
@@ -550,7 +572,33 @@ pub(super) async fn process_movie_full_scan_candidate(
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
-        MovieCandidateResolution::CreateFailed(error) => Err(error),
+        MovieCandidateResolution::CreateFailed { candidate, error } => {
+            let tvdb_id = candidate
+                .nfo_meta
+                .as_ref()
+                .and_then(|metadata| metadata.tvdb_id.as_deref())
+                .unwrap_or_default();
+            warn!(
+                file = %item_path,
+                tvdb_id = %tvdb_id,
+                error = %error,
+                "movie scan: failed to create title from NFO"
+            );
+            let unmatched_item = build_movie_unmatched_scan_item(
+                facet,
+                session_id,
+                library_path,
+                &candidate,
+                &MetadataSearchResults::new(),
+                Some("title_create_from_nfo_failed"),
+                Some(error.to_string()),
+            );
+            persist_library_scan_unmatched_item(app, &unmatched_item).await?;
+            unmatched_items.push(unmatched_item);
+            summary.unmatched += 1;
+            coordinator.mark_title_match_completed(1).await;
+            Ok(None)
+        }
         MovieCandidateResolution::Skipped => {
             summary.skipped += 1;
             clear_library_scan_unmatched_item(app, facet, &item_path).await?;
@@ -610,7 +658,7 @@ pub(super) async fn process_series_full_scan_candidate(
     }
 
     if let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet) {
-        match app.create_title_without_hydration(actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 append_series_title_and_merge_work(
@@ -731,7 +779,28 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             coordinator.mark_title_match_completed(1).await;
             Ok(())
         }
-        MovieMetadataResolution::CreateFailed(error) => Err(error),
+        MovieMetadataResolution::CreateFailed(error) => {
+            warn!(
+                file = %candidate.file.path,
+                query = %candidate.query,
+                error = %error,
+                "movie scan: failed to create title from search result"
+            );
+            let unmatched_item = build_movie_unmatched_scan_item(
+                facet,
+                session_id,
+                library_path,
+                &candidate,
+                batch_search_results,
+                Some("title_create_from_search_failed"),
+                Some(error.to_string()),
+            );
+            persist_library_scan_unmatched_item(app, &unmatched_item).await?;
+            unmatched_items.push(unmatched_item);
+            summary.unmatched += 1;
+            coordinator.mark_title_match_completed(1).await;
+            Ok(())
+        }
         MovieMetadataResolution::Unmatched => {
             let unmatched_item = build_movie_unmatched_scan_item(
                 facet,
@@ -739,6 +808,8 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 library_path,
                 &candidate,
                 batch_search_results,
+                None,
+                None,
             );
             persist_library_scan_unmatched_item(app, &unmatched_item).await?;
             unmatched_items.push(unmatched_item);
@@ -827,12 +898,12 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
         return Ok(());
     }
 
-    match app
-        .create_title_without_hydration(
-            actor,
-            build_new_title_from_metadata_match(facet, &selected),
-        )
-        .await
+    match create_title_without_hydration_for_library_scan(
+        app,
+        actor,
+        build_new_title_from_metadata_match(facet, &selected),
+    )
+    .await
     {
         Ok(created) => {
             let was_created = !created.reused_existing;
@@ -947,7 +1018,7 @@ pub(super) async fn process_series_refresh_candidate(
     }
 
     if let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet) {
-        match app.create_title_without_hydration(actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 let index = append_series_title_and_merge_work(
@@ -1038,12 +1109,12 @@ pub(super) async fn process_resolved_series_refresh_candidate(
         return Ok(());
     }
 
-    match app
-        .create_title_without_hydration(
-            actor,
-            build_new_title_from_metadata_match(facet, &selected),
-        )
-        .await
+    match create_title_without_hydration_for_library_scan(
+        app,
+        actor,
+        build_new_title_from_metadata_match(facet, &selected),
+    )
+    .await
     {
         Ok(created) => {
             let was_created = !created.reused_existing;
@@ -1139,7 +1210,7 @@ pub(super) async fn process_movie_refresh_candidate(
             summary.matched += 1;
             Ok(None)
         }
-        MovieCandidateResolution::CreateFailed(error) => {
+        MovieCandidateResolution::CreateFailed { error, .. } => {
             warn!(
                 path = %representative_path,
                 error = %error,

@@ -40,7 +40,8 @@ pub(crate) enum NfoRootKind {
 /// Unknown elements are silently ignored — extra metadata in the NFO won't
 /// cause failures.
 pub(crate) fn parse_nfo(content: &str) -> NfoMetadata {
-    let trimmed = content.trim();
+    let normalized = strip_utf8_bom(content);
+    let trimmed = normalized.trim();
     if trimmed.is_empty() {
         return NfoMetadata::default();
     }
@@ -48,30 +49,31 @@ pub(crate) fn parse_nfo(content: &str) -> NfoMetadata {
     let mut meta = NfoMetadata::default();
 
     if trimmed.starts_with('<') {
-        parse_xml_nfo(content, &mut meta);
+        parse_xml_nfo(normalized, &mut meta);
     }
 
     // URL fallback (works for both XML and plain-text NFO files)
     if meta.imdb_id.is_none() {
-        meta.imdb_id = extract_imdb_url_id(content);
+        meta.imdb_id = extract_imdb_url_id(normalized);
     }
     if meta.tvdb_id.is_none() {
-        meta.tvdb_id = extract_tvdb_url_id(content);
+        meta.tvdb_id = extract_tvdb_url_id(normalized);
     }
     if meta.tmdb_id.is_none() {
-        meta.tmdb_id = extract_tmdb_url_id(content);
+        meta.tmdb_id = extract_tmdb_url_id(normalized);
     }
 
     meta
 }
 
 pub(crate) fn detect_nfo_root_kind(content: &str) -> NfoRootKind {
-    let trimmed = content.trim();
+    let normalized = strip_utf8_bom(content);
+    let trimmed = normalized.trim();
     if trimmed.is_empty() || !trimmed.starts_with('<') {
         return NfoRootKind::Other;
     }
 
-    let mut reader = Reader::from_str(content);
+    let mut reader = Reader::from_str(normalized);
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref event)) | Ok(Event::Empty(ref event)) => {
@@ -92,6 +94,10 @@ pub(crate) fn detect_nfo_root_kind(content: &str) -> NfoRootKind {
 
 pub(crate) fn looks_like_movie_nfo(content: &str) -> bool {
     detect_nfo_root_kind(content) == NfoRootKind::Movie
+}
+
+fn strip_utf8_bom(content: &str) -> &str {
+    content.trim_start_matches('\u{feff}')
 }
 
 fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
@@ -531,6 +537,61 @@ fn finish_xml(buf: Cursor<Vec<u8>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bastard_tvshow_nfo() -> &'static str {
+        r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<tvshow>
+  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
+  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <lockdata>false</lockdata>
+  <dateadded>2026-04-21 04:22:41</dateadded>
+  <title>Bastard!!</title>
+  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
+  <rating>5</rating>
+  <year>2022</year>
+  <mpaa>TV-MA</mpaa>
+  <collectionnumber>156898</collectionnumber>
+  <imdb_id>tt17736234</imdb_id>
+  <tmdbid>156898</tmdbid>
+  <premiered>1992-08-25</premiered>
+  <releasedate>1992-08-25</releasedate>
+  <enddate>1993-06-25</enddate>
+  <runtime>25</runtime>
+  <genre>Anime</genre>
+  <genre>magic</genre>
+  <genre>stereotypes</genre>
+  <genre>super power</genre>
+  <genre>violence</genre>
+  <studio />
+  <studio>Netflix</studio>
+  <tag>anime</tag>
+  <tag>based on manga</tag>
+  <tag>combat</tag>
+  <tag>dark fantasy</tag>
+  <tag>ecchi</tag>
+  <tag>heavy metal</tag>
+  <tag>magic</tag>
+  <tag>original net animation (ona)</tag>
+  <tag>remake</tag>
+  <tag>seinen</tag>
+  <anidbid>10</anidbid>
+  <tvdbid>415677</tvdbid>
+  <tvdbslugid>bastard-2022</tvdbslugid>
+  <art>
+    <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
+    <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
+  </art>
+  <id>415677</id>
+  <episodeguide>
+    <url cache="415677.xml">http://www.thetvdb.com/api/1D62F2F90030C444/series/415677/all/en.zip</url>
+  </episodeguide>
+  <season>-1</season>
+  <episode>-1</episode>
+  <status>Ended</status>
+</tvshow>"#
+    }
     use chrono::Utc;
     use scryer_domain::{ExternalId, MediaFacet};
 
@@ -753,6 +814,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_jellyfin_bastard_tvshow_nfo() {
+        let meta = parse_nfo(bastard_tvshow_nfo());
+        assert_eq!(meta.title.as_deref(), Some("Bastard!!"));
+        assert_eq!(meta.year, Some(2022));
+        assert_eq!(meta.tvdb_id.as_deref(), Some("415677"));
+        assert_eq!(meta.tmdb_id.as_deref(), Some("156898"));
+    }
+
+    #[test]
+    fn parse_jellyfin_bastard_tvshow_nfo_with_utf8_bom() {
+        let prefixed = format!("\u{feff}{}", bastard_tvshow_nfo());
+        let meta = parse_nfo(&prefixed);
+        assert_eq!(meta.title.as_deref(), Some("Bastard!!"));
+        assert_eq!(meta.year, Some(2022));
+        assert_eq!(meta.tvdb_id.as_deref(), Some("415677"));
+    }
+
+    #[test]
     fn parse_episode_nfo() {
         let nfo = r#"<episodedetails>
   <title>Pilot</title>
@@ -792,6 +871,12 @@ mod tests {
         assert!(!looks_like_movie_nfo(
             r#"<episodedetails><title>Pilot</title></episodedetails>"#
         ));
+    }
+
+    #[test]
+    fn detect_tvshow_root_kind_accepts_utf8_bom() {
+        let prefixed = format!("\u{feff}{}", bastard_tvshow_nfo());
+        assert_eq!(detect_nfo_root_kind(&prefixed), NfoRootKind::TvShow);
     }
 
     #[test]

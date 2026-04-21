@@ -43,6 +43,13 @@ function percentForPhase(
   return Math.max(0, Math.min(100, Math.round((done / phase.total) * 100)));
 }
 
+function formatEtaCountdown(totalSeconds: number): string {
+  const seconds = Math.max(1, Math.round(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 function phaseLabel(
   status: LibraryScanProgress["status"],
   phase: LibraryScanPhaseProgress,
@@ -81,6 +88,27 @@ function statusIcon(status: LibraryScanProgress["status"]) {
   return <Loader2 className="h-4 w-4 animate-spin text-sky-400" />;
 }
 
+function scanSummaryText(
+  summary: LibraryScanProgress["summary"],
+  t: Translate,
+  canceled = false,
+): string | null {
+  if (!summary) {
+    return null;
+  }
+
+  return t(
+    canceled
+      ? "settings.libraryScanCanceledSummary"
+      : "settings.libraryScanSummary",
+    {
+      imported: summary.imported,
+      skipped: summary.skipped,
+      unmatched: summary.unmatched,
+    },
+  );
+}
+
 export function LibraryScanToast({
   session,
   t,
@@ -92,6 +120,8 @@ export function LibraryScanToast({
 }) {
   const client = useClient();
   const [cancelPending, setCancelPending] = React.useState(false);
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const mediaAnalysisStartedAtRef = React.useRef<number | null>(null);
   const terminal = isTerminal(session.status);
   const titleMatchPercent = percentForPhase(
     session.titleMatchProgress,
@@ -107,6 +137,52 @@ export function LibraryScanToast({
   const mediaAnalysisIndeterminate =
     !terminal && !session.mediaAnalysisTotalKnown;
   const showCancel = session.mode === "full" && !terminal;
+  const mediaAnalysisDone =
+    session.mediaAnalysisProgress.completed + session.mediaAnalysisProgress.failed;
+  const mediaAnalysisTotal = session.mediaAnalysisProgress.total;
+  const mediaAnalysisRemaining = Math.max(0, mediaAnalysisTotal - mediaAnalysisDone);
+  const mediaAnalysisActive =
+    !terminal &&
+    mediaAnalysisTotal > 0 &&
+    mediaAnalysisRemaining > 0;
+
+  React.useEffect(() => {
+    if (!mediaAnalysisActive) {
+      mediaAnalysisStartedAtRef.current = null;
+      return;
+    }
+    if (mediaAnalysisStartedAtRef.current == null) {
+      mediaAnalysisStartedAtRef.current = Date.parse(session.updatedAt) || Date.now();
+    }
+  }, [mediaAnalysisActive, session.updatedAt]);
+
+  React.useEffect(() => {
+    if (!mediaAnalysisActive) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [mediaAnalysisActive]);
+
+  const mediaAnalysisElapsedMs = mediaAnalysisStartedAtRef.current == null
+    ? 0
+    : Math.max(0, nowMs - mediaAnalysisStartedAtRef.current);
+  const shouldShowEta =
+    showCancel &&
+    mediaAnalysisActive &&
+    mediaAnalysisTotalKnown &&
+    mediaAnalysisDone > 0 &&
+    mediaAnalysisElapsedMs >= 30_000;
+  const mediaAnalysisEtaSeconds = shouldShowEta
+    ? (mediaAnalysisElapsedMs / 1000 / mediaAnalysisDone) * mediaAnalysisRemaining
+    : null;
+  const etaCountdown = mediaAnalysisEtaSeconds != null && Number.isFinite(mediaAnalysisEtaSeconds)
+    ? formatEtaCountdown(mediaAnalysisEtaSeconds)
+    : null;
 
   const handleCancel = React.useCallback(async () => {
     if (cancelPending) {
@@ -149,16 +225,23 @@ export function LibraryScanToast({
               {statusIcon(session.status)}
             </div>
             {showCancel ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                className="h-7 shrink-0 px-2 text-xs"
-                onClick={handleCancel}
-                disabled={cancelPending}
-              >
-                {t("settings.libraryScanCancel")}
-              </Button>
+              <div className="flex shrink-0 items-center gap-2">
+                {etaCountdown ? (
+                  <span className="text-[11px] font-medium tabular-nums text-muted-foreground">
+                    {etaCountdown}
+                  </span>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={handleCancel}
+                  disabled={cancelPending}
+                >
+                  {t("settings.libraryScanCancel")}
+                </Button>
+              </div>
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
@@ -215,20 +298,10 @@ export function LibraryScanToast({
               : session.status === "warning"
                 ? session.warningMessage || t("settings.libraryScanCompletedWithWarnings")
               : session.status === "canceled"
-                ? session.summary
-                  ? t("settings.libraryScanCanceledSummary", {
-                      imported: session.summary.imported,
-                      skipped: session.summary.skipped,
-                      unmatched: session.summary.unmatched,
-                    })
-                  : t("settings.libraryScanCanceled")
-              : session.summary
-                ? t("settings.libraryScanSummary", {
-                    imported: session.summary.imported,
-                    skipped: session.summary.skipped,
-                    unmatched: session.summary.unmatched,
-                  })
-                : t("settings.libraryScanCompleted")}
+                ? scanSummaryText(session.summary, t, true) ??
+                  t("settings.libraryScanCanceled")
+              : scanSummaryText(session.summary, t) ??
+                t("settings.libraryScanCompleted")}
           </p>
         ) : null}
       </div>

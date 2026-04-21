@@ -2,7 +2,7 @@ use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord as AppDownloadQueueCommandRecord,
     DownloadSubmission, ExternalImportMonitorSnapshot, PendingReleaseStatus,
-    ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit, WantedStatus,
+    ReleaseDownloadAttemptOutcome, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
 };
 use scryer_domain::{
     DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
@@ -15,6 +15,56 @@ use crate::types::{
     LibraryProbeSignatureRecord, ReleaseDownloadFailureSignatureRecord,
     TitleReleaseBlocklistRecord, WorkflowOperationRecord,
 };
+
+fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<&str>) {
+    (
+        scope.persisted_episode_id(),
+        scope.persisted_collection_id(),
+    )
+}
+
+fn download_submission_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<DownloadSubmission> {
+    let title_id: String = row
+        .try_get("title_id")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let facet: String = row
+        .try_get("facet")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let download_client_type: String = row
+        .try_get("download_client_type")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let download_client_item_id: String = row
+        .try_get("download_client_item_id")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let source_hint = row
+        .try_get("source_hint")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let source_kind = row
+        .try_get::<Option<String>, _>("source_kind")
+        .map_err(|err| AppError::Repository(err.to_string()))?
+        .as_deref()
+        .and_then(scryer_application::DownloadSourceKind::parse);
+    let source_title = row
+        .try_get("source_title")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let request_signature = row
+        .try_get("request_signature")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let episode_id = row.try_get("episode_id").unwrap_or(None);
+    let collection_id = row.try_get("collection_id").unwrap_or(None);
+
+    Ok(DownloadSubmission {
+        scope: SubmissionScope::from_persisted(&title_id, episode_id, collection_id),
+        title_id,
+        facet,
+        download_client_type,
+        download_client_item_id,
+        source_hint,
+        source_kind,
+        source_title,
+        request_signature,
+    })
+}
 
 fn workflow_operation_from_row(
     row: &sqlx::sqlite::SqliteRow,
@@ -596,6 +646,10 @@ pub(crate) async fn update_job_workflow_operation_query(
     completed_at: Option<String>,
 ) -> AppResult<WorkflowOperationRecord> {
     let now = Utc::now().to_rfc3339();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     sqlx::query(
         "UPDATE workflow_operations
          SET status = ?,
@@ -615,13 +669,17 @@ pub(crate) async fn update_job_workflow_operation_query(
     .bind(&completed_at)
     .bind(&now)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    get_workflow_operation_by_id_query(pool, id)
+    let operation = get_workflow_operation_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("workflow operation {id}")))
+        .ok_or_else(|| AppError::NotFound(format!("workflow operation {id}")))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(operation)
 }
 
 pub(crate) async fn get_workflow_operation_by_id_query(
@@ -631,6 +689,19 @@ pub(crate) async fn get_workflow_operation_by_id_query(
     let row = sqlx::query("SELECT * FROM workflow_operations WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    row.as_ref().map(workflow_operation_from_row).transpose()
+}
+
+async fn get_workflow_operation_by_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> AppResult<Option<WorkflowOperationRecord>> {
+    let row = sqlx::query("SELECT * FROM workflow_operations WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1297,6 +1368,7 @@ pub(crate) async fn record_download_submission_query(
     submission: &DownloadSubmission,
 ) -> AppResult<()> {
     let id = Id::new().0;
+    let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
 
     sqlx::query(
         "INSERT INTO download_submissions
@@ -1321,8 +1393,8 @@ pub(crate) async fn record_download_submission_query(
     .bind(submission.source_kind.map(|value| value.as_str()))
     .bind(submission.source_title.as_deref())
     .bind(submission.request_signature.as_deref())
-    .bind(submission.episode_id.as_deref())
-    .bind(submission.collection_id.as_deref())
+    .bind(episode_id)
+    .bind(collection_id)
     .execute(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -1391,6 +1463,7 @@ async fn record_download_submission_tx(
     submission: &DownloadSubmission,
 ) -> AppResult<()> {
     let id = Id::new().0;
+    let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
 
     sqlx::query(
         "INSERT INTO download_submissions
@@ -1411,12 +1484,12 @@ async fn record_download_submission_tx(
     .bind(&submission.facet)
     .bind(&submission.download_client_type)
     .bind(&submission.download_client_item_id)
-    .bind(&submission.source_hint)
+    .bind(submission.source_hint.as_deref())
     .bind(submission.source_kind.map(|value| value.as_str()))
-    .bind(&submission.source_title)
-    .bind(&submission.request_signature)
-    .bind(&submission.episode_id)
-    .bind(&submission.collection_id)
+    .bind(submission.source_title.as_deref())
+    .bind(submission.request_signature.as_deref())
+    .bind(episode_id)
+    .bind(collection_id)
     .execute(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -1478,36 +1551,7 @@ pub(crate) async fn find_download_submission_query(
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
-        Some(row) => Ok(Some(DownloadSubmission {
-            title_id: row
-                .try_get("title_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            facet: row
-                .try_get("facet")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_type: row
-                .try_get("download_client_type")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_item_id: row
-                .try_get("download_client_item_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_hint: row
-                .try_get("source_hint")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_kind: row
-                .try_get::<Option<String>, _>("source_kind")
-                .map_err(|err| AppError::Repository(err.to_string()))?
-                .as_deref()
-                .and_then(scryer_application::DownloadSourceKind::parse),
-            source_title: row
-                .try_get("source_title")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            request_signature: row
-                .try_get("request_signature")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            episode_id: row.try_get("episode_id").unwrap_or(None),
-            collection_id: row.try_get("collection_id").unwrap_or(None),
-        })),
+        Some(row) => Ok(Some(download_submission_from_row(&row)?)),
         None => Ok(None),
     }
 }
@@ -1528,36 +1572,7 @@ pub(crate) async fn list_download_submissions_for_title_query(
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(DownloadSubmission {
-            title_id: row
-                .try_get("title_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            facet: row
-                .try_get("facet")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_type: row
-                .try_get("download_client_type")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_item_id: row
-                .try_get("download_client_item_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_hint: row
-                .try_get("source_hint")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_kind: row
-                .try_get::<Option<String>, _>("source_kind")
-                .map_err(|err| AppError::Repository(err.to_string()))?
-                .as_deref()
-                .and_then(scryer_application::DownloadSourceKind::parse),
-            source_title: row
-                .try_get("source_title")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            request_signature: row
-                .try_get("request_signature")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            episode_id: row.try_get("episode_id").unwrap_or(None),
-            collection_id: row.try_get("collection_id").unwrap_or(None),
-        });
+        out.push(download_submission_from_row(&row)?);
     }
 
     Ok(out)
@@ -1584,36 +1599,7 @@ pub(crate) async fn find_download_submission_by_title_and_request_signature_quer
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
     match row {
-        Some(row) => Ok(Some(DownloadSubmission {
-            title_id: row
-                .try_get("title_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            facet: row
-                .try_get("facet")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_type: row
-                .try_get("download_client_type")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            download_client_item_id: row
-                .try_get("download_client_item_id")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_hint: row
-                .try_get("source_hint")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            source_kind: row
-                .try_get::<Option<String>, _>("source_kind")
-                .map_err(|err| AppError::Repository(err.to_string()))?
-                .as_deref()
-                .and_then(scryer_application::DownloadSourceKind::parse),
-            source_title: row
-                .try_get("source_title")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            request_signature: row
-                .try_get("request_signature")
-                .map_err(|err| AppError::Repository(err.to_string()))?,
-            episode_id: row.try_get("episode_id").unwrap_or(None),
-            collection_id: row.try_get("collection_id").unwrap_or(None),
-        })),
+        Some(row) => Ok(Some(download_submission_from_row(&row)?)),
         None => Ok(None),
     }
 }
@@ -1656,8 +1642,8 @@ pub(crate) async fn update_tracked_state_query(
     let id = Id::new().0;
     sqlx::query(
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, collection_id, tracked_state, tracked_state_at)
-         VALUES (?, '', '', ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+         (id, title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id, tracked_state, tracked_state_at)
+         VALUES (?, '', '', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
          ON CONFLICT(download_client_type, download_client_item_id) DO UPDATE
          SET tracked_state = excluded.tracked_state,
              tracked_state_at = excluded.tracked_state_at",

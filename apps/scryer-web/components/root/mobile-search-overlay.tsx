@@ -3,7 +3,7 @@ import * as React from "react";
 import { ArrowLeft, Loader2, Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { ViewId } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
@@ -20,7 +20,7 @@ import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-t
 
 type MobileSearchOverlayProps = {
   onClose: () => void;
-  onOpenOverview?: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview?: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
 function catalogFacetFromString(facet: string): Facet {
@@ -125,7 +125,7 @@ export function MobileSearchOverlay({
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
       const titleId = await addMetadataSearchResultToCatalog(result, facet, options);
       if (titleId) {
-        onOpenOverview?.(viewFromFacet(facet), titleId);
+        onOpenOverview?.(viewFromFacet(facet), { id: titleId, slug: result.slug ?? null });
         onClose();
       }
       return titleId;
@@ -148,7 +148,7 @@ export function MobileSearchOverlay({
           type="button"
           onClick={() => {
             onClose();
-            onOpenOverview?.(targetView, title.id);
+            onOpenOverview?.(targetView, title);
           }}
           className="block w-full rounded-lg border border-border bg-card/60 p-3 text-left active:bg-accent/80"
           aria-label={title.name}

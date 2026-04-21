@@ -57,6 +57,7 @@ services:
     environment:
       SCRYER_BIND: 0.0.0.0:8080
       SCRYER_METRICS: "true"
+      SCRYER_DB_PATH: sqlite:///config/scryer.db
       SCRYER_WEB_UI_URL: http://nodejs:3000
       SCRYER_AUTH_ENABLED: "false"
       SCRYER_BACKGROUND_LIBRARY_REFRESH: "false"
@@ -73,7 +74,7 @@ services:
       - .:/workspace
       - scryer-cargo-registry:/usr/local/cargo/registry
       - scryer-cargo-git:/usr/local/cargo/git
-      - ./tmp/scryer-config:/config
+      - scryer-config:/config
       #- ./tmp/scryer-media/movies:/data/movies
       #- ./tmp/scryer-media/series:/data/series
       - /Volumes/Media/Anime:/data/anime:ro
@@ -159,6 +160,8 @@ networks:
     name: scryer-dev
 
 volumes:
+  scryer-config:
+    name: "${SCRYER_DOCKER_STACK_NAME:-scryer-dev}-scryer-config"
   scryer-node_modules:
   scryer-cargo-registry:
   scryer-cargo-git:

@@ -14,12 +14,61 @@ use crate::types::PendingReleaseStatus;
 use chrono::{DateTime, Duration, Utc};
 use scryer_domain::{DomainEventPayload, DownloadFailedEventData, ReleaseGrabbedEventData};
 use std::collections::{HashMap, HashSet};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{JobKey, JobTriggerSource};
 
 const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
 const STANDBY_RETENTION_HOURS: i64 = 24;
+const ACQUISITION_SCAN_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
+    facets.iter().map(MediaFacet::as_str).collect()
+}
+
+async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
+    let blocked_facets = app
+        .runtime
+        .library
+        .library_scan_tracker
+        .active_facets()
+        .await;
+    if blocked_facets.is_empty() {
+        return Vec::new();
+    }
+
+    metrics::counter!("scryer_background_acquisition_scan_owned_yields_total").increment(1);
+    debug!(
+        blocked_facets = ?active_scan_facet_labels(&blocked_facets),
+        wait_secs = ACQUISITION_SCAN_QUIET_WAIT.as_secs(),
+        "background acquisition: yielding while library scan owns active facet"
+    );
+
+    let _ = tokio::time::timeout(
+        ACQUISITION_SCAN_QUIET_WAIT,
+        app.runtime
+            .library
+            .library_scan_tracker
+            .wait_for_active_facets_change(&blocked_facets),
+    )
+    .await;
+
+    let blocked_facets = app
+        .runtime
+        .library
+        .library_scan_tracker
+        .active_facets()
+        .await;
+
+    if !blocked_facets.is_empty() {
+        debug!(
+            blocked_facets = ?active_scan_facet_labels(&blocked_facets),
+            "background acquisition: deferring due wanted items for actively scanning facets"
+        );
+    }
+
+    blocked_facets
+}
 
 fn candidate_matches_title(candidate: &IndexerSearchResult, title: &Title) -> bool {
     if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
@@ -595,12 +644,6 @@ impl DownloadClientSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DownloadSubmissionScope {
-    pub episode_id: Option<String>,
-    pub collection_id: Option<String>,
-}
-
 fn episode_collection_id_for_wanted_item(
     item: &WantedItem,
     episode: Option<&Episode>,
@@ -610,20 +653,26 @@ fn episode_collection_id_for_wanted_item(
         .or_else(|| item.collection_id.clone())
 }
 
+fn episode_submission_scope(episode_id: Option<String>) -> SubmissionScope {
+    episode_id
+        .map(|episode_id| SubmissionScope::Episode { episode_id })
+        .unwrap_or(SubmissionScope::Title)
+}
+
+fn collection_submission_scope(collection_id: Option<String>) -> SubmissionScope {
+    collection_id
+        .map(|collection_id| SubmissionScope::Collection { collection_id })
+        .unwrap_or(SubmissionScope::Title)
+}
+
 pub(crate) fn direct_download_submission_scope_for_wanted_item(
     item: &WantedItem,
-    episode: Option<&Episode>,
-) -> DownloadSubmissionScope {
+    _episode: Option<&Episode>,
+) -> SubmissionScope {
     match item.media_type.as_str() {
-        "episode" => DownloadSubmissionScope {
-            episode_id: item.episode_id.clone(),
-            collection_id: episode_collection_id_for_wanted_item(item, episode),
-        },
-        "interstitial_movie" => DownloadSubmissionScope {
-            episode_id: None,
-            collection_id: item.collection_id.clone(),
-        },
-        _ => DownloadSubmissionScope::default(),
+        "episode" => episode_submission_scope(item.episode_id.clone()),
+        "interstitial_movie" => collection_submission_scope(item.collection_id.clone()),
+        _ => SubmissionScope::Title,
     }
 }
 
@@ -631,7 +680,7 @@ pub(crate) fn download_submission_scope_for_release_title(
     item: &WantedItem,
     episode: Option<&Episode>,
     release_title: &str,
-) -> DownloadSubmissionScope {
+) -> SubmissionScope {
     if item.media_type == "episode" {
         let parsed = crate::parse_release_metadata(release_title);
         if parsed.episode.as_ref().is_some_and(|episode| {
@@ -647,17 +696,13 @@ pub(crate) fn download_submission_scope_for_release_title(
 pub(crate) fn collection_download_submission_scope_for_wanted_item(
     item: &WantedItem,
     episode: Option<&Episode>,
-) -> DownloadSubmissionScope {
+) -> SubmissionScope {
     match item.media_type.as_str() {
-        "episode" => DownloadSubmissionScope {
-            episode_id: None,
-            collection_id: episode_collection_id_for_wanted_item(item, episode),
-        },
-        "interstitial_movie" => DownloadSubmissionScope {
-            episode_id: None,
-            collection_id: item.collection_id.clone(),
-        },
-        _ => DownloadSubmissionScope::default(),
+        "episode" => {
+            collection_submission_scope(episode_collection_id_for_wanted_item(item, episode))
+        }
+        "interstitial_movie" => collection_submission_scope(item.collection_id.clone()),
+        _ => SubmissionScope::Title,
     }
 }
 
@@ -678,29 +723,17 @@ fn submission_blocks_wanted_item(
     item: &WantedItem,
     episode_collection_id: Option<&str>,
 ) -> bool {
-    match item.media_type.as_str() {
-        "episode" => {
-            if submission.episode_id.as_deref() == item.episode_id.as_deref() {
-                return true;
-            }
-
-            if submission.episode_id.is_none() && submission.collection_id.is_none() {
-                return true;
-            }
-
-            submission.episode_id.is_none()
-                && episode_collection_id.is_some()
-                && submission.collection_id.as_deref() == episode_collection_id
+    match &submission.scope {
+        SubmissionScope::Orphan => false,
+        SubmissionScope::Title => true,
+        SubmissionScope::Episode { episode_id } => {
+            item.media_type == "episode" && item.episode_id.as_deref() == Some(episode_id.as_str())
         }
-        "interstitial_movie" => {
-            if submission.episode_id.is_some() {
-                return false;
-            }
-
-            item.collection_id.is_some()
-                && submission.collection_id.as_deref() == item.collection_id.as_deref()
-        }
-        _ => submission.episode_id.is_none() && submission.collection_id.is_none(),
+        SubmissionScope::Collection { collection_id } => match item.media_type.as_str() {
+            "episode" => episode_collection_id == Some(collection_id.as_str()),
+            "interstitial_movie" => item.collection_id.as_deref() == Some(collection_id.as_str()),
+            _ => false,
+        },
     }
 }
 
@@ -723,7 +756,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
     };
 
     if grabbed_items.is_empty() {
-        info!("check_grabbed_for_failures: no grabbed wanted items");
+        debug!("check_grabbed_for_failures: no grabbed wanted items");
         return;
     }
 
@@ -1044,6 +1077,14 @@ async fn resolve_failure_wanted_item(
 
 /// Process due wanted items: search indexers and auto-grab best releases.
 async fn process_due_wanted_items(app: &AppUseCase) {
+    let blocked_facets = blocked_acquisition_facets_after_quiet_wait(app).await;
+    process_due_wanted_items_with_blocked_facets(app, &blocked_facets).await;
+}
+
+pub(crate) async fn process_due_wanted_items_with_blocked_facets(
+    app: &AppUseCase,
+    blocked_facets: &[MediaFacet],
+) {
     prune_standby_candidates(app).await;
 
     // Check for download failures first — re-queues failed items with
@@ -1068,7 +1109,7 @@ async fn process_due_wanted_items(app: &AppUseCase) {
         .services
         .workflow
         .wanted_items
-        .list_due_wanted_items(&now_str, batch_size)
+        .list_due_wanted_items(&now_str, batch_size, &blocked_facets)
         .await
     {
         Ok(items) => {
@@ -1684,8 +1725,7 @@ async fn process_single_wanted_item(
                                         source_kind: None,
                                         source_title: Some(best_pack.title.clone()),
                                         request_signature: request_signature.clone(),
-                                        episode_id: submission_scope.episode_id,
-                                        collection_id: submission_scope.collection_id,
+                                        scope: submission_scope,
                                     })
                                     .await;
                                 let pack_score = best_pack
@@ -1782,7 +1822,7 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
-    info!(
+    debug!(
         title_id = title.id.as_str(),
         title_name = title.name.as_str(),
         queries = ?queries,
@@ -1839,7 +1879,7 @@ async fn process_single_wanted_item(
         .await;
 
     if results.is_empty() {
-        info!(
+        debug!(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
             "background acquisition: search returned 0 results"
@@ -2294,8 +2334,7 @@ async fn process_single_wanted_item(
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
-                            episode_id: submission_scope.episode_id,
-                            collection_id: submission_scope.collection_id,
+                            scope: submission_scope,
                         },
                         grabbed_pending_release_id: None,
                         grabbed_at: Some(now.to_rfc3339()),

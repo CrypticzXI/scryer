@@ -238,10 +238,17 @@ impl TitleImageProcessor for SqliteTitleImageProcessor {
     }
 }
 
-fn preferred_variant_for_kind(kind: TitleImageKind) -> &'static str {
+fn preferred_local_route_key_for_kind(kind: TitleImageKind) -> &'static str {
     match kind {
         TitleImageKind::Poster => "w500",
         TitleImageKind::Banner | TitleImageKind::Fanart => "master",
+    }
+}
+
+fn required_persisted_variant_for_kind(kind: TitleImageKind) -> Option<&'static str> {
+    match kind {
+        TitleImageKind::Poster => Some("w500"),
+        TitleImageKind::Banner | TitleImageKind::Fanart => None,
     }
 }
 
@@ -252,16 +259,24 @@ pub(crate) fn materialize_local_title_image_path(
     master_sha256: &str,
     variants: &[TitleImageVariantRecord],
 ) -> String {
-    let preferred_variant = preferred_variant_for_kind(kind);
-    let (variant_key, version_hash) = if storage_mode == TitleImageStorageMode::Original {
-        ("original", master_sha256)
-    } else if let Some(variant) = variants
-        .iter()
-        .find(|variant| variant.variant_key == preferred_variant)
-    {
-        (preferred_variant, variant.sha256.as_str())
-    } else {
-        ("original", master_sha256)
+    let (variant_key, version_hash) = match storage_mode {
+        TitleImageStorageMode::Original => ("original", master_sha256),
+        TitleImageStorageMode::AvifMaster => match kind {
+            TitleImageKind::Poster => {
+                let preferred_variant = preferred_local_route_key_for_kind(kind);
+                if let Some(variant) = variants
+                    .iter()
+                    .find(|variant| variant.variant_key == preferred_variant)
+                {
+                    (preferred_variant, variant.sha256.as_str())
+                } else {
+                    ("original", master_sha256)
+                }
+            }
+            TitleImageKind::Banner | TitleImageKind::Fanart => {
+                (preferred_local_route_key_for_kind(kind), master_sha256)
+            }
+        },
     };
 
     synthesize_local_title_image_url("", title_id, kind, variant_key, version_hash)
@@ -280,37 +295,56 @@ pub(crate) async fn list_titles_requiring_image_refresh_query(
     kind: TitleImageKind,
     limit: usize,
 ) -> AppResult<Vec<TitleImageSyncTask>> {
-    let (source_col, preferred_variant) = match kind {
-        TitleImageKind::Poster => ("poster_url", "w500"),
-        TitleImageKind::Banner => ("banner_url", "master"),
-        TitleImageKind::Fanart => ("background_url", "master"),
+    let source_col = match kind {
+        TitleImageKind::Poster => "poster_url",
+        TitleImageKind::Banner => "banner_url",
+        TitleImageKind::Fanart => "background_url",
     };
+    let required_variant = required_persisted_variant_for_kind(kind);
 
-    let sql = format!(
+    let mut sql = format!(
         "SELECT t.id AS title_id, t.{source_col} AS source_url, ti.source_url AS cached_source_url
          FROM titles t
          LEFT JOIN title_images ti
            ON ti.title_id = t.id
-          AND ti.kind = ?
+          AND ti.kind = ?",
+    );
+    if let Some(required_variant) = required_variant {
+        sql.push_str(&format!(
+            "
          LEFT JOIN title_image_variants pv
            ON pv.title_image_id = ti.id
-          AND pv.variant_key = '{preferred_variant}'
+          AND pv.variant_key = '{required_variant}'"
+        ));
+    }
+    sql.push_str(&format!(
+        "
          WHERE NULLIF(TRIM(t.{source_col}), '') IS NOT NULL
            AND (
                 ti.id IS NULL
-                OR ti.source_url <> t.{source_col}
+                OR ti.source_url <> t.{source_col}"
+    ));
+    if required_variant.is_some() {
+        sql.push_str(
+            "
                 OR (
                     ti.storage_mode = ?
                     AND pv.id IS NULL
-                )
+                )",
+        );
+    }
+    sql.push_str(
+        "
            )
          ORDER BY t.created_at ASC
          LIMIT ?",
     );
 
-    let rows = sqlx::query(&sql)
-        .bind(kind.as_str())
-        .bind(TitleImageStorageMode::AvifMaster.as_str())
+    let mut query = sqlx::query(&sql).bind(kind.as_str());
+    if required_variant.is_some() {
+        query = query.bind(TitleImageStorageMode::AvifMaster.as_str());
+    }
+    let rows = query
         .bind(limit as i64)
         .fetch_all(pool)
         .await
@@ -484,7 +518,10 @@ pub(crate) async fn get_title_image_blob_query(
     kind: TitleImageKind,
     variant_key: &str,
 ) -> AppResult<Option<TitleImageBlob>> {
-    if variant_key == "original" {
+    if variant_key == "original"
+        || (variant_key == "master"
+            && matches!(kind, TitleImageKind::Banner | TitleImageKind::Fanart))
+    {
         let row = sqlx::query(
             "SELECT master_format, master_sha256, bytes
              FROM title_images
@@ -557,32 +594,8 @@ fn build_image_variants(
             }
             Ok(variants)
         }
-        TitleImageKind::Banner => {
-            // Full-resolution AVIF — single "master" variant, no resizing
-            let bytes = encode_avif(rgba, AVIF_SPEED, AVIF_QUALITY)?;
-            let (width, height) = rgba.dimensions();
-            Ok(vec![TitleImageVariantRecord {
-                variant_key: "master".to_string(),
-                format: SupportedImageFormat::Avif.as_str().to_string(),
-                width: width as i32,
-                height: height as i32,
-                sha256: sha256_hex(&bytes),
-                bytes,
-            }])
-        }
-        TitleImageKind::Fanart => {
-            // Full-resolution AVIF — single "master" variant, no resizing
-            let bytes = encode_avif(rgba, AVIF_SPEED, AVIF_QUALITY)?;
-            let (width, height) = rgba.dimensions();
-            Ok(vec![TitleImageVariantRecord {
-                variant_key: "master".to_string(),
-                format: SupportedImageFormat::Avif.as_str().to_string(),
-                width: width as i32,
-                height: height as i32,
-                sha256: sha256_hex(&bytes),
-                bytes,
-            }])
-        }
+        TitleImageKind::Banner => Ok(Vec::new()),
+        TitleImageKind::Fanart => Ok(Vec::new()),
     }
 }
 
@@ -806,6 +819,43 @@ mod tests {
         assert_eq!(widths.get("w500"), Some(&(500, 750)));
         assert_eq!(widths.get("w250"), Some(&(250, 375)));
         assert_eq!(widths.get("w70"), Some(&(70, 105)));
+    }
+
+    #[test]
+    fn banner_and_fanart_avif_pipeline_do_not_generate_persisted_variants() {
+        let processor = SqliteTitleImageProcessor::new_for_tests(true);
+        let bytes = encode_test_image(ImageFormat::Png);
+
+        for kind in [TitleImageKind::Banner, TitleImageKind::Fanart] {
+            let processed = processor
+                .process_bytes_for_tests(kind, "https://example.com/image.png", &bytes)
+                .expect("processing should succeed");
+
+            assert_eq!(processed.storage_mode, TitleImageStorageMode::AvifMaster);
+            assert_eq!(processed.master_format, "avif");
+            assert!(processed.variants.is_empty());
+        }
+    }
+
+    #[test]
+    fn materialize_local_path_uses_master_alias_for_banner_and_fanart_without_variants() {
+        for kind in [TitleImageKind::Banner, TitleImageKind::Fanart] {
+            let path = materialize_local_title_image_path(
+                "title-1",
+                kind,
+                TitleImageStorageMode::AvifMaster,
+                "abcdef0123456789abcdef0123456789",
+                &[],
+            );
+
+            assert_eq!(
+                path,
+                format!(
+                    "/images/titles/title-1/{}/master?v=abcdef0123456789",
+                    kind.as_str()
+                )
+            );
+        }
     }
 
     #[test]

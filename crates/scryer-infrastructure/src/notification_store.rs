@@ -11,6 +11,7 @@ use crate::queries::{notification_channel, notification_subscription};
 
 #[derive(Clone)]
 pub struct SqliteNotificationStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
     encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
@@ -18,6 +19,7 @@ pub struct SqliteNotificationStore {
 impl SqliteNotificationStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
             encryption_key: db.encryption_key_state(),
         }
@@ -53,30 +55,18 @@ impl NotificationChannelRepository for SqliteNotificationStore {
         &self,
         config: NotificationChannelConfig,
     ) -> AppResult<NotificationChannelConfig> {
-        let encryption_key = self.encryption_key();
-        notification_channel::create_notification_channel_query(
-            &self.pool,
-            &config,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db.create_notification_channel(config).await
     }
 
     async fn update_channel(
         &self,
         config: NotificationChannelConfig,
     ) -> AppResult<NotificationChannelConfig> {
-        let encryption_key = self.encryption_key();
-        notification_channel::update_notification_channel_query(
-            &self.pool,
-            &config,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db.update_notification_channel(config).await
     }
 
     async fn delete_channel(&self, id: &str) -> AppResult<()> {
-        notification_channel::delete_notification_channel_query(&self.pool, id).await
+        self.db.delete_notification_channel(id).await
     }
 }
 
@@ -110,17 +100,17 @@ impl NotificationSubscriptionRepository for SqliteNotificationStore {
         &self,
         sub: NotificationSubscription,
     ) -> AppResult<NotificationSubscription> {
-        notification_subscription::create_notification_subscription_query(&self.pool, &sub).await
+        self.db.create_notification_subscription(sub).await
     }
 
     async fn update_subscription(
         &self,
         sub: NotificationSubscription,
     ) -> AppResult<NotificationSubscription> {
-        notification_subscription::update_notification_subscription_query(&self.pool, &sub).await
+        self.db.update_notification_subscription(sub).await
     }
 
     async fn delete_subscription(&self, id: &str) -> AppResult<()> {
-        notification_subscription::delete_notification_subscription_query(&self.pool, id).await
+        self.db.delete_notification_subscription(id).await
     }
 }

@@ -478,7 +478,7 @@ impl AppUseCase {
         };
         let discovered_file_count = discovered_files.len();
 
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             session_id = session_id.unwrap_or("none"),
@@ -568,7 +568,7 @@ impl AppUseCase {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
         let title_dir_str = title_dir.to_string_lossy().to_string();
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             session_id = session_id.unwrap_or("none"),
@@ -633,7 +633,7 @@ impl AppUseCase {
             .await
             .unwrap_or_default();
         db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             discovered_files = discovered_files.len(),
@@ -643,7 +643,7 @@ impl AppUseCase {
             "title scan stage: db state loaded"
         );
         let episode_lookup = build_title_episode_lookup(&collections, &title_episodes);
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             "title scan stage: episode lookup built"
@@ -795,13 +795,13 @@ impl AppUseCase {
             }
 
             planned_files.sort_by(|left, right| left.file.path.cmp(&right.file.path));
-            info!(
+            debug!(
                 title_id = %title.id,
                 title_name = %title.name,
                 chunk_files = planned_files.len(),
                 "title scan stage: chunk planned"
             );
-            info!(
+            debug!(
                 title_id = %title.id,
                 title_name = %title.name,
                 "title scan stage: analysis phase begin"
@@ -843,7 +843,7 @@ impl AppUseCase {
                 analyzed_files += 1;
                 pending_analysis_plans.push_back(plan);
             }
-            info!(
+            debug!(
                 title_id = %title.id,
                 title_name = %title.name,
                 pending_analysis = pending_analysis_plans.len(),
@@ -861,14 +861,14 @@ impl AppUseCase {
                     let analysis_limit = analysis_limit.clone();
                     let file_path = plan.file.path.clone();
                     analysis_set.spawn(async move {
-                        tracing::info!(file_path = %file_path, "title scan analysis task: start");
+                        tracing::debug!(file_path = %file_path, "title scan analysis task: start");
                         let _permit = analysis_limit
                             .acquire_owned()
                             .await
                             .map_err(|error| AppError::Repository(error.to_string()))?;
                         let analysis_started = Instant::now();
                         let outcome = analyzer.analyze_file(PathBuf::from(&file_path)).await?;
-                        tracing::info!(file_path = %file_path, "title scan analysis task: complete");
+                        tracing::debug!(file_path = %file_path, "title scan analysis task: complete");
                         Ok::<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration), AppError>((
                             plan,
                             outcome,
@@ -900,7 +900,7 @@ impl AppUseCase {
                     continue;
                 }
                 let file_path = plan.file.path.clone();
-                info!(
+                debug!(
                     title_id = %title.id,
                     title_name = %title.name,
                     file_path = %file_path,
@@ -920,7 +920,7 @@ impl AppUseCase {
                 pending_progress.absorb(outcome.progress);
                 title_updated_in_batch |= outcome.title_updated;
                 flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
-                info!(
+                debug!(
                     title_id = %title.id,
                     title_name = %title.name,
                     file_path = %file_path,
@@ -1000,7 +1000,7 @@ impl AppUseCase {
             }
         }
 
-        info!(
+        debug!(
             title_id = %title.id,
             path = %title_dir.display(),
             scanned = summary.scanned,

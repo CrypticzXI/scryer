@@ -9,7 +9,7 @@ use scryer_application::{
 };
 use scryer_domain::IndexerConfig;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// A single search strategy dispatched as an independent parallel task.
 /// Each strategy carries the raw query/ID params to pass through to the plugin.
@@ -577,7 +577,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             if let Some(until) = c.disabled_until
                 && until > now
             {
-                info!(
+                debug!(
                     indexer = c.name.as_str(),
                     disabled_until = %until,
                     "skipping indexer: temporarily disabled (config)"
@@ -586,7 +586,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             }
             // Check in-memory backoff escalation
             if let Some(until) = self.backoff_tracker.is_disabled(&c.id).await {
-                info!(
+                debug!(
                     indexer = c.name.as_str(),
                     disabled_until = %until,
                     "skipping indexer: temporarily disabled (backoff)"
@@ -613,7 +613,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             });
         }
 
-        info!(
+        debug!(
             mode = ?mode,
             count = enabled.len(),
             indexers = ?enabled.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
@@ -917,7 +917,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             Ok(mut response) => {
                                 primary_had_success = true;
                                 batch_health.mark_success();
-                                info!(
+                                debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
                                     count = response.results.len(),
@@ -1003,7 +1003,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             match outcome.response {
                                 Ok(mut response) => {
                                     batch_health.mark_success();
-                                    info!(
+                                    debug!(
                                         indexer = indexer_name.as_str(),
                                         strategy = outcome.label.as_str(),
                                         count = response.results.len(),
@@ -1083,7 +1083,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         while let Some(join_result) = set.join_next().await {
             match join_result {
                 Ok((_id, name, Ok(mut response))) => {
-                    info!(
+                    debug!(
                         indexer = name.as_str(),
                         count = response.results.len(),
                         "indexer returned aggregated results"
@@ -1119,7 +1119,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             });
             let deduped = before - all_results.len();
             if deduped > 0 {
-                info!(
+                debug!(
                     before,
                     after = all_results.len(),
                     deduped,
@@ -1403,7 +1403,7 @@ fn filter_strategy_results(
 
     let filtered = before - results.len();
     if filtered > 0 {
-        info!(
+        debug!(
             strategy = strategy_label,
             before,
             after = results.len(),

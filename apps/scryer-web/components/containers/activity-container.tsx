@@ -395,6 +395,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
           clientType: item.clientType,
           downloadClientItemId: item.downloadClientItemId,
           titleId,
+          scope: { title: true },
         },
       });
       if (result.error) {

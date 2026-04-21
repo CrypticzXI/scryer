@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use scryer_application::{AppError, AppResult, DownloadClientConfigUpdate};
 use scryer_domain::DownloadClientConfig;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::encryption::EncryptionKey;
 
@@ -128,6 +128,26 @@ pub(crate) async fn get_download_client_config_query(
         .transpose()
 }
 
+async fn get_download_client_config_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<Option<DownloadClientConfig>> {
+    let row = sqlx::query(
+        "SELECT id, name, client_type, base_url, config_json, is_enabled, status,
+                client_priority, last_error, last_seen_at, created_at, updated_at
+           FROM download_clients
+          WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    row.map(|row| row_to_download_client_config(&row, encryption_key))
+        .transpose()
+}
+
 fn maybe_encrypt_config_json(key: Option<&EncryptionKey>, config_json: &str) -> AppResult<String> {
     let Some(key) = key else {
         return Ok(config_json.to_string());
@@ -221,8 +241,12 @@ pub(crate) async fn update_download_client_config_query(
 
     statement = statement.bind(&update.id);
 
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let result = statement
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -233,9 +257,13 @@ pub(crate) async fn update_download_client_config_query(
         )));
     }
 
-    get_download_client_config_query(pool, &update.id, encryption_key)
+    let config = get_download_client_config_tx(&mut tx, &update.id, encryption_key)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("download client config {}", update.id)))
+        .ok_or_else(|| AppError::NotFound(format!("download client config {}", update.id)))?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(config)
 }
 
 pub(crate) async fn delete_download_client_config_query(

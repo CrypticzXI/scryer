@@ -12,12 +12,14 @@ use crate::queries::{title, user};
 
 #[derive(Clone)]
 pub struct SqliteCatalogStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
 }
 
 impl SqliteCatalogStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
         }
     }
@@ -49,6 +51,14 @@ impl TitleRepository for SqliteCatalogStore {
         title::get_title_by_id_query(&self.pool, id).await
     }
 
+    async fn get_by_facet_and_slug(
+        &self,
+        facet: MediaFacet,
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        title::get_title_by_facet_and_slug_query(&self.pool, facet, slug).await
+    }
+
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>> {
         title::get_title_by_external_id_query(&self.pool, source, value).await
     }
@@ -63,11 +73,11 @@ impl TitleRepository for SqliteCatalogStore {
     }
 
     async fn create_or_get_existing(&self, title_record: Title) -> AppResult<CreateTitleOutcome> {
-        title::create_or_get_existing_title_query(&self.pool, &title_record).await
+        self.db.create_or_get_existing_title(&title_record).await
     }
 
     async fn create(&self, title_record: Title) -> AppResult<Title> {
-        title::create_title_query(&self.pool, &title_record).await
+        self.db.create_title(&title_record).await
     }
 
     async fn list_titles_due_for_hydration(
@@ -79,7 +89,7 @@ impl TitleRepository for SqliteCatalogStore {
     }
 
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
-        title::mark_title_metadata_hydration_due_now_query(&self.pool, id).await
+        self.db.mark_title_metadata_hydration_due_now(id).await
     }
 
     async fn schedule_title_metadata_hydration_retry(
@@ -88,21 +98,17 @@ impl TitleRepository for SqliteCatalogStore {
         next_attempt_at: &str,
         attempt_count: i64,
     ) -> AppResult<()> {
-        title::schedule_title_metadata_hydration_retry_query(
-            &self.pool,
-            id,
-            next_attempt_at,
-            attempt_count,
-        )
-        .await
+        self.db
+            .schedule_title_metadata_hydration_retry(id, next_attempt_at, attempt_count)
+            .await
     }
 
     async fn clear_title_metadata_hydration_retry_state(&self, id: &str) -> AppResult<()> {
-        title::clear_title_metadata_hydration_retry_state_query(&self.pool, id).await
+        self.db.clear_title_metadata_hydration_retry_state(id).await
     }
 
     async fn update_monitored(&self, id: &str, monitored: bool) -> AppResult<Title> {
-        title::update_title_monitored_query(&self.pool, id, monitored).await
+        self.db.update_title_monitored(id, monitored).await
     }
 
     async fn update_metadata(
@@ -119,7 +125,9 @@ impl TitleRepository for SqliteCatalogStore {
             ),
             None => None,
         };
-        title::update_title_metadata_query(&self.pool, id, name, facet, tags_json).await
+        self.db
+            .update_title_metadata(id, name, facet, tags_json)
+            .await
     }
 
     async fn update_title_hydrated_metadata(
@@ -127,7 +135,7 @@ impl TitleRepository for SqliteCatalogStore {
         id: &str,
         metadata: TitleMetadataUpdate,
     ) -> AppResult<Title> {
-        title::update_title_hydrated_metadata_query(&self.pool, id, metadata).await
+        self.db.update_title_hydrated_metadata(id, metadata).await
     }
 
     async fn replace_match_state(
@@ -136,23 +144,25 @@ impl TitleRepository for SqliteCatalogStore {
         external_ids: Vec<scryer_domain::ExternalId>,
         tags: Vec<String>,
     ) -> AppResult<Title> {
-        title::replace_title_match_state_query(&self.pool, id, external_ids, tags).await
+        self.db
+            .replace_title_match_state(id, external_ids, tags)
+            .await
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
-        title::delete_title_query(&self.pool, id).await
+        self.db.delete_title(id).await
     }
 
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()> {
-        title::set_title_folder_path_query(&self.pool, id, folder_path).await
+        self.db.set_title_folder_path(id, folder_path).await
     }
 
     async fn clear_folder_path(&self, id: &str) -> AppResult<()> {
-        title::clear_title_folder_path_query(&self.pool, id).await
+        self.db.clear_title_folder_path(id).await
     }
 
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
-        title::clear_metadata_language_for_all_query(&self.pool).await
+        self.db.clear_metadata_language_for_all().await
     }
 }
 
@@ -196,7 +206,7 @@ impl ShowRepository for SqliteCatalogStore {
     }
 
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
-        title::create_collection_query(&self.pool, &collection).await
+        self.db.create_collection(&collection).await
     }
 
     async fn update_collection(
@@ -204,7 +214,7 @@ impl ShowRepository for SqliteCatalogStore {
         collection_id: &str,
         update: CollectionUpdate,
     ) -> AppResult<Collection> {
-        title::update_collection_query(&self.pool, collection_id, update).await
+        self.db.update_collection(collection_id, update).await
     }
 
     async fn update_collection_interstitial_movie(
@@ -212,12 +222,9 @@ impl ShowRepository for SqliteCatalogStore {
         collection_id: &str,
         interstitial_movie: scryer_domain::InterstitialMovieMetadata,
     ) -> AppResult<Collection> {
-        title::update_collection_interstitial_movie_query(
-            &self.pool,
-            collection_id,
-            &interstitial_movie,
-        )
-        .await
+        self.db
+            .update_collection_interstitial_movie(collection_id, &interstitial_movie)
+            .await
     }
 
     async fn update_collection_specials_movies(
@@ -225,7 +232,8 @@ impl ShowRepository for SqliteCatalogStore {
         collection_id: &str,
         specials_movies: Vec<scryer_domain::InterstitialMovieMetadata>,
     ) -> AppResult<Collection> {
-        title::update_collection_specials_movies_query(&self.pool, collection_id, &specials_movies)
+        self.db
+            .update_collection_specials_movies(collection_id, &specials_movies)
             .await
     }
 
@@ -234,12 +242,9 @@ impl ShowRepository for SqliteCatalogStore {
         collection_id: &str,
         season_episode: Option<String>,
     ) -> AppResult<()> {
-        title::update_interstitial_season_episode_query(
-            &self.pool,
-            collection_id,
-            season_episode.as_deref(),
-        )
-        .await
+        self.db
+            .update_interstitial_season_episode(collection_id, season_episode.as_deref())
+            .await
     }
 
     async fn set_collection_episodes_monitored(
@@ -247,15 +252,17 @@ impl ShowRepository for SqliteCatalogStore {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()> {
-        title::set_collection_episodes_monitored_query(&self.pool, collection_id, monitored).await
+        self.db
+            .set_collection_episodes_monitored(collection_id, monitored)
+            .await
     }
 
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
-        title::delete_collection_query(&self.pool, collection_id).await
+        self.db.delete_collection(collection_id).await
     }
 
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()> {
-        title::delete_collections_for_title_query(&self.pool, title_id).await
+        self.db.delete_collections_for_title(title_id).await
     }
 
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>> {
@@ -271,19 +278,19 @@ impl ShowRepository for SqliteCatalogStore {
     }
 
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
-        title::create_episode_query(&self.pool, &episode).await
+        self.db.create_episode(&episode).await
     }
 
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
-        title::update_episode_query(&self.pool, episode_id, update).await
+        self.db.update_episode(episode_id, update).await
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
-        title::delete_episode_query(&self.pool, episode_id).await
+        self.db.delete_episode(episode_id).await
     }
 
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()> {
-        title::delete_episodes_for_title_query(&self.pool, title_id).await
+        self.db.delete_episodes_for_title(title_id).await
     }
 
     async fn find_episode_by_title_and_numbers(
@@ -334,7 +341,7 @@ impl UserRepository for SqliteCatalogStore {
     }
 
     async fn create(&self, user_record: User) -> AppResult<User> {
-        user::create_user_query(&self.pool, &user_record).await
+        self.db.create_user(&user_record).await
     }
 
     async fn list_all(&self) -> AppResult<Vec<User>> {
@@ -348,14 +355,16 @@ impl UserRepository for SqliteCatalogStore {
     ) -> AppResult<User> {
         let entitlements_json = serde_json::to_string(&entitlements)
             .map_err(|err| AppError::Repository(err.to_string()))?;
-        user::update_user_entitlements_query(&self.pool, id, &entitlements_json).await
+        self.db
+            .update_user_entitlements(id, &entitlements_json)
+            .await
     }
 
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
-        user::update_user_password_query(&self.pool, id, &password_hash).await
+        self.db.update_user_password_hash(id, &password_hash).await
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
-        user::delete_user_query(&self.pool, id).await
+        self.db.delete_user(id).await
     }
 }

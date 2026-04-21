@@ -8,12 +8,14 @@ use crate::SqliteServices;
 
 #[derive(Clone)]
 pub struct SqliteReleaseStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
 }
 
 impl SqliteReleaseStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
         }
     }
@@ -30,16 +32,16 @@ impl ReleaseAttemptRepository for SqliteReleaseStore {
         error_message: Option<String>,
         source_password: Option<String>,
     ) -> AppResult<()> {
-        crate::queries::workflow::create_release_download_attempt_query(
-            &self.pool,
-            title_id,
-            source_hint,
-            source_title,
-            outcome,
-            error_message,
-            source_password,
-        )
-        .await
+        self.db
+            .create_release_download_attempt(
+                title_id,
+                source_hint,
+                source_title,
+                outcome,
+                error_message,
+                source_password,
+            )
+            .await
     }
 
     async fn list_failed_release_signatures(

@@ -326,6 +326,13 @@ export const titleDetailQuery = `query TitleDetail($id: String!) {
   }
 }`;
 
+export const titleBySlugQuery = `query TitleBySlug($facet: MediaFacetValue!, $slug: String!) {
+  titleBySlug(facet: $facet, slug: $slug) {
+    id
+    slug
+  }
+}`;
+
 export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId: String!, $limit: Int) {
   titleReleaseBlocklist(titleId: $titleId, limit: $limit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
@@ -339,6 +346,9 @@ export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $bl
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
   subtitleDownloads(titleId: $id) {${SUBTITLE_DOWNLOAD_FIELDS}
+  }
+  setupStatus {
+    hasDownloadClients
   }
 }`;
 
@@ -665,6 +675,7 @@ export type ReactiveRefreshQueryActionPlan =
       titleEventsAlias: string;
       titleReleaseBlocklistAlias: string;
       subtitleDownloadsAlias: string;
+      setupStatusAlias: string;
     }
   | {
       key: string;
@@ -713,6 +724,7 @@ export function buildReactiveRefreshQuery(
           `titleOverviewBlocklistAction${index}`;
         const subtitleDownloadsAlias =
           `titleOverviewSubtitleDownloadsAction${index}`;
+        const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
@@ -728,6 +740,9 @@ export function buildReactiveRefreshQuery(
         fields.push(
           `  ${subtitleDownloadsAlias}: subtitleDownloads(titleId: $${titleIdVariableName}) {\n${SUBTITLE_DOWNLOAD_FIELDS}\n  }`,
         );
+        fields.push(
+          `  ${setupStatusAlias}: setupStatus {\n    hasDownloadClients\n  }`,
+        );
         variables[titleIdVariableName] = action.titleId;
         variables[blocklistLimitVariableName] = action.blocklistLimit;
         actionPlans.push({
@@ -737,6 +752,7 @@ export function buildReactiveRefreshQuery(
           titleEventsAlias,
           titleReleaseBlocklistAlias,
           subtitleDownloadsAlias,
+          setupStatusAlias,
         });
         break;
       }

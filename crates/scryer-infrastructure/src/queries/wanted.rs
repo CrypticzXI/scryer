@@ -1,5 +1,6 @@
 use chrono::Utc;
 use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem};
+use scryer_domain::MediaFacet;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite, SqlitePool, Transaction};
 
@@ -194,23 +195,41 @@ pub(crate) async fn list_due_wanted_items_query(
     pool: &SqlitePool,
     now: &str,
     batch_limit: i64,
+    excluded_facets: &[MediaFacet],
 ) -> AppResult<Vec<WantedItem>> {
-    let rows: Vec<SqliteRow> = sqlx::query(
+    let mut sql = String::from(
         "SELECT w.id, w.title_id, w.episode_id, w.collection_id, e.season_number,
                 w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
                 w.current_score, w.created_at, w.updated_at
          FROM wanted_items w
+         JOIN titles t ON t.id = w.title_id
          LEFT JOIN episodes e ON e.id = w.episode_id
-         WHERE w.status = 'wanted' AND (w.next_search_at IS NULL OR w.next_search_at <= ?)
-         ORDER BY w.next_search_at ASC
-         LIMIT ?",
-    )
-    .bind(now)
-    .bind(batch_limit)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+         WHERE w.status = 'wanted' AND (w.next_search_at IS NULL OR w.next_search_at <= ?)",
+    );
+
+    if !excluded_facets.is_empty() {
+        sql.push_str(" AND t.facet NOT IN (");
+        for (index, _) in excluded_facets.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('?');
+        }
+        sql.push(')');
+    }
+
+    sql.push_str(" ORDER BY w.next_search_at ASC LIMIT ?");
+
+    let mut query = sqlx::query(&sql).bind(now);
+    for facet in excluded_facets {
+        query = query.bind(facet.as_str());
+    }
+    let rows: Vec<SqliteRow> = query
+        .bind(batch_limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {

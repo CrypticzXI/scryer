@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, QualityProfile as ApplicationQualityProfile, QualityProfileRepository,
+    AppResult, QualityProfile as ApplicationQualityProfile, QualityProfileRepository,
     SettingsRepository, SystemInfoProvider,
 };
 use std::sync::{Arc, RwLock};
@@ -11,6 +11,7 @@ use crate::types::{MigrationStatus, SettingDefinitionSeed, SettingsValueRecord};
 
 #[derive(Clone)]
 pub struct SqliteSettingsStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
     encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
@@ -18,6 +19,7 @@ pub struct SqliteSettingsStore {
 impl SqliteSettingsStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
             encryption_key: db.encryption_key_state(),
         }
@@ -34,8 +36,7 @@ impl SqliteSettingsStore {
         &self,
         definitions: Vec<SettingDefinitionSeed>,
     ) -> AppResult<()> {
-        crate::queries::settings::batch_ensure_setting_definitions_query(&self.pool, &definitions)
-            .await
+        self.db.batch_ensure_setting_definitions(definitions).await
     }
 
     pub async fn batch_get_settings_with_defaults(
@@ -55,13 +56,9 @@ impl SqliteSettingsStore {
         &self,
         entries: Vec<(String, String, String, String)>,
     ) -> AppResult<()> {
-        let encryption_key = self.encryption_key();
-        crate::queries::settings::batch_upsert_settings_if_not_overridden_query(
-            &self.pool,
-            &entries,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db
+            .batch_upsert_settings_if_not_overridden(entries)
+            .await
     }
 
     pub async fn list_settings_with_defaults(
@@ -108,22 +105,16 @@ impl SqliteSettingsStore {
         source: impl Into<String>,
         updated_by_user_id: Option<String>,
     ) -> AppResult<SettingsValueRecord> {
-        let encryption_key = self.encryption_key();
-        let scope = scope.into();
-        let key_name = key_name.into();
-        let value_json = value_json.into();
-        let source = source.into();
-        crate::queries::settings::upsert_setting_value_query(
-            &self.pool,
-            &scope,
-            &key_name,
-            scope_id,
-            &value_json,
-            &source,
-            updated_by_user_id,
-            encryption_key.as_ref(),
-        )
-        .await
+        self.db
+            .upsert_setting_value(
+                scope,
+                key_name,
+                scope_id,
+                value_json,
+                source,
+                updated_by_user_id,
+            )
+            .await
     }
 
     pub async fn delete_setting_value(
@@ -132,12 +123,9 @@ impl SqliteSettingsStore {
         key_name: impl Into<String>,
         scope_id: Option<String>,
     ) -> AppResult<()> {
-        let scope = scope.into();
-        let key_name = key_name.into();
-        crate::queries::settings::delete_setting_value_query(
-            &self.pool, &scope, &key_name, scope_id,
-        )
-        .await
+        self.db
+            .delete_setting_value(scope, key_name, scope_id)
+            .await
     }
 
     pub async fn list_applied_migrations(&self) -> AppResult<Vec<MigrationStatus>> {
@@ -177,18 +165,16 @@ impl SettingsRepository for SqliteSettingsStore {
         source: &str,
         updated_by_user_id: Option<String>,
     ) -> AppResult<()> {
-        let encryption_key = self.encryption_key();
-        crate::queries::settings::upsert_setting_value_query(
-            &self.pool,
-            scope,
-            key_name,
-            scope_id,
-            &value_json,
-            source,
-            updated_by_user_id,
-            encryption_key.as_ref(),
-        )
-        .await?;
+        self.db
+            .upsert_setting_value(
+                scope.to_string(),
+                key_name.to_string(),
+                scope_id,
+                value_json,
+                source.to_string(),
+                updated_by_user_id,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -209,10 +195,9 @@ impl QualityProfileRepository for SqliteSettingsStore {
         scope_id: Option<String>,
         profiles: Vec<ApplicationQualityProfile>,
     ) -> AppResult<()> {
-        crate::queries::quality::replace_quality_profiles_query(
-            &self.pool, scope, scope_id, profiles,
-        )
-        .await
+        self.db
+            .replace_quality_profiles(scope, scope_id, profiles)
+            .await
     }
 }
 
@@ -272,11 +257,6 @@ impl SystemInfoProvider for SqliteSettingsStore {
     }
 
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
-        sqlx::query("VACUUM INTO ?")
-            .bind(dest_path)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        Ok(())
+        self.db.vacuum_into(dest_path).await
     }
 }

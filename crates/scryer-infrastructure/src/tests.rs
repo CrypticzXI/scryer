@@ -1,18 +1,22 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    CollectionUpdate, DownloadQueueCommandRepository, DownloadSubmissionRepository, EpisodeUpdate,
-    ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
+    CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
+    DownloadSubmissionRepository, EpisodeUpdate, ImportRepository, InsertMediaFileInput,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
+    NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
     ShowRepository, TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
     TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-    UserRepository, WantedItemRepository,
+    UserRepository, WantedItemRepository, WantedStatus,
 };
 use scryer_domain::{
-    Collection, CollectionType, Entitlement, Episode, ExternalId, ImportType,
-    InterstitialMovieMetadata, MediaFacet, Title,
+    ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
+    Entitlement, Episode, ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet,
+    NotificationChannelConfig, NotificationEventType, NotificationSubscription, Title,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
+use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
 #[tokio::test]
@@ -73,6 +77,267 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
     let _ = std::fs::remove_file(db);
 }
 
+#[tokio::test]
+async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
+    let (services, db) = temp_services("scryer_settings_writer").await;
+    services
+        .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([7; 32]))
+        .await
+        .expect("encryption key should set");
+    let settings = SqliteSettingsStore::new(&services);
+
+    settings
+        .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
+            category: "general".to_string(),
+            scope: "system".to_string(),
+            key_name: "secret.value".to_string(),
+            data_type: "string".to_string(),
+            default_value_json: "\"default\"".to_string(),
+            is_sensitive: true,
+            validation_json: None,
+        }])
+        .await
+        .expect("definitions should seed");
+
+    settings
+        .batch_upsert_settings_if_not_overridden(vec![(
+            "system".to_string(),
+            "secret.value".to_string(),
+            "\"seeded\"".to_string(),
+            "migration".to_string(),
+        )])
+        .await
+        .expect("batch upsert should succeed");
+
+    let seeded = settings
+        .get_setting_with_defaults("system", "secret.value", None)
+        .await
+        .expect("seeded setting should load")
+        .expect("seeded setting should exist");
+    assert_eq!(seeded.effective_value_json, "\"seeded\"");
+
+    let updated = settings
+        .upsert_setting_value(
+            "system",
+            "secret.value",
+            None,
+            "\"overridden\"",
+            "user",
+            None,
+        )
+        .await
+        .expect("direct upsert should succeed");
+    assert_eq!(updated.effective_value_json, "\"overridden\"");
+
+    settings
+        .delete_setting_value("system", "secret.value", None)
+        .await
+        .expect("delete override should succeed");
+
+    let reverted = settings
+        .get_setting_with_defaults("system", "secret.value", None)
+        .await
+        .expect("setting should still load")
+        .expect("setting should still exist");
+    assert_eq!(reverted.effective_value_json, "\"default\"");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn serialized_writer_handles_notification_channel_and_subscription_round_trip() {
+    let (services, db) = temp_services("scryer_notification_writer").await;
+    services
+        .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([9; 32]))
+        .await
+        .expect("encryption key should set");
+    let store = SqliteNotificationStore::new(&services);
+    let now = Utc::now();
+
+    let channel = NotificationChannelConfig {
+        id: "channel-1".to_string(),
+        name: "Discord".to_string(),
+        channel_type: ChannelType::parse("discord").expect("channel type"),
+        config_json: r#"{"url":"https://example.com/webhook"}"#.to_string(),
+        is_enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    NotificationChannelRepository::create_channel(&store, channel.clone())
+        .await
+        .expect("channel should create");
+
+    let fetched = NotificationChannelRepository::get_channel(&store, &channel.id)
+        .await
+        .expect("channel lookup should succeed")
+        .expect("channel should exist");
+    assert_eq!(fetched.config_json, channel.config_json);
+
+    let updated_channel = NotificationChannelConfig {
+        name: "Discord Alerts".to_string(),
+        config_json: r#"{"url":"https://example.com/updated"}"#.to_string(),
+        is_enabled: false,
+        updated_at: Utc::now(),
+        ..fetched.clone()
+    };
+    let updated = NotificationChannelRepository::update_channel(&store, updated_channel.clone())
+        .await
+        .expect("channel should update");
+    assert_eq!(updated.name, "Discord Alerts");
+    assert_eq!(updated.config_json, updated_channel.config_json);
+
+    let subscription = NotificationSubscription {
+        id: "subscription-1".to_string(),
+        channel_id: updated.id.clone(),
+        event_type: NotificationEventType::ImportComplete,
+        scope: "global".to_string(),
+        scope_id: None,
+        is_enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    NotificationSubscriptionRepository::create_subscription(&store, subscription.clone())
+        .await
+        .expect("subscription should create");
+
+    let updated_subscription = NotificationSubscription {
+        is_enabled: false,
+        updated_at: Utc::now(),
+        ..subscription.clone()
+    };
+    NotificationSubscriptionRepository::update_subscription(&store, updated_subscription.clone())
+        .await
+        .expect("subscription should update");
+
+    let by_channel =
+        NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)
+            .await
+            .expect("subscription list should load");
+    assert_eq!(by_channel.len(), 1);
+    assert!(!by_channel[0].is_enabled);
+
+    NotificationSubscriptionRepository::delete_subscription(&store, &subscription.id)
+        .await
+        .expect("subscription should delete");
+    NotificationChannelRepository::delete_channel(&store, &updated.id)
+        .await
+        .expect("channel should delete");
+
+    let remaining =
+        NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)
+            .await
+            .expect("subscription list should still load");
+    assert!(remaining.is_empty());
+    assert!(
+        NotificationChannelRepository::get_channel(&store, &updated.id)
+            .await
+            .expect("channel lookup should succeed")
+            .is_none()
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn serialized_writer_handles_download_client_reorder() {
+    let (services, db) = temp_services("scryer_download_client_writer").await;
+    let store = SqliteConfigStore::new(&services);
+    let now = Utc::now();
+
+    let client_a = DownloadClientConfig {
+        id: "client-a".to_string(),
+        name: "Client A".to_string(),
+        client_type: "weaver".to_string(),
+        config_json: "{}".to_string(),
+        client_priority: 0,
+        is_enabled: true,
+        status: DownloadClientStatus::Healthy,
+        last_error: None,
+        last_seen_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let client_b = DownloadClientConfig {
+        id: "client-b".to_string(),
+        name: "Client B".to_string(),
+        client_type: "sabnzbd".to_string(),
+        config_json: "{}".to_string(),
+        client_priority: 1,
+        is_enabled: true,
+        status: DownloadClientStatus::Healthy,
+        last_error: None,
+        last_seen_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    DownloadClientConfigRepository::create(&store, client_a.clone())
+        .await
+        .expect("first client should create");
+    DownloadClientConfigRepository::create(&store, client_b.clone())
+        .await
+        .expect("second client should create");
+
+    DownloadClientConfigRepository::reorder(&store, vec![client_b.id.clone(), client_a.id.clone()])
+        .await
+        .expect("reorder should succeed");
+
+    let ordered = DownloadClientConfigRepository::list(&store, None)
+        .await
+        .expect("clients should list");
+    let ordered_ids: Vec<String> = ordered.into_iter().map(|client| client.id).collect();
+    assert_eq!(ordered_ids, vec![client_b.id, client_a.id]);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
+    let (services, db) = temp_services("scryer_release_writer").await;
+    let release_store = SqliteReleaseStore::new(&services);
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        None,
+        Some("weaver".to_string()),
+        Some("Outlander.S08E05".to_string()),
+        ReleaseDownloadAttemptOutcome::Failed,
+        Some("boom".to_string()),
+        Some("secret".to_string()),
+    )
+    .await
+    .expect("release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].source_hint.as_deref(), Some("weaver"));
+
+    let latest_password = ReleaseAttemptRepository::get_latest_source_password(
+        &release_store,
+        None,
+        Some("weaver"),
+        Some("Outlander.S08E05"),
+    )
+    .await
+    .expect("latest password should load");
+    assert_eq!(latest_password.as_deref(), Some("secret"));
+
+    let vacuum_dest = std::env::temp_dir().join(format!(
+        "scryer_release_writer_copy_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    services
+        .vacuum_into(vacuum_dest.to_string_lossy().as_ref())
+        .await
+        .expect("vacuum into should succeed");
+    assert!(vacuum_dest.exists());
+
+    let _ = std::fs::remove_file(vacuum_dest);
+    let _ = std::fs::remove_file(db);
+}
+
 fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     Title {
         id: id.to_string(),
@@ -120,6 +385,18 @@ fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
     SqliteLibraryStateStore::new(services)
 }
 
+async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
+    let db = std::env::temp_dir().join(format!(
+        "{}_{}.db",
+        prefix,
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    (services, db)
+}
+
 async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
     for statement in sql
         .split(';')
@@ -131,6 +408,31 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
             .await
             .expect("migration statement should succeed");
     }
+}
+
+async fn single_connection_services(name: &str) -> (SqliteServices, std::path::PathBuf) {
+    let db = std::env::temp_dir().join(format!(
+        "{}_{}.db",
+        name,
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("single-connection pool should open");
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("migrations should apply");
+
+    let services = SqliteServices {
+        sender: crate::commands::spawn_db_command_worker(pool.clone()),
+        pool,
+        encryption_key: Arc::new(RwLock::new(None)),
+    };
+
+    (services, db)
 }
 
 async fn create_pre_0079_title_projection_schema(pool: &sqlx::SqlitePool) {
@@ -265,9 +567,8 @@ async fn title_queries_prefer_local_cached_poster_url() {
 
 #[tokio::test]
 async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_connection_sqlite() {
-    let services = SqliteServices::new("sqlite://file::memory:?mode=memory&cache=shared")
-        .await
-        .expect("in-memory db should initialize");
+    let (services, db) =
+        single_connection_services("scryer_title_hydration_single_connection").await;
     let catalog = catalog_store(&services);
 
     let mut title = make_test_title("title-hydration-extra-ids", None);
@@ -317,6 +618,56 @@ async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_con
             .iter()
             .any(|external_id| { external_id.source == "anilist" && external_id.value == "269" })
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn replace_title_match_state_completes_on_single_connection_sqlite() {
+    let (services, db) =
+        single_connection_services("scryer_replace_match_state_single_connection").await;
+    let catalog = catalog_store(&services);
+
+    let mut title = make_test_title("title-replace-match-state", None);
+    title.facet = MediaFacet::Anime;
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    title.year = Some(2024);
+    title.overview = Some("overview before clear".to_string());
+
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let updated = timeout(
+        Duration::from_secs(1),
+        TitleRepository::replace_match_state(
+            &catalog,
+            &title.id,
+            vec![ExternalId {
+                source: "tvdb".to_string(),
+                value: "99999".to_string(),
+            }],
+            vec!["score:9.1".to_string()],
+        ),
+    )
+    .await
+    .expect("replace match state should not self-deadlock on single-connection sqlite")
+    .expect("replace match state should succeed");
+
+    assert_eq!(updated.year, None);
+    assert_eq!(updated.overview, None);
+    assert!(
+        updated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tvdb" && external_id.value == "99999" })
+    );
+    assert!(updated.tags.iter().any(|tag| tag == "score:9.1"));
+
+    let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
@@ -905,6 +1256,406 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
 }
 
 #[tokio::test]
+async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_banner_fanart_alias_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
+
+    let title = make_test_title("title-banner-fanart", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
+        .bind("https://tvdb.example/banner.jpg")
+        .bind("https://tvdb.example/fanart.jpg")
+        .bind(&title.id)
+        .execute(&services.pool)
+        .await
+        .expect("source urls should update");
+
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Banner,
+                source_url: "https://tvdb.example/banner.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1920,
+                source_height: 1080,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "11111111111111111111111111111111".to_string(),
+                master_width: 1920,
+                master_height: 1080,
+                master_bytes: vec![1, 2, 3, 4],
+                variants: Vec::new(),
+            },
+        )
+        .await
+        .expect("banner image should insert");
+    library_state
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Fanart,
+                source_url: "https://tvdb.example/fanart.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 2560,
+                source_height: 1440,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "22222222222222222222222222222222".to_string(),
+                master_width: 2560,
+                master_height: 1440,
+                master_bytes: vec![5, 6, 7, 8],
+                variants: Vec::new(),
+            },
+        )
+        .await
+        .expect("fanart image should insert");
+
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        updated.banner_url.as_deref(),
+        Some("/images/titles/title-banner-fanart/banner/master?v=1111111111111111")
+    );
+    assert_eq!(
+        updated.banner_source_url.as_deref(),
+        Some("https://tvdb.example/banner.jpg")
+    );
+    assert_eq!(
+        updated.background_url.as_deref(),
+        Some("/images/titles/title-banner-fanart/fanart/master?v=2222222222222222")
+    );
+    assert_eq!(
+        updated.background_source_url.as_deref(),
+        Some("https://tvdb.example/fanart.jpg")
+    );
+
+    let banner = library_state
+        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
+        .await
+        .expect("banner blob lookup should succeed");
+    assert_eq!(
+        banner,
+        Some(TitleImageBlob {
+            content_type: "image/avif".to_string(),
+            etag: "11111111111111111111111111111111".to_string(),
+            bytes: vec![1, 2, 3, 4],
+        })
+    );
+
+    let fanart = library_state
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
+        .await
+        .expect("fanart blob lookup should succeed");
+    assert_eq!(
+        fanart,
+        Some(TitleImageBlob {
+            content_type: "image/avif".to_string(),
+            etag: "22222222222222222222222222222222".to_string(),
+            bytes: vec![5, 6, 7, 8],
+        })
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_master_variant_rows()
+{
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_banner_fanart_refresh_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
+
+    let title = make_test_title("title-banner-fanart-refresh", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
+        .bind("https://tvdb.example/banner-refresh.jpg")
+        .bind("https://tvdb.example/fanart-refresh.jpg")
+        .bind(&title.id)
+        .execute(&services.pool)
+        .await
+        .expect("source urls should update");
+
+    for (kind, source_url, sha) in [
+        (
+            TitleImageKind::Banner,
+            "https://tvdb.example/banner-refresh.jpg",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        (
+            TitleImageKind::Fanart,
+            "https://tvdb.example/fanart-refresh.jpg",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ),
+    ] {
+        library_state
+            .replace_title_image(
+                &title.id,
+                TitleImageReplacement {
+                    kind,
+                    source_url: source_url.to_string(),
+                    source_etag: None,
+                    source_last_modified: None,
+                    source_format: "jpeg".to_string(),
+                    source_width: 1920,
+                    source_height: 1080,
+                    storage_mode: TitleImageStorageMode::AvifMaster,
+                    master_format: "avif".to_string(),
+                    master_sha256: sha.to_string(),
+                    master_width: 1920,
+                    master_height: 1080,
+                    master_bytes: vec![1, 2, 3],
+                    variants: Vec::new(),
+                },
+            )
+            .await
+            .expect("title image should insert");
+    }
+
+    let pending_banner = library_state
+        .list_titles_requiring_image_refresh(TitleImageKind::Banner, 10)
+        .await
+        .expect("list pending banner refresh should succeed");
+    assert!(pending_banner.is_empty());
+
+    let pending_fanart = library_state
+        .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
+        .await
+        .expect("list pending fanart refresh should succeed");
+    assert!(pending_fanart.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fanart_variants() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_master_dedup_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
+
+    let title = make_test_title("title-master-dedup", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query(
+        "UPDATE titles SET
+            banner_url = ?,
+            background_url = ?,
+            banner_local_path = ?,
+            background_local_path = ?
+         WHERE id = ?",
+    )
+    .bind("https://tvdb.example/banner-master.jpg")
+    .bind("https://tvdb.example/fanart-master.jpg")
+    .bind("/images/titles/title-master-dedup/banner/master?v=bbbbbbbbbbbbbbbb")
+    .bind("/images/titles/title-master-dedup/fanart/master?v=dddddddddddddddd")
+    .bind(&title.id)
+    .execute(&services.pool)
+    .await
+    .expect("title source and legacy local paths should update");
+
+    sqlx::query(
+        "INSERT INTO title_images (
+            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
+            source_last_modified, source_format, source_width, source_height, storage_mode,
+            master_path, master_format, master_sha256, master_width, master_height, bytes,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("img-banner-master")
+    .bind(&title.id)
+    .bind("tvdb")
+    .bind(Option::<String>::None)
+    .bind("banner")
+    .bind("https://tvdb.example/banner-master.jpg")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind("jpeg")
+    .bind(1920i32)
+    .bind(1080i32)
+    .bind("avif_master")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    .bind(1920i32)
+    .bind(1080i32)
+    .bind(vec![1_u8, 2, 3, 4])
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("banner image row should insert");
+
+    sqlx::query(
+        "INSERT INTO title_images (
+            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
+            source_last_modified, source_format, source_width, source_height, storage_mode,
+            master_path, master_format, master_sha256, master_width, master_height, bytes,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("img-fanart-master")
+    .bind(&title.id)
+    .bind("tvdb")
+    .bind(Option::<String>::None)
+    .bind("fanart")
+    .bind("https://tvdb.example/fanart-master.jpg")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind("jpeg")
+    .bind(2560i32)
+    .bind(1440i32)
+    .bind("avif_master")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind("cccccccccccccccccccccccccccccccc")
+    .bind(2560i32)
+    .bind(1440i32)
+    .bind(vec![5_u8, 6, 7, 8])
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("fanart image row should insert");
+
+    sqlx::query(
+        "INSERT INTO title_image_variants (
+            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("variant-banner-master")
+    .bind("img-banner-master")
+    .bind("master")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind(1920i32)
+    .bind(1080i32)
+    .bind(vec![9_u8, 9, 9])
+    .bind("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("banner master variant row should insert");
+
+    sqlx::query(
+        "INSERT INTO title_image_variants (
+            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("variant-fanart-master")
+    .bind("img-fanart-master")
+    .bind("master")
+    .bind(Option::<String>::None)
+    .bind("avif")
+    .bind(2560i32)
+    .bind(1440i32)
+    .bind(vec![8_u8, 8, 8])
+    .bind("dddddddddddddddddddddddddddddddd")
+    .bind(Utc::now().to_rfc3339())
+    .bind(Utc::now().to_rfc3339())
+    .execute(&services.pool)
+    .await
+    .expect("fanart master variant row should insert");
+
+    run_embedded_migration(
+        &services.pool,
+        include_str!("../../scryer/src/db/migrations/0081_title_image_master_dedup.sql"),
+    )
+    .await;
+
+    let paths =
+        sqlx::query("SELECT banner_local_path, background_local_path FROM titles WHERE id = ?")
+            .bind(&title.id)
+            .fetch_one(&services.pool)
+            .await
+            .expect("load migrated local paths");
+    let banner_local_path: Option<String> = paths.try_get("banner_local_path").unwrap_or(None);
+    let background_local_path: Option<String> =
+        paths.try_get("background_local_path").unwrap_or(None);
+    assert_eq!(
+        banner_local_path.as_deref(),
+        Some("/images/titles/title-master-dedup/banner/master?v=aaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        background_local_path.as_deref(),
+        Some("/images/titles/title-master-dedup/fanart/master?v=cccccccccccccccc")
+    );
+
+    let remaining_master_variants: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM title_image_variants tiv
+         INNER JOIN title_images ti ON ti.id = tiv.title_image_id
+         WHERE tiv.variant_key = 'master'
+           AND ti.kind IN ('banner', 'fanart')",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("count remaining master variants");
+    assert_eq!(remaining_master_variants, 0);
+
+    let banner = library_state
+        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
+        .await
+        .expect("banner blob lookup should succeed after migration");
+    assert_eq!(
+        banner,
+        Some(TitleImageBlob {
+            content_type: "image/avif".to_string(),
+            etag: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            bytes: vec![1, 2, 3, 4],
+        })
+    );
+
+    let fanart = library_state
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
+        .await
+        .expect("fanart blob lookup should succeed after migration");
+    assert_eq!(
+        fanart,
+        Some(TitleImageBlob {
+            content_type: "image/avif".to_string(),
+            etag: "cccccccccccccccccccccccccccccccc".to_string(),
+            bytes: vec![5, 6, 7, 8],
+        })
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_image_local_path_backfill_matches_legacy_served_path() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_image_backfill_{}.db",
@@ -1341,6 +2092,215 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         row.get::<Option<String>, _>("grabbed_release"),
         Some("Existing Release".to_string())
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_due_wanted_items_by_facet_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = library_state_store(&services);
+    let catalog = catalog_store(&services);
+    let now = Utc::now().to_rfc3339();
+
+    let mut movie_title = make_test_title("title-movie", None);
+    movie_title.name = "Blocked Movie".to_string();
+    movie_title.facet = MediaFacet::Movie;
+    TitleRepository::create(&catalog, movie_title.clone())
+        .await
+        .expect("movie title should insert");
+
+    let mut series_title = make_test_title("title-series", None);
+    series_title.name = "Eligible Series".to_string();
+    series_title.facet = MediaFacet::Series;
+    TitleRepository::create(&catalog, series_title.clone())
+        .await
+        .expect("series title should insert");
+
+    let mut anime_title = make_test_title("title-anime", None);
+    anime_title.name = "Blocked Anime".to_string();
+    anime_title.facet = MediaFacet::Anime;
+    TitleRepository::create(&catalog, anime_title.clone())
+        .await
+        .expect("anime title should insert");
+
+    let series_collection = ShowRepository::create_collection(
+        &catalog,
+        Collection {
+            id: "series-season-1".to_string(),
+            title_id: series_title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("series collection should insert");
+
+    let series_episode = ShowRepository::create_episode(
+        &catalog,
+        Episode {
+            id: "series-episode-1".to_string(),
+            title_id: series_title.id.clone(),
+            collection_id: Some(series_collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Pilot".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1_800),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("series episode should insert");
+
+    let anime_collection = ShowRepository::create_collection(
+        &catalog,
+        Collection {
+            id: "anime-interstitial-1".to_string(),
+            title_id: anime_title.id.clone(),
+            collection_type: CollectionType::Interstitial,
+            collection_index: "0".to_string(),
+            label: Some("Movie".to_string()),
+            ordered_path: None,
+            narrative_order: Some("0".to_string()),
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: Some(InterstitialMovieMetadata {
+                tvdb_id: "anime-movie-1".to_string(),
+                name: "Franchise Movie".to_string(),
+                slug: "franchise-movie".to_string(),
+                year: Some(2024),
+                content_status: "released".to_string(),
+                overview: "Franchise movie between anime arcs".to_string(),
+                poster_url: String::new(),
+                language: "ja".to_string(),
+                runtime_minutes: 100,
+                sort_title: "Franchise Movie".to_string(),
+                continuity_status: Some("canon".to_string()),
+                genres: vec!["anime".to_string()],
+                studio: "Studio".to_string(),
+                digital_release_date: Some("2024-01-01".to_string()),
+                imdb_id: String::new(),
+                association_confidence: Some("high".to_string()),
+                movie_form: None,
+                confidence: Some("high".to_string()),
+                signal_summary: Some("Inserted by test fixture".to_string()),
+                placement: Some("between_seasons".to_string()),
+                movie_tmdb_id: None,
+                movie_mal_id: None,
+                movie_anidb_id: None,
+            }),
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("anime interstitial collection should insert");
+
+    for item in [
+        scryer_application::WantedItem {
+            id: "wanted-movie".to_string(),
+            title_id: movie_title.id.clone(),
+            title_name: Some(movie_title.name.clone()),
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        scryer_application::WantedItem {
+            id: "wanted-series-episode".to_string(),
+            title_id: series_title.id.clone(),
+            title_name: Some(series_title.name.clone()),
+            episode_id: Some(series_episode.id.clone()),
+            collection_id: None,
+            season_number: Some("1".to_string()),
+            media_type: "episode".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some("2024-01-01T00:00:01Z".to_string()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        scryer_application::WantedItem {
+            id: "wanted-anime-movie".to_string(),
+            title_id: anime_title.id.clone(),
+            title_name: Some(anime_title.name.clone()),
+            episode_id: None,
+            collection_id: Some(anime_collection.id.clone()),
+            season_number: Some("0".to_string()),
+            media_type: "interstitial_movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+    ] {
+        workflow
+            .upsert_wanted_item(&item)
+            .await
+            .expect("wanted item should insert");
+    }
+
+    let rows = crate::queries::wanted::list_due_wanted_items_query(
+        services.pool(),
+        "2024-01-02T00:00:00Z",
+        2,
+        &[MediaFacet::Movie, MediaFacet::Anime],
+    )
+    .await
+    .expect("due wanted items query should succeed");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "wanted-series-episode");
 
     let _ = std::fs::remove_file(db);
 }

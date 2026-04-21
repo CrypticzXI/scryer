@@ -1,8 +1,6 @@
-import * as React from "react";
 import { useTranslate } from "@/lib/context/translate-context";
-import { Button } from "@/components/ui/button";
-import { Eye, EyeOff, Loader2, Trash2, Zap } from "lucide-react";
-import type { ViewId } from "@/components/root/types";
+import { Eye, EyeOff } from "lucide-react";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -54,7 +52,7 @@ type PosterGridProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
   isDeletingById: Record<string, boolean>;
@@ -68,30 +66,10 @@ export function PosterGrid({
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
-  onDelete,
-  onAutoQueue,
-  isDeletingById,
   overviewTargetView,
 }: PosterGridProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
-  const [autoQueueLoadingById, setAutoQueueLoadingById] = React.useState<Record<string, boolean>>({});
-
-  const handleAutoQueue = React.useCallback(
-    (title: TitleRecord) => {
-      const titleId = title.id;
-      setAutoQueueLoadingById((prev) => ({ ...prev, [titleId]: true }));
-      void Promise.resolve(onAutoQueue(title)).finally(() => {
-        setAutoQueueLoadingById((prev) => {
-          if (!prev[titleId]) return prev;
-          const next = { ...prev };
-          delete next[titleId];
-          return next;
-        });
-      });
-    },
-    [onAutoQueue],
-  );
 
   if (titles.length === 0) {
     return (
@@ -110,10 +88,6 @@ export function PosterGrid({
           qualityProfiles={qualityProfiles}
           qualityProfilesLoading={qualityProfilesLoading}
           onOpenOverview={onOpenOverview}
-          onDelete={onDelete}
-          onAutoQueue={handleAutoQueue}
-          deleteLoading={isDeletingById[title.id] === true}
-          autoQueueLoading={autoQueueLoadingById[title.id] === true}
           overviewTargetView={overviewTargetView}
           isMobile={isMobile}
         />
@@ -128,11 +102,7 @@ type PosterCardProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, titleId: string) => void;
-  onDelete: (title: TitleRecord) => void;
-  onAutoQueue: (title: TitleRecord) => void;
-  deleteLoading: boolean;
-  autoQueueLoading: boolean;
+  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   overviewTargetView: ViewId;
   isMobile: boolean;
 };
@@ -144,10 +114,6 @@ function PosterCard({
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
-  onDelete,
-  onAutoQueue,
-  deleteLoading,
-  autoQueueLoading,
   overviewTargetView,
   isMobile,
 }: PosterCardProps) {
@@ -163,7 +129,7 @@ function PosterCard({
         <div className="relative">
           <button
             type="button"
-            onClick={() => onOpenOverview(overviewTargetView, title.id)}
+            onClick={() => onOpenOverview(overviewTargetView, title)}
             className="block w-full overflow-hidden bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >
@@ -218,44 +184,7 @@ function PosterCard({
               ) : null}
             </div>
           </button>
-
         </div>
-
-        {isMobile ? (
-          <div className="space-y-2 p-2">
-            <button
-              type="button"
-              onClick={() => onOpenOverview(overviewTargetView, title.id)}
-              className="block w-full text-left"
-            >
-              <p className="line-clamp-2 text-sm font-semibold text-foreground">{title.name}</p>
-            </button>
-            <div className="flex gap-2">
-              {isMovieView ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => onAutoQueue(title)}
-                  disabled={autoQueueLoading}
-                >
-                  {autoQueueLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                  <span>{t("label.search")}</span>
-                </Button>
-              ) : null}
-              <Button
-                variant="destructive"
-                size="sm"
-                className={isMovieView ? "flex-1" : "w-full"}
-                onClick={() => onDelete(title)}
-                disabled={deleteLoading}
-              >
-                {deleteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                <span>{t("label.delete")}</span>
-              </Button>
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
   );

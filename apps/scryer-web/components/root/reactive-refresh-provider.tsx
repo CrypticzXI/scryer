@@ -125,6 +125,7 @@ function applyReactiveRefreshActionResult(
         titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["titleEvents"],
         titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["titleReleaseBlocklist"],
         subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["subtitleDownloads"],
+        hasDownloadClients: (payload[typedActionPlan.setupStatusAlias] as { hasDownloadClients?: boolean } | null | undefined)?.hasDownloadClients === true,
       });
       return;
     }
@@ -159,6 +160,7 @@ function reactiveRefreshActionAliases(
         actionPlan.titleEventsAlias,
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.subtitleDownloadsAlias,
+        actionPlan.setupStatusAlias,
       ];
     case "importHistory":
       return [actionPlan.importHistoryAlias];

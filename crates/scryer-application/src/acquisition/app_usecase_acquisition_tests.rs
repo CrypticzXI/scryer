@@ -384,8 +384,12 @@ fn season_pack_release_uses_collection_submission_scope() {
         "Test.Show.S01.2025.Complete.1080p.WEB-DL.AVC.AAC-DBTV",
     );
 
-    assert_eq!(scope.episode_id, None);
-    assert_eq!(scope.collection_id.as_deref(), Some("season-1"));
+    assert_eq!(
+        scope,
+        SubmissionScope::Collection {
+            collection_id: "season-1".to_string(),
+        }
+    );
 }
 
 #[test]
@@ -399,8 +403,12 @@ fn single_episode_release_uses_episode_submission_scope() {
         "Test.Show.S01E01.1080p.WEB-DL.AVC.AAC-DBTV",
     );
 
-    assert_eq!(scope.episode_id.as_deref(), Some("episode-1"));
-    assert_eq!(scope.collection_id.as_deref(), Some("season-1"));
+    assert_eq!(
+        scope,
+        SubmissionScope::Episode {
+            episode_id: "episode-1".to_string(),
+        }
+    );
 }
 
 #[test]
@@ -416,17 +424,18 @@ fn interstitial_movie_blocking_is_collection_scoped() {
         source_kind: None,
         source_title: Some("Title-level".to_string()),
         request_signature: None,
-        episode_id: None,
-        collection_id: None,
+        scope: SubmissionScope::Title,
     };
-    assert!(!submission_blocks_wanted_item(
+    assert!(submission_blocks_wanted_item(
         &title_submission,
         &wanted,
         wanted.collection_id.as_deref(),
     ));
 
     let matching_collection_submission = DownloadSubmission {
-        collection_id: wanted.collection_id.clone(),
+        scope: SubmissionScope::Collection {
+            collection_id: wanted.collection_id.clone().expect("collection id"),
+        },
         ..title_submission.clone()
     };
     assert!(submission_blocks_wanted_item(
@@ -436,7 +445,9 @@ fn interstitial_movie_blocking_is_collection_scoped() {
     ));
 
     let different_collection_submission = DownloadSubmission {
-        collection_id: Some("movie-collection-2".to_string()),
+        scope: SubmissionScope::Collection {
+            collection_id: "movie-collection-2".to_string(),
+        },
         ..title_submission
     };
     assert!(!submission_blocks_wanted_item(

@@ -368,12 +368,13 @@ pub async fn try_import_completed_downloads(
                 .await
             {
                 Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
+                    let collection_id = submission.scope.collection_id().map(str::to_string);
                     let mut patched = completed.clone();
                     patched.parameters = vec![
                         ("*scryer_title_id".to_string(), submission.title_id),
                         ("*scryer_facet".to_string(), submission.facet),
                     ];
-                    if let Some(coll_id) = submission.collection_id {
+                    if let Some(coll_id) = collection_id {
                         patched
                             .parameters
                             .push(("*scryer_collection_id".to_string(), coll_id));

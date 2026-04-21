@@ -1,7 +1,7 @@
 use chrono::Utc;
 use scryer_application::{AppError, AppResult};
 use scryer_domain::NotificationChannelConfig;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::encryption::EncryptionKey;
 
@@ -101,6 +101,23 @@ pub(crate) async fn get_notification_channel_query(
     row.map(|r| row_to_channel(&r, encryption_key)).transpose()
 }
 
+async fn get_notification_channel_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<Option<NotificationChannelConfig>> {
+    let row = sqlx::query(
+        "SELECT id, name, channel_type, config_json, is_enabled, created_at, updated_at
+         FROM notification_channels WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| AppError::Repository(e.to_string()))?;
+
+    row.map(|r| row_to_channel(&r, encryption_key)).transpose()
+}
+
 pub(crate) async fn create_notification_channel_query(
     pool: &SqlitePool,
     config: &NotificationChannelConfig,
@@ -132,6 +149,10 @@ pub(crate) async fn update_notification_channel_query(
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<NotificationChannelConfig> {
     let stored_config = maybe_encrypt(encryption_key, &config.config_json)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AppError::Repository(e.to_string()))?;
 
     let result = sqlx::query(
         "UPDATE notification_channels SET name = ?, config_json = ?, is_enabled = ?, updated_at = ? WHERE id = ?",
@@ -141,7 +162,7 @@ pub(crate) async fn update_notification_channel_query(
     .bind(if config.is_enabled { 1_i64 } else { 0_i64 })
     .bind(Utc::now().to_rfc3339())
     .bind(&config.id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Repository(e.to_string()))?;
 
@@ -152,9 +173,13 @@ pub(crate) async fn update_notification_channel_query(
         )));
     }
 
-    get_notification_channel_query(pool, &config.id, encryption_key)
+    let channel = get_notification_channel_tx(&mut tx, &config.id, encryption_key)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("notification channel {}", config.id)))
+        .ok_or_else(|| AppError::NotFound(format!("notification channel {}", config.id)))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Repository(e.to_string()))?;
+    Ok(channel)
 }
 
 pub(crate) async fn delete_notification_channel_query(

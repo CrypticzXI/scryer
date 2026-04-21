@@ -13,6 +13,11 @@ pub trait TitleRepository: Send + Sync {
         query: Option<String>,
     ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
+    async fn get_by_facet_and_slug(
+        &self,
+        facet: MediaFacet,
+        slug: &str,
+    ) -> AppResult<Option<Title>>;
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>>;
     async fn find_by_external_id_in_facet(
         &self,
@@ -680,6 +685,7 @@ pub trait WantedItemRepository: Send + Sync {
         &self,
         now: &str,
         batch_limit: i64,
+        excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<WantedItem>>;
 
     async fn update_wanted_item_status(

@@ -155,7 +155,9 @@ That means:
 
 - all state lives in SQLite
 - we do not add Redis, external queues, or alternate persistence systems
-- write contention is handled through the existing serialized write path
+- production SQLite writes go through one serialized writer path
+- reads stay direct on the pool
+- write contention is handled by the writer deadline/retry policy rather than ad hoc per-store behavior
 - backup, restore, upgrade, and portability matter
 - operational simplicity matters
 
@@ -517,7 +519,7 @@ Responsibilities:
 
 - smaller SQLite store implementations grouped by concern
 - shared SQLite runtime through `DbRuntime` / `SqliteServices`
-- narrow command-worker path only for the operations still requiring serialized execution
+- one canonical serialized SQLite writer through `DbRuntime` / `DbCommand`
 - read-query modules
 - download client integrations
 - metadata gateway integration
@@ -527,7 +529,10 @@ Responsibilities:
 Persistence rules:
 
 - reads query the pool directly through the store/query modules
-- serialized execution is reserved for the remaining operations that truly need it
+- production SQLite mutations are sent through the serialized writer, not executed directly from stores
+- stores may keep both `db` and `pool`, but `pool` is for reads and inspections while `db` owns writes
+- the writer is the only place that applies SQLite busy retry/deadline policy for serialized commands
+- batch and maintenance writes remain single commands on the writer rather than hand-rolled loops from callers
 - SQL is parameterized and explicit
 - dynamic SQL goes through `QueryBuilder`
 - migrations are embedded and applied at startup
@@ -654,7 +659,7 @@ State flows through:
 2. Add it to the smallest relevant grouped dependency struct inside `AppServices`.
 3. Implement it in infrastructure.
 4. Add explicit query support.
-5. Add serialized write-path support only if the write genuinely requires it.
+5. If the trait mutates SQLite state, route that mutation through `DbRuntime` / `DbCommand` instead of writing directly from the store.
 6. Add testing/null implementations as needed.
 7. Wire the concrete implementation in the binary crate.
 

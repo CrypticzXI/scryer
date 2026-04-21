@@ -2,16 +2,13 @@
 import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
-  deleteSubtitlePreviewQuery,
   deleteTitlePreviewQuery,
   mediaRenamePreviewQuery,
   movieOverviewSettingsInitQuery,
   searchForTitleQuery,
-  subtitleDownloadsQuery,
 } from "@/lib/graphql/queries";
 import {
   applyMediaRenameMutation,
-  blacklistSubtitleMutation,
   deleteMediaFileMutation,
   deleteTitleMutation,
   queueExistingMutation,
@@ -36,6 +33,7 @@ import { MovieOverviewView } from "@/components/views/movie-overview-view";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
 import { Checkbox } from "@/components/ui/checkbox";
+import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
@@ -208,12 +206,14 @@ type MovieOverviewContainerProps = {
   titleId: string;
   onTitleNotFound?: () => void;
   onBackToList?: () => void;
+  onTitleResolved?: (title: OverviewTitleTarget) => void;
 };
 
 export const MovieOverviewContainer = React.memo(function MovieOverviewContainer({
   titleId,
   onTitleNotFound,
   onBackToList,
+  onTitleResolved,
 }: MovieOverviewContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -237,8 +237,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_MOVIE_LIBRARY_PATH);
   const [mediaFiles, setMediaFiles] = React.useState<TitleMediaFile[]>([]);
-  const [subtitleDownloads, setSubtitleDownloads] = React.useState<SubtitleDownloadRecord[]>([]);
   const [wantedItem, setWantedItem] = React.useState<WantedItem | null>(null);
+  const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
+  const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
+    React.useState(false);
   const [monitoredUpdating, setMonitoredUpdating] = React.useState(false);
   const [searchMonitoredLoading, setSearchMonitoredLoading] = React.useState(false);
   const [refreshAndScanLoading, setRefreshAndScanLoading] = React.useState(false);
@@ -251,11 +253,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     React.useState<TitleMediaFile | null>(null);
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
-    React.useState("");
-  const [subtitleToBlacklist, setSubtitleToBlacklist] =
-    React.useState<SubtitleDownloadRecord | null>(null);
-  const [subtitleDeleteLoading, setSubtitleDeleteLoading] = React.useState(false);
-  const [subtitleDeleteTypedConfirmation, setSubtitleDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
   const [wantedActionLoading, setWantedActionLoading] = React.useState<
@@ -293,24 +290,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     mediaFileDeletePreviewVariables,
     mediaFileToDelete !== null,
   );
-  const subtitleDeletePreviewVariables = React.useMemo(
-    () =>
-      subtitleToBlacklist
-        ? { input: { subtitleDownloadId: subtitleToBlacklist.id } }
-        : null,
-    [subtitleToBlacklist],
-  );
-  const {
-    preview: subtitleDeletePreview,
-    loading: subtitleDeletePreviewLoading,
-    error: subtitleDeletePreviewError,
-  } = useDeletePreview(
-    deleteSubtitlePreviewQuery,
-    "deleteSubtitlePreview",
-    subtitleDeletePreviewVariables,
-    subtitleToBlacklist !== null,
-  );
-
   const applyTitleDetailSnapshot = React.useCallback(
     (
       snapshot: TitleOverviewSnapshot<
@@ -322,16 +301,25 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     ) => {
       const nextTitle = snapshot.title;
       setTitle(nextTitle);
+      if (nextTitle) {
+        onTitleResolved?.({ id: nextTitle.id, slug: nextTitle.slug });
+      }
       setCollections(nextTitle?.collections ?? []);
       setEvents(snapshot.titleEvents);
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
       setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
-      setSubtitleDownloads(snapshot.subtitleDownloads);
+      setHasDownloadClients(snapshot.hasDownloadClients);
       setRenamePlan(null);
     },
-    [],
+    [onTitleResolved],
   );
+
+  React.useEffect(() => {
+    if (hasDownloadClients) {
+      setShowSearchPrerequisiteNotice(false);
+    }
+  }, [hasDownloadClients]);
 
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
@@ -342,13 +330,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     >(client, titleId, 200);
     applyTitleDetailSnapshot(snapshot);
   }, [applyTitleDetailSnapshot, titleId, client]);
-
-  const refreshSubtitleDownloads = React.useCallback(() => {
-    if (!titleId) return;
-    client.query(subtitleDownloadsQuery, { titleId }).toPromise().then((subResult) => {
-      setSubtitleDownloads(subResult.data?.subtitleDownloads ?? []);
-    }).catch(() => {});
-  }, [titleId, client]);
 
   // Load title detail on mount
   React.useEffect(() => {
@@ -365,6 +346,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setRenamePlan(null);
       setRenamePreviewing(false);
       setRenameApplying(false);
+      setHasDownloadClients(true);
+      setShowSearchPrerequisiteNotice(false);
       setTitleLookupAttempted(false);
       setTitleLookupFailed(false);
       setLoading(false);
@@ -378,6 +361,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     setTitleLookupFailed(false);
     setSearchResults([]);
     setInteractiveSearchAttempted(false);
+    setShowSearchPrerequisiteNotice(false);
     setLoading(true);
     refreshTitleDetail()
       .catch((err: unknown) => {
@@ -497,6 +481,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const handleSearchMonitored = React.useCallback(
     async () => {
       if (!title) return;
+      if (!hasDownloadClients) {
+        setShowSearchPrerequisiteNotice(true);
+        return;
+      }
       setSearchMonitoredLoading(true);
       try {
         const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
@@ -517,7 +505,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         setSearchMonitoredLoading(false);
       }
     },
-    [title, client, refreshTitleDetail, setGlobalStatus, t],
+    [title, hasDownloadClients, client, refreshTitleDetail, setGlobalStatus, t],
   );
 
   const handlePauseWanted = React.useCallback(
@@ -543,7 +531,14 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
 
   const runIndexerSearch = React.useCallback(async () => {
     if (!title) return;
+    if (!hasDownloadClients) {
+      setShowSearchPrerequisiteNotice(true);
+      setSearchResults([]);
+      setInteractiveSearchAttempted(false);
+      return;
+    }
     setInteractiveSearchAttempted(true);
+    setShowSearchPrerequisiteNotice(false);
     setSearching(true);
     setGlobalStatus(t("status.searchingNzb", { query: title.name, category: "" }));
     try {
@@ -560,7 +555,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     } finally {
       setSearching(false);
     }
-  }, [title, client, t, setGlobalStatus]);
+  }, [title, hasDownloadClients, client, t, setGlobalStatus]);
 
   const queueRelease = React.useCallback(
     async (release: Release) => {
@@ -579,6 +574,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         const { error } = await client.mutation(queueExistingMutation, {
           input: {
             titleId: title.id,
+            scope: { title: true },
             release: {
               sourceHint,
               sourceKind: release.sourceKind ?? null,
@@ -802,50 +798,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     t,
   ]);
 
-  const handleRequestBlacklistSubtitle = React.useCallback((subtitleDownloadId: string) => {
-    const download =
-      subtitleDownloads.find((candidate) => candidate.id === subtitleDownloadId) ?? null;
-    setSubtitleToBlacklist(download);
-    setSubtitleDeleteTypedConfirmation("");
-  }, [subtitleDownloads]);
-
-  const handleCancelBlacklistSubtitle = React.useCallback(() => {
-    if (subtitleDeleteLoading) return;
-    setSubtitleToBlacklist(null);
-    setSubtitleDeleteTypedConfirmation("");
-  }, [subtitleDeleteLoading]);
-
-  const handleConfirmBlacklistSubtitle = React.useCallback(async () => {
-    if (!subtitleToBlacklist || !subtitleDeletePreview) return;
-    setSubtitleDeleteLoading(true);
-    try {
-      const { error } = await client.mutation(blacklistSubtitleMutation, {
-        input: {
-          subtitleDownloadId: subtitleToBlacklist.id,
-          previewFingerprint: subtitleDeletePreview.fingerprint,
-          typedConfirmation: subtitleDeleteTypedConfirmation.trim() || undefined,
-        },
-      }).toPromise();
-      if (error) throw error;
-      setGlobalStatus(t("subtitle.blacklisted"));
-      await refreshSubtitleDownloads();
-      setSubtitleToBlacklist(null);
-      setSubtitleDeleteTypedConfirmation("");
-    } catch (error: unknown) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
-    } finally {
-      setSubtitleDeleteLoading(false);
-    }
-  }, [
-    client,
-    refreshSubtitleDownloads,
-    setGlobalStatus,
-    subtitleDeletePreview,
-    subtitleDeleteTypedConfirmation,
-    subtitleToBlacklist,
-    t,
-  ]);
-
   const deleteTitleConfirmDisabled =
     deleteFilesOnDisk &&
     (titleDeletePreviewLoading ||
@@ -859,12 +811,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     !mediaFileDeletePreview ||
     (mediaFileDeletePreview.requiresTypedConfirmation &&
       mediaFileDeleteTypedConfirmation.trim() !== "DELETE");
-  const deleteSubtitleConfirmDisabled =
-    subtitleDeletePreviewLoading ||
-    !!subtitleDeletePreviewError ||
-    !subtitleDeletePreview ||
-    (subtitleDeletePreview.requiresTypedConfirmation &&
-      subtitleDeleteTypedConfirmation.trim() !== "DELETE");
 
   const IMPORT_KINDS = React.useMemo(
     () =>
@@ -894,6 +840,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         events={events}
         searchResults={searchResults}
         searching={searching}
+        hasDownloadClients={hasDownloadClients}
+        showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         renamePlan={renamePlan}
         renamePreviewing={renamePreviewing}
         renameApplying={renameApplying}
@@ -922,11 +870,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         onRequestDeleteTitle={handleRequestDeleteTitle}
         blocklistEntries={blocklistEntries}
         mediaFiles={mediaFiles}
-        subtitleDownloads={subtitleDownloads}
         onDeleteFile={handleDeleteMediaFile}
-        onRequestBlacklistSubtitle={handleRequestBlacklistSubtitle}
-        blacklistingId={subtitleDeleteLoading ? subtitleToBlacklist?.id ?? null : null}
-        onRefreshSubtitles={refreshSubtitleDownloads}
+        onRefreshSubtitles={() => { void refreshTitleDetail(); }}
         onOpenFixMatch={() => setFixMatchOpen(true)}
       />
       <FixTitleMatchDialog
@@ -987,25 +932,6 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
           error={mediaFileDeletePreviewError}
           typedConfirmation={mediaFileDeleteTypedConfirmation}
           onTypedConfirmationChange={setMediaFileDeleteTypedConfirmation}
-        />
-      </ConfirmDialog>
-      <ConfirmDialog
-        open={subtitleToBlacklist !== null}
-        title={t("subtitle.blacklist")}
-        description={subtitleToBlacklist?.filePath ?? t("subtitle.blacklist")}
-        confirmLabel={t("label.delete")}
-        cancelLabel={t("label.cancel")}
-        isBusy={subtitleDeleteLoading}
-        confirmDisabled={deleteSubtitleConfirmDisabled}
-        onConfirm={handleConfirmBlacklistSubtitle}
-        onCancel={handleCancelBlacklistSubtitle}
-      >
-        <DeletePreviewSummary
-          preview={subtitleDeletePreview}
-          loading={subtitleDeletePreviewLoading}
-          error={subtitleDeletePreviewError}
-          typedConfirmation={subtitleDeleteTypedConfirmation}
-          onTypedConfirmationChange={setSubtitleDeleteTypedConfirmation}
         />
       </ConfirmDialog>
     </>

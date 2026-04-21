@@ -25,6 +25,11 @@ export type ContentSettingsSection =
   | "renaming"
   | "routing";
 
+export type OverviewTitleTarget = {
+  id: string;
+  slug?: string | null;
+};
+
 export type Translate = (
   key: string,
   values?: Record<string, string | number | boolean | null | undefined>,

@@ -1847,7 +1847,7 @@ impl MetadataGateway for MetadataGatewayClient {
 
         for chunk in deduped_queries.chunks(METADATA_GATEWAY_MAX_SEARCH_BATCH) {
             let request_started_at = Instant::now();
-            info!(
+            debug!(
                 query_count = chunk.len(),
                 "metadata gateway batched search request"
             );
@@ -1868,7 +1868,7 @@ impl MetadataGateway for MetadataGatewayClient {
                 },
             });
             let data: SearchTvdbBatchResponse = self.execute_graphql(payload).await?;
-            info!(
+            debug!(
                 query_count = chunk.len(),
                 elapsed_ms = request_started_at.elapsed().as_millis() as u64,
                 "metadata gateway batched search complete"
@@ -2166,7 +2166,7 @@ impl MetadataGateway for MetadataGatewayClient {
 
         let request_started_at = Instant::now();
 
-        info!(
+        debug!(
             movies = unique_movies.len(),
             series = unique_series.len(),
             "bulk metadata request"
@@ -2191,7 +2191,7 @@ impl MetadataGateway for MetadataGatewayClient {
             merge_bulk_metadata_partial(&data, &mut movies, &mut series);
         }
 
-        info!(
+        debug!(
             movies_resolved = movies.len(),
             series_resolved = series.len(),
             elapsed_ms = request_started_at.elapsed().as_millis() as u64,

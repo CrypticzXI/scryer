@@ -20,6 +20,7 @@ import type {
 } from "@/components/containers/series-overview-container";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import { TitleHistoryModal } from "@/components/common/title-history-modal";
+import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import {
   episodePanelReducer,
   initialEpisodePanelState,
@@ -75,9 +76,11 @@ type Props = {
   seasonSearchResultsByCollection?: Record<string, Release[]>;
   seasonSearchLoadingByCollection?: Record<string, boolean>;
   onRunSeasonSearch?: (collection: TitleCollection) => Promise<void> | void;
-  onQueueFromSeasonSearch?: (release: Release) => Promise<void> | void;
+  onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
   monitoredUpdating?: boolean;
   searchMonitoredLoading?: boolean;
+  hasDownloadClients: boolean;
+  showSearchPrerequisiteNotice: boolean;
   refreshAndScanLoading?: boolean;
   onRequestDeleteTitle?: () => void;
   deleteLoading?: boolean;
@@ -100,6 +103,7 @@ export function SeriesOverviewView({
   onSetCollectionMonitored,
   onSetEpisodeMonitored,
   onSetTitleMonitored,
+  onSearchMonitored,
   onRefreshAndScan,
   onAutoSearchEpisode,
   onAutoSearchInterstitialMovie,
@@ -115,7 +119,12 @@ export function SeriesOverviewView({
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
   monitoredUpdating = false,
+  searchMonitoredLoading = false,
+  hasDownloadClients,
+  showSearchPrerequisiteNotice,
   refreshAndScanLoading = false,
+  onRequestDeleteTitle,
+  deleteLoading = false,
   onDeleteFile,
   onOpenFixMatch,
 }: Props) {
@@ -136,6 +145,23 @@ export function SeriesOverviewView({
   const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [episodePanel, dispatchEpisodePanel] = React.useReducer(episodePanelReducer, initialEpisodePanelState);
+  const [searchBlockedByEpisode, setSearchBlockedByEpisode] = React.useState<Record<string, boolean>>({});
+  const [searchBlockedByCollection, setSearchBlockedByCollection] = React.useState<Record<string, boolean>>({});
+  const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
+    ? <TitleSearchDownloadClientNotice />
+    : null;
+
+  React.useEffect(() => {
+    setSearchBlockedByEpisode({});
+    setSearchBlockedByCollection({});
+  }, [title?.id]);
+
+  React.useEffect(() => {
+    if (hasDownloadClients) {
+      setSearchBlockedByEpisode({});
+      setSearchBlockedByCollection({});
+    }
+  }, [hasDownloadClients]);
 
   // Initialize expanded state when data arrives
   const initializedRef = React.useRef(false);
@@ -182,6 +208,20 @@ export function SeriesOverviewView({
     (episode: CollectionEpisode) => {
       if (!title) return;
       const episodeId = episode.id;
+
+      if (!hasDownloadClients) {
+        setSearchBlockedByEpisode((prev) => ({ ...prev, [episodeId]: true }));
+        dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
+        dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
+        return;
+      }
+
+      setSearchBlockedByEpisode((prev) => {
+        if (!prev[episodeId]) return prev;
+        const next = { ...prev };
+        delete next[episodeId];
+        return next;
+      });
       dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: true });
 
       const collection = collections.find((c) => c.id === episode.collectionId);
@@ -210,7 +250,7 @@ export function SeriesOverviewView({
           dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
         });
     },
-    [client, title, collections],
+    [client, hasDownloadClients, title, collections],
   );
 
   const handleToggleEpisodeSearch = React.useCallback(
@@ -226,12 +266,15 @@ export function SeriesOverviewView({
           dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
         }
         dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab: "search" });
-        if (!Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)) {
+        if (
+          searchBlockedByEpisode[episodeId]
+          || !Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)
+        ) {
           handleRunEpisodeSearch(episode);
         }
       }
     },
-    [episodePanel.expandedEpisodeRows, episodePanel.episodeActiveTab, handleRunEpisodeSearch, episodePanel.searchResultsByEpisode],
+    [episodePanel.expandedEpisodeRows, episodePanel.episodeActiveTab, handleRunEpisodeSearch, episodePanel.searchResultsByEpisode, searchBlockedByEpisode],
   );
 
   const handleToggleEpisodeDetails = React.useCallback(
@@ -255,15 +298,21 @@ export function SeriesOverviewView({
   const handleEpisodeTabChange = React.useCallback(
     (episodeId: string, tab: EpisodePanelTab, episode: CollectionEpisode) => {
       dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab });
-      if (tab === "search" && !Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)) {
+      if (
+        tab === "search"
+        && (
+          searchBlockedByEpisode[episodeId]
+          || !Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)
+        )
+      ) {
         handleRunEpisodeSearch(episode);
       }
     },
-    [handleRunEpisodeSearch, episodePanel.searchResultsByEpisode],
+    [handleRunEpisodeSearch, episodePanel.searchResultsByEpisode, searchBlockedByEpisode],
   );
 
   const handleQueueFromEpisodeSearch = React.useCallback(
-    (release: Release) => {
+    (episode: CollectionEpisode, release: Release) => {
       if (!title) return Promise.resolve();
       if (release.qualityProfileDecision && release.qualityProfileDecision.allowed === false) {
         const reason = release.qualityProfileDecision.blockCodes.join(", ") || "unknown";
@@ -280,6 +329,7 @@ export function SeriesOverviewView({
       return client.mutation(queueExistingMutation, {
         input: {
           titleId: title.id,
+          scope: { episode: episode.id },
           release: {
             sourceHint,
             sourceKind: release.sourceKind ?? null,
@@ -302,8 +352,24 @@ export function SeriesOverviewView({
 
   const handleAutoSearchEpisode = React.useCallback(
     (episode: CollectionEpisode) => {
+      if (!hasDownloadClients) {
+        const episodeId = episode.id;
+        if (!episodePanel.expandedEpisodeRows.has(episodeId)) {
+          dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
+        }
+        dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab: "search" });
+        dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
+        setSearchBlockedByEpisode((prev) => ({ ...prev, [episodeId]: true }));
+        return;
+      }
       if (!onAutoSearchEpisode) return;
       const episodeId = episode.id;
+      setSearchBlockedByEpisode((prev) => {
+        if (!prev[episodeId]) return prev;
+        const next = { ...prev };
+        delete next[episodeId];
+        return next;
+      });
       dispatchEpisodePanel({ type: "SET_AUTO_SEARCH_LOADING", episodeId, loading: true });
       Promise.resolve(onAutoSearchEpisode(episode))
         .catch((error: unknown) => {
@@ -313,13 +379,23 @@ export function SeriesOverviewView({
           dispatchEpisodePanel({ type: "SET_AUTO_SEARCH_LOADING", episodeId, loading: false });
         });
     },
-    [onAutoSearchEpisode, setGlobalStatus, t],
+    [episodePanel.expandedEpisodeRows, hasDownloadClients, onAutoSearchEpisode, setGlobalStatus, t],
   );
 
   const [interstitialSearchLoading, setInterstitialSearchLoading] = React.useState(false);
   const handleAutoSearchInterstitialMovie = React.useCallback(
     (collection: TitleCollection) => {
+      if (!hasDownloadClients) {
+        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
+        return;
+      }
       if (!onAutoSearchInterstitialMovie) return;
+      setSearchBlockedByCollection((prev) => {
+        if (!prev[collection.id]) return prev;
+        const next = { ...prev };
+        delete next[collection.id];
+        return next;
+      });
       setInterstitialSearchLoading(true);
       Promise.resolve(onAutoSearchInterstitialMovie(collection))
         .catch((error: unknown) => {
@@ -327,7 +403,7 @@ export function SeriesOverviewView({
         })
         .finally(() => setInterstitialSearchLoading(false));
     },
-    [onAutoSearchInterstitialMovie, setGlobalStatus, t],
+    [hasDownloadClients, onAutoSearchInterstitialMovie, setGlobalStatus, t],
   );
 
   if (loading) {
@@ -535,10 +611,15 @@ export function SeriesOverviewView({
       <OverviewControlPanel
         monitored={title.monitored}
         monitoredUpdating={monitoredUpdating}
+        searchMonitoredLoading={searchMonitoredLoading}
         refreshAndScanLoading={refreshAndScanLoading}
+        deleteLoading={deleteLoading}
         onToggleMonitoring={onSetTitleMonitored ? () => void onSetTitleMonitored(!title.monitored) : undefined}
+        onSearchMonitored={onSearchMonitored ? () => void onSearchMonitored() : undefined}
         onRefreshAndScan={onRefreshAndScan ? () => void onRefreshAndScan() : undefined}
+        onRequestDelete={onRequestDeleteTitle}
         onHistory={() => setHistoryOpen(true)}
+        searchNotice={searchPrerequisiteNotice}
         settingsPanel={
           onUpdateTitleOptions && qualityProfiles && defaultRootFolder ? (
             <TitleSettingsPanel
@@ -603,6 +684,7 @@ export function SeriesOverviewView({
                     releaseBlocklistEntries={releaseBlocklistEntries}
                     searchResultsByEpisode={episodePanel.searchResultsByEpisode}
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
+                    searchBlockedByEpisode={searchBlockedByEpisode}
                     autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}
                     onToggleEpisodeSearch={handleToggleEpisodeSearch}
                     onToggleEpisodeDetails={handleToggleEpisodeDetails}
@@ -614,7 +696,20 @@ export function SeriesOverviewView({
                     onSetEpisodeMonitored={onSetEpisodeMonitored}
                     seasonSearchResults={seasonSearchResultsByCollection?.[collection.id]}
                     seasonSearchLoading={seasonSearchLoadingByCollection?.[collection.id] === true}
-                    onRunSeasonSearch={onRunSeasonSearch ? () => onRunSeasonSearch(collection) : undefined}
+                    onRunSeasonSearch={onRunSeasonSearch ? () => {
+                      if (!hasDownloadClients) {
+                        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
+                        return;
+                      }
+                      setSearchBlockedByCollection((prev) => {
+                        if (!prev[collection.id]) return prev;
+                        const next = { ...prev };
+                        delete next[collection.id];
+                        return next;
+                      });
+                      return onRunSeasonSearch(collection);
+                    } : undefined}
+                    searchBlocked={searchBlockedByCollection[collection.id] === true}
                     onQueueFromSeasonSearch={onQueueFromSeasonSearch}
                     onDeleteFile={onDeleteFile}
                     onAutoSearchInterstitialMovie={onAutoSearchInterstitialMovie ? handleAutoSearchInterstitialMovie : undefined}

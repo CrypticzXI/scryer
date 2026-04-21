@@ -5,6 +5,8 @@ use scryer_application::{
 };
 use scryer_domain::MediaFacet;
 
+use super::common::repository_error_from_sqlx;
+
 fn row_to_library_scan_unmatched_item(row: &SqliteRow) -> AppResult<LibraryScanUnmatchedItem> {
     let facet_raw: String = row
         .try_get("facet")
@@ -96,7 +98,7 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
     .bind(&item.updated_at)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(item.id.clone())
 }
@@ -114,7 +116,7 @@ pub(crate) async fn delete_library_scan_unmatched_item_query(
     .bind(item_path)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }

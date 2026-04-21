@@ -61,6 +61,16 @@ where
     Ok(projected)
 }
 
+pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
+    TitleHistoryEventType::Grabbed,
+    TitleHistoryEventType::Imported,
+    TitleHistoryEventType::ImportFailed,
+    TitleHistoryEventType::ImportSkipped,
+    TitleHistoryEventType::FileDeleted,
+    TitleHistoryEventType::FileRenamed,
+    TitleHistoryEventType::Rematched,
+];
+
 const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::TitleRematched,
     DomainEventType::ReleaseGrabbed,
@@ -69,6 +79,14 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
 ];
+
+pub fn supported_title_history_event_types() -> &'static [TitleHistoryEventType] {
+    SUPPORTED_TITLE_HISTORY_EVENT_TYPES
+}
+
+pub fn is_supported_title_history_event_type(event_type: TitleHistoryEventType) -> bool {
+    SUPPORTED_TITLE_HISTORY_EVENT_TYPES.contains(&event_type)
+}
 
 fn title_history_record_matches(
     record: &TitleHistoryRecord,

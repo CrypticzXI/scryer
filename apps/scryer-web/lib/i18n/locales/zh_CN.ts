@@ -150,7 +150,7 @@ const zh_CN: LocaleDictionary = {
   "settings.libraryScanCancelFailed": "无法取消库扫描。",
   "settings.libraryScanCanceled": "图书馆扫描已取消。",
   "settings.libraryScanCanceledSummary":
-    "图书馆扫描已取消。 {{imported}} 已导入，{{skipped}} 已跳过，{{unmatched}} 不匹配。",
+    "图书馆扫描已取消。已导入 {{imported}} 个，跳过 {{skipped}} 个，未匹配 {{unmatched}} 个。",
   "settings.libraryScanToastTitle": "{{facet}} 媒体库扫描",
   "settings.libraryScanFoundTitles": "已发现 {{count}} 个标题",
   "settings.libraryScanDiscovering": "正在发现标题…",
@@ -520,6 +520,10 @@ const zh_CN: LocaleDictionary = {
   "title.noReleasesFound": "未找到 {{name}} 的发布资源。",
   "title.interactiveSearchHint":
     "使用交互式搜索可在已配置的索引站中查询 {{name}} 的发布资源。",
+  "title.searchNeedsDownloadClientTitle": "搜索需要下载客户端",
+  "title.searchNeedsDownloadClientDescription":
+    "在此标题页面使用搜索或交互式搜索之前，请先配置至少一个下载客户端。",
+  "title.searchNeedsDownloadClientAction": "打开下载客户端",
   "title.blockedReleases": "已阻止的发布资源",
   "title.noBlockedReleases": "此电影没有记录任何已阻止的发布资源。",
   "title.settings": "标题设置",

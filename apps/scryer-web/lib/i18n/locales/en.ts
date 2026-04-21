@@ -552,6 +552,10 @@ const en: LocaleDictionary = {
   "title.noReleasesFound": "No releases found for {{name}}.",
   "title.interactiveSearchHint":
     "Use interactive search to query your configured indexers for releases of {{name}}.",
+  "title.searchNeedsDownloadClientTitle": "Search requires a download client",
+  "title.searchNeedsDownloadClientDescription":
+    "Configure at least one download client before using search or interactive search from this title page.",
+  "title.searchNeedsDownloadClientAction": "Open Download Clients",
   "title.blockedReleases": "Blocked Releases",
   "title.noBlockedReleases": "No blocked releases recorded for this movie.",
   "title.settings": "Title Settings",

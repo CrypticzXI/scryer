@@ -3,7 +3,7 @@ use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     IndexerEpisodeSearchRequest, IndexerSearchRequest, ReleaseDecisionsQuery, TitleHistoryFilter,
-    WantedItemsQuery,
+    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{PolicyInput, TitleHistoryEventType};
 
@@ -28,6 +28,40 @@ fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
         MediaFacetValue::Series => ContentScopeValue::Series,
         MediaFacetValue::Anime => ContentScopeValue::Anime,
     }
+}
+
+fn supported_title_history_values_message() -> String {
+    supported_title_history_event_types()
+        .iter()
+        .map(TitleHistoryEventType::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn parse_supported_title_history_event_types(
+    event_types: Option<Vec<String>>,
+) -> GqlResult<Option<Vec<TitleHistoryEventType>>> {
+    let Some(event_types) = event_types else {
+        return Ok(None);
+    };
+
+    let supported_values = supported_title_history_values_message();
+    let mut parsed = Vec::with_capacity(event_types.len());
+    for raw in event_types {
+        let Some(event_type) = TitleHistoryEventType::parse(&raw) else {
+            return Err(Error::new(format!(
+                "invalid title history event type `{raw}`. Supported values: {supported_values}"
+            )));
+        };
+        if !is_supported_title_history_event_type(event_type) {
+            return Err(Error::new(format!(
+                "unsupported title history event type `{raw}`. Supported values: {supported_values}"
+            )));
+        }
+        parsed.push(event_type);
+    }
+
+    Ok(Some(parsed))
 }
 
 fn from_subtitle_settings(
@@ -272,6 +306,25 @@ impl QueryRoot {
         Ok(payloads.pop())
     }
 
+    async fn title_by_slug(
+        &self,
+        ctx: &Context<'_>,
+        facet: MediaFacetValue,
+        slug: String,
+    ) -> GqlResult<Option<TitlePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let Some(title) = app
+            .get_title_by_slug(&actor, facet.into_domain(), &slug)
+            .await
+            .map_err(to_gql_error)?
+        else {
+            return Ok(None);
+        };
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        Ok(payloads.pop())
+    }
+
     async fn media_rename_preview(
         &self,
         ctx: &Context<'_>,
@@ -503,12 +556,7 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
 
-        let parsed_types: Option<Vec<TitleHistoryEventType>> = event_types.map(|types| {
-            types
-                .iter()
-                .filter_map(|s| TitleHistoryEventType::parse(s))
-                .collect()
-        });
+        let parsed_types = parse_supported_title_history_event_types(event_types)?;
 
         if let Some(ref tid) = title_id {
             let page = app
@@ -554,12 +602,7 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
 
-        let parsed_types = filter.event_types.map(|types| {
-            types
-                .iter()
-                .filter_map(|s| TitleHistoryEventType::parse(s))
-                .collect()
-        });
+        let parsed_types = parse_supported_title_history_event_types(filter.event_types)?;
 
         let f = TitleHistoryFilter {
             event_types: parsed_types,

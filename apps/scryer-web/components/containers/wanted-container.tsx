@@ -370,6 +370,7 @@ export const WantedContainer = memo(function WantedContainer({
         .mutation(queueExistingMutation, {
           input: {
             titleId: title.id,
+            scope: { title: true },
             release: {
               sourceHint,
               sourceKind: top.sourceKind ?? null,

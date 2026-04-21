@@ -51,30 +51,41 @@ impl DownloadMutations {
     ) -> GqlResult<QueueDownloadPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let source_kind = parse_download_source_kind(input.release.source_kind);
+        let QueueDownloadInput {
+            title_id,
+            release,
+            scope,
+        } = input;
+        let ReleaseSelectionInput {
+            source_hint,
+            source_kind: raw_source_kind,
+            source_title,
+        } = release;
+        let source_kind = parse_download_source_kind(raw_source_kind);
         let job_id = app
             .queue_existing_title_download(
                 &actor,
-                &input.title_id,
+                &title_id,
                 QueuedReleaseSelection {
-                    source_hint: input.release.source_hint,
+                    source_hint,
                     source_kind,
-                    source_title: input.release.source_title.clone(),
+                    source_title: source_title.clone(),
                 },
+                scope.into_application(),
             )
             .await
             .map_err(to_gql_error)?;
         let title = app
-            .get_title_for_trigger_actions(&actor, &input.title_id)
+            .get_title_for_trigger_actions(&actor, &title_id)
             .await
             .map_err(to_gql_error)?
-            .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;
+            .ok_or_else(|| Error::new(format!("title not found: {}", title_id)))?;
 
         Ok(QueueDownloadPayload {
             job_id,
             title_id: title.id,
             title_name: title.name,
-            source_title: input.release.source_title,
+            source_title,
             source_kind: source_kind.map(DownloadSourceKindValue::from_application),
         })
     }
@@ -265,13 +276,18 @@ impl DownloadMutations {
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let client_type = input.client_type.clone();
-        let download_client_item_id = input.download_client_item_id.clone();
+        let AssignTrackedDownloadTitleInput {
+            client_type,
+            download_client_item_id,
+            title_id,
+            scope,
+        } = input;
         app.assign_tracked_download_title(
             &actor,
-            &input.client_type,
-            &input.download_client_item_id,
-            &input.title_id,
+            &client_type,
+            &download_client_item_id,
+            &title_id,
+            scope.into_application(),
         )
         .await
         .map_err(to_gql_error)?;

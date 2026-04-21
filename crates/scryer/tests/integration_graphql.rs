@@ -12,7 +12,11 @@ use scryer_application::{
     TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
     start_background_download_delete_poller,
 };
-use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title};
+use scryer_domain::{
+    Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds, Episode,
+    EpisodeType, ExternalId, Id, ImportCompletedEventData, MediaFacet, MediaPathUpdate,
+    MediaUpdateType, NewDomainEvent, Title, TitleContextSnapshot,
+};
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteCatalogStore, SqliteLibraryStateStore,
     SqliteWorkflowStore,
@@ -7102,6 +7106,206 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
 }
 
 #[tokio::test]
+async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let fixture = json!({
+        "data": {
+            "s0": {
+                "series": {
+                    "tvdb_id": 415677,
+                    "name": "Bastard!! Correct Match",
+                    "sort_name": "Bastard!! Correct Match",
+                    "slug": "bastard-correct-match",
+                    "status": "Ended",
+                    "year": 2022,
+                    "first_aired": "2022-06-30",
+                    "overview": "A regression fixture for the Bastard!! anime scan path.",
+                    "network": "Netflix",
+                    "runtime_minutes": 24,
+                    "poster_url": "https://artworks.thetvdb.com/banners/series/415677/posters/test.jpg",
+                    "country": "jpn",
+                    "genres": ["Animation", "Fantasy"],
+                    "aliases": ["Bastard!! Ankoku no Hakaishin"],
+                    "tagged_aliases": [],
+                    "artworks": [],
+                    "seasons": [
+                        {
+                            "tvdb_id": 14156771,
+                            "number": 1,
+                            "label": "Season 1",
+                            "episode_type": "default"
+                        }
+                    ],
+                    "episodes": [
+                        {
+                            "tvdb_id": 24156771,
+                            "episode_number": 1,
+                            "season_number": 1,
+                            "name": "Episode 1",
+                            "aired": "2022-06-30",
+                            "runtime_minutes": 24,
+                            "is_filler": false,
+                            "is_recap": false,
+                            "overview": "Episode 1 overview.",
+                            "absolute_number": "1"
+                        }
+                    ],
+                    "anime_mappings": [],
+                    "anime_movies": []
+                }
+            }
+        }
+    })
+    .to_string();
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let bastard_tvshow_nfo = r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<tvshow>
+  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
+  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <lockdata>false</lockdata>
+  <dateadded>2026-04-21 04:22:41</dateadded>
+  <title>Bastard!!</title>
+  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
+  <rating>5</rating>
+  <year>2022</year>
+  <mpaa>TV-MA</mpaa>
+  <collectionnumber>156898</collectionnumber>
+  <imdb_id>tt17736234</imdb_id>
+  <tmdbid>156898</tmdbid>
+  <premiered>1992-08-25</premiered>
+  <releasedate>1992-08-25</releasedate>
+  <enddate>1993-06-25</enddate>
+  <runtime>25</runtime>
+  <genre>Anime</genre>
+  <genre>magic</genre>
+  <genre>stereotypes</genre>
+  <genre>super power</genre>
+  <genre>violence</genre>
+  <studio />
+  <studio>Netflix</studio>
+  <tag>anime</tag>
+  <tag>based on manga</tag>
+  <tag>combat</tag>
+  <tag>dark fantasy</tag>
+  <tag>ecchi</tag>
+  <tag>heavy metal</tag>
+  <tag>magic</tag>
+  <tag>original net animation (ona)</tag>
+  <tag>remake</tag>
+  <tag>seinen</tag>
+  <anidbid>10</anidbid>
+  <tvdbid>415677</tvdbid>
+  <tvdbslugid>bastard-2022</tvdbslugid>
+  <art>
+    <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
+    <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
+  </art>
+  <id>415677</id>
+  <episodeguide>
+    <url cache="415677.xml">http://www.thetvdb.com/api/1D62F2F90030C444/series/415677/all/en.zip</url>
+  </episodeguide>
+  <season>-1</season>
+  <episode>-1</episode>
+  <status>Ended</status>
+</tvshow>"#;
+
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let show_dir = media_root.path().join("Bastard!! (2022)");
+    let season_dir = show_dir.join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    std::fs::write(show_dir.join("tvshow.nfo"), bastard_tvshow_nfo).expect("write tvshow.nfo");
+    std::fs::write(
+        season_dir.join("Bastard!! (2022) - S01E01 (1) - 1080p.mkv"),
+        b"not-a-real-video",
+    )
+    .expect("write fake video");
+    std::fs::write(
+        season_dir.join("Bastard!! (2022) - S01E01 (1) - 1080p.nfo"),
+        b"<episodedetails><title>Episode 1</title></episodedetails>",
+    )
+    .expect("write episode nfo");
+    std::fs::write(season_dir.join("season.nfo"), b"<season></season>").expect("write season nfo");
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateLibraryPaths($input: UpdateLibraryPathsInput!) {
+          updateLibraryPaths(input: $input) {
+            moviePath
+            seriesPath
+            animePath
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "moviePath": "/tmp/movies-unused",
+            "seriesPath": "/tmp/series-unused",
+            "animePath": media_root.path().display().to_string()
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let summary = ctx
+        .app
+        .scan_library(&admin, MediaFacet::Anime)
+        .await
+        .expect("scan anime library");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.imported, 1);
+    assert_eq!(summary.unmatched, 0);
+
+    let mut hydrated_title = None;
+    for _ in 0..100 {
+        let titles = ctx
+            .catalog
+            .list(Some(MediaFacet::Anime), None)
+            .await
+            .expect("list anime titles");
+        assert_eq!(titles.len(), 1);
+        let title = &titles[0];
+        if title.metadata_fetched_at.is_some() {
+            hydrated_title = Some(title.clone());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let hydrated_title =
+        hydrated_title.expect("anime title should hydrate from tvshow.nfo identity");
+    assert_eq!(hydrated_title.name, "Bastard!! Correct Match");
+    assert!(hydrated_title.metadata_fetched_at.is_some());
+    assert_eq!(
+        hydrated_title.folder_path.as_deref(),
+        Some(show_dir.to_string_lossy().as_ref())
+    );
+    assert!(
+        hydrated_title
+            .external_ids
+            .iter()
+            .any(|id| id.source == "tvdb" && id.value == "415677"),
+        "hydrated title should preserve the Bastard!! TVDB identity"
+    );
+}
+
+#[tokio::test]
 async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_folder_path() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -8014,8 +8218,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
             request_signature: None,
-            episode_id: None,
-            collection_id: None,
+            scope: scryer_application::SubmissionScope::Title,
         })
         .await
         .expect("seed download submission");
@@ -8181,6 +8384,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
         json!({
             "input": {
                 "titleId": title_id,
+                "scope": { "title": true },
                 "release": {
                     "sourceHint": source_hint,
                     "sourceKind": "nzbFile",
@@ -8883,6 +9087,190 @@ async fn graphql_title_history_empty() {
     assert!(body["data"]["titleHistory"]["records"].is_array());
 }
 
+#[tokio::test]
+async fn graphql_title_history_rejects_unsupported_event_type_filters() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ titleHistory(filter: { eventTypes: ["download_completed"], limit: 10 }) { totalCount } }"#,
+        json!({}),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(message.contains("unsupported title history event type `download_completed`"));
+    assert!(message.contains("grabbed"));
+    assert!(message.contains("rematched"));
+}
+
+#[tokio::test]
+async fn graphql_title_events_rejects_unsupported_event_type_filters() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ titleEvents(eventTypes: ["download_ignored"], limit: 10) { id eventType } }"#,
+        json!({}),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(message.contains("unsupported title history event type `download_ignored`"));
+    assert!(message.contains("imported"));
+    assert!(message.contains("rematched"));
+}
+
+#[tokio::test]
+async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_events() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "History Projection Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .catalog
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode_one = ctx
+        .catalog
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("history-episode-1".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create first episode");
+    let episode_two = ctx
+        .catalog
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("2".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E02".to_string()),
+            title: Some("Episode Two".to_string()),
+            air_date: Some("2024-01-08".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("2".to_string()),
+            overview: None,
+            tvdb_id: Some("history-episode-2".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create second episode");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_user_id: None,
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                },
+                media_updates: vec![
+                    MediaPathUpdate {
+                        path: "/library/History Projection Fixture/S01E01.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                    MediaPathUpdate {
+                        path: "/library/History Projection Fixture/S01E02.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                ],
+                imported_count: 2,
+                episode_ids: vec![episode_one.id.clone(), episode_two.id.clone()],
+            }),
+        })
+        .await
+        .expect("append import completed event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query EpisodeHistory($episodeId: String!) {
+          episodeHistory(episodeId: $episodeId, limit: 10) {
+            eventType
+            sourceTitle
+          }
+        }
+        "#,
+        json!({ "episodeId": episode_one.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let records = body["data"]["episodeHistory"]
+        .as_array()
+        .expect("episode history array");
+    let imported = records
+        .iter()
+        .find(|record| record["eventType"] == "imported")
+        .expect("imported event");
+    assert!(imported["sourceTitle"].is_null());
+}
+
 // ---------------------------------------------------------------------------
 // Metadata queries (via SMG mock)
 // ---------------------------------------------------------------------------
@@ -9129,6 +9517,28 @@ async fn graphql_fix_title_match_movie_updates_identity_and_history() {
     assert_eq!(data_value["old_tvdb_id"], "999");
     assert_eq!(data_value["new_tvdb_id"], "123456");
     assert_eq!(data_value["source"], "manual");
+
+    let history = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: String!) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: ["rematched"], limit: 10 }) {
+            totalCount
+            records {
+              eventType
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+    assert_no_errors(&history);
+    assert_eq!(history["data"]["titleHistory"]["totalCount"], 1);
+    assert_eq!(
+        history["data"]["titleHistory"]["records"][0]["eventType"],
+        "rematched"
+    );
 
     let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
     assert!(

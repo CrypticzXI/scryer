@@ -51,6 +51,8 @@ export const WANTED_SECTION_PATH: Record<WantedSection, string> = {
   pending: "pending",
 };
 
+const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "settings"]);
+
 export function buildViewPath(
   nextView: ViewId,
   nextSettingsSection?: SettingsSection,
@@ -74,6 +76,14 @@ export function buildViewPath(
     }
   }
   return base;
+}
+
+export function buildOverviewDetailPath(view: ViewId, slug?: string | null) {
+  const normalizedSlug = slug?.trim();
+  if (!normalizedSlug) {
+    return `/${view}/overview`;
+  }
+  return `/${view}/${encodeURIComponent(normalizedSlug)}`;
 }
 
 export function isLocaleSupported(code: string): code is LocaleCode {
@@ -107,6 +117,23 @@ export function parseContentSectionFromPath(value: string | null, subValue?: str
     return "general";
   }
   return CONTENT_SECTION_PATH_TO_ID[value] ?? "overview";
+}
+
+export function parseOverviewSlugFromPath(value: string | null, subValue?: string | null): string | null {
+  const normalizedValue = value?.trim();
+  if (!normalizedValue || subValue) {
+    return null;
+  }
+
+  if (MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedValue.toLowerCase())) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(normalizedValue);
+  } catch {
+    return normalizedValue;
+  }
 }
 
 export function parseSystemSectionFromPath(value: string | null): SystemSection {

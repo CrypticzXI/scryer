@@ -2,20 +2,10 @@ import * as React from "react";
 import { useClient } from "urql";
 import { titleHistoryQuery } from "@/lib/graphql/queries";
 import type { TitleHistoryEvent, TitleHistoryPage } from "@/lib/types";
+import { TITLE_HISTORY_FILTERS } from "@/components/common/title-history-event-meta";
 import { TitleHistoryView } from "@/components/views/title-history-view";
 
 const PAGE_SIZE = 50;
-
-const EVENT_TYPE_FILTERS = [
-  "grabbed",
-  "download_completed",
-  "imported",
-  "import_failed",
-  "import_skipped",
-  "file_deleted",
-  "file_renamed",
-  "download_ignored",
-] as const;
 
 export function TitleHistoryContainer() {
   const client = useClient();
@@ -82,7 +72,7 @@ export function TitleHistoryContainer() {
       totalCount={totalCount}
       loading={loading}
       activeFilters={activeFilters}
-      availableFilters={EVENT_TYPE_FILTERS as unknown as string[]}
+      availableFilters={[...TITLE_HISTORY_FILTERS]}
       onToggleFilter={toggleFilter}
       onClearFilters={clearFilters}
       onLoadMore={loadMore}

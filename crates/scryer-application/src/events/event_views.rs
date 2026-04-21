@@ -251,7 +251,9 @@ pub(crate) fn title_history_records_from_domain_event(
         ),
         DomainEventPayload::ImportCompleted(data) => (
             TitleHistoryEventType::Imported,
-            data.media_updates.first().map(|update| update.path.clone()),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
             None,
             None,
         ),
@@ -267,13 +269,17 @@ pub(crate) fn title_history_records_from_domain_event(
         ),
         DomainEventPayload::MediaFileDeleted(data) => (
             TitleHistoryEventType::FileDeleted,
-            data.media_updates.first().map(|update| update.path.clone()),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
             None,
             None,
         ),
         DomainEventPayload::MediaFileRenamed(data) => (
             TitleHistoryEventType::FileRenamed,
-            data.media_updates.first().map(|update| update.path.clone()),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
             None,
             None,
         ),

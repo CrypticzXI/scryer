@@ -36,6 +36,7 @@ import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
 import { Checkbox } from "@/components/ui/checkbox";
+import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
@@ -210,6 +211,7 @@ type SeriesOverviewContainerProps = {
   titleId: string;
   onTitleNotFound?: () => void;
   onBackToList?: () => void;
+  onTitleResolved?: (title: OverviewTitleTarget) => void;
   initialEpisodeId?: string | null;
 };
 
@@ -228,6 +230,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   titleId,
   onTitleNotFound,
   onBackToList,
+  onTitleResolved,
   initialEpisodeId,
 }: SeriesOverviewContainerProps) {
   const setGlobalStatus = useGlobalStatus();
@@ -255,6 +258,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [completedDownloads, setCompletedDownloads] = React.useState<DownloadQueueItem[]>([]);
   const [manualImportItem, setManualImportItem] = React.useState<DownloadQueueItem | null>(null);
   const [hydratingFromActivity, setHydratingFromActivity] = React.useState(false);
+  const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
+  const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
+    React.useState(false);
   const [monitoredUpdating, setMonitoredUpdating] = React.useState(false);
   const [searchMonitoredLoading, setSearchMonitoredLoading] = React.useState(false);
   const [refreshAndScanLoading, setRefreshAndScanLoading] = React.useState(false);
@@ -343,6 +349,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextCollections = nextTitle?.collections ?? [];
       const nextMediaFiles = nextTitle?.mediaFiles ?? [];
       setTitle(nextTitle);
+      if (nextTitle) {
+        onTitleResolved?.({ id: nextTitle.id, slug: nextTitle.slug });
+      }
       setCollections(nextCollections);
       setEpisodesByCollection(
         Object.fromEntries(
@@ -356,6 +365,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
       setSubtitleDownloads(snapshot.subtitleDownloads);
+      setHasDownloadClients(snapshot.hasDownloadClients);
 
       if (!nextTitle) {
         setCompletedDownloads([]);
@@ -376,8 +386,14 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           );
         });
     },
-    [fetchCompletedDownloads],
+    [fetchCompletedDownloads, onTitleResolved],
   );
+
+  React.useEffect(() => {
+    if (hasDownloadClients) {
+      setShowSearchPrerequisiteNotice(false);
+    }
+  }, [hasDownloadClients]);
 
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
@@ -403,6 +419,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setCompletedDownloads([]);
       setManualImportItem(null);
       setHydratingFromActivity(false);
+      setHasDownloadClients(true);
+      setShowSearchPrerequisiteNotice(false);
       setTitleLookupAttempted(false);
       setTitleLookupFailed(false);
       setLoading(false);
@@ -413,6 +431,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setTitleLookupAttempted(false);
     setTitleLookupFailed(false);
+  setShowSearchPrerequisiteNotice(false);
     setLoading(true);
     refreshTitleDetail()
       .catch((error: unknown) => {
@@ -555,6 +574,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
   const handleSearchMonitored = React.useCallback(async () => {
     if (!title) return;
+    if (!hasDownloadClients) {
+      setShowSearchPrerequisiteNotice(true);
+      return;
+    }
 
     setSearchMonitoredLoading(true);
     try {
@@ -574,7 +597,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     } finally {
       setSearchMonitoredLoading(false);
     }
-  }, [client, setGlobalStatus, t, title]);
+  }, [client, hasDownloadClients, setGlobalStatus, t, title]);
 
   const handleDeleteMediaFile = React.useCallback((fileId: string) => {
     const nextFile =
@@ -784,6 +807,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         const { error } = await client.mutation(queueExistingMutation, {
           input: {
             titleId: title.id,
+            scope: { episode: episode.id },
             release: {
               sourceHint,
               sourceKind: top.sourceKind ?? null,
@@ -834,6 +858,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const { error: queueError } = await client.mutation(queueExistingMutation, {
         input: {
           titleId: title.id,
+          scope: { collection: collection.id },
           release: {
             sourceHint,
             sourceKind: top.sourceKind ?? null,
@@ -876,7 +901,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   );
 
   const handleQueueFromSeasonSearch = React.useCallback(
-    async (release: Release) => {
+    async (collection: TitleCollection, release: Release) => {
       if (!title) return;
       const sourceHint = release.downloadUrl || release.link;
       if (!sourceHint) return;
@@ -885,6 +910,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
+              scope: { collection: collection.id },
               release: {
                 sourceHint,
                 sourceKind: release.sourceKind ?? null,
@@ -962,6 +988,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onSearchMonitored={handleSearchMonitored}
         onAutoSearchEpisode={handleAutoSearchEpisode}
         onAutoSearchInterstitialMovie={handleAutoSearchInterstitialMovie}
+        hasDownloadClients={hasDownloadClients}
+        showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         qualityProfiles={qualityProfiles}
         defaultRootFolder={defaultRootFolder}
         rootFolders={rootFolders}

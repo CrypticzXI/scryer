@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { Ban, FolderOpen, HardDrive, Loader2, Pause, Play, RotateCcw, Search, Subtitles, Trash2 } from "lucide-react";
+import { FolderOpen, HardDrive, Loader2, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,10 +24,11 @@ import type {
   TitleCollection,
   TitleHistoryEvent,
   TitleMediaFile,
-  SubtitleDownloadRecord,
 } from "@/components/containers/movie-overview-container";
 import { MediaInfoBadges } from "@/components/common/media-info-badges";
 import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-panel";
+import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
 import {
@@ -42,10 +43,13 @@ import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import type { WantedSearchPhase, WantedStatus } from "@/lib/types";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
+import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
 const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
+const boxedTextActionButtonBaseClass =
+  "h-9 border px-3 shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[color,background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:shadow-[0_10px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.85)] dark:shadow-none dark:hover:translate-y-0 dark:hover:shadow-none";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -89,6 +93,14 @@ function formatFileSize(sizeBytes: string | number | null | undefined) {
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(2)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   return `${bytes.toFixed(0)} B`;
+}
+
+function resolveMediaFileDisplayResolution(width: number | null, height: number | null) {
+  if (width == null) return height != null ? `${height}p` : null;
+  if (width >= 3840) return "4K";
+  if (width >= 1920) return "1080p";
+  if (width >= 1280) return "720p";
+  return height != null ? `${height}p` : null;
 }
 
 function prettifyTagValue(raw: string) {
@@ -189,154 +201,6 @@ function wantedPhaseClass(phase: WantedSearchPhase) {
     default:
       return "bg-muted text-muted-foreground";
   }
-}
-
-type SubtitleInventoryEntry = {
-  id: string;
-  label: string;
-  secondaryLabel: string;
-  metadataLabel: string | null;
-  blacklistableDownloadId: string | null;
-};
-
-function SubtitleInventorySelect({
-  mediaFile,
-  subtitleDownloads,
-  blacklistingId,
-  onRequestBlacklistSubtitle,
-}: {
-  mediaFile: TitleMediaFile;
-  subtitleDownloads: SubtitleDownloadRecord[];
-  blacklistingId: string | null | undefined;
-  onRequestBlacklistSubtitle?: (downloadId: string) => void;
-}) {
-  const t = useTranslate();
-  const entries = React.useMemo<SubtitleInventoryEntry[]>(() => {
-    const unknownLabel = t("label.unknown");
-    const embeddedEntries: SubtitleInventoryEntry[] = mediaFile.subtitleStreams.length > 0
-      ? mediaFile.subtitleStreams.map((stream, index) => {
-          const language = stream.language?.trim() || mediaFile.subtitleLanguages[index]?.trim() || unknownLabel;
-          const secondaryBits = [
-            t("subtitle.embedded"),
-            stream.forced ? t("subtitle.forced") : null,
-            stream.default ? t("label.default") : null,
-          ].filter(Boolean) as string[];
-          const metadataBits = [
-            stream.codec?.trim() || null,
-            stream.name?.trim() || null,
-          ].filter(Boolean) as string[];
-
-          return {
-            id: `embedded:${mediaFile.id}:${index}:${language}`,
-            label: language,
-            secondaryLabel: secondaryBits.join(" • "),
-            metadataLabel: metadataBits.length > 0 ? metadataBits.join(" • ") : null,
-            blacklistableDownloadId: null,
-          };
-        })
-      : (mediaFile.subtitleLanguages ?? []).map((language, index) => ({
-          id: `embedded:${mediaFile.id}:${index}:${language}`,
-          label: language?.trim() || unknownLabel,
-          secondaryLabel: t("subtitle.embedded"),
-          metadataLabel: null,
-          blacklistableDownloadId: null,
-        }));
-
-    const downloadEntries = subtitleDownloads.map((download) => {
-      const secondaryBits = [
-        download.provider,
-        download.hearingImpaired ? t("subtitle.hearingImpaired") : null,
-        download.forced ? t("subtitle.forced") : null,
-        download.aiTranslated ? t("subtitle.aiTranslated") : null,
-        download.machineTranslated ? t("subtitle.machineTranslated") : null,
-      ].filter(Boolean) as string[];
-      const metadataBits = [
-        download.uploader?.trim() || null,
-        download.score != null ? t("subtitle.score", { score: download.score }) : null,
-        download.releaseInfo?.trim()
-          ? `${t("subtitle.releaseInfo")}: ${download.releaseInfo.trim()}`
-          : null,
-      ].filter(Boolean) as string[];
-
-      return {
-        id: `download:${download.id}`,
-        label: download.language?.trim() || unknownLabel,
-        secondaryLabel: secondaryBits.join(" • "),
-        metadataLabel: metadataBits.length > 0 ? metadataBits.join(" • ") : null,
-        blacklistableDownloadId: download.id,
-      };
-    });
-
-    return [...embeddedEntries, ...downloadEntries];
-  }, [mediaFile.id, mediaFile.subtitleLanguages, mediaFile.subtitleStreams, subtitleDownloads, t]);
-
-  const [selectedEntryId, setSelectedEntryId] = React.useState<string | undefined>(entries[0]?.id);
-
-  React.useEffect(() => {
-    setSelectedEntryId((current) => (
-      current && entries.some((entry) => entry.id === current)
-        ? current
-        : entries[0]?.id
-    ));
-  }, [entries]);
-
-  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? entries[0] ?? null;
-  const subtitleCountText = t("mediaFile.subtitleCount", { count: entries.length });
-  const summaryLine = [subtitleCountText, selectedEntry?.metadataLabel].filter(Boolean).join(" • ");
-
-  if (entries.length === 0) {
-    return <span className="text-xs text-muted-foreground">{t("subtitle.noResults")}</span>;
-  }
-
-  return (
-    <div className="mt-2 space-y-2">
-      <div className="flex items-start gap-2">
-        <Select value={selectedEntry?.id} onValueChange={setSelectedEntryId}>
-          <SelectTrigger className="w-full min-w-0">
-            <SelectValue aria-label={selectedEntry ? `${selectedEntry.label} ${selectedEntry.secondaryLabel}` : subtitleCountText}>
-              {selectedEntry ? (
-                <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-                  <span className="w-full truncate">{selectedEntry.label}</span>
-                  <span className="w-full truncate text-xs text-muted-foreground">
-                    {selectedEntry.secondaryLabel}
-                  </span>
-                </span>
-              ) : (
-                <span className="truncate text-left">{subtitleCountText}</span>
-              )}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent className="max-h-[320px]">
-            {entries.map((entry) => (
-              <SelectItem key={entry.id} value={entry.id}>
-                <span className="flex min-w-0 flex-col items-start gap-0.5">
-                  <span className="w-full truncate font-medium">{entry.label}</span>
-                  <span className="w-full truncate text-xs text-muted-foreground">
-                    {entry.secondaryLabel}
-                  </span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {selectedEntry?.blacklistableDownloadId && onRequestBlacklistSubtitle ? (
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            className="h-9 w-9 shrink-0"
-            title={t("subtitle.blacklist")}
-            aria-label={t("subtitle.blacklist")}
-            disabled={blacklistingId === selectedEntry.blacklistableDownloadId}
-            onClick={() => onRequestBlacklistSubtitle(selectedEntry.blacklistableDownloadId!)}
-          >
-            <Ban className="h-4 w-4" />
-          </Button>
-        ) : null}
-      </div>
-      <p className="text-xs text-muted-foreground">{summaryLine}</p>
-    </div>
-  );
 }
 
 // ─── title settings ──────────────────────────────────────────────────────────
@@ -555,6 +419,8 @@ type Props = {
   events: TitleHistoryEvent[];
   searchResults: Release[];
   searching: boolean;
+  hasDownloadClients: boolean;
+  showSearchPrerequisiteNotice: boolean;
   renamePlan: MediaRenamePlan | null;
   renamePreviewing: boolean;
   renameApplying: boolean;
@@ -583,10 +449,7 @@ type Props = {
   onRequestDeleteTitle?: () => void;
   blocklistEntries: TitleReleaseBlocklistEntry[];
   mediaFiles: TitleMediaFile[];
-  subtitleDownloads: SubtitleDownloadRecord[];
   onDeleteFile?: (fileId: string) => void;
-  onRequestBlacklistSubtitle?: (subtitleDownloadId: string) => void;
-  blacklistingId?: string | null;
   onRefreshSubtitles?: () => void;
   onOpenFixMatch?: () => void;
 };
@@ -594,12 +457,22 @@ type Props = {
 export function MovieOverviewView({
   loading,
   title,
-  collections,
+  collections = [],
   events: _events,
+  searchResults = [],
+  searching,
+  hasDownloadClients,
+  showSearchPrerequisiteNotice,
   renamePlan,
   renamePreviewing,
   renameApplying,
+  interactiveSearchAttempted,
+  searchMonitoredLoading,
   refreshAndScanLoading,
+  deleteLoading,
+  onSearch,
+  onQueue,
+  onSearchMonitored,
   onRefreshAndScan,
   onTitleChanged,
   onPreviewRename,
@@ -615,12 +488,10 @@ export function MovieOverviewView({
   onPauseWanted,
   onResumeWanted,
   onResetWanted,
-  blocklistEntries,
-  mediaFiles,
-  subtitleDownloads,
+  onRequestDeleteTitle,
+  blocklistEntries = [],
+  mediaFiles = [],
   onDeleteFile,
-  onRequestBlacklistSubtitle,
-  blacklistingId = null,
   onRefreshSubtitles,
   onOpenFixMatch,
 }: Props) {
@@ -681,6 +552,43 @@ export function MovieOverviewView({
   const wantedPhaseLabel = wantedItem?.searchPhase
     ? localizedWantedPhase(t, wantedItem.searchPhase)
     : null;
+  const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
+    ? <TitleSearchDownloadClientNotice />
+    : null;
+  const interactiveSearchPanel = (
+    <div className="p-4">
+      {searchPrerequisiteNotice ? (
+        searchPrerequisiteNotice
+      ) : searching ? (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+          <p className="text-sm text-muted-foreground">{t("title.searchingReleases")}</p>
+          <div className="w-full space-y-2">
+            {[1, 2, 3].map((index) => (
+              <div
+                key={index}
+                className="h-12 animate-pulse rounded-lg bg-muted"
+                style={{ animationDelay: `${index * 150}ms` }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : searchResults.length > 0 ? (
+        <SearchResultBuckets
+          results={searchResults}
+          onQueue={onQueue}
+        />
+      ) : interactiveSearchAttempted ? (
+        <p className="text-sm text-muted-foreground">
+          {t("title.noReleasesFound", { name: title.name })}
+        </p>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          {t("title.interactiveSearchHint", { name: title.name })}
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -732,9 +640,6 @@ export function MovieOverviewView({
                     ? t("title.monitored")
                     : t("search.monitorType.unmonitored")}
                 </span>
-                <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {localizedFacetLabel(t, title.facet)}
-                </span>
               {localizedTitleStatus(t, title.contentStatus) ? (
                 <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
                   {localizedTitleStatus(t, title.contentStatus)}
@@ -746,7 +651,7 @@ export function MovieOverviewView({
                 {studio ? (
                   <span className="text-xs text-muted-foreground">{studio}</span>
                 ) : null}
-                {title.tags
+                {(title.tags ?? [])
                   .filter((tag) => !tag.startsWith(MONITOR_TYPE_TAG_PREFIX))
                   .map((tag) => {
                   const formattedTag = formatTitleTag(t, tag, qualityProfiles);
@@ -900,11 +805,19 @@ export function MovieOverviewView({
 
       <OverviewControlPanel
         monitored={title.monitored}
+        searchMonitoredLabel={t("label.search")}
         monitoredUpdating={monitoredUpdating}
+        searchMonitoredLoading={searchMonitoredLoading}
+        interactiveSearchLoading={searching}
         refreshAndScanLoading={refreshAndScanLoading}
+        deleteLoading={deleteLoading}
         onToggleMonitoring={() => void onSetTitleMonitored(!title.monitored)}
+        onSearchMonitored={() => void onSearchMonitored()}
+        onInteractiveSearch={() => void onSearch()}
         onRefreshAndScan={() => void onRefreshAndScan()}
+        onRequestDelete={onRequestDeleteTitle}
         onHistory={() => setHistoryOpen(true)}
+        searchNotice={searchPrerequisiteNotice}
         settingsPanel={(
             <TitleSettingsPanel
               title={title}
@@ -915,6 +828,7 @@ export function MovieOverviewView({
               onOpenFixMatch={onOpenFixMatch}
             />
         )}
+        interactiveSearchPanel={interactiveSearchPanel}
       />
 
       {/* files on disk */}
@@ -951,38 +865,76 @@ export function MovieOverviewView({
               {mediaFiles.map((mediaFile) => {
                 const collection = collectionsByOrderedPath.get(mediaFile.filePath) ?? null;
                 const qualityHint = mediaFile.qualityLabel ?? collection?.label ?? null;
+                const displayResolution = resolveMediaFileDisplayResolution(
+                  mediaFile.videoWidth,
+                  mediaFile.videoHeight,
+                );
+                const showQualityHint =
+                  qualityHint != null &&
+                  qualityHint.trim().toLowerCase() !== displayResolution?.trim().toLowerCase();
                 return (
-                  <div key={mediaFile.id} className="space-y-1.5 rounded bg-card/60 px-3 py-2 text-sm">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-                      <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">{mediaFile.filePath}</span>
-                      {collection ? (
-                        <span className="text-xs capitalize text-muted-foreground/60">{collection.collectionType}</span>
-                      ) : null}
-                      {qualityHint ? (
+                  <div key={mediaFile.id} className="rounded bg-card/60 px-3 py-3 text-sm">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex items-start gap-3">
+                          <HardDrive className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <p className="break-all font-mono text-sm text-muted-foreground">{mediaFile.filePath}</p>
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground/60">
+                              {showQualityHint ? (
                         <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
-                          {qualityHint}
+                                  {qualityHint}
                         </span>
                       ) : null}
-                      <span className="text-xs text-muted-foreground/60">{formatFileSize(mediaFile.sizeBytes)}</span>
-                      <span className="text-xs text-muted-foreground/60">{formatDate(mediaFile.createdAt)}</span>
-                      {mediaFile.acquisitionScore != null ? (
-                        <span className="text-xs text-muted-foreground/60" title={mediaFile.scoringLog ?? undefined}>
-                          {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
-                        </span>
-                      ) : null}
-                      {onDeleteFile ? (
-                        <button
+                              {mediaFile.acquisitionScore != null ? (
+                                <span title={mediaFile.scoringLog ?? undefined}>
+                                  {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                        <MediaInfoBadges file={mediaFile} />
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3 sm:self-center sm:pl-4">
+                        <div className="text-left sm:text-right">
+                          <div
+                            className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl"
+                            style={{
+                              fontFamily:
+                                "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
+                            }}
+                          >
+                            {formatFileSize(mediaFile.sizeBytes)}
+                          </div>
+                        </div>
+                        <Button
                           type="button"
-                          onClick={() => onDeleteFile(mediaFile.id)}
-                          className="ml-auto shrink-0 rounded p-1 text-muted-foreground/40 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                          title={t("mediaFile.delete")}
+                          size="sm"
+                          variant="secondary"
+                          className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
+                          onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
+                          title={t("subtitle.search")}
+                          aria-label={t("subtitle.search")}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      ) : null}
+                          <Search className="mr-1.5 h-3.5 w-3.5" />
+                          {t("subtitle.search")}
+                        </Button>
+                        {onDeleteFile ? (
+                          <Button
+                            type="button"
+                            size="icon-sm"
+                            variant="secondary"
+                            onClick={() => onDeleteFile(mediaFile.id)}
+                            className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
+                            title={t("mediaFile.delete")}
+                            aria-label={t("mediaFile.delete")}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
-                    <MediaInfoBadges file={mediaFile} />
                   </div>
                 );
               })}
@@ -1023,55 +975,6 @@ export function MovieOverviewView({
                 applyDisabled={renameApplying || renamePlan.renamable === 0}
                 onApply={onApplyRename}
               />
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {/* Subtitles */}
-      <Card>
-        <CardContent className="pt-4">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Subtitles className="h-4 w-4" />
-              {t("subtitle.subtitles")}
-            </CardTitle>
-          </div>
-          {mediaFiles.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              {mediaFiles.map((mf) => {
-                const embeddedLangs = mf.subtitleLanguages ?? [];
-                const downloads = subtitleDownloads.filter((d) => d.mediaFileId === mf.id);
-                const hasAny = embeddedLangs.length > 0 || downloads.length > 0;
-                return (
-                  <div key={`sub-${mf.id}`} className="rounded-lg border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <p className="truncate font-mono text-xs text-muted-foreground">{mf.filePath}</p>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2"
-                        onClick={() => setSubtitleSearchTarget({ mediaFileId: mf.id, filePath: mf.filePath })}
-                      >
-                        <Search className="mr-1 h-3 w-3" />
-                        {t("subtitle.search")}
-                      </Button>
-                    </div>
-                    {hasAny ? (
-                      <SubtitleInventorySelect
-                        mediaFile={mf}
-                        subtitleDownloads={downloads}
-                        blacklistingId={blacklistingId}
-                        onRequestBlacklistSubtitle={onRequestBlacklistSubtitle}
-                      />
-                    ) : (
-                      <div className="mt-2">
-                        <span className="text-xs text-muted-foreground">{t("subtitle.noResults")}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
             </div>
           ) : null}
         </CardContent>

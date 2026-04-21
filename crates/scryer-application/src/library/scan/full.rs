@@ -171,6 +171,8 @@ pub(super) async fn scan_library_movies(
                         app,
                         actor,
                         facet,
+                        library_path,
+                        session_id,
                         &coordinator,
                         *candidate,
                         &mut workset,
@@ -180,6 +182,7 @@ pub(super) async fn scan_library_movies(
                         &mut existing_titles_by_imdb_id,
                         &mut existing_titles_by_tmdb_id,
                         &mut summary,
+                        &mut unmatched_items,
                     )
                     .await?
                     {
@@ -446,7 +449,8 @@ pub(super) async fn scan_library_series(
         batch_size = LIBRARY_SCAN_SERIES_BATCH_SIZE,
         worker_concurrency = LIBRARY_METADATA_LOOKUP_CONCURRENCY,
         elapsed_ms = elapsed_ms_u64(started_at),
-        "series library scan completed"
+        "{} library scan completed",
+        facet.as_str()
     );
 
     if !unmatched_items.is_empty() {

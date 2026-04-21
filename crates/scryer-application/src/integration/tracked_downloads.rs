@@ -11,7 +11,7 @@ use scryer_domain::{
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{AppResult, AppUseCase, DownloadSubmission};
+use crate::{AppResult, AppUseCase, DownloadSubmission, SubmissionScope};
 
 // ── TrackedDownload ──────────────────────────────────────────────────────────
 
@@ -335,8 +335,7 @@ impl TrackedDownloadService {
                     source_kind: None,
                     source_title: Some(td.client_item.title_name.clone()),
                     request_signature: None,
-                    episode_id: None,
-                    collection_id: None,
+                    scope: SubmissionScope::Orphan,
                 })
                 .await
         {
@@ -1013,6 +1012,38 @@ mod tests {
             Ok(self.titles.iter().find(|title| title.id == id).cloned())
         }
 
+        async fn get_by_facet_and_slug(
+            &self,
+            facet: MediaFacet,
+            slug: &str,
+        ) -> AppResult<Option<Title>> {
+            let normalized_slug = slug.trim();
+            if normalized_slug.is_empty() {
+                return Ok(None);
+            }
+
+            let matches = self
+                .titles
+                .iter()
+                .filter(|title| {
+                    title.facet == facet
+                        && title
+                            .slug
+                            .as_deref()
+                            .is_some_and(|candidate| {
+                                candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            match matches.as_slice() {
+                [] => Ok(None),
+                [title] => Ok(Some(title.clone())),
+                _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+            }
+        }
+
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
             Ok(None)
         }
@@ -1156,6 +1187,38 @@ mod tests {
                 .iter()
                 .find(|title| title.id == id)
                 .cloned())
+        }
+
+        async fn get_by_facet_and_slug(
+            &self,
+            facet: MediaFacet,
+            slug: &str,
+        ) -> AppResult<Option<Title>> {
+            let normalized_slug = slug.trim();
+            if normalized_slug.is_empty() {
+                return Ok(None);
+            }
+
+            let titles = self.titles.lock().await;
+            let matches = titles
+                .iter()
+                .filter(|title| {
+                    title.facet == facet
+                        && title
+                            .slug
+                            .as_deref()
+                            .is_some_and(|candidate| {
+                                candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            match matches.as_slice() {
+                [] => Ok(None),
+                [title] => Ok(Some(title.clone())),
+                _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+            }
         }
 
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
@@ -1410,8 +1473,7 @@ mod tests {
                 source_kind: None,
                 source_title: Some("Restart Recovery Show".to_string()),
                 request_signature: None,
-                episode_id: None,
-                collection_id: None,
+                scope: crate::SubmissionScope::Title,
             }),
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),

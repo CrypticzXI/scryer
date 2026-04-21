@@ -14,42 +14,19 @@ use scryer_domain::{
 };
 
 use crate::SqliteServices;
-use crate::queries::housekeeping::{
-    delete_dispatched_event_outboxes_older_than_query,
-    delete_domain_events_older_than_for_types_query,
-    delete_download_import_artifacts_older_than_query, delete_history_events_older_than_query,
-    delete_media_files_by_ids_query, delete_release_attempts_older_than_query,
-    delete_release_decisions_older_than_query, delete_rule_set_history_older_than_query,
-    delete_terminal_download_queue_commands_older_than_query,
-    delete_terminal_imports_older_than_query, delete_title_history_older_than_query,
-    list_all_media_file_paths_query,
-};
-use crate::queries::library_scan_unmatched::{
-    count_library_scan_unmatched_items_query, delete_library_scan_unmatched_item_query,
-    get_library_scan_unmatched_item_query, list_library_scan_unmatched_items_query,
-    upsert_library_scan_unmatched_item_query,
-};
+use crate::queries::housekeeping::list_all_media_file_paths_query;
+use crate::queries::library_scan_unmatched::get_library_scan_unmatched_item_query;
 use crate::queries::media_file::{
-    delete_media_file_query, get_media_file_by_id_query, get_media_file_by_path_query,
-    insert_media_file_query, link_file_to_episode_query, list_media_files_for_title_query,
+    get_media_file_by_id_query, get_media_file_by_path_query, list_media_files_for_title_query,
     list_title_episode_progress_summaries_query, list_title_media_size_summaries_query,
-    list_title_quality_summaries_query, mark_scan_failed_query, update_media_file_analysis_query,
-    update_media_file_path_query, update_media_file_source_signature_query,
+    list_title_quality_summaries_query,
 };
 use crate::queries::subtitle::{
-    delete_subtitle_download, get_subtitle_download,
-    insert_blacklist_entry as insert_subtitle_blacklist_entry, insert_subtitle_download,
-    is_blacklisted as is_subtitle_blacklisted, list_subtitle_downloads_for_media_file,
-    list_subtitle_downloads_for_title, update_subtitle_download_synced,
+    get_subtitle_download, is_blacklisted as is_subtitle_blacklisted,
+    list_subtitle_downloads_for_media_file, list_subtitle_downloads_for_title,
 };
-use crate::queries::wanted::complete_wanted_item_for_title_query;
-use crate::queries::workflow::{
-    get_library_probe_signature_query, upsert_library_probe_signature_query,
-};
-use crate::title_images::{
-    get_title_image_blob_query, list_titles_requiring_image_refresh_query,
-    replace_title_image_query,
-};
+use crate::queries::workflow::get_library_probe_signature_query;
+use crate::title_images::{get_title_image_blob_query, list_titles_requiring_image_refresh_query};
 
 #[derive(Clone)]
 pub struct SqliteLibraryStateStore {
@@ -89,16 +66,16 @@ impl LibraryProbeRepository for SqliteLibraryStateStore {
     }
 
     async fn upsert_probe_signature(&self, probe: &LibraryProbeSignature) -> AppResult<()> {
-        upsert_library_probe_signature_query(
-            self.db.pool(),
-            &probe.title_id,
-            &probe.path,
-            probe.probe_signature_scheme.clone(),
-            probe.probe_signature_value.clone(),
-            probe.last_probed_at.map(|value| value.to_rfc3339()),
-            probe.last_changed_at.map(|value| value.to_rfc3339()),
-        )
-        .await
+        self.db
+            .upsert_library_probe_signature(
+                &probe.title_id,
+                &probe.path,
+                probe.probe_signature_scheme.clone(),
+                probe.probe_signature_value.clone(),
+                probe.last_probed_at.map(|value| value.to_rfc3339()),
+                probe.last_changed_at.map(|value| value.to_rfc3339()),
+            )
+            .await
     }
 }
 
@@ -108,7 +85,7 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         &self,
         item: &LibraryScanUnmatchedItem,
     ) -> AppResult<String> {
-        upsert_library_scan_unmatched_item_query(&self.db.pool, item).await
+        self.db.upsert_library_scan_unmatched_item(item).await
     }
 
     async fn get_library_scan_unmatched_item(
@@ -123,7 +100,9 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         facet: MediaFacet,
         item_path: &str,
     ) -> AppResult<()> {
-        delete_library_scan_unmatched_item_query(&self.db.pool, facet, item_path).await
+        self.db
+            .delete_library_scan_unmatched_item(facet, item_path)
+            .await
     }
 
     async fn list_library_scan_unmatched_items(
@@ -133,7 +112,8 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
-        list_library_scan_unmatched_items_query(&self.db.pool, facet, scan_root, limit, offset)
+        self.db
+            .list_library_scan_unmatched_items(facet, scan_root, limit, offset)
             .await
     }
 
@@ -142,18 +122,20 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
     ) -> AppResult<i64> {
-        count_library_scan_unmatched_items_query(&self.db.pool, facet, scan_root).await
+        self.db
+            .count_library_scan_unmatched_items(facet, scan_root)
+            .await
     }
 }
 
 #[async_trait]
 impl MediaFileRepository for SqliteLibraryStateStore {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
-        insert_media_file_query(&self.db.pool, input).await
+        self.db.insert_media_file(input).await
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
-        link_file_to_episode_query(&self.db.pool, file_id, episode_id).await
+        self.db.link_file_to_episode(file_id, episode_id).await
     }
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
@@ -186,7 +168,7 @@ impl MediaFileRepository for SqliteLibraryStateStore {
         file_id: &str,
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
-        update_media_file_analysis_query(&self.db.pool, file_id, &analysis).await
+        self.db.update_media_file_analysis(file_id, analysis).await
     }
 
     async fn update_media_file_source_signature(
@@ -196,26 +178,26 @@ impl MediaFileRepository for SqliteLibraryStateStore {
         source_signature_scheme: Option<String>,
         source_signature_value: Option<String>,
     ) -> AppResult<()> {
-        update_media_file_source_signature_query(
-            &self.db.pool,
-            file_id,
-            size_bytes,
-            source_signature_scheme.as_deref(),
-            source_signature_value.as_deref(),
-        )
-        .await
+        self.db
+            .update_media_file_source_signature(
+                file_id,
+                size_bytes,
+                source_signature_scheme,
+                source_signature_value,
+            )
+            .await
     }
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
-        update_media_file_path_query(&self.db.pool, file_id, file_path).await
+        self.db.update_media_file_path(file_id, file_path).await
     }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
-        mark_scan_failed_query(&self.db.pool, file_id, error).await
+        self.db.mark_scan_failed(file_id, error).await
     }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
-        delete_media_file_query(&self.db.pool, file_id).await
+        self.db.delete_media_file(file_id).await
     }
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
@@ -241,8 +223,11 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         &self,
         now: &str,
         batch_limit: i64,
+        excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<WantedItem>> {
-        self.db.list_due_wanted_items(now, batch_limit).await
+        self.db
+            .list_due_wanted_items(now, batch_limit, excluded_facets)
+            .await
     }
 
     async fn update_wanted_item_status(
@@ -285,14 +270,9 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         last_search_at: Option<&str>,
         current_score: Option<i32>,
     ) -> AppResult<bool> {
-        complete_wanted_item_for_title_query(
-            self.db.pool(),
-            title_id,
-            episode_id,
-            last_search_at,
-            current_score,
-        )
-        .await
+        self.db
+            .complete_wanted_item_for_title(title_id, episode_id, last_search_at, current_score)
+            .await
     }
 
     async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
@@ -369,19 +349,21 @@ impl WantedItemRepository for SqliteLibraryStateStore {
 #[async_trait]
 impl HousekeepingRepository for SqliteLibraryStateStore {
     async fn delete_release_decisions_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_release_decisions_older_than_query(self.db.pool(), days).await
+        self.db.delete_release_decisions_older_than(days).await
     }
 
     async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_release_attempts_older_than_query(self.db.pool(), days).await
+        self.db.delete_release_attempts_older_than(days).await
     }
 
     async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_dispatched_event_outboxes_older_than_query(self.db.pool(), days).await
+        self.db
+            .delete_dispatched_event_outboxes_older_than(days)
+            .await
     }
 
     async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_history_events_older_than_query(self.db.pool(), days).await
+        self.db.delete_history_events_older_than(days).await
     }
 
     async fn delete_domain_events_older_than_for_types(
@@ -389,30 +371,36 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
         days: i64,
         event_types: &[DomainEventType],
     ) -> AppResult<u32> {
-        delete_domain_events_older_than_for_types_query(self.db.pool(), days, event_types).await
+        self.db
+            .delete_domain_events_older_than_for_types(days, event_types)
+            .await
     }
 
     async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_title_history_older_than_query(self.db.pool(), days).await
+        self.db.delete_title_history_older_than(days).await
     }
 
     async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_download_import_artifacts_older_than_query(self.db.pool(), days).await
+        self.db
+            .delete_download_import_artifacts_older_than(days)
+            .await
     }
 
     async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_terminal_imports_older_than_query(self.db.pool(), days).await
+        self.db.delete_terminal_imports_older_than(days).await
     }
 
     async fn delete_terminal_download_queue_commands_older_than(
         &self,
         days: i64,
     ) -> AppResult<u32> {
-        delete_terminal_download_queue_commands_older_than_query(self.db.pool(), days).await
+        self.db
+            .delete_terminal_download_queue_commands_older_than(days)
+            .await
     }
 
     async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32> {
-        delete_rule_set_history_older_than_query(self.db.pool(), days).await
+        self.db.delete_rule_set_history_older_than(days).await
     }
 
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
@@ -420,7 +408,7 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
     }
 
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {
-        delete_media_files_by_ids_query(self.db.pool(), ids).await
+        self.db.delete_media_files_by_ids(ids).await
     }
 }
 
@@ -655,15 +643,15 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
     }
 
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()> {
-        insert_subtitle_download(self.db.pool(), download).await
+        self.db.insert_subtitle_download(download).await
     }
 
     async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()> {
-        update_subtitle_download_synced(self.db.pool(), id, synced).await
+        self.db.set_subtitle_download_synced(id, synced).await
     }
 
     async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
-        delete_subtitle_download(self.db.pool(), id).await
+        self.db.delete_subtitle_download(id).await
     }
 
     async fn is_blacklisted(
@@ -683,16 +671,16 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         language: &str,
         reason: Option<&str>,
     ) -> AppResult<()> {
-        insert_subtitle_blacklist_entry(
-            self.db.pool(),
-            media_file_id,
-            provider,
-            provider_file_id,
-            language,
-            reason,
-        )
-        .await
-        .map(|_| ())
+        self.db
+            .blacklist_subtitle_download(
+                media_file_id,
+                provider,
+                provider_file_id,
+                language,
+                reason,
+            )
+            .await
+            .map(|_| ())
     }
 }
 
@@ -711,7 +699,7 @@ impl TitleImageRepository for SqliteLibraryStateStore {
         title_id: &str,
         replacement: TitleImageReplacement,
     ) -> AppResult<()> {
-        replace_title_image_query(&self.db.pool, title_id, replacement).await
+        self.db.replace_title_image(title_id, replacement).await
     }
 
     async fn get_title_image_blob(

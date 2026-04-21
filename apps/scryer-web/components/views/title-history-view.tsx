@@ -6,17 +6,7 @@ import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventTable } from "@/components/common/history-event-table";
 import { HistoryEventIcon } from "@/components/common/history-event-icon";
-
-const filterI18nKeys: Record<string, string> = {
-  grabbed: "history.grabbed",
-  download_completed: "history.downloadCompleted",
-  imported: "history.imported",
-  import_failed: "history.importFailed",
-  import_skipped: "history.importSkipped",
-  file_deleted: "history.fileDeleted",
-  file_renamed: "history.fileRenamed",
-  download_ignored: "history.downloadIgnored",
-};
+import { getTitleHistoryFilterLabel } from "@/components/common/title-history-event-meta";
 
 export function TitleHistoryView({
   events,
@@ -67,7 +57,7 @@ export function TitleHistoryView({
                 onClick={() => onToggleFilter(eventType)}
                 icon={<HistoryEventIcon eventType={eventType} size={14} />}
               >
-                {t(filterI18nKeys[eventType] ?? eventType)}
+                {getTitleHistoryFilterLabel(eventType, t)}
               </FilterChipButton>
             );
           })}

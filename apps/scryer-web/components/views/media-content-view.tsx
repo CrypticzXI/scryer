@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { LayoutGrid, LayoutList } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { ContentSettingsSection, ViewId } from "@/components/root/types";
+import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
@@ -198,7 +198,7 @@ export function MediaContentView({
     libraryScanNotice: string | null;
     libraryScanSummary: LibraryScanSummary | null;
     scanLibrary: () => Promise<void> | void;
-    onOpenOverview: (targetView: ViewId, titleId: string) => void;
+    onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
   };

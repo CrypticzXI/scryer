@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus, ImportType,
-    NewDomainEvent,
+    MediaFacet, NewDomainEvent,
 };
 
 use scryer_domain::RuleSet;
@@ -365,6 +365,7 @@ impl WantedItemRepository for NullWantedItemRepository {
         &self,
         _now: &str,
         _batch_limit: i64,
+        _excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<WantedItem>> {
         Ok(vec![])
     }
@@ -1252,6 +1253,13 @@ pub mod test_nulls {
             Ok(vec![])
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+        async fn get_by_facet_and_slug(
+            &self,
+            _: MediaFacet,
+            _: &str,
+        ) -> AppResult<Option<Title>> {
             Ok(None)
         }
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {

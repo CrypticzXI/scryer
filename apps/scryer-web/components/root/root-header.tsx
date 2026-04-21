@@ -6,7 +6,7 @@ import ScryerLogo from "@/components/scryer-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RouteCommandPalette } from "@/components/common/route-command-palette";
-import type { ViewId } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
@@ -28,7 +28,7 @@ import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-t
 
 type RootHeaderProps = {
   routeCommandPalette?: RouteCommandPaletteConfig;
-  onOpenOverview?: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview?: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
 function catalogFacetFromString(facet: string): Facet {
@@ -97,7 +97,7 @@ export const RootHeader = React.memo(function RootHeader({
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
       const titleId = await addMetadataSearchResultToCatalog(result, facet, options);
       if (titleId) {
-        onOpenOverview?.(viewFromFacet(facet), titleId);
+        onOpenOverview?.(viewFromFacet(facet), { id: titleId, slug: result.slug ?? null });
         closeGlobalSearchPanel();
       }
       return titleId;
@@ -155,7 +155,7 @@ export const RootHeader = React.memo(function RootHeader({
             type="button"
             onClick={() => {
               closeGlobalSearchPanel();
-              onOpenOverview?.(targetView, title.id);
+              onOpenOverview?.(targetView, title);
             }}
             className="block w-full rounded-lg border border-border bg-card/60 p-3 text-left hover:bg-accent/80"
             aria-label={title.name}

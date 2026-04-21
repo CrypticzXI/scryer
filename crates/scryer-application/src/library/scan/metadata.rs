@@ -1449,8 +1449,12 @@ pub(crate) fn select_best_match(
         return Some((*match_item).clone());
     }
 
-    if let Some(match_item) = canonical_matches.into_iter().next() {
-        return Some(match_item.clone());
+    if year.is_none() {
+        if let Some(match_item) = canonical_matches.into_iter().next() {
+            return Some(match_item.clone());
+        }
+    } else if let Some(match_item) = canonical_matches.iter().find(|item| item.year.is_none()) {
+        return Some((*match_item).clone());
     }
 
     let match_year = year.map(|value| value as i32)?;
@@ -1803,6 +1807,61 @@ mod tests {
         }
     }
 
+    fn bastard_tvshow_nfo_fixture() -> &'static str {
+        r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<tvshow>
+  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
+  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <lockdata>false</lockdata>
+  <dateadded>2026-04-21 04:22:41</dateadded>
+  <title>Bastard!!</title>
+  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
+  <rating>5</rating>
+  <year>2022</year>
+  <mpaa>TV-MA</mpaa>
+  <collectionnumber>156898</collectionnumber>
+  <imdb_id>tt17736234</imdb_id>
+  <tmdbid>156898</tmdbid>
+  <premiered>1992-08-25</premiered>
+  <releasedate>1992-08-25</releasedate>
+  <enddate>1993-06-25</enddate>
+  <runtime>25</runtime>
+  <genre>Anime</genre>
+  <genre>magic</genre>
+  <genre>stereotypes</genre>
+  <genre>super power</genre>
+  <genre>violence</genre>
+  <studio />
+  <studio>Netflix</studio>
+  <tag>anime</tag>
+  <tag>based on manga</tag>
+  <tag>combat</tag>
+  <tag>dark fantasy</tag>
+  <tag>ecchi</tag>
+  <tag>heavy metal</tag>
+  <tag>magic</tag>
+  <tag>original net animation (ona)</tag>
+  <tag>remake</tag>
+  <tag>seinen</tag>
+  <anidbid>10</anidbid>
+  <tvdbid>415677</tvdbid>
+  <tvdbslugid>bastard-2022</tvdbslugid>
+  <art>
+    <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
+    <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
+  </art>
+  <id>415677</id>
+  <episodeguide>
+    <url cache="415677.xml">http://www.thetvdb.com/api/1D62F2F90030C444/series/415677/all/en.zip</url>
+  </episodeguide>
+  <season>-1</season>
+  <episode>-1</episode>
+  <status>Ended</status>
+</tvshow>"#
+    }
+
     #[test]
     fn extract_library_queries_uses_movie_title_variants_for_root_files() {
         let (queries, year) = extract_library_queries(
@@ -2107,6 +2166,73 @@ mod tests {
                 .map(|item| item.tvdb_id.as_str())
                 == Some("series-1")
         }));
+    }
+
+    #[tokio::test]
+    async fn prepare_series_library_scan_candidates_prefers_tvshow_nfo_identity_for_bastard_fixture()
+     {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let folder = tempdir.path().join("Bastard!! (2022)");
+        std::fs::create_dir_all(&folder).expect("create show dir");
+        std::fs::write(folder.join("tvshow.nfo"), bastard_tvshow_nfo_fixture())
+            .expect("write tvshow.nfo");
+
+        let candidates = prepare_series_library_scan_candidates(std::slice::from_ref(&folder))
+            .await
+            .expect("prepare series candidates");
+
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.query, "Bastard!!");
+        assert_eq!(candidate.year_hint, Some(2022));
+        assert_eq!(
+            candidate
+                .nfo_meta
+                .as_ref()
+                .and_then(|meta| meta.tvdb_id.as_deref()),
+            Some("415677")
+        );
+        assert!(!candidate.metadata_lookup_attempted);
+        assert!(candidate.search_candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preload_series_library_scan_candidates_rejects_wrong_year_match_for_bastard_fixture() {
+        let gateway = CountingMetadataGateway::default();
+        let wrong_year_match = vec![MetadataSearchItem {
+            tvdb_id: "wrong-series".into(),
+            name: "Bastard".into(),
+            year: Some(2009),
+        }];
+        gateway.set_search_results(METADATA_TYPE_SERIES, "Bastard!!", wrong_year_match.clone());
+        gateway.set_search_results(METADATA_TYPE_SERIES, "bastard", wrong_year_match);
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let folder = tempdir.path().join("Bastard!! (2022)");
+        std::fs::create_dir_all(&folder).expect("create show dir");
+        std::fs::write(
+            folder.join("tvshow.nfo"),
+            r#"<tvshow><title>Bastard!!</title><year>2022</year></tvshow>"#,
+        )
+        .expect("write tvshow.nfo");
+
+        let (candidates, stats) =
+            preload_series_library_scan_candidates(Arc::new(gateway.clone()), &[folder])
+                .await
+                .expect("series preload should succeed");
+
+        assert_eq!(stats.logical_lookups, 1);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].query, "Bastard!!");
+        assert_eq!(
+            candidates[0]
+                .nfo_meta
+                .as_ref()
+                .and_then(|meta| meta.year)
+                .map(|value| value as u32),
+            Some(2022)
+        );
+        assert!(candidates[0].selected_metadata.is_none());
     }
 
     #[tokio::test]
@@ -2467,6 +2593,52 @@ mod tests {
 
         assert_eq!(selected.tvdb_id, "right");
         assert_eq!(selected.name, "Dune");
+    }
+
+    #[test]
+    fn select_best_match_rejects_canonical_wrong_year_results() {
+        let results = vec![MetadataSearchItem {
+            tvdb_id: "wrong".into(),
+            name: "Bastard".into(),
+            year: Some(2009),
+        }];
+        let raw_candidates = vec!["Bastard!!".to_string()];
+        let (candidates, reduced) =
+            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
+
+        assert!(
+            select_best_match(
+                &results,
+                Some(2022),
+                &candidates,
+                &reduced,
+                TitleMatchProfile::Series,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn select_best_match_accepts_canonical_match_with_missing_year() {
+        let results = vec![MetadataSearchItem {
+            tvdb_id: "right".into(),
+            name: "Bastard".into(),
+            year: None,
+        }];
+        let raw_candidates = vec!["Bastard!!".to_string()];
+        let (candidates, reduced) =
+            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
+
+        let selected = select_best_match(
+            &results,
+            Some(2022),
+            &candidates,
+            &reduced,
+            TitleMatchProfile::Series,
+        )
+        .expect("missing-year canonical match should remain eligible");
+
+        assert_eq!(selected.tvdb_id, "right");
     }
 
     #[test]

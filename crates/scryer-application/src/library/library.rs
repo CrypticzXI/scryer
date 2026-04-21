@@ -39,7 +39,7 @@ use crate::library_scan_unmatched::{
     normalize_library_scan_item_path, persist_library_scan_unmatched_item,
     reconcile_library_scan_unmatched_items,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
 const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;

@@ -987,8 +987,7 @@ impl AppUseCase {
                         source_kind: None,
                         source_title: source_title.clone(),
                         request_signature: request_signature.clone(),
-                        episode_id: submission_scope.episode_id,
-                        collection_id: submission_scope.collection_id,
+                        scope: submission_scope,
                     })
                     .await;
 

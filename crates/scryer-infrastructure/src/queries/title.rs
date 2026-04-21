@@ -10,7 +10,7 @@ use serde_json;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
-use super::common::parse_utc_datetime;
+use super::common::{parse_utc_datetime, repository_error_from_sqlx};
 use crate::title_images::{normalized_base_path_from_env, prefix_local_title_image_path};
 
 const TITLE_COLUMNS: &str = "id, name, facet, monitored, tags, external_ids, created_by, created_at, \
@@ -114,6 +114,41 @@ pub(crate) async fn get_title_by_id_query(pool: &SqlitePool, id: &str) -> AppRes
             &normalized_base_path_from_env(),
         )?)),
         None => Ok(None),
+    }
+}
+
+pub(crate) async fn get_title_by_facet_and_slug_query(
+    pool: &SqlitePool,
+    facet: MediaFacet,
+    slug: &str,
+) -> AppResult<Option<Title>> {
+    let normalized_slug = slug.trim().to_ascii_lowercase();
+    if normalized_slug.is_empty() {
+        return Ok(None);
+    }
+
+    let sql = format!(
+        "SELECT {} FROM titles\n         WHERE facet = ?\n           AND LOWER(TRIM(slug)) = ?\n         ORDER BY id ASC\n         LIMIT 2",
+        TITLE_COLUMNS,
+    );
+    let rows = sqlx::query(&sql)
+        .bind(facet.as_str())
+        .bind(&normalized_slug)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match rows.as_slice() {
+        [] => Ok(None),
+        [row] => Ok(Some(row_to_title(
+            row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
+        _ => Err(AppError::Validation(format!(
+            "multiple titles found for facet `{}` and slug `{normalized_slug}`",
+            facet.as_str()
+        ))),
     }
 }
 
@@ -291,7 +326,7 @@ async fn list_existing_title_ids_for_external_ids_tx(
         .build()
         .fetch_all(&mut **tx)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
 
     let mut ids = Vec::with_capacity(rows.len());
     for row in rows {
@@ -313,7 +348,7 @@ async fn replace_title_external_ids_projection_tx(
         .bind(title_id)
         .execute(&mut **tx)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
 
     let now = chrono::Utc::now().to_rfc3339();
     for (source, value) in normalized_external_ids(external_ids) {
@@ -331,7 +366,7 @@ async fn replace_title_external_ids_projection_tx(
         .bind(&now)
         .execute(&mut **tx)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
     }
 
     Ok(())
@@ -346,7 +381,7 @@ async fn get_title_by_id_tx(
         .bind(id)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
 
     match row {
         Some(row) => Ok(Some(row_to_title(
@@ -684,6 +719,35 @@ pub(crate) async fn get_collection_by_id_query(
     }
 }
 
+async fn get_collection_by_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    collection_id: &str,
+) -> AppResult<Option<Collection>> {
+    let row = sqlx::query(
+        "SELECT id, title_id, collection_type, collection_index, label, ordered_path,
+                narrative_order, first_episode_number, last_episode_number,
+                interstitial_tvdb_id, interstitial_name, interstitial_slug, interstitial_year,
+                interstitial_content_status, interstitial_overview, interstitial_poster_url,
+                interstitial_language, interstitial_runtime_minutes, interstitial_sort_title,
+                interstitial_imdb_id, interstitial_genres_json, interstitial_studio,
+                interstitial_digital_release_date, interstitial_association_confidence,
+                interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
+                interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
+                interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
+                special_movies_json, monitored, created_at
+         FROM collections WHERE id = ?",
+    )
+    .bind(collection_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match row {
+        Some(row) => Ok(Some(row_to_collection(&row)?)),
+        None => Ok(None),
+    }
+}
+
 pub(crate) async fn get_collection_by_ordered_path_query(
     pool: &SqlitePool,
     ordered_path: &str,
@@ -887,7 +951,7 @@ pub(crate) async fn create_collection_query(
     .bind(collection.created_at.to_rfc3339())
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(collection.clone())
 }
@@ -964,8 +1028,9 @@ pub(crate) async fn update_collection_query(
     }
     statement = statement.bind(collection_id);
 
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     let result = statement
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -973,9 +1038,11 @@ pub(crate) async fn update_collection_query(
         return Err(AppError::NotFound(format!("collection {}", collection_id)));
     }
 
-    get_collection_by_id_query(pool, collection_id)
+    let collection = get_collection_by_id_tx(&mut tx, collection_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))
+        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
+    Ok(collection)
 }
 
 pub(crate) async fn update_collection_interstitial_movie_query(
@@ -983,6 +1050,7 @@ pub(crate) async fn update_collection_interstitial_movie_query(
     collection_id: &str,
     interstitial_movie: &InterstitialMovieMetadata,
 ) -> AppResult<Collection> {
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     let result = sqlx::query(
         "UPDATE collections SET
             interstitial_tvdb_id = ?,
@@ -1034,7 +1102,7 @@ pub(crate) async fn update_collection_interstitial_movie_query(
     .bind(&interstitial_movie.movie_mal_id)
     .bind(&interstitial_movie.movie_anidb_id)
     .bind(collection_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1042,9 +1110,11 @@ pub(crate) async fn update_collection_interstitial_movie_query(
         return Err(AppError::NotFound(format!("collection {}", collection_id)));
     }
 
-    get_collection_by_id_query(pool, collection_id)
+    let collection = get_collection_by_id_tx(&mut tx, collection_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))
+        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
+    Ok(collection)
 }
 
 pub(crate) async fn update_collection_specials_movies_query(
@@ -1052,10 +1122,11 @@ pub(crate) async fn update_collection_specials_movies_query(
     collection_id: &str,
     specials_movies: &[InterstitialMovieMetadata],
 ) -> AppResult<Collection> {
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     let result = sqlx::query("UPDATE collections SET special_movies_json = ? WHERE id = ?")
         .bind(serde_json::to_string(specials_movies).unwrap_or_else(|_| "[]".to_string()))
         .bind(collection_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1063,9 +1134,11 @@ pub(crate) async fn update_collection_specials_movies_query(
         return Err(AppError::NotFound(format!("collection {}", collection_id)));
     }
 
-    get_collection_by_id_query(pool, collection_id)
+    let collection = get_collection_by_id_tx(&mut tx, collection_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))
+        .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
+    Ok(collection)
 }
 
 pub(crate) async fn list_episodes_for_collection_query(
@@ -1124,6 +1197,27 @@ pub(crate) async fn get_episode_by_id_query(
     )
     .bind(episode_id)
     .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match row {
+        Some(row) => Ok(Some(row_to_episode(&row)?)),
+        None => Ok(None),
+    }
+}
+
+async fn get_episode_by_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    episode_id: &str,
+) -> AppResult<Option<Episode>> {
+    let row = sqlx::query(
+        "SELECT id, title_id, collection_id, episode_type, episode_number, season_number,
+                episode_label, title, air_date, duration_seconds, has_multi_audio,
+                has_subtitle, is_filler, is_recap, absolute_number, overview, tvdb_id, monitored, created_at
+         FROM episodes WHERE id = ?",
+    )
+    .bind(episode_id)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1247,8 +1341,9 @@ pub(crate) async fn update_episode_query(
     }
     statement = statement.bind(episode_id);
 
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     let result = statement
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1256,9 +1351,11 @@ pub(crate) async fn update_episode_query(
         return Err(AppError::NotFound(format!("episode {}", episode_id)));
     }
 
-    get_episode_by_id_query(pool, episode_id)
+    let episode = get_episode_by_id_tx(&mut tx, episode_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))
+        .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
+    Ok(episode)
 }
 
 pub(crate) async fn create_episode_query(
@@ -1758,7 +1855,7 @@ async fn insert_title_row_tx(tx: &mut Transaction<'_, Sqlite>, title: &Title) ->
     .bind(0_i64)
     .execute(&mut **tx)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }
@@ -1768,10 +1865,7 @@ pub(crate) async fn create_or_get_existing_title_query(
     title: &Title,
 ) -> AppResult<CreateTitleOutcome> {
     let external_ids = normalized_external_ids(&title.external_ids);
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
 
     let existing_ids =
         list_existing_title_ids_for_external_ids_tx(&mut tx, title.facet.clone(), &external_ids)
@@ -1785,9 +1879,7 @@ pub(crate) async fn create_or_get_existing_title_query(
         let existing = get_title_by_id_tx(&mut tx, existing_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", existing_id)))?;
-        tx.rollback()
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
+        tx.rollback().await.map_err(repository_error_from_sqlx)?;
         return Ok(CreateTitleOutcome {
             title: existing,
             reused_existing: true,
@@ -1805,9 +1897,7 @@ pub(crate) async fn create_or_get_existing_title_query(
     .await
     {
         Ok(()) => {
-            tx.commit()
-                .await
-                .map_err(|err| AppError::Repository(err.to_string()))?;
+            tx.commit().await.map_err(repository_error_from_sqlx)?;
             Ok(CreateTitleOutcome {
                 title: title.clone(),
                 reused_existing: false,
@@ -1817,10 +1907,7 @@ pub(crate) async fn create_or_get_existing_title_query(
             let _ = tx.rollback().await;
             if matches!(&error, AppError::Repository(message) if message.contains("UNIQUE constraint failed"))
             {
-                let mut lookup_tx = pool
-                    .begin()
-                    .await
-                    .map_err(|err| AppError::Repository(err.to_string()))?;
+                let mut lookup_tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
                 let conflict_ids = list_existing_title_ids_for_external_ids_tx(
                     &mut lookup_tx,
                     title.facet.clone(),
@@ -1834,7 +1921,7 @@ pub(crate) async fn create_or_get_existing_title_query(
                     lookup_tx
                         .rollback()
                         .await
-                        .map_err(|err| AppError::Repository(err.to_string()))?;
+                        .map_err(repository_error_from_sqlx)?;
                     return Ok(CreateTitleOutcome {
                         title: existing,
                         reused_existing: true,
@@ -1844,7 +1931,7 @@ pub(crate) async fn create_or_get_existing_title_query(
                     lookup_tx
                         .rollback()
                         .await
-                        .map_err(|err| AppError::Repository(err.to_string()))?;
+                        .map_err(repository_error_from_sqlx)?;
                     return Err(AppError::Validation(
                         "external ids already map to multiple titles".to_string(),
                     ));
@@ -1856,10 +1943,7 @@ pub(crate) async fn create_or_get_existing_title_query(
 }
 
 pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppResult<Title> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     insert_title_row_tx(&mut tx, title).await?;
     replace_title_external_ids_projection_tx(
         &mut tx,
@@ -1868,9 +1952,7 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
         &title.external_ids,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
     Ok(title.clone())
 }
 
@@ -1984,10 +2066,11 @@ pub(crate) async fn update_title_monitored_query(
     id: &str,
     monitored: bool,
 ) -> AppResult<Title> {
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     let result = sqlx::query("UPDATE titles SET monitored = ? WHERE id = ?")
         .bind(if monitored { 1_i64 } else { 0_i64 })
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1995,9 +2078,11 @@ pub(crate) async fn update_title_monitored_query(
         return Err(AppError::NotFound(format!("title {}", id)));
     }
 
-    get_title_by_id_query(pool, id)
+    let title = get_title_by_id_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))
+        .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
+    Ok(title)
 }
 
 pub(crate) async fn set_title_folder_path_query(
@@ -2010,7 +2095,7 @@ pub(crate) async fn set_title_folder_path_query(
         .bind(id)
         .execute(pool)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
     Ok(())
 }
 

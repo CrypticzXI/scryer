@@ -732,7 +732,7 @@ impl AppUseCase {
             .is_some_and(|h| h.has_episodes());
 
         if has_episodes {
-            info!(
+            debug!(
                 hydration_source = source.as_str(),
                 facet = title.facet.as_str(),
                 title_id = %title.id,
@@ -1306,7 +1306,7 @@ impl AppUseCase {
                     {
                         Ok(created) => {
                             existing_collections_by_id.insert(created.id.clone(), created.clone());
-                            info!(
+                            debug!(
                                 title_id = %title.id,
                                 label = %label,
                                 narrative_order = %narrative_order,
@@ -1685,8 +1685,7 @@ impl AppUseCase {
                         source_kind,
                         source_title: source_title_for_attempt.clone(),
                         request_signature: request_signature.clone(),
-                        episode_id: None,
-                        collection_id: None,
+                        scope: SubmissionScope::Title,
                     })
                     .await;
                 grab
@@ -1752,6 +1751,7 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
         queued_release: QueuedReleaseSelection,
+        scope: SubmissionScope,
     ) -> AppResult<String> {
         require(actor, &Entitlement::TriggerActions)?;
 
@@ -1873,8 +1873,7 @@ impl AppUseCase {
                         source_kind: None,
                         source_title: source_title_for_attempt.clone(),
                         request_signature: request_signature.clone(),
-                        episode_id: None,
-                        collection_id: None,
+                        scope,
                     })
                     .await;
                 grab
@@ -2954,6 +2953,20 @@ impl AppUseCase {
     pub async fn get_title(&self, actor: &User, id: &str) -> AppResult<Option<Title>> {
         require(actor, &Entitlement::ViewCatalog)?;
         self.services.catalog.titles.get_by_id(id).await
+    }
+
+    pub async fn get_title_by_slug(
+        &self,
+        actor: &User,
+        facet: MediaFacet,
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        require(actor, &Entitlement::ViewCatalog)?;
+        self.services
+            .catalog
+            .titles
+            .get_by_facet_and_slug(facet, slug)
+            .await
     }
 
     async fn validate_title_exists(&self, title_id: &str) -> AppResult<()> {

@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { ViewId } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -158,7 +158,7 @@ type TitleTableProps = {
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
-  onOpenOverview: (targetView: ViewId, titleId: string) => void;
+  onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
   onToggleMonitored?: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
@@ -471,7 +471,7 @@ export function TitleTable({
           <TableCell className="align-middle">
             <button
               type="button"
-              onClick={() => onOpenOverview(overviewTargetView, item.id)}
+              onClick={() => onOpenOverview(overviewTargetView, item)}
               data-ui="poster-link"
               className="inline-block text-left"
               aria-label={t("media.posterAlt", { name: item.name })}
@@ -496,7 +496,7 @@ export function TitleTable({
           <TableCell className="align-middle overflow-hidden">
             <button
               type="button"
-              onClick={() => onOpenOverview(overviewTargetView, item.id)}
+              onClick={() => onOpenOverview(overviewTargetView, item)}
               data-ui="title-name"
               className="block w-full overflow-hidden text-left text-xl font-bold hover:text-foreground hover:underline"
             >

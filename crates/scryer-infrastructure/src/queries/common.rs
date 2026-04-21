@@ -1,6 +1,16 @@
 use chrono::{DateTime, Utc};
 use scryer_application::{AppError, AppResult};
 
+pub(crate) fn repository_error_from_sqlx(error: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(database_error) = &error
+        && let Some(code) = database_error.code()
+    {
+        return AppError::Repository(format!("sqlite_code={code}; {}", database_error.message()));
+    }
+
+    AppError::Repository(error.to_string())
+}
+
 pub(crate) fn parse_utc_datetime(raw: &str) -> AppResult<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))

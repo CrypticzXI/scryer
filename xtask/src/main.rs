@@ -221,10 +221,7 @@ fn main() -> Result<()> {
             StackCommand::Up(args) => stack_up(&ctx, args),
             StackCommand::Down(args) => stack_down(&ctx, args),
             StackCommand::Logs(args) => stack_logs(&ctx, args),
-            StackCommand::Restart(args) => {
-                stack_down(&ctx, StackDownArgs { all: false })?;
-                stack_up(&ctx, StackUpArgs { seed: args.seed })
-            }
+            StackCommand::Restart(args) => stack_restart(&ctx, args),
         },
         Commands::Nzbget(args) => match args.command {
             NzbgetCommand::Up => nzbget_up(&ctx),
@@ -1091,6 +1088,39 @@ fn docker_capture(ctx: &TaskContext, args: &[String]) -> Result<String> {
     run_capture(&mut command)
 }
 
+fn stack_restart(ctx: &TaskContext, args: StackRestartArgs) -> Result<()> {
+    stack_down(ctx, StackDownArgs { all: false })?;
+
+    let restart_services = env_list(
+        "SCRYER_DOCKER_RESTART_SERVICES",
+        &["scryer", "nodejs", "proxy"],
+    );
+    if restart_services.iter().any(|service| service == "scryer") {
+        reset_scryer_config_volume(ctx)?;
+    }
+
+    stack_up(ctx, StackUpArgs { seed: args.seed })
+}
+
+fn reset_scryer_config_volume(ctx: &TaskContext) -> Result<()> {
+    let (_, _, stack_name) = compose_command(ctx)?;
+    let volume_name = format!("{stack_name}-scryer-config");
+
+    let mut inspect = ctx.command("docker");
+    inspect.args(["volume", "inspect", &volume_name]);
+    if !inspect.output()?.status.success() {
+        ok(format!("Scryer config volume {volume_name} already absent"));
+        return Ok(());
+    }
+
+    step(format!("Resetting scryer config volume ({volume_name})"));
+    let mut remove = ctx.command("docker");
+    remove.args(["volume", "rm", "-f", &volume_name]);
+    run_checked(&mut remove)?;
+    ok(format!("Removed {volume_name}"));
+    Ok(())
+}
+
 fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     let (compose_base, _, _) = compose_command(ctx)?;
     // SAFETY: xtask is a single-process CLI and the env var only needs to apply
@@ -1099,7 +1129,6 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         std::env::set_var("SCRYER_AUTH_ENABLED", "false");
     }
     for path in [
-        "tmp/scryer-config",
         "tmp/scryer-data",
         "tmp/scryer-media/movies",
         "tmp/scryer-media/series",

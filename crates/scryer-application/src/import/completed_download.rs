@@ -894,6 +894,38 @@ mod tests {
             Ok(titles.iter().find(|title| title.id == id).cloned())
         }
 
+        async fn get_by_facet_and_slug(
+            &self,
+            facet: MediaFacet,
+            slug: &str,
+        ) -> AppResult<Option<Title>> {
+            let normalized_slug = slug.trim();
+            if normalized_slug.is_empty() {
+                return Ok(None);
+            }
+
+            let titles = self.titles.lock().await;
+            let matches = titles
+                .iter()
+                .filter(|title| {
+                    title.facet == facet
+                        && title
+                            .slug
+                            .as_deref()
+                            .is_some_and(|candidate| {
+                                candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            match matches.as_slice() {
+                [] => Ok(None),
+                [title] => Ok(Some(title.clone())),
+                _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+            }
+        }
+
         async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>> {
             let titles = self.titles.lock().await;
             Ok(titles

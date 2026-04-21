@@ -7,11 +7,11 @@ use common::TestContext;
 use scryer_application::{
     AcquisitionStateRepository, AppError, DownloadSourceKind, DownloadSubmission,
     DownloadSubmissionRepository, PendingReleaseRepository, PendingReleaseStatus,
-    SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition, WantedItemRepository,
-    WantedSearchTransition, WantedStatus,
+    SubmissionScope, SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition,
+    WantedItemRepository, WantedSearchTransition, WantedStatus,
 };
 use scryer_domain::{MediaFacet, Title};
-use sqlx::query;
+use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -353,8 +353,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 source_kind: None,
                 source_title: Some("Best.Release.1080p.WEB-DL".to_string()),
                 request_signature: None,
-                episode_id: None,
-                collection_id: None,
+                scope: SubmissionScope::Title,
             },
             grabbed_pending_release_id: None,
             grabbed_at: Some(grabbed_at.clone()),
@@ -457,8 +456,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 source_kind: None,
                 source_title: Some(claimed.release_title.clone()),
                 request_signature: None,
-                episode_id: None,
-                collection_id: None,
+                scope: SubmissionScope::Title,
             },
             grabbed_pending_release_id: Some(claimed.id.clone()),
             grabbed_at: Some(grabbed_at.clone()),
@@ -503,11 +501,20 @@ async fn download_submission_roundtrips_episode_scope() {
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
             request_signature: Some("episode-scope-signature".to_string()),
-            episode_id: Some("episode-1".to_string()),
-            collection_id: Some("season-1".to_string()),
+            scope: SubmissionScope::Episode {
+                episode_id: "episode-1".to_string(),
+            },
         })
         .await
         .expect("record submission");
+
+    let persisted = query(
+        "SELECT episode_id, collection_id FROM download_submissions WHERE download_client_item_id = ?",
+    )
+    .bind("job-episode-scope")
+    .fetch_one(ctx.db.pool())
+    .await
+    .expect("load raw submission row");
 
     let submission = workflow_store
         .find_by_client_item_id("nzbget", "job-episode-scope")
@@ -516,8 +523,14 @@ async fn download_submission_roundtrips_episode_scope() {
         .expect("submission exists");
 
     assert_eq!(submission.title_id, "title-episode-scope");
-    assert_eq!(submission.episode_id.as_deref(), Some("episode-1"));
-    assert_eq!(submission.collection_id.as_deref(), Some("season-1"));
+    assert_eq!(
+        submission.scope,
+        SubmissionScope::Episode {
+            episode_id: "episode-1".to_string(),
+        }
+    );
+    assert_eq!(persisted.try_get::<Option<String>, _>("episode_id").unwrap(), Some("episode-1".to_string()));
+    assert_eq!(persisted.try_get::<Option<String>, _>("collection_id").unwrap(), None);
     assert_eq!(
         submission.request_signature.as_deref(),
         Some("episode-scope-signature")
@@ -557,8 +570,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
         .expect("legacy submission exists");
 
     assert_eq!(submission.title_id, "title-legacy-scope");
-    assert_eq!(submission.episode_id, None);
-    assert_eq!(submission.collection_id, None);
+    assert_eq!(submission.scope, SubmissionScope::Title);
     assert_eq!(submission.request_signature, None);
 }
 

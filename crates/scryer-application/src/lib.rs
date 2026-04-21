@@ -136,8 +136,9 @@ pub use contracts::{
     IndexerEpisodeSearchRequest, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSearchRequest,
     IndexerSeasonSearchRequest, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
     NewBlocklistEntry, NewTitleHistoryEvent, NotificationScopeIdUpdate, PendingStagedNzb,
-    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubtitleStreamDetail,
-    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope,
+    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
+    WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,
@@ -146,6 +147,9 @@ pub use event_views::{
     sorted_download_queue_items,
 };
 pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, ActivitySeverity};
+pub use events::activity_api::{
+    is_supported_title_history_event_type, supported_title_history_event_types,
+};
 pub use import_workflow::{
     ManualImportExecutionResult, ManualImportFileMapping, ManualImportFilePreview,
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,

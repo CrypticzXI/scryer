@@ -1,12 +1,12 @@
 use super::*;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
 const IMAGE_COLLECT_WINDOW: Duration = Duration::from_millis(50);
 const IMAGE_MAX_BATCH: usize = 256;
+const IMAGE_WRITE_CHUNK_SIZE: usize = 8;
 const IMAGE_RETRY_BASE: Duration = Duration::from_secs(10);
 const IMAGE_RETRY_MAX: Duration = Duration::from_secs(300);
 const IMAGE_CONCURRENT_WORKERS: usize = 2;
@@ -42,7 +42,7 @@ async fn wait_for_image_loop_to_resume(
         return true;
     }
 
-    info!(
+    debug!(
         kind = kind.as_str(),
         active_scans = active_scans.len(),
         "image loop: pausing while library scan is active"
@@ -51,10 +51,100 @@ async fn wait_for_image_loop_to_resume(
     tokio::select! {
         _ = token.cancelled() => false,
         _ = app.runtime.library.library_scan_tracker.wait_until_idle() => {
-            info!(kind = kind.as_str(), "image loop: resuming after library scan");
+            debug!(kind = kind.as_str(), "image loop: resuming after library scan");
             true
         }
     }
+}
+
+async fn process_image_refresh_chunk(
+    app: &AppUseCase,
+    kind: TitleImageKind,
+    label: &str,
+    chunk: &[TitleImageSyncTask],
+) -> (usize, usize) {
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(IMAGE_CONCURRENT_WORKERS));
+    let mut join_set = tokio::task::JoinSet::new();
+    let label = label.to_string();
+
+    for task in chunk.iter().cloned() {
+        let sem = semaphore.clone();
+        let app = app.clone();
+        let label = label.clone();
+        join_set.spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore should not be closed");
+            let started_at = std::time::Instant::now();
+            debug!(
+                title_id = %task.title_id,
+                source_url = %task.source_url,
+                kind = %label,
+                "image loop: refreshing"
+            );
+            match app
+                .services
+                .library
+                .title_image_processor
+                .fetch_and_process_image(kind, &task.source_url)
+                .await
+            {
+                Ok(replacement) => {
+                    if let Err(error) = app
+                        .services
+                        .library
+                        .title_images
+                        .replace_title_image(&task.title_id, replacement)
+                        .await
+                    {
+                        warn!(
+                            error = %error,
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            title_id = %task.title_id,
+                            source_url = %task.source_url,
+                            kind = %label,
+                            "image loop: failed to store processed image"
+                        );
+                        return false;
+                    }
+                    debug!(
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        title_id = %task.title_id,
+                        kind = %label,
+                        "image loop: cached"
+                    );
+                    true
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id = %task.title_id,
+                        source_url = %task.source_url,
+                        kind = %label,
+                        "image loop: fetch/process failed"
+                    );
+                    false
+                }
+            }
+        });
+    }
+
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(true) => {
+                succeeded += 1;
+            }
+            Ok(false) => {
+                failed += 1;
+            }
+            Err(err) => {
+                warn!(error = %err, kind = label, "image loop: task panicked");
+                failed += 1;
+            }
+        }
+    }
+
+    (succeeded, failed)
 }
 
 async fn start_background_image_loop(
@@ -62,7 +152,7 @@ async fn start_background_image_loop(
     token: tokio_util::sync::CancellationToken,
     kind: TitleImageKind,
 ) {
-    let label = kind.as_str();
+    let label: &'static str = kind.as_str();
     let wake: Arc<Notify> = match kind {
         TitleImageKind::Poster => app.runtime.catalog.poster_wake.clone(),
         TitleImageKind::Banner => app.runtime.catalog.banner_wake.clone(),
@@ -73,6 +163,7 @@ async fn start_background_image_loop(
         kind = label,
         collect_window_ms = IMAGE_COLLECT_WINDOW.as_millis(),
         max_batch = IMAGE_MAX_BATCH,
+        write_chunk_size = IMAGE_WRITE_CHUNK_SIZE,
         concurrent_workers = IMAGE_CONCURRENT_WORKERS,
         retry_base_secs = IMAGE_RETRY_BASE.as_secs(),
         retry_max_secs = IMAGE_RETRY_MAX.as_secs(),
@@ -119,102 +210,33 @@ async fn start_background_image_loop(
             };
 
             if batch.is_empty() {
-                info!(kind = label, "image loop: no pending work");
+                debug!(kind = label, "image loop: no pending work");
                 break 'drain;
             }
 
             let batch_len = batch.len();
-            let success_count = AtomicUsize::new(0);
-            let failure_count = AtomicUsize::new(0);
-            info!(
+            debug!(
                 count = batch_len,
                 kind = label,
                 "image loop: processing batch"
             );
 
-            let semaphore =
-                std::sync::Arc::new(tokio::sync::Semaphore::new(IMAGE_CONCURRENT_WORKERS));
-            let mut join_set = tokio::task::JoinSet::new();
-
-            for task in batch {
-                let sem = semaphore.clone();
-                let app = app.clone();
-                join_set.spawn(async move {
-                    let _permit = sem.acquire().await.expect("semaphore should not be closed");
-                    let started_at = std::time::Instant::now();
-                    debug!(
-                        title_id = %task.title_id,
-                        source_url = %task.source_url,
-                        kind = label,
-                        "image loop: refreshing"
-                    );
-                    match app
-                        .services
-                        .library
-                        .title_image_processor
-                        .fetch_and_process_image(kind, &task.source_url)
-                        .await
-                    {
-                        Ok(replacement) => {
-                            if let Err(error) = app
-                                .services
-                                .library
-                                .title_images
-                                .replace_title_image(&task.title_id, replacement)
-                                .await
-                            {
-                                warn!(
-                                    error = %error,
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    source_url = %task.source_url,
-                                    kind = label,
-                                    "image loop: failed to store processed image"
-                                );
-                                return false;
-                            }
-                            debug!(
-                                elapsed_ms = started_at.elapsed().as_millis(),
-                                title_id = %task.title_id,
-                                kind = label,
-                                "image loop: cached"
-                            );
-                            true
-                        }
-                        Err(error) => {
-                            warn!(
-                                error = %error,
-                                title_id = %task.title_id,
-                                source_url = %task.source_url,
-                                kind = label,
-                                "image loop: fetch/process failed"
-                            );
-                            false
-                        }
-                    }
-                });
-            }
-
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok(true) => {
-                        success_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Ok(false) => {
-                        failure_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(err) => {
-                        warn!(error = %err, kind = label, "image loop: task panicked");
-                        failure_count.fetch_add(1, Ordering::Relaxed);
-                    }
+            let mut succeeded = 0usize;
+            let mut failed = 0usize;
+            for chunk in batch.chunks(IMAGE_WRITE_CHUNK_SIZE) {
+                if !wait_for_image_loop_to_resume(&app, &token, kind).await {
+                    return;
                 }
+
+                let (chunk_succeeded, chunk_failed) =
+                    process_image_refresh_chunk(&app, kind, label, chunk).await;
+                succeeded += chunk_succeeded;
+                failed += chunk_failed;
             }
 
-            let succeeded = success_count.load(Ordering::Relaxed);
-            let failed = failure_count.load(Ordering::Relaxed);
             let had_failures = failed > 0;
 
-            info!(
+            debug!(
                 processed = batch_len,
                 succeeded,
                 failed,
@@ -247,6 +269,6 @@ async fn start_background_image_loop(
             }
         }
 
-        info!(kind = label, "image loop: queue drained, parking");
+        debug!(kind = label, "image loop: queue drained, parking");
     }
 }

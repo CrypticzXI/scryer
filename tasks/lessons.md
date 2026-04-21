@@ -41,6 +41,7 @@
 - **When converting string workflow states, follow the existing serde-enum pattern already used in the codebase instead of inventing new constant-only patterns.** Keep text serialization at the persistence boundary and make the enum authoritative inside Rust.
 - **When moving conditional persistence logic out of SQL and into Rust, preserve the original atomicity guarantees.** If the old query did read/modify/write in one statement, replace it with a transaction or a single repository command, and keep low-level upserts defensive against accidental bypasses.
 - **When the user narrows a task to backend planning or backend stabilization, do not broaden the work into frontend validation or install repair unless they ask for it.** Keep the active scope tight before major refactors.
+- **Never create unsigned commits or tags.** Before any commit or release rewrite, verify the real SSH signer path works first; if a pushed unsigned commit must be fixed, rewrite from the earliest bad commit and re-sign every descendant plus any affected release tags.
 
 ## Indexer Search Contracts
 - **Do not bake alias language or script policy into core search query construction.** Core should pass canonical title plus tagged alias context through to indexer plugins, and plugins should decide whether to prefer romanized Japanese, Korean aliases, or other provider-specific naming conventions.
@@ -68,10 +69,18 @@
 - Library scans can attach pre-existing titles that still need hydration. Those titles do not pass through title creation, so scan tracking must explicitly wake the background hydration loop when it starts counting them, or metadata progress can stall with counted titles never entering hydration.
 - For runtime library-scan tracking, workers must emit durable scan fact events and a single backend coordinator must subscribe to the central domain-event bus to project tracker state and publish compatibility scan snapshots. Do not let worker code or coordinator entrypoints mutate the in-memory scan tracker directly.
 - Final scan-phase reconciliation must read the projected durable session state, not worker-local counters. If the worker assumes its local counts are authoritative, the durable event stream can still end short of terminal title/file counts and leave the session stuck in `running` even after the worker logs completion.
+- Transient SQLite busy handling in library scans must stay fully internal. Route hot scan writes through the serialized `DbCommand` lane and keep retrying there until they succeed so scan summaries, unmatched items, and UI contracts never surface a separate deferred state.
+- Prefer extending the existing serialized `DbCommand` write lane for hot SQLite write paths like title create-or-get and title image replacement. Reuse existing scan-aware wait patterns for background workers before inventing a heavier global coordinator.
 
 ## Frontend Reactive Refresh
 - Debouncing websocket-driven refreshes is an action-spooling problem, not a subscriber-coupling problem. Events should be collected by action type and deduped so a 300ms flush performs one instance of each action, instead of each subscriber independently firing duplicate network requests.
 - Do not scope reactive batching to one container. Event-driven refreshes must enqueue into a shared root-level spool so title lists, title overviews, import history, and any future reactive query actions can collapse into the same aliased GraphQL flush.
+
+## Frontend Search Scope
+- When the user narrows a search UX fix to title-owned search surfaces, do not broaden it back out to global search, add-title flows, or result queue actions. Gate the actual title search entrypoints the user named.
+
+## Frontend Mobile Layouts
+- When fixing mobile regressions in shared views, inspect the dedicated mobile branch of the component instead of assuming the desktop table layout covers it. Reuse shared action-tone helpers so card actions and table actions stay visually aligned.
 
 ## Frontend Toast Boundaries
 - If Sonner toast content depends on app-level React context, the `Toaster` must be mounted beneath those providers. A global toaster in `src/main.tsx` cannot safely render route-level contexts like translation or library-scan state.

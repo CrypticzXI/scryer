@@ -563,6 +563,10 @@ const it: LocaleDictionary = {
   "title.noReleasesFound": "Nessun rilascio trovato per {{name}}.",
   "title.interactiveSearchHint":
     "Usa la ricerca interattiva per interrogare gli indicizzatori configurati sui rilasci di {{name}}.",
+  "title.searchNeedsDownloadClientTitle": "La ricerca richiede un client di download",
+  "title.searchNeedsDownloadClientDescription":
+    "Configura almeno un client di download prima di usare la ricerca o la ricerca interattiva da questa pagina del titolo.",
+  "title.searchNeedsDownloadClientAction": "Apri client di download",
   "title.blockedReleases": "Rilasci bloccati",
   "title.noBlockedReleases":
     "Nessun rilascio bloccato registrato per questo film.",

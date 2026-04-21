@@ -13,32 +13,14 @@ import type { TitleHistoryEvent, TitleHistoryPage } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventTable } from "./history-event-table";
 import {
+  TITLE_HISTORY_FILTERS,
+  getTitleHistoryFilterLabel,
+} from "./title-history-event-meta";
+import {
   HistoryEventIcon,
 } from "./history-event-icon";
 
 const PAGE_SIZE = 50;
-
-const EVENT_TYPE_FILTERS = [
-  "grabbed",
-  "download_completed",
-  "imported",
-  "import_failed",
-  "import_skipped",
-  "file_deleted",
-  "file_renamed",
-  "download_ignored",
-];
-
-const filterI18nKeys: Record<string, string> = {
-  grabbed: "history.grabbed",
-  download_completed: "history.downloadCompleted",
-  imported: "history.imported",
-  import_failed: "history.importFailed",
-  import_skipped: "history.importSkipped",
-  file_deleted: "history.fileDeleted",
-  file_renamed: "history.fileRenamed",
-  download_ignored: "history.downloadIgnored",
-};
 
 export function TitleHistoryModal({
   open,
@@ -133,7 +115,7 @@ export function TitleHistoryModal({
           >
             {t("history.allEvents")}
           </Button>
-          {EVENT_TYPE_FILTERS.map((eventType) => {
+          {TITLE_HISTORY_FILTERS.map((eventType) => {
             const isActive = activeFilters.includes(eventType);
             return (
               <Button
@@ -145,7 +127,7 @@ export function TitleHistoryModal({
                 className="h-7 gap-1.5 text-xs"
               >
                 <HistoryEventIcon eventType={eventType} size={12} />
-                {t(filterI18nKeys[eventType] ?? eventType)}
+                {getTitleHistoryFilterLabel(eventType, t)}
               </Button>
             );
           })}

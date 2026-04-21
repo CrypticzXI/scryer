@@ -7,6 +7,8 @@ use scryer_domain::Id;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
+use super::common::repository_error_from_sqlx;
+
 const RECYCLE_BIN_PATH_SEGMENT: &str = "/.scryer-recycle/";
 
 fn live_media_file_predicate(alias: &str) -> String {
@@ -109,7 +111,7 @@ pub(crate) async fn insert_media_file_query(
     .bind(&input.release_hash)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(id)
 }
@@ -128,7 +130,7 @@ pub(crate) async fn link_file_to_episode_query(
     .bind(episode_id)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }
@@ -557,7 +559,7 @@ pub(crate) async fn update_media_file_analysis_query(
     .bind(file_id)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }
@@ -582,7 +584,7 @@ pub(crate) async fn update_media_file_source_signature_query(
     .bind(file_id)
     .execute(pool)
     .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }
@@ -612,7 +614,7 @@ pub(crate) async fn mark_scan_failed_query(
         .bind(file_id)
         .execute(pool)
         .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
+        .map_err(repository_error_from_sqlx)?;
 
     Ok(())
 }

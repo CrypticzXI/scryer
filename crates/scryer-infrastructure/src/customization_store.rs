@@ -9,12 +9,14 @@ use crate::queries::{plugin_installation, post_processing_script, rule_set};
 
 #[derive(Clone)]
 pub struct SqliteCustomizationStore {
+    db: SqliteServices,
     pool: sqlx::SqlitePool,
 }
 
 impl SqliteCustomizationStore {
     pub fn new(db: &SqliteServices) -> Self {
         Self {
+            db: db.clone(),
             pool: db.pool().clone(),
         }
     }
@@ -35,15 +37,15 @@ impl RuleSetRepository for SqliteCustomizationStore {
     }
 
     async fn create_rule_set(&self, rule_set_record: &RuleSet) -> AppResult<()> {
-        rule_set::insert_rule_set_query(&self.pool, rule_set_record).await
+        self.db.create_rule_set(rule_set_record).await
     }
 
     async fn update_rule_set(&self, rule_set_record: &RuleSet) -> AppResult<()> {
-        rule_set::update_rule_set_query(&self.pool, rule_set_record).await
+        self.db.update_rule_set(rule_set_record).await
     }
 
     async fn delete_rule_set(&self, id: &str) -> AppResult<()> {
-        rule_set::delete_rule_set_query(&self.pool, id).await
+        self.db.delete_rule_set(id).await
     }
 
     async fn record_rule_set_history(
@@ -54,15 +56,9 @@ impl RuleSetRepository for SqliteCustomizationStore {
         actor_id: Option<&str>,
     ) -> AppResult<()> {
         let id = scryer_domain::Id::new().0;
-        rule_set::insert_rule_set_history_query(
-            &self.pool,
-            &id,
-            rule_set_id,
-            action,
-            rego_source,
-            actor_id,
-        )
-        .await
+        self.db
+            .record_rule_set_history(&id, rule_set_id, action, rego_source, actor_id)
+            .await
     }
 
     async fn get_rule_set_by_managed_key(&self, key: &str) -> AppResult<Option<RuleSet>> {
@@ -70,7 +66,7 @@ impl RuleSetRepository for SqliteCustomizationStore {
     }
 
     async fn delete_rule_set_by_managed_key(&self, key: &str) -> AppResult<()> {
-        rule_set::delete_rule_set_by_managed_key_query(&self.pool, key).await
+        self.db.delete_rule_set_by_managed_key(key).await
     }
 
     async fn list_rule_sets_by_managed_key_prefix(&self, prefix: &str) -> AppResult<Vec<RuleSet>> {
@@ -89,15 +85,15 @@ impl PostProcessingScriptRepository for SqliteCustomizationStore {
     }
 
     async fn create_script(&self, script: PostProcessingScript) -> AppResult<PostProcessingScript> {
-        post_processing_script::insert_script_query(&self.pool, &script).await
+        self.db.create_post_processing_script(script).await
     }
 
     async fn update_script(&self, script: PostProcessingScript) -> AppResult<PostProcessingScript> {
-        post_processing_script::update_script_query(&self.pool, &script).await
+        self.db.update_post_processing_script(script).await
     }
 
     async fn delete_script(&self, id: &str) -> AppResult<()> {
-        post_processing_script::delete_script_query(&self.pool, id).await
+        self.db.delete_post_processing_script(id).await
     }
 
     async fn list_enabled_for_facet(&self, facet: &str) -> AppResult<Vec<PostProcessingScript>> {
@@ -105,7 +101,7 @@ impl PostProcessingScriptRepository for SqliteCustomizationStore {
     }
 
     async fn record_run(&self, run: PostProcessingScriptRun) -> AppResult<()> {
-        post_processing_script::record_run_query(&self.pool, &run).await
+        self.db.record_post_processing_script_run(run).await
     }
 
     async fn list_runs_for_script(
@@ -143,7 +139,8 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
         installation: &PluginInstallation,
         wasm_bytes: Option<&[u8]>,
     ) -> AppResult<PluginInstallation> {
-        plugin_installation::create_plugin_installation_query(&self.pool, installation, wasm_bytes)
+        self.db
+            .create_plugin_installation(installation, wasm_bytes)
             .await
     }
 
@@ -152,12 +149,13 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
         installation: &PluginInstallation,
         wasm_bytes: Option<&[u8]>,
     ) -> AppResult<PluginInstallation> {
-        plugin_installation::update_plugin_installation_query(&self.pool, installation, wasm_bytes)
+        self.db
+            .update_plugin_installation(installation, wasm_bytes)
             .await
     }
 
     async fn delete_plugin_installation(&self, plugin_id: &str) -> AppResult<()> {
-        plugin_installation::delete_plugin_installation_query(&self.pool, plugin_id).await
+        self.db.delete_plugin_installation(plugin_id).await
     }
 
     async fn get_enabled_plugin_wasm_bytes(
@@ -174,19 +172,13 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
         version: &str,
         provider_type: &str,
     ) -> AppResult<()> {
-        plugin_installation::seed_builtin_query(
-            &self.pool,
-            plugin_id,
-            name,
-            description,
-            version,
-            provider_type,
-        )
-        .await
+        self.db
+            .seed_builtin_plugin(plugin_id, name, description, version, provider_type)
+            .await
     }
 
     async fn store_registry_cache(&self, json: &str) -> AppResult<()> {
-        plugin_installation::store_registry_cache_query(&self.pool, json).await
+        self.db.store_plugin_registry_cache(json).await
     }
 
     async fn get_registry_cache(&self) -> AppResult<Option<String>> {
