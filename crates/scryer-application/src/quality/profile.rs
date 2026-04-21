@@ -718,10 +718,8 @@ pub fn evaluate_against_profile_for_category(
             if weights.atmos_bonus != 0 {
                 d.log("atmos_preferred_match", weights.atmos_bonus);
             }
-        } else {
-            if weights.atmos_missing_penalty != 0 {
-                d.log("atmos_preferred_missing", weights.atmos_missing_penalty);
-            }
+        } else if weights.atmos_missing_penalty != 0 {
+            d.log("atmos_preferred_missing", weights.atmos_missing_penalty);
         }
     }
 

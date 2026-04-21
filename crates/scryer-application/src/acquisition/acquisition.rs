@@ -1109,7 +1109,7 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         .services
         .workflow
         .wanted_items
-        .list_due_wanted_items(&now_str, batch_size, &blocked_facets)
+        .list_due_wanted_items(&now_str, batch_size, blocked_facets)
         .await
     {
         Ok(items) => {
