@@ -1629,7 +1629,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             || {
                                 crate::queries::workflow::recover_stale_processing_imports_for_type_query(
                                     &pool,
-                                    import_type.clone(),
+                                    import_type,
                                     stale_seconds,
                                 )
                             },

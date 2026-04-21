@@ -1909,7 +1909,6 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    #[expect(clippy::too_many_arguments)]
     pub async fn upsert_setting_value(
         &self,
         scope: impl Into<String>,
