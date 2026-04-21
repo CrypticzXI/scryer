@@ -6,9 +6,9 @@ use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
     AcquisitionStateRepository, AppError, DownloadSourceKind, DownloadSubmission,
-    DownloadSubmissionRepository, PendingReleaseRepository, PendingReleaseStatus,
-    SubmissionScope, SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition,
-    WantedItemRepository, WantedSearchTransition, WantedStatus,
+    DownloadSubmissionRepository, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
+    SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition, WantedItemRepository,
+    WantedSearchTransition, WantedStatus,
 };
 use scryer_domain::{MediaFacet, Title};
 use sqlx::{Row, query};
@@ -529,8 +529,18 @@ async fn download_submission_roundtrips_episode_scope() {
             episode_id: "episode-1".to_string(),
         }
     );
-    assert_eq!(persisted.try_get::<Option<String>, _>("episode_id").unwrap(), Some("episode-1".to_string()));
-    assert_eq!(persisted.try_get::<Option<String>, _>("collection_id").unwrap(), None);
+    assert_eq!(
+        persisted
+            .try_get::<Option<String>, _>("episode_id")
+            .unwrap(),
+        Some("episode-1".to_string())
+    );
+    assert_eq!(
+        persisted
+            .try_get::<Option<String>, _>("collection_id")
+            .unwrap(),
+        None
+    );
     assert_eq!(
         submission.request_signature.as_deref(),
         Some("episode-scope-signature")

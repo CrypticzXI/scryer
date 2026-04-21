@@ -140,6 +140,7 @@ export function LibraryScanToast({
   const mediaAnalysisDone =
     session.mediaAnalysisProgress.completed + session.mediaAnalysisProgress.failed;
   const mediaAnalysisTotal = session.mediaAnalysisProgress.total;
+  const mediaAnalysisTotalKnown = session.mediaAnalysisTotalKnown;
   const mediaAnalysisRemaining = Math.max(0, mediaAnalysisTotal - mediaAnalysisDone);
   const mediaAnalysisActive =
     !terminal &&

@@ -32,7 +32,6 @@ import { TitleSearchDownloadClientNotice } from "@/components/common/title-searc
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
 import {
-  localizedFacetLabel,
   localizedTitleStatus,
   localizedWantedPhase,
   localizedWantedStatus,

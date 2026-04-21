@@ -1027,12 +1027,9 @@ mod tests {
                 .iter()
                 .filter(|title| {
                     title.facet == facet
-                        && title
-                            .slug
-                            .as_deref()
-                            .is_some_and(|candidate| {
-                                candidate.trim().eq_ignore_ascii_case(normalized_slug)
-                            })
+                        && title.slug.as_deref().is_some_and(|candidate| {
+                            candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                        })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -1040,7 +1037,9 @@ mod tests {
             match matches.as_slice() {
                 [] => Ok(None),
                 [title] => Ok(Some(title.clone())),
-                _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+                _ => Err(AppError::Validation(
+                    "multiple titles found for slug lookup".into(),
+                )),
             }
         }
 
@@ -1204,12 +1203,9 @@ mod tests {
                 .iter()
                 .filter(|title| {
                     title.facet == facet
-                        && title
-                            .slug
-                            .as_deref()
-                            .is_some_and(|candidate| {
-                                candidate.trim().eq_ignore_ascii_case(normalized_slug)
-                            })
+                        && title.slug.as_deref().is_some_and(|candidate| {
+                            candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                        })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -1217,7 +1213,9 @@ mod tests {
             match matches.as_slice() {
                 [] => Ok(None),
                 [title] => Ok(Some(title.clone())),
-                _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+                _ => Err(AppError::Validation(
+                    "multiple titles found for slug lookup".into(),
+                )),
             }
         }
 

@@ -1255,11 +1255,7 @@ pub mod test_nulls {
         async fn get_by_id(&self, _: &str) -> AppResult<Option<Title>> {
             Ok(None)
         }
-        async fn get_by_facet_and_slug(
-            &self,
-            _: MediaFacet,
-            _: &str,
-        ) -> AppResult<Option<Title>> {
+        async fn get_by_facet_and_slug(&self, _: MediaFacet, _: &str) -> AppResult<Option<Title>> {
             Ok(None)
         }
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {

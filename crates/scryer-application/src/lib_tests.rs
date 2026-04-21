@@ -95,10 +95,9 @@ impl TitleRepository for MockTitleRepo {
             .iter()
             .filter(|title| {
                 title.facet == facet
-                    && title
-                        .slug
-                        .as_deref()
-                        .is_some_and(|candidate| candidate.trim().eq_ignore_ascii_case(normalized_slug))
+                    && title.slug.as_deref().is_some_and(|candidate| {
+                        candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -106,7 +105,9 @@ impl TitleRepository for MockTitleRepo {
         match matches.as_slice() {
             [] => Ok(None),
             [title] => Ok(Some(title.clone())),
-            _ => Err(AppError::Validation("multiple titles found for slug lookup".into())),
+            _ => Err(AppError::Validation(
+                "multiple titles found for slug lookup".into(),
+            )),
         }
     }
 
@@ -7914,7 +7915,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
         &app,
         &[MediaFacet::Anime],
     )
-        .await;
+    .await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert_eq!(searches.len(), 1);
@@ -8035,7 +8036,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
         &app,
         &[MediaFacet::Movie],
     )
-        .await;
+    .await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert_eq!(searches.len(), 1);
@@ -8156,7 +8157,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
         &app,
         &[MediaFacet::Series],
     )
-        .await;
+    .await;
 
     assert!(indexer_client.searches.lock().await.is_empty());
 }
@@ -8276,7 +8277,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         &app,
         &[MediaFacet::Anime],
     )
-        .await;
+    .await;
 
     assert_eq!(
         download_client
