@@ -600,6 +600,7 @@ export const TITLE_LIST_FIELDS = `
     facet
     monitored
     tags
+    slug
     imdbId
     posterUrl
     posterSourceUrl
@@ -1741,6 +1742,7 @@ export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: String!
     id
     titleId
     titleName
+    titleSlug
     titleFacet
     seasonNumber
     episodeNumber

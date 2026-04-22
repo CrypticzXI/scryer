@@ -52,7 +52,11 @@ export const CalendarContainer = memo(function CalendarContainer({
     (episode: CalendarEpisodeItem) => {
       const facet = FACETS_BY_ID.get(episode.titleFacet as import("@/lib/types/titles").Facet);
       if (!facet || !onOpenOverview) return;
-      onOpenOverview(facet.viewId as ViewId, { id: episode.titleId }, episode.id);
+      onOpenOverview(
+        facet.viewId as ViewId,
+        { id: episode.titleId, slug: episode.titleSlug ?? null },
+        episode.id,
+      );
     },
     [onOpenOverview],
   );

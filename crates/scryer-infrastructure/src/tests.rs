@@ -2132,6 +2132,26 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
         .await
         .expect("pool should open");
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS title_history (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            episode_id TEXT,
+            collection_id TEXT,
+            event_type TEXT NOT NULL,
+            source_title TEXT,
+            quality TEXT,
+            download_id TEXT,
+            data_json TEXT,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy title_history compatibility table");
+
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO titles (id, name, name_normalized, facet, monitored, status, tags, external_ids, created_at)
@@ -2230,6 +2250,21 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
     .await
     .expect("insert canonical wanted item");
 
+    sqlx::query(
+        "INSERT INTO title_history
+         (id, title_id, collection_id, event_type, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind("history-legacy")
+    .bind("title-series")
+    .bind("legacy-specials")
+    .bind("imported")
+    .bind(&now)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .expect("insert legacy title history row");
+
     let migration_sql =
         include_str!("../../scryer/src/db/migrations/0070_specials_collection_convergence.sql");
     for statement in migration_sql
@@ -2270,6 +2305,14 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
             .await
             .expect("load wanted items");
     assert_eq!(wanted_ids, vec!["wanted-canonical".to_string()]);
+
+    let history_collection: String =
+        sqlx::query_scalar("SELECT collection_id FROM title_history WHERE id = ?")
+            .bind("history-legacy")
+            .fetch_one(&pool)
+            .await
+            .expect("load migrated title history collection");
+    assert_eq!(history_collection, "canonical-specials");
 
     let _ = std::fs::remove_file(db);
 }
