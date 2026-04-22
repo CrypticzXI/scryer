@@ -2,6 +2,8 @@
 
 Architecture documentation lives in a separate repo: `github.com/scryer-media/scryer-docs`.
 
+For code discovery in this repo, prefer the `claude-context` MCP if your environment provides it. Treat shell search as follow-up refinement only after MCP has identified the relevant files, unless you are doing a narrow exact-string confirmation. If MCP is unavailable in your environment, fall back to `rg` or other local search tools.
+
 Use this order when making architectural decisions:
 
 1. Confirm the requested change matches existing module boundaries.

@@ -348,6 +348,11 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>>;
 
+    async fn list_for_client_items(
+        &self,
+        client_items: &[(String, String)],
+    ) -> AppResult<Vec<DownloadSubmission>>;
+
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
     async fn find_by_title_and_request_signature(
         &self,
@@ -896,31 +901,6 @@ pub trait PendingReleaseRepository: Send + Sync {
         except_id: &str,
     ) -> AppResult<()>;
     async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()>;
-}
-
-#[async_trait]
-pub trait TitleHistoryRepository: Send + Sync {
-    async fn record_event(&self, event: &NewTitleHistoryEvent) -> AppResult<String>;
-
-    async fn list_history(&self, filter: &TitleHistoryFilter) -> AppResult<TitleHistoryPage>;
-
-    async fn list_for_title(
-        &self,
-        title_id: &str,
-        event_types: Option<&[TitleHistoryEventType]>,
-        limit: usize,
-        offset: usize,
-    ) -> AppResult<TitleHistoryPage>;
-
-    async fn list_for_episode(
-        &self,
-        episode_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleHistoryRecord>>;
-
-    async fn find_by_download_id(&self, download_id: &str) -> AppResult<Vec<TitleHistoryRecord>>;
-
-    async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
 }
 
 #[async_trait]

@@ -457,7 +457,8 @@ pub(super) async fn scan_library_series(
         info!(
             count = unmatched_items.len(),
             facet = facet.as_str(),
-            "series library scan unmatched folders follow"
+            "{} library scan unmatched folders follow",
+            facet.as_str()
         );
         for unmatched in unmatched_items {
             info!(
@@ -468,7 +469,8 @@ pub(super) async fn scan_library_series(
                 reason = %unmatched.reason_code,
                 error_message = ?unmatched.error_message,
                 search_attempts = %format_library_scan_unmatched_search_attempts(&unmatched.search_attempts),
-                "series library scan unmatched folder"
+                "{} library scan unmatched folder",
+                facet.as_str()
             );
         }
     }

@@ -1,5 +1,10 @@
-use crate::{AppError, WantedItem};
+use crate::acquisition_search_queries::tvdb_id_from_external_ids;
+use crate::{
+    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, WantedItem,
+    app_usecase_discovery::QualityProfileLookup, default_quality_profile_for_search,
+};
 use chrono::{DateTime, NaiveDate, Utc};
+use scryer_domain::Title;
 
 pub(crate) const FAILED_GRAB_OLD_TITLE_DAYS: i64 = 14;
 pub(crate) const FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES: i64 = 20;
@@ -60,4 +65,125 @@ fn parse_failed_grab_baseline_date(raw: &str) -> Option<NaiveDate> {
                 .ok()
                 .map(|value| value.date_naive())
         })
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedUpgradeContext {
+    pub(crate) profile: QualityProfile,
+    pub(crate) thresholds: AcquisitionThresholds,
+    pub(crate) cutoff_reached: bool,
+}
+
+pub(crate) fn upgrade_context_category<'a>(
+    title: &'a Title,
+    category_hint: Option<&'a str>,
+) -> &'a str {
+    category_hint
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .unwrap_or_else(|| title.facet.as_str())
+}
+
+impl AppUseCase {
+    pub(crate) async fn resolve_upgrade_context_for_title(
+        &self,
+        title: &Title,
+        grabbed_release: Option<&str>,
+    ) -> ResolvedUpgradeContext {
+        self.resolve_upgrade_context_for_title_with_category(title, grabbed_release, None)
+            .await
+    }
+
+    pub(crate) async fn resolve_upgrade_context_for_title_with_category(
+        &self,
+        title: &Title,
+        grabbed_release: Option<&str>,
+        category_hint: Option<&str>,
+    ) -> ResolvedUpgradeContext {
+        let category = upgrade_context_category(title, category_hint);
+        let profile = self
+            .resolve_quality_profile(QualityProfileLookup {
+                title_tags: &title.tags,
+                imdb_id: title.imdb_id.as_deref(),
+                tvdb_id: tvdb_id_from_external_ids(&title.external_ids).as_deref(),
+                category_hint: Some(category),
+            })
+            .await
+            .unwrap_or_else(|_| default_quality_profile_for_search());
+
+        let cutoff_reached = crate::quality_profile::has_reached_cutoff(
+            grabbed_release,
+            profile.criteria.cutoff_tier.as_deref(),
+            &profile.criteria.quality_tiers,
+        );
+
+        let persona = self
+            .resolve_scoring_persona(Some(category))
+            .await
+            .unwrap_or_default();
+        let thresholds = self.acquisition_thresholds(&persona).await;
+
+        ResolvedUpgradeContext {
+            profile,
+            thresholds,
+            cutoff_reached,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scryer_domain::{MediaFacet, Title};
+
+    fn make_title(facet: MediaFacet) -> Title {
+        Title {
+            id: "title-1".to_string(),
+            name: "Example".to_string(),
+            facet,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    #[test]
+    fn upgrade_context_category_prefers_explicit_hint() {
+        let title = make_title(MediaFacet::Movie);
+        assert_eq!(upgrade_context_category(&title, Some("anime")), "anime");
+    }
+
+    #[test]
+    fn upgrade_context_category_falls_back_to_facet_for_blank_hint() {
+        let title = make_title(MediaFacet::Series);
+        assert_eq!(upgrade_context_category(&title, Some("  ")), "series");
+    }
 }

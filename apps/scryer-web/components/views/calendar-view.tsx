@@ -18,6 +18,7 @@ export type CalendarEpisodeItem = {
   id: string;
   titleId: string;
   titleName: string;
+  titleSlug?: string | null;
   titleFacet: string;
   seasonNumber: string | null;
   episodeNumber: string | null;

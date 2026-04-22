@@ -1204,21 +1204,18 @@ export const seriesOverviewSettingsInitQuery = `query SeriesOverviewSettingsInit
   }
 }`;
 
-export const wantedCutoffInitQuery = `query WantedCutoffInit {
-  titles {
+export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue) {
+  cutoffUnmetTitles(facet: $facet) {
     id
     name
-    monitored
     facet
     posterUrl
     externalIds {
       source
       value
     }
-    qualityProfileId
-    currentQualityTier
-  }
-  qualityProfileSettings {${qualityProfileSettingsFieldSelection}
+    currentTier
+    targetTier
   }
 }`;
 

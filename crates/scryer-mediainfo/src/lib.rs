@@ -120,8 +120,6 @@ pub struct MediaAnalysis {
     pub duration_seconds: Option<i32>,
     pub num_chapters: Option<i32>,
     pub container_format: Option<String>,
-    /// Structured JSON representation of the analysis
-    pub raw_json: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,9 +354,6 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
     let num_chapters = raw.num_chapters;
     let container_format = Some(raw.format_name.clone());
 
-    // --- Structured JSON (replaces ffprobe raw JSON) ---
-    let raw_json = build_raw_json(&raw);
-
     MediaAnalysis {
         video_codec,
         video_width,
@@ -383,7 +378,6 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
         duration_seconds,
         num_chapters,
         container_format,
-        raw_json,
     }
 }
 
@@ -416,59 +410,6 @@ fn extract_codec_info(track: &RawTrack) -> codec::CodecInfo {
             .unwrap_or_default(),
         _ => codec::CodecInfo::default(),
     }
-}
-
-/// Serialize the raw container data into a structured JSON string.
-fn build_raw_json(raw: &RawContainer) -> String {
-    #[derive(Serialize)]
-    struct JsonAnalysis<'a> {
-        format: &'a str,
-        duration_seconds: Option<f64>,
-        num_chapters: Option<i32>,
-        tracks: Vec<JsonTrack<'a>>,
-    }
-
-    #[derive(Serialize)]
-    struct JsonTrack<'a> {
-        kind: &'a str,
-        codec_id: &'a str,
-        codec_name: Option<&'a str>,
-        audio_profile: Option<&'a str>,
-        width: Option<i32>,
-        height: Option<i32>,
-        channels: Option<i32>,
-        bit_rate_bps: Option<i64>,
-        language: Option<&'a str>,
-        frame_rate_fps: Option<f64>,
-    }
-
-    let analysis = JsonAnalysis {
-        format: &raw.format_name,
-        duration_seconds: raw.duration_seconds,
-        num_chapters: raw.num_chapters,
-        tracks: raw
-            .tracks
-            .iter()
-            .map(|t| JsonTrack {
-                kind: match t.kind {
-                    TrackKind::Video => "video",
-                    TrackKind::Audio => "audio",
-                    TrackKind::Subtitle => "subtitle",
-                },
-                codec_id: &t.codec_id,
-                codec_name: t.codec_name.as_deref(),
-                audio_profile: t.audio_profile.as_deref(),
-                width: t.width,
-                height: t.height,
-                channels: t.channels,
-                bit_rate_bps: t.bit_rate_bps,
-                language: t.language.as_deref(),
-                frame_rate_fps: t.frame_rate_fps,
-            })
-            .collect(),
-    };
-
-    serde_json::to_string(&analysis).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[cfg(test)]

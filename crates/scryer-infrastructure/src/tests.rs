@@ -2,13 +2,13 @@ use super::*;
 use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
-    DownloadSubmissionRepository, EpisodeUpdate, ImportRepository, InsertMediaFileInput,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate, ImportRepository,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
     NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
-    ShowRepository, TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
-    TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-    UserRepository, WantedItemRepository, WantedStatus,
+    ShowRepository, SubmissionScope, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItemRepository, WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -77,6 +77,78 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
     let _ = std::fs::remove_file(db);
 }
 
+#[test]
+fn download_submission_lookup_chunks_and_deduplicates_client_items() {
+    let mut client_items = (0..805)
+        .map(|idx| ("weaver".to_string(), format!("job-{idx}")))
+        .collect::<Vec<_>>();
+    client_items.push(("weaver".to_string(), "job-12".to_string()));
+    client_items.push(("weaver".to_string(), "job-400".to_string()));
+
+    let chunks = crate::queries::workflow::chunk_download_submission_client_items(&client_items);
+
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].len(), 400);
+    assert_eq!(chunks[1].len(), 400);
+    assert_eq!(chunks[2].len(), 5);
+    assert_eq!(chunks[0][12], ("weaver".to_string(), "job-12".to_string()));
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter())
+            .filter(|(client_type, item_id)| client_type == "weaver" && item_id == "job-12")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn list_download_submissions_for_client_items_handles_large_batched_lookup() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_sources_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = SqliteWorkflowStore::new(&services);
+
+    for idx in 0..805 {
+        workflow
+            .record_submission(DownloadSubmission {
+                title_id: format!("title-{idx}"),
+                facet: "movie".to_string(),
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: format!("job-{idx}"),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some(format!("Release {idx}")),
+                request_signature: None,
+                scope: SubmissionScope::Title,
+            })
+            .await
+            .expect("record submission should succeed");
+    }
+
+    let mut lookup = (0..805)
+        .map(|idx| ("weaver".to_string(), format!("job-{idx}")))
+        .collect::<Vec<_>>();
+    lookup.push(("weaver".to_string(), "job-12".to_string()));
+    lookup.push(("weaver".to_string(), "job-400".to_string()));
+
+    let records = workflow
+        .list_for_client_items(&lookup)
+        .await
+        .expect("batched lookup should succeed");
+
+    assert_eq!(records.len(), 805);
+    assert!(records.iter().any(|record| {
+        record.download_client_type == "weaver" && record.download_client_item_id == "job-804"
+    }));
+
+    let _ = std::fs::remove_file(db);
+}
+
 #[tokio::test]
 async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
     let (services, db) = temp_services("scryer_settings_writer").await;
@@ -141,6 +213,141 @@ async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
         .expect("setting should still exist");
     assert_eq!(reverted.effective_value_json, "\"default\"");
 
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn settings_with_defaults_query_and_tx_paths_match() {
+    let (services, db) = temp_services("scryer_settings_parity").await;
+    let encryption_key = crate::encryption::EncryptionKey::from_bytes([11; 32]);
+    services
+        .set_encryption_key(encryption_key.clone())
+        .await
+        .expect("encryption key should set");
+    let settings = SqliteSettingsStore::new(&services);
+
+    settings
+        .batch_ensure_setting_definitions(vec![
+            crate::types::SettingDefinitionSeed {
+                category: "general".to_string(),
+                scope: "system".to_string(),
+                key_name: "secret.global".to_string(),
+                data_type: "string".to_string(),
+                default_value_json: "\"default-global\"".to_string(),
+                is_sensitive: true,
+                validation_json: None,
+            },
+            crate::types::SettingDefinitionSeed {
+                category: "general".to_string(),
+                scope: "system".to_string(),
+                key_name: "secret.scoped".to_string(),
+                data_type: "string".to_string(),
+                default_value_json: "\"default-scoped\"".to_string(),
+                is_sensitive: true,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("definitions should seed");
+
+    settings
+        .upsert_setting_value(
+            "system",
+            "secret.global",
+            None,
+            "\"overridden-global\"",
+            "user",
+            None,
+        )
+        .await
+        .expect("global override should succeed");
+    settings
+        .upsert_setting_value(
+            "system",
+            "secret.scoped",
+            Some("movie".to_string()),
+            "\"overridden-scoped\"",
+            "user",
+            None,
+        )
+        .await
+        .expect("scoped override should succeed");
+
+    let query_rows = crate::queries::settings::list_settings_with_defaults_query(
+        services.pool(),
+        "system",
+        Some("movie".to_string()),
+        Some(&encryption_key),
+    )
+    .await
+    .expect("query path should succeed");
+
+    let mut tx = services
+        .pool()
+        .begin()
+        .await
+        .expect("transaction should open");
+    let tx_rows = crate::queries::settings::list_settings_with_defaults_tx(
+        &mut tx,
+        "system",
+        Some("movie".to_string()),
+        Some(&encryption_key),
+    )
+    .await
+    .expect("tx path should succeed");
+
+    let summarize = |rows: Vec<crate::types::SettingsValueRecord>| {
+        let mut summary = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.key_name,
+                    row.scope_id,
+                    row.effective_value_json,
+                    row.value_json,
+                    row.source,
+                    row.is_sensitive,
+                )
+            })
+            .collect::<Vec<_>>();
+        summary.sort_by(|left, right| left.0.cmp(&right.0));
+        summary
+    };
+    assert_eq!(summarize(query_rows), summarize(tx_rows));
+
+    let query_record = crate::queries::settings::get_setting_with_defaults_query(
+        services.pool(),
+        "system",
+        "secret.scoped",
+        Some("movie".to_string()),
+        Some(&encryption_key),
+    )
+    .await
+    .expect("single query path should succeed");
+    let tx_record = crate::queries::settings::get_setting_with_defaults_tx(
+        &mut tx,
+        "system",
+        "secret.scoped",
+        Some("movie".to_string()),
+        Some(&encryption_key),
+    )
+    .await
+    .expect("single tx path should succeed");
+    let summarize_record = |row: Option<crate::types::SettingsValueRecord>| {
+        row.map(|record| {
+            (
+                record.key_name,
+                record.scope_id,
+                record.effective_value_json,
+                record.value_json,
+                record.source,
+                record.is_sensitive,
+            )
+        })
+    };
+    assert_eq!(summarize_record(query_record), summarize_record(tx_record));
+
+    tx.rollback().await.expect("tx should roll back cleanly");
     let _ = std::fs::remove_file(db);
 }
 
@@ -470,6 +677,64 @@ async fn create_pre_0079_title_projection_schema(pool: &sqlx::SqlitePool) {
     .execute(pool)
     .await
     .expect("create legacy title_external_ids lookup");
+}
+
+async fn create_pre_0084_media_file_schema(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "CREATE TABLE media_files (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            file_path TEXT NOT NULL UNIQUE,
+            size_bytes INTEGER NOT NULL,
+            quality_id TEXT,
+            hash_sha256 TEXT,
+            audio_languages_json TEXT,
+            subtitle_languages_json TEXT,
+            has_multiaudio INTEGER DEFAULT 0,
+            scan_status TEXT NOT NULL DEFAULT 'pending',
+            scan_error TEXT,
+            created_at TEXT NOT NULL,
+            video_codec TEXT,
+            video_width INTEGER,
+            video_height INTEGER,
+            video_bitrate_kbps INTEGER,
+            video_bit_depth INTEGER,
+            video_hdr_format TEXT,
+            audio_codec TEXT,
+            audio_channels INTEGER,
+            duration_seconds INTEGER,
+            container_format TEXT,
+            ffprobe_json TEXT,
+            video_frame_rate TEXT,
+            video_profile TEXT,
+            audio_bitrate_kbps INTEGER,
+            subtitle_codecs_json TEXT,
+            audio_streams_json TEXT,
+            scene_name TEXT,
+            release_group TEXT,
+            source_type TEXT,
+            resolution TEXT,
+            video_codec_parsed TEXT,
+            audio_codec_parsed TEXT,
+            audio_channels_parsed TEXT,
+            acquisition_score INTEGER,
+            scoring_log TEXT,
+            indexer_source TEXT,
+            grabbed_release_title TEXT,
+            grabbed_at TEXT,
+            edition TEXT,
+            original_file_path TEXT,
+            release_hash TEXT,
+            num_chapters INTEGER,
+            subtitle_streams_json TEXT,
+            source_signature_scheme TEXT,
+            source_signature_value TEXT,
+            audio_profile TEXT
+        )",
+    )
+    .execute(pool)
+    .await
+    .expect("create legacy media_files");
 }
 
 #[tokio::test]
@@ -2600,6 +2865,157 @@ async fn migration_0079_rejects_invalid_projection_before_delete() {
         .await
         .expect("load remaining legacy projection rows");
     assert_eq!(remaining, 1);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0084_media_analysis_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pool should open");
+
+    create_pre_0084_media_file_schema(&pool).await;
+
+    // Seeded from a real pre-0084 media_files row pulled from the running local scryer
+    // container on 2026-04-21 so the migration test exercises production-shaped data.
+    let legacy_ffprobe_json = r#"{"format":"matroska","duration_seconds":1440.055,"num_chapters":4,"tracks":[{"kind":"video","codec_id":"V_MPEG4/ISO/AVC","codec_name":"h264","audio_profile":null,"width":1920,"height":1080,"channels":null,"bit_rate_bps":8253642,"language":null,"frame_rate_fps":23.976024167640553},{"kind":"audio","codec_id":"A_AAC","codec_name":"aac","audio_profile":"LC","width":null,"height":null,"channels":2,"bit_rate_bps":null,"language":"jpn","frame_rate_fps":43.0664074528313},{"kind":"audio","codec_id":"A_AAC","codec_name":"aac","audio_profile":"LC","width":null,"height":null,"channels":2,"bit_rate_bps":null,"language":"eng","frame_rate_fps":43.0664074528313},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"eng","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"eng","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/UTF8","codec_name":"subrip","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"eng","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"ara","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"ger","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"spa","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"spa","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"fre","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"ita","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"por","frame_rate_fps":null},{"kind":"subtitle","codec_id":"S_TEXT/ASS","codec_name":"ass","audio_profile":null,"width":null,"height":null,"channels":null,"bit_rate_bps":null,"language":"rus","frame_rate_fps":null}]}"#;
+    let legacy_audio_languages_json = r#"["jpn","eng"]"#;
+    let legacy_subtitle_languages_json = r#"["eng","ara","deu","spa","fra","ita","por","rus"]"#;
+    let legacy_subtitle_codecs_json =
+        r#"["ass","ass","subrip","ass","ass","ass","ass","ass","ass","ass","ass"]"#;
+    let legacy_audio_streams_json = r#"[{"codec":"aac","profile":"LC","channels":2,"language":"jpn","bitrate_kbps":null},{"codec":"aac","profile":"LC","channels":2,"language":"eng","bitrate_kbps":null}]"#;
+    let legacy_subtitle_streams_json = r#"[{"codec":"ass","language":"eng","name":"Forced","forced":true,"default":false},{"codec":"ass","language":"eng","name":null,"forced":false,"default":true},{"codec":"subrip","language":"eng","name":"CC","forced":false,"default":false},{"codec":"ass","language":"ara","name":"Saudi Arabia","forced":false,"default":false},{"codec":"ass","language":"deu","name":null,"forced":false,"default":false},{"codec":"ass","language":"spa","name":"Latin American","forced":false,"default":false},{"codec":"ass","language":"spa","name":"European","forced":false,"default":false},{"codec":"ass","language":"fra","name":null,"forced":false,"default":false},{"codec":"ass","language":"ita","name":null,"forced":false,"default":false},{"codec":"ass","language":"por","name":"Brazilian","forced":false,"default":false},{"codec":"ass","language":"rus","name":null,"forced":false,"default":false}]"#;
+
+    sqlx::query(
+        "INSERT INTO media_files (
+            id, title_id, file_path, size_bytes, quality_id, has_multiaudio,
+            scan_status, created_at, video_codec, video_width, video_height,
+            video_bitrate_kbps, video_bit_depth, video_hdr_format, audio_codec,
+            audio_channels, duration_seconds, container_format, ffprobe_json,
+            video_frame_rate, video_profile, audio_bitrate_kbps, subtitle_codecs_json,
+            audio_streams_json, subtitle_languages_json, subtitle_streams_json,
+            audio_languages_json, num_chapters, audio_profile
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?
+        )",
+    )
+    .bind("file-legacy")
+    .bind("title-legacy")
+    .bind("/data/anime/The Apothecary Diaries/The Apothecary Diaries.S02E03.Corpse Fungus.mkv")
+    .bind(1_485_712_325i64)
+    .bind(Option::<String>::None)
+    .bind(1i64)
+    .bind("scanned")
+    .bind("2026-04-21T18:56:54.286796797+00:00")
+    .bind("h264")
+    .bind(1_920i64)
+    .bind(1_080i64)
+    .bind(8_253i64)
+    .bind(8i64)
+    .bind(Option::<String>::None)
+    .bind("aac")
+    .bind(2i64)
+    .bind(1_440i64)
+    .bind("matroska")
+    .bind(legacy_ffprobe_json)
+    .bind("23.976")
+    .bind("High")
+    .bind(Option::<i64>::None)
+    .bind(legacy_subtitle_codecs_json)
+    .bind(legacy_audio_streams_json)
+    .bind(legacy_subtitle_languages_json)
+    .bind(legacy_subtitle_streams_json)
+    .bind(legacy_audio_languages_json)
+    .bind(4i64)
+    .bind("LC")
+    .execute(&pool)
+    .await
+    .expect("insert legacy media file row");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../scryer/src/db/migrations/0084_media_analysis_json.sql"),
+    )
+    .await;
+
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(media_files)")
+        .fetch_all(&pool)
+        .await
+        .expect("load migrated media_files columns")
+        .into_iter()
+        .map(|row| {
+            row.try_get::<String, _>("name")
+                .expect("table info row should have name")
+        })
+        .collect();
+    assert!(columns.iter().any(|column| column == "analysis_json"));
+    assert!(!columns.iter().any(|column| column == "ffprobe_json"));
+    assert!(!columns.iter().any(|column| column == "audio_streams_json"));
+    assert!(
+        !columns
+            .iter()
+            .any(|column| column == "subtitle_streams_json")
+    );
+
+    let stored_analysis_json: Option<String> =
+        sqlx::query_scalar("SELECT analysis_json FROM media_files WHERE id = ?")
+            .bind("file-legacy")
+            .fetch_one(&pool)
+            .await
+            .expect("analysis json should load");
+    let stored_analysis_json = stored_analysis_json.expect("analysis json should be present");
+    let stored_analysis_json: serde_json::Value =
+        serde_json::from_str(&stored_analysis_json).expect("analysis json should parse");
+    assert_eq!(
+        stored_analysis_json["audio_languages"],
+        serde_json::json!(["jpn", "eng"])
+    );
+    assert_eq!(
+        stored_analysis_json["audio_profile"],
+        serde_json::json!("LC")
+    );
+    assert_eq!(
+        stored_analysis_json["has_multiaudio"],
+        serde_json::json!(true)
+    );
+    assert!(stored_analysis_json.get("audio_streams").is_some());
+    assert!(stored_analysis_json.get("tracks").is_none());
+
+    let media_file = crate::queries::media_file::get_media_file_by_id_query(&pool, "file-legacy")
+        .await
+        .expect("lookup should succeed")
+        .expect("media file should exist");
+    assert_eq!(
+        media_file.audio_languages,
+        vec!["jpn".to_string(), "eng".to_string()]
+    );
+    assert_eq!(media_file.audio_streams[0].language.as_deref(), Some("jpn"));
+    assert_eq!(media_file.audio_streams[0].profile.as_deref(), Some("LC"));
+    assert_eq!(media_file.subtitle_codecs.len(), 11);
+    assert!(
+        media_file
+            .subtitle_codecs
+            .iter()
+            .any(|codec| codec == "subrip")
+    );
+    assert_eq!(
+        media_file.subtitle_streams[0].name.as_deref(),
+        Some("Forced")
+    );
+    assert!(media_file.subtitle_streams[0].forced);
+    assert_eq!(media_file.audio_profile.as_deref(), Some("LC"));
+    assert_eq!(media_file.num_chapters, Some(4));
 
     let _ = std::fs::remove_file(db);
 }

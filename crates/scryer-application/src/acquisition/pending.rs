@@ -391,46 +391,21 @@ impl AppUseCase {
             return Ok(false);
         }
 
-        // Check upgrade decision
-        let category = title.facet.as_str();
-        let tvdb_id = title
-            .external_ids
-            .iter()
-            .find(|id| id.source == "tvdb")
-            .map(|id| id.value.clone());
+        let upgrade_context = self
+            .resolve_upgrade_context_for_title(&title, wanted.grabbed_release.as_deref())
+            .await;
 
-        let profile = self
-            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
-                title_tags: &title.tags,
-                imdb_id: title.imdb_id.as_deref(),
-                tvdb_id: tvdb_id.as_deref(),
-                category_hint: Some(category),
-            })
-            .await
-            .unwrap_or_else(|_| crate::quality_profile::default_quality_profile_for_search());
-
-        // Cutoff tier check
-        if crate::quality_profile::has_reached_cutoff(
-            wanted.grabbed_release.as_deref(),
-            profile.criteria.cutoff_tier.as_deref(),
-            &profile.criteria.quality_tiers,
-        ) {
+        if upgrade_context.cutoff_reached {
             return Ok(false);
         }
-
-        let persona = self
-            .resolve_scoring_persona(Some(category))
-            .await
-            .unwrap_or_default();
-        let thresholds = self.acquisition_thresholds(&persona).await;
         let decision = crate::acquisition_policy::evaluate_upgrade(
             pr.release_score,
             wanted.current_score,
-            profile.criteria.allow_upgrades,
+            upgrade_context.profile.criteria.allow_upgrades,
             wanted.last_search_at.as_deref(),
             now,
-            &thresholds,
-            profile.criteria.min_score_to_grab,
+            &upgrade_context.thresholds,
+            upgrade_context.profile.criteria.min_score_to_grab,
         );
 
         if !decision.is_accept() {

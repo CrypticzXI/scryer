@@ -559,26 +559,7 @@ async fn process_job_snapshot(
     let mut items: Vec<scryer_domain::DownloadQueueItem> =
         jobs.iter().map(weaver_item_to_queue_item).collect();
 
-    // Enrich items from the download_submissions table so that is_scryer_origin,
-    // title_id, and facet are populated even when the Weaver job metadata is
-    // missing (mirrors the enrichment in list_download_queue).
-    for item in &mut items {
-        if item.is_scryer_origin {
-            continue;
-        }
-        if let Ok(Some(submission)) = app
-            .find_download_submission_by_client_item_id(
-                actor,
-                &item.client_type,
-                &item.download_client_item_id,
-            )
-            .await
-        {
-            item.is_scryer_origin = true;
-            item.title_id = Some(submission.title_id);
-            item.facet = Some(submission.facet);
-        }
-    }
+    scryer_application::enrich_download_queue_items_from_submissions(app, &mut items).await;
 
     emit_queue_metrics(&items);
 

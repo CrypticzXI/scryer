@@ -16,7 +16,6 @@ pub mod rule_set;
 pub mod settings;
 pub mod subtitle;
 pub mod title;
-pub mod title_history;
 pub mod user;
 pub mod wanted;
 pub mod workflow;

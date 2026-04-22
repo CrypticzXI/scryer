@@ -138,6 +138,17 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
         .await
     }
 
+    async fn list_for_client_items(
+        &self,
+        client_items: &[(String, String)],
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        crate::queries::workflow::list_download_submissions_for_client_items_query(
+            &self.pool,
+            client_items,
+        )
+        .await
+    }
+
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
         crate::queries::workflow::list_download_submissions_for_title_query(&self.pool, title_id)
             .await

@@ -9,7 +9,7 @@ use scryer_domain::{
     Episode, ExternalId, ImportStatus, ImportType, IndexerConfig, InterstitialMovieMetadata,
     MediaFacet, NewDomainEvent, NotificationChannelConfig, NotificationSubscription,
     PluginInstallation, PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
-    Title, TitleHistoryRecord, User,
+    Title, User,
 };
 use sqlx::ConnectOptions;
 use std::sync::{Arc, RwLock};
@@ -22,6 +22,7 @@ use crate::types::{SettingDefinitionSeed, SettingsValueRecord};
 
 const DEFAULT_SQLITE_MAX_CONNECTIONS: u32 = 16;
 const MAX_SQLITE_CONNECTIONS_CAP: u32 = 64;
+const SQLITE_SLOW_STATEMENT_WARN_MS: u64 = 500;
 
 fn sqlite_max_connections_from_env() -> u32 {
     std::env::var("SCRYER_SQLITE_MAX_CONNECTIONS")
@@ -118,7 +119,7 @@ impl DbRuntime {
             .map_err(|err: sqlx::Error| AppError::Repository(err.to_string()))?;
         connect_opts = connect_opts.log_slow_statements(
             tracing::log::LevelFilter::Warn,
-            std::time::Duration::from_millis(250),
+            std::time::Duration::from_millis(SQLITE_SLOW_STATEMENT_WARN_MS),
         );
         if !is_memory {
             connect_opts = connect_opts
@@ -1589,20 +1590,6 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    pub async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteTitleHistoryOlderThan {
-                days,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
     pub async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
@@ -2835,138 +2822,6 @@ impl DbRuntime {
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
 
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    // ── Title History ─────────────────────────────────────────────────────────
-
-    #[expect(clippy::too_many_arguments)]
-    pub async fn insert_title_history_event(
-        &self,
-        title_id: String,
-        episode_id: Option<String>,
-        collection_id: Option<String>,
-        event_type: String,
-        source_title: Option<String>,
-        quality: Option<String>,
-        download_id: Option<String>,
-        data_json: Option<String>,
-    ) -> AppResult<String> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::InsertTitleHistoryEvent {
-                title_id,
-                episode_id,
-                collection_id,
-                event_type,
-                source_title,
-                quality,
-                download_id,
-                data_json,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_title_history(
-        &self,
-        event_types: Option<Vec<String>>,
-        title_ids: Option<Vec<String>>,
-        download_id: Option<String>,
-        limit: usize,
-        offset: usize,
-    ) -> AppResult<(Vec<TitleHistoryRecord>, i64)> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListTitleHistory {
-                event_types,
-                title_ids,
-                download_id,
-                limit,
-                offset,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_title_history_for_title(
-        &self,
-        title_id: &str,
-        event_types: Option<Vec<String>>,
-        limit: usize,
-        offset: usize,
-    ) -> AppResult<(Vec<TitleHistoryRecord>, i64)> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListTitleHistoryForTitle {
-                title_id: title_id.to_string(),
-                event_types,
-                limit,
-                offset,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn list_title_history_for_episode(
-        &self,
-        episode_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleHistoryRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ListTitleHistoryForEpisode {
-                episode_id: episode_id.to_string(),
-                limit,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn find_title_history_by_download_id(
-        &self,
-        download_id: &str,
-    ) -> AppResult<Vec<TitleHistoryRecord>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::FindTitleHistoryByDownloadId {
-                download_id: download_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_title_history_for_title(&self, title_id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteTitleHistoryForTitle {
-                title_id: title_id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
         reply_rx
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?

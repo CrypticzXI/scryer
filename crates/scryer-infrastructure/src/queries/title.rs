@@ -1520,7 +1520,7 @@ pub(crate) async fn list_episodes_in_date_range_query(
     end_date: &str,
 ) -> AppResult<Vec<CalendarEpisode>> {
     let rows = sqlx::query(
-        "SELECT e.id, e.title_id, t.name AS title_name, t.facet AS title_facet,
+        "SELECT e.id, e.title_id, t.name AS title_name, t.slug AS title_slug, t.facet AS title_facet,
                 e.season_number, e.episode_number, e.title AS episode_title,
                 e.air_date, e.monitored
          FROM episodes e
@@ -1541,6 +1541,7 @@ pub(crate) async fn list_episodes_in_date_range_query(
             id: row.get("id"),
             title_id: row.get("title_id"),
             title_name: row.get("title_name"),
+            title_slug: row.get("title_slug"),
             title_facet: row.get("title_facet"),
             season_number: row.get("season_number"),
             episode_number: row.get("episode_number"),

@@ -1908,24 +1908,14 @@ async fn process_single_wanted_item(
         .map(|t| t.to_ascii_lowercase())
         .collect();
 
-    // Resolve quality profile once (used by upgrade evaluation for each candidate).
-    let profile = app
-        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
-            title_tags: &title.tags,
-            imdb_id: title.imdb_id.as_deref(),
-            tvdb_id: tvdb_id_from_external_ids(&title.external_ids).as_deref(),
-            category_hint: Some(&category),
-        })
-        .await
-        .unwrap_or_else(|_| crate::quality_profile::default_quality_profile_for_search());
+    let upgrade_context = app
+        .resolve_upgrade_context_for_title(&title, item.grabbed_release.as_deref())
+        .await;
+    let profile = &upgrade_context.profile;
 
     // Cutoff tier check — skip upgrades if the existing file meets the cutoff quality.
     // This is independent of any candidate and can short-circuit before the loop.
-    if crate::quality_profile::has_reached_cutoff(
-        item.grabbed_release.as_deref(),
-        profile.criteria.cutoff_tier.as_deref(),
-        &profile.criteria.quality_tiers,
-    ) {
+    if upgrade_context.cutoff_reached {
         tracing::debug!(
             title_id = title.id.as_str(),
             cutoff = profile.criteria.cutoff_tier.as_deref().unwrap_or(""),
@@ -1933,12 +1923,7 @@ async fn process_single_wanted_item(
         );
         return Ok(());
     }
-
-    let persona = app
-        .resolve_scoring_persona(Some(&category))
-        .await
-        .unwrap_or_default();
-    let thresholds = app.acquisition_thresholds(&persona).await;
+    let thresholds = &upgrade_context.thresholds;
 
     // Load existing media files for repack group validation.
     let existing_files = app
@@ -2042,7 +2027,7 @@ async fn process_single_wanted_item(
             profile.criteria.allow_upgrades,
             item.last_search_at.as_deref(),
             now,
-            &thresholds,
+            thresholds,
             profile.criteria.min_score_to_grab,
         );
 
@@ -2345,13 +2330,13 @@ async fn process_single_wanted_item(
                     app,
                     item,
                     &title,
-                    &profile,
+                    profile,
                     &results,
                     candidate_index + 1,
                     now,
                     dl_snapshot,
                     &db_blocklist,
-                    &thresholds,
+                    thresholds,
                     &existing_files,
                     &delay_profiles,
                 )

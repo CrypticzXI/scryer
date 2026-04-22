@@ -501,6 +501,72 @@ fn queue_item_import_state_eligible(item: &DownloadQueueItem) -> bool {
     )
 }
 
+pub async fn enrich_download_queue_items_from_submissions(
+    app: &AppUseCase,
+    items: &mut [DownloadQueueItem],
+) {
+    let client_items = items
+        .iter()
+        .filter(|item| !item.is_scryer_origin)
+        .map(|item| {
+            (
+                item.client_type.clone(),
+                item.download_client_item_id.clone(),
+            )
+        })
+        .filter(|(client_type, item_id)| !client_type.is_empty() && !item_id.is_empty())
+        .collect::<Vec<_>>();
+
+    if client_items.is_empty() {
+        return;
+    }
+
+    let submissions = match app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_client_items(&client_items)
+        .await
+    {
+        Ok(submissions) => submissions,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to batch-load download submissions for queue enrichment"
+            );
+            return;
+        }
+    };
+
+    let submission_map = submissions
+        .into_iter()
+        .filter(|submission| !submission.title_id.trim().is_empty())
+        .map(|submission| {
+            (
+                (
+                    submission.download_client_type.clone(),
+                    submission.download_client_item_id.clone(),
+                ),
+                submission,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for item in items {
+        if item.is_scryer_origin {
+            continue;
+        }
+        if let Some(submission) = submission_map.get(&(
+            item.client_type.clone(),
+            item.download_client_item_id.clone(),
+        )) {
+            item.is_scryer_origin = true;
+            item.title_id = Some(submission.title_id.clone());
+            item.facet = Some(submission.facet.clone());
+        }
+    }
+}
+
 async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [DownloadQueueItem]) {
     let import_sources = items
         .iter()
@@ -978,26 +1044,7 @@ impl AppUseCase {
             return items;
         }
 
-        // Enrich items with download_submissions data (for SABnzbd which
-        // cannot embed metadata in the download itself). This populates
-        // title_id, facet, and is_scryer_origin from the submissions table.
-        for item in &mut items {
-            if item.is_scryer_origin {
-                continue;
-            }
-            if let Ok(Some(submission)) = self
-                .services
-                .workflow
-                .download_submissions
-                .find_by_client_item_id(&item.client_type, &item.download_client_item_id)
-                .await
-                && !submission.title_id.trim().is_empty()
-            {
-                item.is_scryer_origin = true;
-                item.title_id = Some(submission.title_id);
-                item.facet = Some(submission.facet);
-            }
-        }
+        enrich_download_queue_items_from_submissions(self, &mut items).await;
 
         if use_tracked_runtime_snapshot
             && let Some(handle) = self.runtime.acquisition.tracked_download_handle.as_ref()

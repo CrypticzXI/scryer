@@ -113,6 +113,9 @@ async fn project_title_history_page(
     filter: &TitleHistoryFilter,
     episode_id: Option<&str>,
 ) -> AppResult<TitleHistoryPage> {
+    // Title and episode history are projected exclusively from durable domain events.
+    // The legacy `title_history` table is deprecated compatibility state and must not
+    // be used for live reads or writes.
     let mut domain_filter = DomainEventFilter {
         title_id: filter
             .title_ids

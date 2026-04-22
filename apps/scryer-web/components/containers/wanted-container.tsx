@@ -4,10 +4,10 @@ import { useClient, useMutation } from "urql";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import {
+  cutoffUnmetTitlesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
   searchQuery,
-  wantedCutoffInitQuery,
   wantedItemsQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -19,82 +19,16 @@ import {
   forceGrabPendingReleaseMutation,
   dismissPendingReleaseMutation,
 } from "@/lib/graphql/mutations";
-import {
-  qualityProfileSettingsToCategoryOverrides,
-  qualityProfileSettingsToEntries,
-} from "@/lib/utils/quality-profiles";
-import { QUALITY_PROFILE_INHERIT_VALUE } from "@/lib/constants/settings";
 import type {
   PendingReleaseItem,
   Release,
   ReleaseDecisionItem,
-  TitleRecord,
   WantedItem,
   WantedMediaType,
   WantedStatus,
 } from "@/lib/types";
-import type { ParsedQualityProfileEntry } from "@/lib/types/quality-profiles";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
-
-function computeCutoffUnmetItems(
-  titles: TitleRecord[],
-  profileEntries: ParsedQualityProfileEntry[],
-  profileIdByScope: Record<string, string>,
-  globalProfileId: string | null,
-): CutoffUnmetItem[] {
-  const profileMap = new Map(profileEntries.map((e) => [e.id, e]));
-
-  const resolveProfile = (title: TitleRecord): ParsedQualityProfileEntry | null => {
-    const scopeId = title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime";
-    const titleProfileId = title.qualityProfileId?.trim();
-    if (titleProfileId && titleProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
-      const p = profileMap.get(titleProfileId);
-      if (p) return p;
-    }
-    const scopeProfileId = profileIdByScope[scopeId];
-    if (scopeProfileId && scopeProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
-      const p = profileMap.get(scopeProfileId);
-      if (p) return p;
-    }
-    if (globalProfileId && globalProfileId !== QUALITY_PROFILE_INHERIT_VALUE) {
-      return profileMap.get(globalProfileId) ?? null;
-    }
-    return null;
-  };
-
-  const result: CutoffUnmetItem[] = [];
-
-  for (const title of titles) {
-    const currentQualityTier = title.currentQualityTier?.trim().toUpperCase();
-    if (!title.monitored || !currentQualityTier) continue;
-
-    const profile = resolveProfile(title);
-    if (!profile || !profile.criteria.allow_upgrades) continue;
-
-    const tiers = profile.criteria.quality_tiers;
-    const cutoffTier = profile.criteria.cutoff_tier?.trim().toUpperCase();
-    if (tiers.length === 0 || !cutoffTier) continue;
-
-    const currentIndex = tiers.findIndex((tier) => tier.toUpperCase() === currentQualityTier);
-    const cutoffIndex = tiers.findIndex((tier) => tier.toUpperCase() === cutoffTier);
-    if (currentIndex === -1 || cutoffIndex === -1) continue;
-
-    // Already at or above the configured cutoff tier.
-    if (currentIndex <= cutoffIndex) continue;
-
-    result.push({
-      id: title.id,
-      name: title.name,
-      facet: title.facet,
-      posterUrl: title.posterUrl,
-      currentTier: currentQualityTier,
-      targetTier: cutoffTier,
-    });
-  }
-
-  return result;
-}
 
 type WantedContainerProps = {
   wantedSection: WantedSection;
@@ -133,8 +67,6 @@ export const WantedContainer = memo(function WantedContainer({
   const [bulkSearching, setBulkSearching] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
   const bulkCancelRef = useRef(false);
-  // Keep a ref to the full title list so search can access externalIds
-  const titlesRef = useRef<TitleRecord[]>([]);
 
   // --- Pending releases state ---
   const [pendingItems, setPendingItems] = useState<PendingReleaseItem[]>([]);
@@ -223,27 +155,20 @@ export const WantedContainer = memo(function WantedContainer({
   const refreshCutoff = useCallback(async () => {
     setCutoffLoading(true);
     try {
-      const { data, error } = await client.query(wantedCutoffInitQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(cutoffUnmetTitlesQuery, {
+          facet: cutoffFacetFilter ?? null,
+        })
+        .toPromise();
       if (error) throw error;
-
-      const titles: TitleRecord[] = data?.titles ?? [];
-      titlesRef.current = titles;
-
-      const entries = qualityProfileSettingsToEntries(data?.qualityProfileSettings);
-      const globalProfileId = data?.qualityProfileSettings?.globalProfileId ?? null;
-      const profileIdByScope = qualityProfileSettingsToCategoryOverrides(
-        data?.qualityProfileSettings,
-      );
-
-      const computed = computeCutoffUnmetItems(titles, entries, profileIdByScope, globalProfileId);
-      setCutoffItems(computed);
+      setCutoffItems(data?.cutoffUnmetTitles ?? []);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
     } finally {
       setCutoffLoading(false);
     }
-  }, [client, t, setGlobalStatus]);
+  }, [client, cutoffFacetFilter, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "cutoff") {
@@ -329,25 +254,27 @@ export const WantedContainer = memo(function WantedContainer({
 
   const searchAndQueueTitle = useCallback(
     async (cutoffItem: CutoffUnmetItem) => {
-      const title = titlesRef.current.find((t) => t.id === cutoffItem.id);
-      if (!title) return;
-
       const imdbId =
-        title.externalIds
+        cutoffItem.externalIds
           ?.find((e) => e.source.toLowerCase() === "imdb")
           ?.value?.trim() || null;
       const tvdbId =
-        title.externalIds
+        cutoffItem.externalIds
           ?.find((e) => e.source.toLowerCase() === "tvdb")
           ?.value?.trim() || null;
 
       const { data, error } = await client
         .query(searchQuery, {
-          query: title.name,
+          query: cutoffItem.name,
           imdbId,
           tvdbId,
-          category: title.facet === "movie" ? "movie" : title.facet === "series" ? "series" : "anime",
-          limit: title.facet === "movie" ? 50 : 15,
+          category:
+            cutoffItem.facet === "movie"
+              ? "movie"
+              : cutoffItem.facet === "series"
+                ? "series"
+                : "anime",
+          limit: cutoffItem.facet === "movie" ? 50 : 15,
         })
         .toPromise();
 
@@ -356,20 +283,20 @@ export const WantedContainer = memo(function WantedContainer({
       const results: Release[] = data?.searchReleases ?? [];
       const top = results.find((r) => r.qualityProfileDecision?.allowed ?? true);
       if (!top) {
-        setGlobalStatus(t("status.noReleaseForTitle", { name: title.name }));
+        setGlobalStatus(t("status.noReleaseForTitle", { name: cutoffItem.name }));
         return;
       }
 
       const sourceHint = top.downloadUrl || top.link;
       if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: title.name }));
+        setGlobalStatus(t("status.noSource", { name: cutoffItem.name }));
         return;
       }
 
       const { error: queueError } = await client
         .mutation(queueExistingMutation, {
           input: {
-            titleId: title.id,
+            titleId: cutoffItem.id,
             scope: { title: true },
             release: {
               sourceHint,
@@ -381,7 +308,7 @@ export const WantedContainer = memo(function WantedContainer({
         .toPromise();
 
       if (queueError) throw queueError;
-      setGlobalStatus(t("cutoff.searchTriggered", { name: title.name }));
+      setGlobalStatus(t("cutoff.searchTriggered", { name: cutoffItem.name }));
     },
     [client, t, setGlobalStatus],
   );

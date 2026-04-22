@@ -195,6 +195,25 @@ fn from_metadata_search_item(
     }
 }
 
+fn from_cutoff_unmet_title(item: scryer_application::CutoffUnmetTitle) -> CutoffUnmetTitlePayload {
+    CutoffUnmetTitlePayload {
+        id: item.id,
+        name: item.name,
+        facet: MediaFacetValue::from_domain(item.facet),
+        poster_url: item.poster_url,
+        external_ids: item
+            .external_ids
+            .into_iter()
+            .map(|id| ExternalIdPayload {
+                source: id.source,
+                value: id.value,
+            })
+            .collect(),
+        current_tier: item.current_tier,
+        target_tier: item.target_tier,
+    }
+}
+
 async fn title_payloads_from_titles(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
@@ -1331,6 +1350,20 @@ impl QueryRoot {
             items: items.into_iter().map(from_wanted_item).collect(),
             total,
         })
+    }
+
+    async fn cutoff_unmet_titles(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+    ) -> GqlResult<Vec<CutoffUnmetTitlePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let items = app
+            .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(items.into_iter().map(from_cutoff_unmet_title).collect())
     }
 
     async fn release_decisions(

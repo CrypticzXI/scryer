@@ -175,7 +175,7 @@ export function LibraryScanToast({
   const shouldShowEta =
     showCancel &&
     mediaAnalysisActive &&
-    mediaAnalysisTotalKnown &&
+    session.mediaAnalysisTotalKnown &&
     mediaAnalysisDone > 0 &&
     mediaAnalysisElapsedMs >= 30_000;
   const mediaAnalysisEtaSeconds = shouldShowEta

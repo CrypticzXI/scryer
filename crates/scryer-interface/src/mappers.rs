@@ -886,6 +886,7 @@ pub(crate) fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePaylo
         id: ep.id,
         title_id: ep.title_id,
         title_name: ep.title_name,
+        title_slug: ep.title_slug,
         title_facet: ep.title_facet,
         season_number: ep.season_number,
         episode_number: ep.episode_number,

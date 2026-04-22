@@ -261,6 +261,140 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_cutoff_unmet_titles(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+    ) -> AppResult<Vec<CutoffUnmetTitle>> {
+        require(actor, &Entitlement::ViewCatalog)?;
+
+        let titles = self.services.catalog.titles.list(facet, None).await?;
+        let monitored_titles = titles
+            .into_iter()
+            .filter(|title| title.monitored)
+            .collect::<Vec<_>>();
+        if monitored_titles.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let title_ids = monitored_titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let quality_summaries = self
+            .services
+            .library
+            .media_files
+            .list_title_quality_summaries(&title_ids)
+            .await?;
+        let quality_map: HashMap<&str, &str> = quality_summaries
+            .iter()
+            .map(|summary| (summary.title_id.as_str(), summary.quality_tier.as_str()))
+            .collect();
+
+        let profile_settings = self.load_quality_profile_settings().await?;
+        let global_profile_id = Some(profile_settings.global_profile_id.as_str());
+        let profile_map: HashMap<&str, &QualityProfile> = profile_settings
+            .profiles
+            .iter()
+            .map(|profile| (profile.id.as_str(), profile))
+            .collect();
+        let default_profile = crate::default_quality_profile_for_search();
+
+        let mut items = Vec::new();
+        for title in monitored_titles {
+            let Some(current_tier) = quality_map.get(title.id.as_str()).copied() else {
+                continue;
+            };
+
+            let title_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:")
+                .map(str::trim)
+                .filter(|value| {
+                    !value.is_empty() && *value != crate::QUALITY_PROFILE_INHERIT_VALUE
+                });
+            let category_profile_id = profile_settings
+                .category_selections
+                .iter()
+                .find(|selection| selection.facet == title.facet)
+                .and_then(|selection| selection.override_profile_id.as_deref());
+
+            let resolved_profile_id = crate::resolve_profile_id_for_title(
+                title_profile_id,
+                category_profile_id,
+                global_profile_id,
+            );
+            let profile = resolved_profile_id
+                .as_deref()
+                .and_then(|profile_id| profile_map.get(profile_id).copied())
+                .unwrap_or(&default_profile);
+
+            if !profile.criteria.allow_upgrades {
+                continue;
+            }
+
+            let Some(cutoff_tier) = profile
+                .criteria
+                .cutoff_tier
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            let Some(normalized_current_tier) =
+                crate::quality_profile::normalize_quality_tier(Some(current_tier))
+            else {
+                continue;
+            };
+            let Some(normalized_cutoff_tier) =
+                crate::quality_profile::normalize_quality_tier(Some(cutoff_tier))
+            else {
+                continue;
+            };
+
+            if !profile
+                .criteria
+                .quality_tiers
+                .iter()
+                .any(|tier| tier == &normalized_current_tier)
+                || !profile
+                    .criteria
+                    .quality_tiers
+                    .iter()
+                    .any(|tier| tier == &normalized_cutoff_tier)
+            {
+                continue;
+            }
+
+            if crate::quality_profile::quality_meets_or_exceeds_cutoff(
+                current_tier,
+                cutoff_tier,
+                &profile.criteria.quality_tiers,
+            ) {
+                continue;
+            }
+
+            items.push(CutoffUnmetTitle {
+                id: title.id,
+                name: title.name,
+                facet: title.facet,
+                poster_url: title.poster_url,
+                external_ids: title.external_ids,
+                current_tier: normalized_current_tier,
+                target_tier: normalized_cutoff_tier,
+            });
+        }
+
+        items.sort_by(|left, right| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+        });
+
+        Ok(items)
+    }
+
     pub async fn list_title_release_blocklist(
         &self,
         actor: &User,
@@ -1561,19 +1695,18 @@ impl AppUseCase {
         }
     }
 
-    pub async fn add_title_and_queue_download_with_outcome(
+    async fn queue_manual_release_for_title(
         &self,
         actor: &User,
-        request: NewTitle,
+        title: &Title,
         queued_release: QueuedReleaseSelection,
-    ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
+        scope: SubmissionScope,
+    ) -> AppResult<(String, bool)> {
         let QueuedReleaseSelection {
             source_hint,
             source_kind,
             source_title,
         } = queued_release;
-        let add_outcome = self.add_title_with_outcome(actor, request).await?;
-        let title = add_outcome.title.clone();
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
         let request_signature = normalize_release_selection_signature(
@@ -1608,13 +1741,7 @@ impl AppUseCase {
                 .await?
         {
             drop(dedupe_guard);
-            return Ok(AddTitleAndQueueDownloadOutcome {
-                title,
-                metadata_hydration_state: add_outcome.metadata_hydration_state,
-                reused_existing_title: add_outcome.reused_existing_title,
-                download_job_id: existing.download_client_item_id,
-                reused_queued_download: true,
-            });
+            return Ok((existing.download_client_item_id, true));
         }
 
         let category = self.derive_download_category(&title.facet).await;
@@ -1685,194 +1812,6 @@ impl AppUseCase {
                         source_kind,
                         source_title: source_title_for_attempt.clone(),
                         request_signature: request_signature.clone(),
-                        scope: SubmissionScope::Title,
-                    })
-                    .await;
-                grab
-            }
-            Err(error) => {
-                let error_message = error.to_string();
-                let _ = self
-                    .services
-                    .workflow
-                    .release_attempts
-                    .record_release_attempt(
-                        Some(title.id.clone()),
-                        source_hint_for_attempt,
-                        source_title_for_attempt,
-                        ReleaseDownloadAttemptOutcome::Failed,
-                        Some(error_message),
-                        source_password,
-                    )
-                    .await;
-                drop(dedupe_guard);
-                return Err(error);
-            }
-        };
-
-        drop(dedupe_guard);
-
-        self.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
-            &title,
-            DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
-                title: title_context_snapshot(&title),
-                source_title: None,
-                source_hint: None,
-                download_id: Some(grab.job_id.clone()),
-                episode_ids: Vec::new(),
-            }),
-        ))
-        .await?;
-
-        Ok(AddTitleAndQueueDownloadOutcome {
-            title,
-            metadata_hydration_state: add_outcome.metadata_hydration_state,
-            reused_existing_title: add_outcome.reused_existing_title,
-            download_job_id: grab.job_id,
-            reused_queued_download: false,
-        })
-    }
-
-    pub async fn add_title_and_queue_download(
-        &self,
-        actor: &User,
-        request: NewTitle,
-        queued_release: QueuedReleaseSelection,
-    ) -> AppResult<(Title, String)> {
-        let outcome = self
-            .add_title_and_queue_download_with_outcome(actor, request, queued_release)
-            .await?;
-        Ok((outcome.title, outcome.download_job_id))
-    }
-
-    pub async fn queue_existing_title_download(
-        &self,
-        actor: &User,
-        title_id: &str,
-        queued_release: QueuedReleaseSelection,
-        scope: SubmissionScope,
-    ) -> AppResult<String> {
-        require(actor, &Entitlement::TriggerActions)?;
-
-        let QueuedReleaseSelection {
-            source_hint,
-            source_kind,
-            source_title,
-        } = queued_release;
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
-
-        let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
-        let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
-        let request_signature = normalize_release_selection_signature(
-            source_hint_for_attempt.as_deref(),
-            source_title_for_attempt.as_deref(),
-            source_kind,
-        );
-        let source_password: Option<String> = None;
-        let _ = self
-            .services
-            .workflow
-            .release_attempts
-            .record_release_attempt(
-                Some(title.id.clone()),
-                source_hint_for_attempt.clone(),
-                source_title_for_attempt.clone(),
-                ReleaseDownloadAttemptOutcome::Pending,
-                None,
-                source_password.clone(),
-            )
-            .await;
-
-        let dedupe_guard = self
-            .lock_download_submission_signature(&title.id, request_signature.as_deref())
-            .await;
-        if let Some(signature) = request_signature.as_deref()
-            && let Some(existing) = self
-                .services
-                .workflow
-                .download_submissions
-                .find_by_title_and_request_signature(&title.id, signature)
-                .await?
-        {
-            drop(dedupe_guard);
-            return Ok(existing.download_client_item_id);
-        }
-
-        let category = self.derive_download_category(&title.facet).await;
-        let is_recent = self.is_recent_for_queue_priority(
-            title
-                .first_aired
-                .as_deref()
-                .or(title.digital_release_date.as_deref()),
-        );
-        let job_result = self
-            .services
-            .integrations
-            .download_client
-            .submit_download(&DownloadClientAddRequest {
-                title: title.clone(),
-                source_hint,
-                staged_nzb: None,
-                source_kind,
-                source_title,
-                source_password: source_password.clone(),
-                category: Some(category),
-                queue_priority: None,
-                download_directory: None,
-                release_title: None,
-                indexer_name: None,
-                info_hash_hint: None,
-                seed_goal_ratio: None,
-                seed_goal_seconds: None,
-                is_recent,
-                season_pack: None,
-            })
-            .await;
-
-        let grab = match job_result {
-            Ok(grab) => {
-                {
-                    let facet_label = serde_json::to_string(&title.facet)
-                        .unwrap_or_else(|_| "\"other\"".to_string())
-                        .trim_matches('"')
-                        .to_string();
-                    metrics::counter!("scryer_grabs_total", "indexer" => "manual", "facet" => facet_label).increment(1);
-                }
-                let _ = self
-                    .services
-                    .workflow
-                    .release_attempts
-                    .record_release_attempt(
-                        Some(title.id.clone()),
-                        source_hint_for_attempt.clone(),
-                        source_title_for_attempt.clone(),
-                        ReleaseDownloadAttemptOutcome::Success,
-                        None,
-                        source_password.clone(),
-                    )
-                    .await;
-                let facet_str =
-                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let _ = self
-                    .services
-                    .workflow
-                    .download_submissions
-                    .record_submission(DownloadSubmission {
-                        title_id: title.id.clone(),
-                        facet: facet_str.trim_matches('"').to_string(),
-                        download_client_type: grab.client_type.clone(),
-                        download_client_item_id: grab.job_id.clone(),
-                        source_hint: None,
-                        source_kind: None,
-                        source_title: source_title_for_attempt.clone(),
-                        request_signature: request_signature.clone(),
                         scope,
                     })
                     .await;
@@ -1902,9 +1841,9 @@ impl AppUseCase {
 
         self.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
-            &title,
+            title,
             DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
-                title: title_context_snapshot(&title),
+                title: title_context_snapshot(title),
                 source_title: None,
                 source_hint: None,
                 download_id: Some(grab.job_id.clone()),
@@ -1913,7 +1852,62 @@ impl AppUseCase {
         ))
         .await?;
 
-        Ok(grab.job_id)
+        Ok((grab.job_id, false))
+    }
+
+    pub async fn add_title_and_queue_download_with_outcome(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        queued_release: QueuedReleaseSelection,
+    ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
+        let add_outcome = self.add_title_with_outcome(actor, request).await?;
+        let title = add_outcome.title.clone();
+        let (download_job_id, reused_queued_download) = self
+            .queue_manual_release_for_title(actor, &title, queued_release, SubmissionScope::Title)
+            .await?;
+
+        Ok(AddTitleAndQueueDownloadOutcome {
+            title,
+            metadata_hydration_state: add_outcome.metadata_hydration_state,
+            reused_existing_title: add_outcome.reused_existing_title,
+            download_job_id,
+            reused_queued_download,
+        })
+    }
+
+    pub async fn add_title_and_queue_download(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        queued_release: QueuedReleaseSelection,
+    ) -> AppResult<(Title, String)> {
+        let outcome = self
+            .add_title_and_queue_download_with_outcome(actor, request, queued_release)
+            .await?;
+        Ok((outcome.title, outcome.download_job_id))
+    }
+
+    pub async fn queue_existing_title_download(
+        &self,
+        actor: &User,
+        title_id: &str,
+        queued_release: QueuedReleaseSelection,
+        scope: SubmissionScope,
+    ) -> AppResult<String> {
+        require(actor, &Entitlement::TriggerActions)?;
+
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        let (job_id, _reused_queued_download) = self
+            .queue_manual_release_for_title(actor, &title, queued_release, scope)
+            .await?;
+        Ok(job_id)
     }
 
     /// Resolve the per-facet fallback category used when the selected client

@@ -1890,6 +1890,38 @@ impl QualityProfileRepository for MockQualityProfileRepo {
     }
 }
 
+#[derive(Default, Clone)]
+struct StoredQualityProfileRepo {
+    profiles: Arc<Mutex<Vec<QualityProfile>>>,
+}
+
+impl StoredQualityProfileRepo {
+    async fn set_profiles(&self, profiles: Vec<QualityProfile>) {
+        *self.profiles.lock().await = profiles;
+    }
+}
+
+#[async_trait]
+impl QualityProfileRepository for StoredQualityProfileRepo {
+    async fn list_quality_profiles(
+        &self,
+        _scope: &str,
+        _scope_id: Option<String>,
+    ) -> AppResult<Vec<QualityProfile>> {
+        Ok(self.profiles.lock().await.clone())
+    }
+
+    async fn replace_quality_profiles(
+        &self,
+        _scope: &str,
+        _scope_id: Option<String>,
+        profiles: Vec<QualityProfile>,
+    ) -> AppResult<()> {
+        *self.profiles.lock().await = profiles;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl IndexerConfigRepository for MockIndexerConfigRepo {
     async fn list(&self, provider_filter: Option<String>) -> AppResult<Vec<IndexerConfig>> {
@@ -2435,6 +2467,23 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                     && entry.download_client_item_id == download_client_item_id
             })
             .cloned())
+    }
+
+    async fn list_for_client_items(
+        &self,
+        client_items: &[(String, String)],
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let entries = self.store.lock().await;
+        Ok(entries
+            .iter()
+            .filter(|entry| {
+                client_items.iter().any(|(client_type, item_id)| {
+                    entry.download_client_type == *client_type
+                        && entry.download_client_item_id == *item_id
+                })
+            })
+            .cloned()
+            .collect())
     }
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
@@ -3168,6 +3217,58 @@ fn bootstrap_with_search_settings_and_indexer(
     );
 
     (app, User::new_admin("admin"))
+}
+
+fn bootstrap_with_cutoff_projection_state(
+    settings: Arc<StoredSettingsRepo>,
+    quality_profiles: Arc<StoredQualityProfileRepo>,
+    media_files: Arc<MockMediaFileRepo>,
+) -> (AppUseCase, User, Arc<MockTitleRepo>) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let download_client = Arc::new(StubDownloadClient::default());
+    let indexer_client = Arc::new(MockIndexerClient);
+
+    let services = AppServices::builder(
+        titles.clone(),
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_media_files(media_files)
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, User::new_admin("admin"), titles)
 }
 
 fn bootstrap_with_delete_queue(
@@ -5509,6 +5610,152 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
             .as_slice(),
         &["Existing Queue".to_string()]
     );
+}
+
+fn cutoff_projection_test_profile(id: &str, cutoff_tier: &str) -> QualityProfile {
+    QualityProfile {
+        id: id.to_string(),
+        name: format!("Profile {id}"),
+        criteria: QualityProfileCriteria {
+            quality_tiers: vec!["1080P".to_string(), "720P".to_string(), "480P".to_string()],
+            archival_quality: Some("1080P".to_string()),
+            allow_unknown_quality: false,
+            source_allowlist: vec![],
+            source_blocklist: vec![],
+            video_codec_allowlist: vec![],
+            video_codec_blocklist: vec![],
+            audio_codec_allowlist: vec![],
+            audio_codec_blocklist: vec![],
+            atmos_preferred: false,
+            dolby_vision_allowed: true,
+            detected_hdr_allowed: true,
+            prefer_remux: false,
+            allow_bd_disk: false,
+            allow_upgrades: true,
+            prefer_dual_audio: false,
+            required_audio_languages: vec![],
+            scoring_persona: ScoringPersona::default(),
+            scoring_overrides: ScoringOverrides::default(),
+            cutoff_tier: Some(cutoff_tier.to_string()),
+            min_score_to_grab: None,
+            facet_persona_overrides: HashMap::new(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn list_cutoff_unmet_titles_normalizes_lowercase_cutoff_tier() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            r#""cutoff-lowercase""#,
+        )
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![cutoff_projection_test_profile(
+            "cutoff-lowercase",
+            "720p",
+        )])
+        .await;
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) =
+        bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Cutoff Case".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/library/Cutoff Case.mkv".to_string(),
+            size_bytes: 1_000,
+            quality_label: Some("480p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert media file");
+
+    let items = app
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie))
+        .await
+        .expect("cutoff unmet query should succeed");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, title.id);
+    assert_eq!(items[0].current_tier, "480P");
+    assert_eq!(items[0].target_tier, "720P");
+}
+
+#[tokio::test]
+async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_is_stale() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            r#""cutoff-global""#,
+        )
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![cutoff_projection_test_profile(
+            "cutoff-global",
+            "720P",
+        )])
+        .await;
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) =
+        bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Stale Tag".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec!["scryer:quality-profile:missing-profile".to_string()],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/library/Stale Tag.mkv".to_string(),
+            size_bytes: 1_000,
+            quality_label: Some("480p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert media file");
+
+    let items = app
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie))
+        .await
+        .expect("cutoff unmet query should succeed");
+
+    assert!(items.is_empty());
 }
 
 #[tokio::test]

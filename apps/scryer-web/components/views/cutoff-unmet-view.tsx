@@ -20,12 +20,14 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
+import type { ExternalId, Facet } from "@/lib/types";
 
 export type CutoffUnmetItem = {
   id: string;
   name: string;
-  facet: string;
+  facet: Facet;
   posterUrl?: string | null;
+  externalIds: ExternalId[];
   currentTier: string;
   targetTier: string;
 };

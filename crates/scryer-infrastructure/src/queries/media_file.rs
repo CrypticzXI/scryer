@@ -40,6 +40,10 @@ fn quality_rank_expression(alias: &str) -> String {
     )
 }
 
+fn serialized_media_analysis(analysis: &MediaFileAnalysis) -> String {
+    serde_json::to_string(analysis).unwrap_or_else(|_| "{}".to_string())
+}
+
 pub(crate) async fn insert_media_file_query(
     pool: &SqlitePool,
     input: &InsertMediaFileInput,
@@ -148,9 +152,11 @@ pub(crate) async fn list_media_files_for_title_query(
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
                 mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
-                mf.audio_languages_json, mf.audio_streams_json,
-                mf.subtitle_languages_json,
-                mf.subtitle_codecs_json, mf.subtitle_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_languages'), '[]') AS audio_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_streams'), '[]') AS audio_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_languages'), '[]') AS subtitle_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_codecs'), '[]') AS subtitle_codecs_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_streams'), '[]') AS subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
                 mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
@@ -496,16 +502,7 @@ pub(crate) async fn update_media_file_analysis_query(
     file_id: &str,
     analysis: &MediaFileAnalysis,
 ) -> AppResult<()> {
-    let audio_languages_json =
-        serde_json::to_string(&analysis.audio_languages).unwrap_or_else(|_| "[]".to_string());
-    let audio_streams_json =
-        serde_json::to_string(&analysis.audio_streams).unwrap_or_else(|_| "[]".to_string());
-    let subtitle_languages_json =
-        serde_json::to_string(&analysis.subtitle_languages).unwrap_or_else(|_| "[]".to_string());
-    let subtitle_codecs_json =
-        serde_json::to_string(&analysis.subtitle_codecs).unwrap_or_else(|_| "[]".to_string());
-    let subtitle_streams_json =
-        serde_json::to_string(&analysis.subtitle_streams).unwrap_or_else(|_| "[]".to_string());
+    let analysis_json = serialized_media_analysis(analysis);
 
     sqlx::query(
         "UPDATE media_files SET
@@ -524,12 +521,7 @@ pub(crate) async fn update_media_file_analysis_query(
             duration_seconds = ?,
             num_chapters = ?,
             container_format = ?,
-            ffprobe_json = ?,
-            audio_languages_json = ?,
-            audio_streams_json = ?,
-            subtitle_languages_json = ?,
-            subtitle_codecs_json = ?,
-            subtitle_streams_json = ?,
+            analysis_json = ?,
             has_multiaudio = ?,
             scan_status = 'scanned'
          WHERE id = ?",
@@ -549,12 +541,7 @@ pub(crate) async fn update_media_file_analysis_query(
     .bind(analysis.duration_seconds)
     .bind(analysis.num_chapters)
     .bind(&analysis.container_format)
-    .bind(&analysis.raw_json)
-    .bind(&audio_languages_json)
-    .bind(&audio_streams_json)
-    .bind(&subtitle_languages_json)
-    .bind(&subtitle_codecs_json)
-    .bind(&subtitle_streams_json)
+    .bind(&analysis_json)
     .bind(if analysis.has_multiaudio { 1i64 } else { 0i64 })
     .bind(file_id)
     .execute(pool)
@@ -632,9 +619,11 @@ pub(crate) async fn get_media_file_by_id_query(
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
                 mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
-                mf.audio_languages_json, mf.audio_streams_json,
-                mf.subtitle_languages_json,
-                mf.subtitle_codecs_json, mf.subtitle_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_languages'), '[]') AS audio_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_streams'), '[]') AS audio_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_languages'), '[]') AS subtitle_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_codecs'), '[]') AS subtitle_codecs_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_streams'), '[]') AS subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
                 mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
@@ -668,9 +657,11 @@ pub(crate) async fn get_media_file_by_path_query(
                 mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
                 mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
                 mf.duration_seconds, mf.num_chapters, mf.container_format,
-                mf.audio_languages_json, mf.audio_streams_json,
-                mf.subtitle_languages_json,
-                mf.subtitle_codecs_json, mf.subtitle_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_languages'), '[]') AS audio_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_streams'), '[]') AS audio_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_languages'), '[]') AS subtitle_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_codecs'), '[]') AS subtitle_codecs_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_streams'), '[]') AS subtitle_streams_json,
                 mf.has_multiaudio,
                 mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
                 mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
@@ -1035,7 +1026,6 @@ mod tests {
                     duration_seconds: Some(1800),
                     num_chapters: Some(4),
                     container_format: Some("matroska".to_string()),
-                    raw_json: "{}".to_string(),
                 },
             )
             .await

@@ -1,6 +1,6 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    title::*, title_history as th_queries,
+    title::*,
 };
 use crate::{
     encryption::EncryptionKey,
@@ -18,8 +18,7 @@ use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
     Episode, ExternalId, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet,
     NewDomainEvent, NotificationChannelConfig, NotificationSubscription, PluginInstallation,
-    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload, Title,
-    TitleHistoryRecord, User,
+    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload, Title, User,
 };
 use sqlx::SqlitePool;
 use std::future::Future;
@@ -464,10 +463,6 @@ pub(crate) enum DbCommand {
         event_types: Vec<scryer_domain::DomainEventType>,
         reply: Sender<AppResult<u32>>,
     },
-    DeleteTitleHistoryOlderThan {
-        days: i64,
-        reply: Sender<AppResult<u32>>,
-    },
     DeleteDownloadImportArtifactsOlderThan {
         days: i64,
         reply: Sender<AppResult<u32>>,
@@ -827,46 +822,6 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<Option<PendingRelease>>>,
     },
     DeletePendingReleasesForTitle {
-        title_id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    // ── Title History ─────────────────────────────────────────────────
-    InsertTitleHistoryEvent {
-        title_id: String,
-        episode_id: Option<String>,
-        collection_id: Option<String>,
-        event_type: String,
-        source_title: Option<String>,
-        quality: Option<String>,
-        download_id: Option<String>,
-        data_json: Option<String>,
-        reply: Sender<AppResult<String>>,
-    },
-    ListTitleHistory {
-        event_types: Option<Vec<String>>,
-        title_ids: Option<Vec<String>>,
-        download_id: Option<String>,
-        limit: usize,
-        offset: usize,
-        reply: Sender<AppResult<(Vec<TitleHistoryRecord>, i64)>>,
-    },
-    ListTitleHistoryForTitle {
-        title_id: String,
-        event_types: Option<Vec<String>>,
-        limit: usize,
-        offset: usize,
-        reply: Sender<AppResult<(Vec<TitleHistoryRecord>, i64)>>,
-    },
-    ListTitleHistoryForEpisode {
-        episode_id: String,
-        limit: usize,
-        reply: Sender<AppResult<Vec<TitleHistoryRecord>>>,
-    },
-    FindTitleHistoryByDownloadId {
-        download_id: String,
-        reply: Sender<AppResult<Vec<TitleHistoryRecord>>>,
-    },
-    DeleteTitleHistoryForTitle {
         title_id: String,
         reply: Sender<AppResult<()>>,
     },
@@ -1863,16 +1818,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::DeleteTitleHistoryOlderThan { days, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_title_history_older_than", || {
-                            crate::queries::housekeeping::delete_title_history_older_than_query(
-                                &pool, days,
-                            )
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::DeleteDownloadImportArtifactsOlderThan { days, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries(
@@ -2805,106 +2750,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                // ── Title History ─────────────────────────────────────────
-                DbCommand::InsertTitleHistoryEvent {
-                    title_id,
-                    episode_id,
-                    collection_id,
-                    event_type,
-                    source_title,
-                    quality,
-                    download_id,
-                    data_json,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        th_queries::insert_title_history_event_query(
-                            &pool,
-                            &title_id,
-                            episode_id.as_deref(),
-                            collection_id.as_deref(),
-                            &event_type,
-                            source_title.as_deref(),
-                            quality.as_deref(),
-                            download_id.as_deref(),
-                            data_json.as_deref(),
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::ListTitleHistory {
-                    event_types,
-                    title_ids,
-                    download_id,
-                    limit,
-                    offset,
-                    reply,
-                } => {
-                    let type_strs: Option<Vec<&str>> = event_types
-                        .as_ref()
-                        .map(|v| v.iter().map(|s| s.as_str()).collect());
-                    let res = th_queries::list_title_history_query(
-                        &pool,
-                        type_strs.as_deref(),
-                        title_ids.as_deref(),
-                        download_id.as_deref(),
-                        limit,
-                        offset,
-                    )
-                    .await
-                    .map(|(rows, total)| {
-                        let records = rows.into_iter().map(th_row_to_record).collect();
-                        (records, total)
-                    });
-                    let _ = reply.send(res);
-                }
-                DbCommand::ListTitleHistoryForTitle {
-                    title_id,
-                    event_types,
-                    limit,
-                    offset,
-                    reply,
-                } => {
-                    let type_strs: Option<Vec<&str>> = event_types
-                        .as_ref()
-                        .map(|v| v.iter().map(|s| s.as_str()).collect());
-                    let res = th_queries::list_title_history_for_title_query(
-                        &pool,
-                        &title_id,
-                        type_strs.as_deref(),
-                        limit,
-                        offset,
-                    )
-                    .await
-                    .map(|(rows, total)| {
-                        let records = rows.into_iter().map(th_row_to_record).collect();
-                        (records, total)
-                    });
-                    let _ = reply.send(res);
-                }
-                DbCommand::ListTitleHistoryForEpisode {
-                    episode_id,
-                    limit,
-                    reply,
-                } => {
-                    let res =
-                        th_queries::list_title_history_for_episode_query(&pool, &episode_id, limit)
-                            .await
-                            .map(|rows| rows.into_iter().map(th_row_to_record).collect());
-                    let _ = reply.send(res);
-                }
-                DbCommand::FindTitleHistoryByDownloadId { download_id, reply } => {
-                    let res =
-                        th_queries::find_title_history_by_download_id_query(&pool, &download_id)
-                            .await
-                            .map(|rows| rows.into_iter().map(th_row_to_record).collect());
-                    let _ = reply.send(res);
-                }
-                DbCommand::DeleteTitleHistoryForTitle { title_id, reply } => {
-                    let _ = reply.send(
-                        th_queries::delete_title_history_for_title_query(&pool, &title_id).await,
-                    );
-                }
                 // ── Blocklist ─────────────────────────────────────────────
                 DbCommand::InsertBlocklistEntry {
                     title_id,
@@ -2978,23 +2823,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
     });
 
     sender
-}
-
-fn th_row_to_record(row: th_queries::TitleHistoryRow) -> TitleHistoryRecord {
-    TitleHistoryRecord {
-        id: row.id,
-        title_id: row.title_id,
-        episode_id: row.episode_id,
-        collection_id: row.collection_id,
-        event_type: scryer_domain::TitleHistoryEventType::parse(&row.event_type)
-            .unwrap_or(scryer_domain::TitleHistoryEventType::Grabbed),
-        source_title: row.source_title,
-        quality: row.quality,
-        download_id: row.download_id,
-        data_json: row.data_json,
-        occurred_at: row.occurred_at,
-        created_at: row.created_at,
-    }
 }
 
 fn bl_row_to_entry(row: blocklist_queries::BlocklistRow) -> BlocklistEntry {

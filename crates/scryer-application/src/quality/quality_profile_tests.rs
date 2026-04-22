@@ -2,31 +2,43 @@ use super::*;
 use crate::release_parser::parse_release_metadata;
 use crate::scoring_weights::balanced_weights;
 
-// ── normalize_quality ─────────────────────────────────────────────────────
+// ── normalize_quality_tier ────────────────────────────────────────────────
 
 #[test]
 fn normalize_quality_1080p() {
-    assert_eq!(normalize_quality(Some("1080p")), Some("1080P".to_string()));
+    assert_eq!(
+        normalize_quality_tier(Some("1080p")),
+        Some("1080P".to_string())
+    );
 }
 
 #[test]
 fn normalize_quality_2160p() {
-    assert_eq!(normalize_quality(Some("2160p")), Some("2160P".to_string()));
+    assert_eq!(
+        normalize_quality_tier(Some("2160p")),
+        Some("2160P".to_string())
+    );
 }
 
 #[test]
 fn normalize_quality_720p() {
-    assert_eq!(normalize_quality(Some("720p")), Some("720P".to_string()));
+    assert_eq!(
+        normalize_quality_tier(Some("720p")),
+        Some("720P".to_string())
+    );
 }
 
 #[test]
 fn normalize_quality_none() {
-    assert_eq!(normalize_quality(None), None);
+    assert_eq!(normalize_quality_tier(None), None);
 }
 
 #[test]
 fn normalize_quality_already_uppercase() {
-    assert_eq!(normalize_quality(Some("1080P")), Some("1080P".to_string()));
+    assert_eq!(
+        normalize_quality_tier(Some("1080P")),
+        Some("1080P".to_string())
+    );
 }
 
 // ── normalize_source ──────────────────────────────────────────────────────
@@ -1360,6 +1372,26 @@ fn cutoff_not_reached_when_no_cutoff_set() {
         Some("Movie.2024.2160p.WEB-DL.H.265-GRP"),
         None,
         &["2160P".to_string(), "1080P".to_string()],
+    );
+    assert!(!reached);
+}
+
+#[test]
+fn quality_meets_or_exceeds_cutoff_normalizes_input_tiers() {
+    let reached = quality_meets_or_exceeds_cutoff(
+        "1080p",
+        "720p",
+        &["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
+    );
+    assert!(reached);
+}
+
+#[test]
+fn quality_meets_or_exceeds_cutoff_rejects_unrecognized_current_tier() {
+    let reached = quality_meets_or_exceeds_cutoff(
+        "dvd",
+        "720P",
+        &["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
     );
     assert!(!reached);
 }

@@ -1383,7 +1383,7 @@ impl AppUseCase {
         self.delay_profiles().await
     }
 
-    async fn load_quality_profile_settings(&self) -> AppResult<QualityProfileSettings> {
+    pub(crate) async fn load_quality_profile_settings(&self) -> AppResult<QualityProfileSettings> {
         let profiles = ensure_quality_profiles_exist(
             self.services
                 .config

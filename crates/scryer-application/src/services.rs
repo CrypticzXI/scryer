@@ -219,7 +219,6 @@ pub struct AppWorkflowServices {
     pub(crate) wanted_items: Arc<dyn WantedItemRepository>,
     pub(crate) housekeeping: Arc<dyn HousekeepingRepository>,
     pub(crate) pending_releases: Arc<dyn PendingReleaseRepository>,
-    pub(crate) title_history: Arc<dyn TitleHistoryRepository>,
     pub(crate) blocklist_repo: Arc<dyn BlocklistRepository>,
     pub(crate) subtitle_downloads: Arc<dyn SubtitleDownloadRepository>,
     pub(crate) staged_nzb_store: Arc<dyn StagedNzbStore>,
@@ -409,7 +408,6 @@ impl AppServices {
                 wanted_items: Arc::new(NullWantedItemRepository),
                 housekeeping: Arc::new(NullHousekeepingRepository),
                 pending_releases: Arc::new(NullPendingReleaseRepository),
-                title_history: Arc::new(NullTitleHistoryRepository),
                 blocklist_repo: Arc::new(NullBlocklistRepository),
                 subtitle_downloads: Arc::new(null_repositories::NullSubtitleDownloadRepository),
                 staged_nzb_store: Arc::new(null_repositories::NullStagedNzbStore),
@@ -487,7 +485,6 @@ struct AppServicesBuildConfiguration {
     title_images: bool,
     housekeeping: bool,
     pending_releases: bool,
-    title_history: bool,
     blocklist_repo: bool,
     subtitle_downloads: bool,
     job_runs: bool,
@@ -550,9 +547,6 @@ impl AppServicesBuildConfiguration {
         if !self.pending_releases {
             missing.push("pending_releases");
         }
-        if !self.title_history {
-            missing.push("title_history");
-        }
         if !self.blocklist_repo {
             missing.push("blocklist_repo");
         }
@@ -584,7 +578,6 @@ impl AppServicesBuilder {
             + MediaFileRepository
             + PendingReleaseRepository
             + SubtitleDownloadRepository
-            + TitleHistoryRepository
             + TitleImageRepository
             + WantedItemRepository
             + Send
@@ -594,7 +587,6 @@ impl AppServicesBuilder {
         self.services.library.media_files = store.clone();
         self.services.workflow.wanted_items = store.clone();
         self.services.workflow.pending_releases = store.clone();
-        self.services.workflow.title_history = store.clone();
         self.services.workflow.blocklist_repo = store.clone();
         self.services.library.library_probe_signatures = store.clone();
         self.services.library.library_scan_unmatched_items = store.clone();
@@ -604,7 +596,6 @@ impl AppServicesBuilder {
         self.configured.media_files = true;
         self.configured.wanted_items = true;
         self.configured.pending_releases = true;
-        self.configured.title_history = true;
         self.configured.blocklist_repo = true;
         self.configured.library_probe_signatures = true;
         self.configured.library_scan_unmatched_items = true;
@@ -749,12 +740,6 @@ impl AppServicesBuilder {
         workflow.pending_releases,
         pending_releases,
         Arc<dyn PendingReleaseRepository>
-    );
-    app_services_builder_required_setter!(
-        with_title_history,
-        workflow.title_history,
-        title_history,
-        Arc<dyn TitleHistoryRepository>
     );
     app_services_builder_required_setter!(
         with_blocklist_repo,

@@ -96,22 +96,6 @@ pub(crate) async fn delete_domain_events_older_than_for_types_query(
     Ok(result.rows_affected() as u32)
 }
 
-pub(crate) async fn delete_title_history_older_than_query(
-    pool: &SqlitePool,
-    days: i64,
-) -> AppResult<u32> {
-    let modifier = format!("-{days} days");
-    let result = sqlx::query("DELETE FROM title_history WHERE occurred_at < datetime('now', ?)")
-        .bind(&modifier)
-        .execute(pool)
-        .await
-        .map_err(|e| {
-            AppError::Repository(format!("housekeeping: title_history cleanup failed: {e}"))
-        })?;
-
-    Ok(result.rows_affected() as u32)
-}
-
 pub(crate) async fn delete_download_import_artifacts_older_than_query(
     pool: &SqlitePool,
     days: i64,

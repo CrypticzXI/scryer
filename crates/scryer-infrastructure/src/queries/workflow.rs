@@ -10,6 +10,7 @@ use scryer_domain::{
 };
 use sqlx::Row;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
+use std::collections::HashSet;
 
 use crate::types::{
     LibraryProbeSignatureRecord, ReleaseDownloadFailureSignatureRecord,
@@ -21,6 +22,26 @@ fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<
         scope.persisted_episode_id(),
         scope.persisted_collection_id(),
     )
+}
+
+const DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE: usize = 400;
+
+pub(crate) fn chunk_download_submission_client_items(
+    client_items: &[(String, String)],
+) -> Vec<Vec<(String, String)>> {
+    let mut seen = HashSet::with_capacity(client_items.len());
+    let mut deduped = Vec::with_capacity(client_items.len());
+    for (client_type, item_id) in client_items {
+        let key = (client_type.clone(), item_id.clone());
+        if seen.insert(key.clone()) {
+            deduped.push(key);
+        }
+    }
+
+    deduped
+        .chunks(DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE)
+        .map(|chunk| chunk.to_vec())
+        .collect()
 }
 
 fn download_submission_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<DownloadSubmission> {
@@ -1573,6 +1594,48 @@ pub(crate) async fn list_download_submissions_for_title_query(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         out.push(download_submission_from_row(&row)?);
+    }
+
+    Ok(out)
+}
+
+pub(crate) async fn list_download_submissions_for_client_items_query(
+    pool: &SqlitePool,
+    client_items: &[(String, String)],
+) -> AppResult<Vec<DownloadSubmission>> {
+    let client_item_chunks = chunk_download_submission_client_items(client_items);
+    if client_item_chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    for client_items in client_item_chunks {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id
+             FROM download_submissions
+             WHERE ",
+        );
+        for (idx, (client_type, item_id)) in client_items.iter().enumerate() {
+            if idx > 0 {
+                query.push(" OR ");
+            }
+            query.push("(download_client_type = ");
+            query.push_bind(client_type);
+            query.push(" AND download_client_item_id = ");
+            query.push_bind(item_id);
+            query.push(")");
+        }
+
+        let rows = query
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        out.reserve(rows.len());
+        for row in rows {
+            out.push(download_submission_from_row(&row)?);
+        }
     }
 
     Ok(out)

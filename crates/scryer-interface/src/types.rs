@@ -2788,6 +2788,17 @@ pub struct WantedItemsListPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct CutoffUnmetTitlePayload {
+    pub id: String,
+    pub name: String,
+    pub facet: MediaFacetValue,
+    pub poster_url: Option<String>,
+    pub external_ids: Vec<ExternalIdPayload>,
+    pub current_tier: String,
+    pub target_tier: String,
+}
+
+#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct ReleaseDecisionPayload {
     pub id: String,
@@ -2980,6 +2991,7 @@ pub struct CalendarEpisodePayload {
     pub id: String,
     pub title_id: String,
     pub title_name: String,
+    pub title_slug: Option<String>,
     pub title_facet: String,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,

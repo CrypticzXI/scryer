@@ -136,7 +136,6 @@ pub(crate) fn build_media_file_analysis(
         duration_seconds: analysis.duration_seconds,
         num_chapters: analysis.num_chapters,
         container_format: analysis.container_format.clone(),
-        raw_json: analysis.raw_json.clone(),
     }
 }
 

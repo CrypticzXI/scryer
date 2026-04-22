@@ -271,6 +271,7 @@ pub struct CalendarEpisode {
     pub id: String,
     pub title_id: String,
     pub title_name: String,
+    pub title_slug: Option<String>,
     pub title_facet: String,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,

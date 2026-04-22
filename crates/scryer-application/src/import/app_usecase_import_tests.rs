@@ -428,7 +428,6 @@ fn test_media_analysis(video_height: Option<i32>) -> crate::MediaFileAnalysis {
         duration_seconds: None,
         num_chapters: None,
         container_format: None,
-        raw_json: "{}".to_string(),
     }
 }
 

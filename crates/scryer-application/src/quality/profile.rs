@@ -437,7 +437,7 @@ fn normalized_audio_codecs(release: &ParsedReleaseMetadata) -> Vec<String> {
     codecs
 }
 
-fn normalize_quality(raw: Option<&str>) -> Option<String> {
+pub(crate) fn normalize_quality_tier(raw: Option<&str>) -> Option<String> {
     raw.map(|value| {
         let value = value.trim().to_ascii_lowercase();
         let clean = value;
@@ -459,6 +459,40 @@ pub fn resolve_profile_id_for_title(
         .map(std::string::ToString::to_string)
         .or_else(|| category_profile_id.map(std::string::ToString::to_string))
         .or_else(|| global_profile_id.map(std::string::ToString::to_string))
+}
+
+pub fn quality_meets_or_exceeds_cutoff(
+    current_quality: &str,
+    cutoff_tier: &str,
+    quality_tiers: &[String],
+) -> bool {
+    if quality_tiers.is_empty() {
+        return false;
+    }
+
+    let current_normalized = match normalize_quality_tier(Some(current_quality)) {
+        Some(quality) => quality,
+        None => return false,
+    };
+    let cutoff_normalized = match normalize_quality_tier(Some(cutoff_tier)) {
+        Some(quality) => quality,
+        None => return false,
+    };
+
+    let cutoff_pos = match quality_tiers
+        .iter()
+        .position(|tier| tier == &cutoff_normalized)
+    {
+        Some(position) => position,
+        None => return false,
+    };
+    match quality_tiers
+        .iter()
+        .position(|tier| tier == &current_normalized)
+    {
+        Some(current_pos) => current_pos <= cutoff_pos,
+        None => false,
+    }
 }
 
 /// Check whether the currently grabbed release has reached the cutoff quality tier.
@@ -483,26 +517,12 @@ pub fn has_reached_cutoff(
         return false;
     }
 
-    let cutoff_normalized = match normalize_quality(Some(cutoff)) {
-        Some(q) => q,
-        None => return false,
-    };
-
-    let cutoff_pos = match quality_tiers.iter().position(|t| t == &cutoff_normalized) {
-        Some(pos) => pos,
-        None => return false,
-    };
-
     let parsed = crate::release_parser::parse_release_metadata(release_title);
-    let current_quality = match normalize_quality(parsed.quality.as_deref()) {
-        Some(q) => q,
-        None => return false,
+    let Some(current_quality) = parsed.quality.as_deref() else {
+        return false;
     };
 
-    match quality_tiers.iter().position(|t| t == &current_quality) {
-        Some(current_pos) => current_pos <= cutoff_pos,
-        None => false,
-    }
+    quality_meets_or_exceeds_cutoff(current_quality, cutoff, quality_tiers)
 }
 
 pub fn evaluate_against_profile(
@@ -530,7 +550,7 @@ pub fn evaluate_against_profile_for_category(
     }
 
     // ── Quality tier ─────────────────────────────────────────────────────────
-    match normalize_quality(release.quality.as_deref()) {
+    match normalize_quality_tier(release.quality.as_deref()) {
         Some(q) if !c.quality_tiers.is_empty() => {
             if let Some(idx) = c.quality_tiers.iter().position(|t| t == &q) {
                 let bonus = match idx {
@@ -1062,7 +1082,7 @@ pub fn apply_size_scoring_for_category(
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     let size_gib = (raw_size_bytes as f64) / GIB;
 
-    let quality = normalize_quality(release.quality.as_deref());
+    let quality = normalize_quality_tier(release.quality.as_deref());
     let source = normalize_source(release.source.as_deref());
     let media_category = normalize_media_size_category(category_hint);
     let is_anime = media_category == MediaSizeCategory::Anime;
@@ -1473,11 +1493,11 @@ fn resolve_archival_quality(
     archival_quality: Option<String>,
     quality_tiers: &[String],
 ) -> Option<String> {
-    match archival_quality.and_then(|value| normalize_quality(Some(&value))) {
+    match archival_quality.and_then(|value| normalize_quality_tier(Some(&value))) {
         Some(normalized) if !normalized.is_empty() => Some(normalized),
         _ => quality_tiers
             .first()
-            .and_then(|value| normalize_quality(Some(value)))
+            .and_then(|value| normalize_quality_tier(Some(value)))
             .or_else(|| Some("1080P".to_string())),
     }
 }

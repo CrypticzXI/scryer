@@ -111,6 +111,7 @@ pub use acquisition::delay_profile::{
 pub use acquisition::policy::AcquisitionThresholds;
 pub use acquisition_workflow::start_background_acquisition_poller;
 pub use app_usecase_integration::derive_download_queue_display_state;
+pub use app_usecase_integration::enrich_download_queue_items_from_submissions;
 pub use app_usecase_integration::matches_download_activity_filter;
 pub use app_usecase_integration::start_download_queue_poller;
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
@@ -135,10 +136,9 @@ pub use contracts::{
     DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate,
     IndexerEpisodeSearchRequest, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSearchRequest,
     IndexerSeasonSearchRequest, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
-    NewBlocklistEntry, NewTitleHistoryEvent, NotificationScopeIdUpdate, PendingStagedNzb,
-    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope,
-    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
-    WantedItemsQuery,
+    NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection,
+    ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope, SubtitleStreamDetail,
+    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,
@@ -221,9 +221,8 @@ pub use null_repositories::{
     NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
     NullPendingReleaseRepository, NullPluginInstallationRepository,
     NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
-    NullStagedNzbStore, NullSystemInfoProvider, NullTitleHistoryRepository,
-    NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
-    NullWorkflowOperationRepository,
+    NullStagedNzbStore, NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
+    NullWantedItemRepository, NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, DomainEventRepository, DownloadClient,
@@ -236,9 +235,9 @@ pub use ports::{
     NotificationSubscriptionRepository, PendingReleaseRepository, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
     RuleSetRepository, SettingsRepository, ShowRepository, StagedNzbStore,
-    SubtitleDownloadRepository, SystemInfoProvider, TitleHistoryRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserRepository, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    SubtitleDownloadRepository, SystemInfoProvider, TitleImageProcessor, TitleImageRepository,
+    TitleRepository, UserRepository, WantedItemRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
@@ -285,12 +284,12 @@ pub use settings::keys::{
 pub(crate) use types::JwtClaims;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
-    CancelLibraryScanResult, CreateTitleOutcome, DiskSpaceInfo, DownloadActivityFilter,
-    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
-    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
-    DownloadQueueCommandRecord, DownloadSourceKind, FixTitleMatchResult, HealthCheckResult,
-    HealthCheckStatus, HousekeepingReport, IndexerQueryStats, IndexerSearchResponse,
-    IndexerSearchResult, JwtAuthConfig, LibraryScanUnmatchedItem,
+    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetTitle, DiskSpaceInfo,
+    DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
+    DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
+    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, FixTitleMatchResult,
+    HealthCheckResult, HealthCheckStatus, HousekeepingReport, IndexerQueryStats,
+    IndexerSearchResponse, IndexerSearchResult, JwtAuthConfig, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedSearchAttempt, PendingImportConnection, PendingImportCounts,
     PendingImportItem, PendingImportSearchAttempt, PendingRelease, PendingReleaseStatus,
     PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,

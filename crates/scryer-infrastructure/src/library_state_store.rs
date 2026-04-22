@@ -3,15 +3,12 @@ use scryer_application::{
     AppResult, BlocklistRepository, HousekeepingRepository, InsertMediaFileInput,
     LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileAnalysis, MediaFileRepository, NewBlocklistEntry,
-    NewTitleHistoryEvent, PendingRelease, PendingReleaseRepository, ReleaseDecision,
-    SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage,
-    TitleHistoryRepository, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    PendingRelease, PendingReleaseRepository, ReleaseDecision, SubtitleDownloadRepository,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
     TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
     TitleQualitySummary, WantedItem, WantedItemRepository,
 };
-use scryer_domain::{
-    BlocklistEntry, DomainEventType, MediaFacet, TitleHistoryEventType, TitleHistoryRecord,
-};
+use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
 use crate::SqliteServices;
 use crate::queries::housekeeping::list_all_media_file_paths_query;
@@ -352,6 +349,11 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
         self.db.delete_release_decisions_older_than(days).await
     }
 
+    async fn delete_title_history_older_than(&self, _days: i64) -> AppResult<u32> {
+        // Legacy title_history rows are retired by migration 0085; nothing remains to prune.
+        Ok(0)
+    }
+
     async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32> {
         self.db.delete_release_attempts_older_than(days).await
     }
@@ -374,10 +376,6 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
         self.db
             .delete_domain_events_older_than_for_types(days, event_types)
             .await
-    }
-
-    async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32> {
-        self.db.delete_title_history_older_than(days).await
     }
 
     async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32> {
@@ -496,90 +494,6 @@ impl PendingReleaseRepository for SqliteLibraryStateStore {
 
     async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()> {
         self.db.delete_pending_releases_for_title(title_id).await
-    }
-}
-
-#[async_trait]
-impl TitleHistoryRepository for SqliteLibraryStateStore {
-    async fn record_event(&self, event: &NewTitleHistoryEvent) -> AppResult<String> {
-        let data_json = serde_json::to_string(&event.data)
-            .map_err(|err| scryer_application::AppError::Repository(err.to_string()))?;
-        self.db
-            .insert_title_history_event(
-                event.title_id.clone(),
-                event.episode_id.clone(),
-                event.collection_id.clone(),
-                event.event_type.as_str().to_string(),
-                event.source_title.clone(),
-                event.quality.clone(),
-                event.download_id.clone(),
-                Some(data_json),
-            )
-            .await
-    }
-
-    async fn list_history(&self, filter: &TitleHistoryFilter) -> AppResult<TitleHistoryPage> {
-        let event_types = filter.event_types.as_ref().map(|types| {
-            types
-                .iter()
-                .map(|event_type| event_type.as_str().to_string())
-                .collect()
-        });
-        let (records, total_count) = self
-            .db
-            .list_title_history(
-                event_types,
-                filter.title_ids.clone(),
-                filter.download_id.clone(),
-                filter.limit,
-                filter.offset,
-            )
-            .await?;
-        Ok(TitleHistoryPage {
-            records,
-            total_count,
-        })
-    }
-
-    async fn list_for_title(
-        &self,
-        title_id: &str,
-        event_types: Option<&[TitleHistoryEventType]>,
-        limit: usize,
-        offset: usize,
-    ) -> AppResult<TitleHistoryPage> {
-        let event_types = event_types.map(|types| {
-            types
-                .iter()
-                .map(|event_type| event_type.as_str().to_string())
-                .collect()
-        });
-        let (records, total_count) = self
-            .db
-            .list_title_history_for_title(title_id, event_types, limit, offset)
-            .await?;
-        Ok(TitleHistoryPage {
-            records,
-            total_count,
-        })
-    }
-
-    async fn list_for_episode(
-        &self,
-        episode_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleHistoryRecord>> {
-        self.db
-            .list_title_history_for_episode(episode_id, limit)
-            .await
-    }
-
-    async fn find_by_download_id(&self, download_id: &str) -> AppResult<Vec<TitleHistoryRecord>> {
-        self.db.find_title_history_by_download_id(download_id).await
-    }
-
-    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.db.delete_title_history_for_title(title_id).await
     }
 }
 

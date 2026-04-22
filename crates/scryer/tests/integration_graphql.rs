@@ -8618,24 +8618,6 @@ async fn graphql_run_housekeeping_respects_configured_history_retention() {
     .expect("domain events should insert");
 
     sqlx::query(
-        "INSERT INTO title_history
-         (id, title_id, episode_id, collection_id, event_type, source_title, quality, download_id, data_json, occurred_at, created_at)
-         VALUES (?, ?, NULL, NULL, 'grabbed', NULL, NULL, NULL, NULL, ?, ?),
-                (?, ?, NULL, NULL, 'grabbed', NULL, NULL, NULL, NULL, ?, ?)",
-    )
-    .bind(Id::new().0)
-    .bind(&title.id)
-    .bind(&stale_at)
-    .bind(&stale_at)
-    .bind(Id::new().0)
-    .bind(&title.id)
-    .bind(&fresh_at)
-    .bind(&fresh_at)
-    .execute(ctx.db.pool())
-    .await
-    .expect("title history should insert");
-
-    sqlx::query(
         "INSERT INTO imports
          (id, source_system, source_ref, import_type, status, payload_json, result_json, started_at, finished_at, created_at, updated_at)
          VALUES (?, 'test', 'stale-completed', 'manual_import', 'completed', '{}', '{}', NULL, ?, ?, ?),
@@ -8723,7 +8705,7 @@ async fn graphql_run_housekeeping_respects_configured_history_retention() {
     assert_eq!(body["data"]["runHousekeeping"]["staleReleaseDecisions"], 1);
     assert_eq!(body["data"]["runHousekeeping"]["staleReleaseAttempts"], 1);
     assert_eq!(body["data"]["runHousekeeping"]["staleHistoryEvents"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 9);
+    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 8);
 
     let remaining_release_decisions: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM release_decisions")
@@ -8750,12 +8732,6 @@ async fn graphql_run_housekeeping_respects_configured_history_retention() {
         .await
         .expect("domain events count");
     assert_eq!(remaining_domain_events, baseline_domain_events + 3);
-
-    let remaining_title_history: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_history")
-        .fetch_one(ctx.db.pool())
-        .await
-        .expect("title history count");
-    assert_eq!(remaining_title_history, 1);
 
     let remaining_imports: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM imports")
         .fetch_one(ctx.db.pool())
@@ -9085,6 +9061,60 @@ async fn graphql_title_history_empty() {
     assert_no_errors(&body);
     assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
     assert!(body["data"]["titleHistory"]["records"].is_array());
+}
+
+#[tokio::test]
+async fn graphql_title_history_works_without_legacy_table() {
+    let ctx = TestContext::new().await;
+    let legacy_table: Option<String> = sqlx::query_scalar(
+        "SELECT name
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'title_history'
+          LIMIT 1",
+    )
+    .fetch_optional(ctx.db.pool())
+    .await
+    .expect("sqlite master query should succeed");
+    assert_eq!(legacy_table, None);
+
+    let title = create_catalog_title(
+        &ctx,
+        "Legacy Title History Fixture",
+        MediaFacet::Movie,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: String!) {
+          titleHistory(filter: { titleIds: [$titleId], limit: 10 }) {
+            totalCount
+            records {
+              id
+              eventType
+              sourceTitle
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
+    assert_eq!(
+        body["data"]["titleHistory"]["records"]
+            .as_array()
+            .expect("history records array")
+            .len(),
+        0
+    );
 }
 
 #[tokio::test]

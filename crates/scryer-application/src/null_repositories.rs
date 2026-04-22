@@ -13,7 +13,7 @@ use crate::types::PendingReleaseStatus;
 use crate::{AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit};
 use scryer_domain::PluginInstallation;
 
-use scryer_domain::{BlocklistEntry, TitleHistoryEventType, TitleHistoryRecord};
+use scryer_domain::BlocklistEntry;
 
 use crate::{
     AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadQueueCommandRecord,
@@ -22,15 +22,13 @@ use crate::{
     ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
     JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
     LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    NewBlocklistEntry, NewTitleHistoryEvent, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
-    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
-    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
-    TitleEpisodeProgressSummary, TitleHistoryFilter, TitleHistoryPage, TitleHistoryRepository,
-    TitleImageBlob, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
-    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
-    TitleQualitySummary, WantedItem, WantedItemRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    NewBlocklistEntry, NotificationChannelRepository, NotificationSubscriptionRepository,
+    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
+    PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
+    StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
+    TitleImageKind, TitleImageProcessor, TitleImageReplacement, TitleImageRepository,
+    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -833,6 +831,12 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(None)
     }
+    async fn list_for_client_items(
+        &self,
+        _: &[(String, String)],
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(vec![])
+    }
     async fn list_for_title(&self, _: &str) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
     }
@@ -1006,43 +1010,6 @@ impl SettingsRepository for NullSettingsRepository {
         _: &str,
         _: Option<String>,
     ) -> AppResult<()> {
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-pub struct NullTitleHistoryRepository;
-
-#[async_trait]
-impl TitleHistoryRepository for NullTitleHistoryRepository {
-    async fn record_event(&self, _: &NewTitleHistoryEvent) -> AppResult<String> {
-        Ok(String::new())
-    }
-    async fn list_history(&self, _: &TitleHistoryFilter) -> AppResult<TitleHistoryPage> {
-        Ok(TitleHistoryPage {
-            records: vec![],
-            total_count: 0,
-        })
-    }
-    async fn list_for_title(
-        &self,
-        _: &str,
-        _: Option<&[TitleHistoryEventType]>,
-        _: usize,
-        _: usize,
-    ) -> AppResult<TitleHistoryPage> {
-        Ok(TitleHistoryPage {
-            records: vec![],
-            total_count: 0,
-        })
-    }
-    async fn list_for_episode(&self, _: &str, _: usize) -> AppResult<Vec<TitleHistoryRecord>> {
-        Ok(vec![])
-    }
-    async fn find_by_download_id(&self, _: &str) -> AppResult<Vec<TitleHistoryRecord>> {
-        Ok(vec![])
-    }
-    async fn delete_for_title(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
 }

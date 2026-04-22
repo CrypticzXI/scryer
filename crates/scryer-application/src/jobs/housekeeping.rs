@@ -78,13 +78,12 @@ impl AppUseCase {
         let (
             stale_history_events,
             stale_domain_events,
-            stale_title_history,
             stale_download_import_artifacts,
             stale_import_history,
             stale_download_queue_deletes,
             stale_rule_set_history,
         ) = if general_settings.keep_history_forever {
-            (0, 0, 0, 0, 0, 0, 0)
+            (0, 0, 0, 0, 0, 0)
         } else {
             (
                 self.services
@@ -99,11 +98,6 @@ impl AppUseCase {
                         history_retention_days,
                         &user_facing_domain_event_types,
                     )
-                    .await?,
-                self.services
-                    .workflow
-                    .housekeeping
-                    .delete_title_history_older_than(history_retention_days)
                     .await?,
                 self.services
                     .workflow
@@ -144,7 +138,6 @@ impl AppUseCase {
             + stale_operational_domain_events
             + stale_history_events
             + stale_domain_events
-            + stale_title_history
             + stale_download_import_artifacts
             + stale_import_history
             + stale_download_queue_deletes
@@ -195,7 +188,6 @@ impl AppUseCase {
             stale_history_events,
             stale_operational_domain_events,
             stale_domain_events,
-            stale_title_history,
             stale_download_import_artifacts,
             stale_import_history,
             stale_download_queue_deletes,

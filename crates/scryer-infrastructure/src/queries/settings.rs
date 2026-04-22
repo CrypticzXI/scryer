@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use scryer_application::{AppError, AppResult};
 use scryer_domain::Id;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::SettingsValueRecord;
@@ -15,63 +16,7 @@ pub(crate) async fn list_settings_with_defaults_query(
     scope_id: Option<String>,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<Vec<SettingsValueRecord>> {
-    let statement = if scope_id.is_some() {
-        sqlx::query(
-            "SELECT
-                d.id AS definition_id,
-                d.category,
-                d.scope,
-                d.key_name,
-                d.data_type,
-                d.default_value_json,
-                d.is_sensitive,
-                d.validation_json,
-                COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
-                sv.value_json,
-                sv.source,
-                sv.scope_id,
-                sv.updated_by_user_id,
-                sv.created_at,
-                sv.updated_at
-             FROM settings_definitions d
-             LEFT JOIN settings_values sv
-               ON sv.setting_definition_id = d.id
-              AND sv.scope = d.scope
-              AND sv.scope = ?
-              AND sv.scope_id = ?
-             WHERE d.scope = ?
-             ORDER BY d.category, d.key_name",
-        )
-    } else {
-        sqlx::query(
-            "SELECT
-                d.id AS definition_id,
-                d.category,
-                d.scope,
-                d.key_name,
-                d.data_type,
-                d.default_value_json,
-                d.is_sensitive,
-                d.validation_json,
-                COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
-                sv.value_json,
-                sv.source,
-                sv.scope_id,
-                sv.updated_by_user_id,
-                sv.created_at,
-                sv.updated_at
-             FROM settings_definitions d
-             LEFT JOIN settings_values sv
-               ON sv.setting_definition_id = d.id
-              AND sv.scope = d.scope
-              AND sv.scope = ?
-              AND sv.scope_id IS NULL
-             WHERE d.scope = ?
-             ORDER BY d.category, d.key_name",
-        )
-    };
-
-    let mut query = statement;
+    let mut query = sqlx::query(settings_with_defaults_sql(scope_id.is_some()));
     if let Some(scope_id) = scope_id {
         query = query.bind(scope).bind(scope_id).bind(scope);
     } else {
@@ -83,146 +28,16 @@ pub(crate) async fn list_settings_with_defaults_query(
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let definition_id: String = row
-            .try_get("definition_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let category: String = row
-            .try_get("category")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let definition_scope: String = row
-            .try_get("scope")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let key_name: String = row
-            .try_get("key_name")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let data_type: String = row
-            .try_get("data_type")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let default_value_json: String = row
-            .try_get("default_value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let is_sensitive: i64 = row
-            .try_get("is_sensitive")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let validation_json: Option<String> = row
-            .try_get("validation_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let effective_value_json: String = row
-            .try_get("effective_value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let value_json: Option<String> = row
-            .try_get("value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let source: Option<String> = row
-            .try_get("source")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let value_scope_id: Option<String> = row
-            .try_get("scope_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let updated_by_user_id: Option<String> = row
-            .try_get("updated_by_user_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let created_at: Option<String> = row
-            .try_get("created_at")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let updated_at: Option<String> = row
-            .try_get("updated_at")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        // Transparently decrypt encrypted values
-        let effective_value_json = maybe_decrypt(encryption_key, effective_value_json)?;
-        let value_json = match value_json {
-            Some(v) => Some(maybe_decrypt(encryption_key, v)?),
-            None => None,
-        };
-
-        out.push(SettingsValueRecord {
-            definition_id,
-            category,
-            scope: definition_scope,
-            key_name,
-            data_type,
-            default_value_json,
-            is_sensitive: is_sensitive != 0,
-            validation_json,
-            effective_value_json,
-            value_json,
-            source,
-            scope_id: value_scope_id,
-            updated_by_user_id,
-            created_at,
-            updated_at,
-        });
-    }
-
-    Ok(out)
+    decode_settings_with_defaults_rows(rows, encryption_key)
 }
 
-async fn list_settings_with_defaults_tx(
+pub(crate) async fn list_settings_with_defaults_tx(
     tx: &mut Transaction<'_, Sqlite>,
     scope: &str,
     scope_id: Option<String>,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<Vec<SettingsValueRecord>> {
-    let statement = if scope_id.is_some() {
-        sqlx::query(
-            "SELECT
-                d.id AS definition_id,
-                d.category,
-                d.scope,
-                d.key_name,
-                d.data_type,
-                d.default_value_json,
-                d.is_sensitive,
-                d.validation_json,
-                COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
-                sv.value_json,
-                sv.source,
-                sv.scope_id,
-                sv.updated_by_user_id,
-                sv.created_at,
-                sv.updated_at
-             FROM settings_definitions d
-             LEFT JOIN settings_values sv
-               ON sv.setting_definition_id = d.id
-              AND sv.scope = d.scope
-              AND sv.scope = ?
-              AND sv.scope_id = ?
-             WHERE d.scope = ?
-             ORDER BY d.category, d.key_name",
-        )
-    } else {
-        sqlx::query(
-            "SELECT
-                d.id AS definition_id,
-                d.category,
-                d.scope,
-                d.key_name,
-                d.data_type,
-                d.default_value_json,
-                d.is_sensitive,
-                d.validation_json,
-                COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
-                sv.value_json,
-                sv.source,
-                sv.scope_id,
-                sv.updated_by_user_id,
-                sv.created_at,
-                sv.updated_at
-             FROM settings_definitions d
-             LEFT JOIN settings_values sv
-               ON sv.setting_definition_id = d.id
-              AND sv.scope = d.scope
-              AND sv.scope = ?
-              AND sv.scope_id IS NULL
-             WHERE d.scope = ?
-             ORDER BY d.category, d.key_name",
-        )
-    };
-
-    let mut query = statement;
+    let mut query = sqlx::query(settings_with_defaults_sql(scope_id.is_some()));
     if let Some(scope_id) = scope_id {
         query = query.bind(scope).bind(scope_id).bind(scope);
     } else {
@@ -234,83 +49,150 @@ async fn list_settings_with_defaults_tx(
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
+    decode_settings_with_defaults_rows(rows, encryption_key)
+}
+
+fn settings_with_defaults_sql(has_scope_id: bool) -> &'static str {
+    if has_scope_id {
+        "SELECT
+            d.id AS definition_id,
+            d.category,
+            d.scope,
+            d.key_name,
+            d.data_type,
+            d.default_value_json,
+            d.is_sensitive,
+            d.validation_json,
+            COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
+            sv.value_json,
+            sv.source,
+            sv.scope_id,
+            sv.updated_by_user_id,
+            sv.created_at,
+            sv.updated_at
+         FROM settings_definitions d
+         LEFT JOIN settings_values sv
+           ON sv.setting_definition_id = d.id
+          AND sv.scope = d.scope
+          AND sv.scope = ?
+          AND sv.scope_id = ?
+         WHERE d.scope = ?
+         ORDER BY d.category, d.key_name"
+    } else {
+        "SELECT
+            d.id AS definition_id,
+            d.category,
+            d.scope,
+            d.key_name,
+            d.data_type,
+            d.default_value_json,
+            d.is_sensitive,
+            d.validation_json,
+            COALESCE(sv.value_json, d.default_value_json) AS effective_value_json,
+            sv.value_json,
+            sv.source,
+            sv.scope_id,
+            sv.updated_by_user_id,
+            sv.created_at,
+            sv.updated_at
+         FROM settings_definitions d
+         LEFT JOIN settings_values sv
+           ON sv.setting_definition_id = d.id
+          AND sv.scope = d.scope
+          AND sv.scope = ?
+          AND sv.scope_id IS NULL
+         WHERE d.scope = ?
+         ORDER BY d.category, d.key_name"
+    }
+}
+
+fn decode_settings_with_defaults_rows(
+    rows: Vec<SqliteRow>,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<Vec<SettingsValueRecord>> {
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let definition_id: String = row
-            .try_get("definition_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let category: String = row
-            .try_get("category")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let definition_scope: String = row
-            .try_get("scope")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let key_name: String = row
-            .try_get("key_name")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let data_type: String = row
-            .try_get("data_type")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let default_value_json: String = row
-            .try_get("default_value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let is_sensitive: i64 = row
-            .try_get("is_sensitive")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let validation_json: Option<String> = row
-            .try_get("validation_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let effective_value_json: String = row
-            .try_get("effective_value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let value_json: Option<String> = row
-            .try_get("value_json")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let source: Option<String> = row
-            .try_get("source")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let value_scope_id: Option<String> = row
-            .try_get("scope_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let updated_by_user_id: Option<String> = row
-            .try_get("updated_by_user_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let created_at: Option<String> = row
-            .try_get("created_at")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let updated_at: Option<String> = row
-            .try_get("updated_at")
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        let effective_value_json = maybe_decrypt(encryption_key, effective_value_json)?;
-        let value_json = match value_json {
-            Some(v) => Some(maybe_decrypt(encryption_key, v)?),
-            None => None,
-        };
-
-        out.push(SettingsValueRecord {
-            definition_id,
-            category,
-            scope: definition_scope,
-            key_name,
-            data_type,
-            default_value_json,
-            is_sensitive: is_sensitive != 0,
-            validation_json,
-            effective_value_json,
-            value_json,
-            source,
-            scope_id: value_scope_id,
-            updated_by_user_id,
-            created_at,
-            updated_at,
-        });
+        out.push(decode_settings_with_defaults_row(&row, encryption_key)?);
     }
-
     Ok(out)
 }
 
-async fn get_setting_with_defaults_tx(
+fn decode_settings_with_defaults_row(
+    row: &SqliteRow,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<SettingsValueRecord> {
+    let definition_id: String = row
+        .try_get("definition_id")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let category: String = row
+        .try_get("category")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let definition_scope: String = row
+        .try_get("scope")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let key_name: String = row
+        .try_get("key_name")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let data_type: String = row
+        .try_get("data_type")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let default_value_json: String = row
+        .try_get("default_value_json")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let is_sensitive: i64 = row
+        .try_get("is_sensitive")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let validation_json: Option<String> = row
+        .try_get("validation_json")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let effective_value_json: String = row
+        .try_get("effective_value_json")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let value_json: Option<String> = row
+        .try_get("value_json")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let source: Option<String> = row
+        .try_get("source")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let value_scope_id: Option<String> = row
+        .try_get("scope_id")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let updated_by_user_id: Option<String> = row
+        .try_get("updated_by_user_id")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let created_at: Option<String> = row
+        .try_get("created_at")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let updated_at: Option<String> = row
+        .try_get("updated_at")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let effective_value_json = maybe_decrypt(encryption_key, effective_value_json)?;
+    let value_json = match value_json {
+        Some(v) => Some(maybe_decrypt(encryption_key, v)?),
+        None => None,
+    };
+
+    Ok(SettingsValueRecord {
+        definition_id,
+        category,
+        scope: definition_scope,
+        key_name,
+        data_type,
+        default_value_json,
+        is_sensitive: is_sensitive != 0,
+        validation_json,
+        effective_value_json,
+        value_json,
+        source,
+        scope_id: value_scope_id,
+        updated_by_user_id,
+        created_at,
+        updated_at,
+    })
+}
+
+pub(crate) async fn get_setting_with_defaults_tx(
     tx: &mut Transaction<'_, Sqlite>,
     scope: &str,
     key_name: &str,

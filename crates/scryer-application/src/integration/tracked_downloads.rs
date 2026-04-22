@@ -682,6 +682,13 @@ mod tests {
             Ok(self.submission.clone())
         }
 
+        async fn list_for_client_items(
+            &self,
+            _: &[(String, String)],
+        ) -> AppResult<Vec<crate::DownloadSubmission>> {
+            Ok(self.submission.clone().into_iter().collect())
+        }
+
         async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {
             Ok(vec![])
         }
@@ -1526,6 +1533,13 @@ mod tests {
                 _: &str,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
                 Ok(None)
+            }
+
+            async fn list_for_client_items(
+                &self,
+                _: &[(String, String)],
+            ) -> AppResult<Vec<crate::DownloadSubmission>> {
+                Ok(vec![])
             }
 
             async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {

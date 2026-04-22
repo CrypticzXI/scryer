@@ -4,4 +4,5 @@ export type HomePageRouteState = {
   initialView?: ViewId;
   initialSettingsSection?: SettingsSection;
   initialContentSection?: ContentSettingsSection;
+  overviewTitleId?: string;
 };

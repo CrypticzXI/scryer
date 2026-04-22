@@ -70,6 +70,17 @@ pub struct AddTitleAndQueueDownloadOutcome {
 }
 
 #[derive(Clone, Debug)]
+pub struct CutoffUnmetTitle {
+    pub id: String,
+    pub name: String,
+    pub facet: scryer_domain::MediaFacet,
+    pub poster_url: Option<String>,
+    pub external_ids: Vec<ExternalId>,
+    pub current_tier: String,
+    pub target_tier: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct PendingTitleHydration {
     /// Title queued for background metadata hydration.
     ///

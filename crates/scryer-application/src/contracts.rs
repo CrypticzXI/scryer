@@ -331,7 +331,7 @@ pub struct SubtitleStreamDetail {
 }
 
 /// Mirrors `scryer_mediainfo::MediaAnalysis` without depending on that crate.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MediaFileAnalysis {
     pub video_codec: Option<String>,
     pub video_width: Option<i32>,
@@ -354,7 +354,6 @@ pub struct MediaFileAnalysis {
     pub duration_seconds: Option<i32>,
     pub num_chapters: Option<i32>,
     pub container_format: Option<String>,
-    pub raw_json: String,
 }
 
 #[derive(Clone, Debug)]
@@ -387,18 +386,6 @@ pub struct InsertMediaFileInput {
     pub edition: Option<String>,
     pub original_file_path: Option<String>,
     pub release_hash: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct NewTitleHistoryEvent {
-    pub title_id: String,
-    pub episode_id: Option<String>,
-    pub collection_id: Option<String>,
-    pub event_type: TitleHistoryEventType,
-    pub source_title: Option<String>,
-    pub quality: Option<String>,
-    pub download_id: Option<String>,
-    pub data: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default)]
