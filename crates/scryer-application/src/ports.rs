@@ -814,6 +814,7 @@ pub trait WantedItemRepository: Send + Sync {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<WantedItem>>;
@@ -823,6 +824,7 @@ pub trait WantedItemRepository: Send + Sync {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
     ) -> AppResult<i64>;
 
     async fn list_release_decisions_for_title(
@@ -844,7 +846,7 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
 ) -> AppResult<Option<WantedItem>> {
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
-            .list_wanted_items(None, None, Some(&item.title_id), 500, 0)
+            .list_wanted_items(None, None, Some(&item.title_id), None, 500, 0)
             .await?
             .into_iter()
             .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
@@ -857,7 +859,7 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
     }
 
     Ok(repo
-        .list_wanted_items(None, None, Some(&item.title_id), 500, 0)
+        .list_wanted_items(None, None, Some(&item.title_id), None, 500, 0)
         .await?
         .into_iter()
         .find(|existing| existing.episode_id.is_none() && existing.collection_id.is_none()))
@@ -872,6 +874,10 @@ pub trait PendingReleaseRepository: Send + Sync {
     async fn list_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
+    ) -> AppResult<Vec<PendingRelease>>;
+    async fn list_pending_releases_for_title(
+        &self,
+        title_id: &str,
     ) -> AppResult<Vec<PendingRelease>>;
     async fn update_pending_release_status(
         &self,
@@ -1312,6 +1318,10 @@ pub trait SubtitleDownloadRepository: Send + Sync {
         &self,
         media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>>;
+    async fn list_blacklist_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>>;
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()>;
     async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()>;
     async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>>;

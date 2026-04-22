@@ -5,6 +5,7 @@ export type Release = {
   title: string;
   link: string | null;
   downloadUrl: string | null;
+  candidateToken?: string | null;
   sourceKind?: DownloadSourceKind | null;
   sizeBytes: number | null;
   publishedAt: string | null;
@@ -36,4 +37,7 @@ export type Release = {
     preferenceScore: number;
     scoringLog: { code: string; delta: number; source: string; ruleSetName?: string | null }[];
   } | null;
+  autoEligible?: boolean | null;
+  autoDecisionCode?: string | null;
+  autoDecisionSummary?: string | null;
 };

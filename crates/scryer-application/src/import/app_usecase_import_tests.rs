@@ -198,6 +198,24 @@ fn find_monitored_movie_title_from_release_matches_alias_variant() {
 }
 
 #[test]
+fn find_monitored_movie_title_from_release_matches_tagged_alias_variant() {
+    let mut title =
+        test_movie_title_with_aliases_and_ids("movie-1", "Bastard!!", Some(2022), vec![], vec![]);
+    title.tagged_aliases = vec![scryer_domain::TaggedAlias {
+        name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+        language: "eng".to_string(),
+    }];
+
+    let parsed =
+        crate::parse_release_metadata("BASTARD.Heavy.Metal.Dark.Fantasy.2022.1080p.WEB-DL");
+
+    let matched = find_monitored_movie_title_from_release(&[title], &parsed)
+        .expect("movie should resolve through tagged alias variants");
+
+    assert_eq!(matched.id, "movie-1");
+}
+
+#[test]
 fn find_monitored_movie_title_from_release_prefers_imdb_id() {
     let titles = vec![
         test_movie_title_with_aliases_and_ids(

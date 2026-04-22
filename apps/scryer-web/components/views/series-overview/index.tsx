@@ -4,10 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clapperboard } from "lucide-react";
 import { useClient } from "urql";
-import type { Release } from "@/lib/types";
+import type { Release, TitleAcquisitionDiagnostics } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { searchForEpisodeQuery } from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
 import type {
@@ -38,7 +38,8 @@ import { OverviewBackLink } from "../overview-back-link";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
-import { localizedFacetLabel, localizedTitleStatus } from "../overview-localization";
+import { localizedTitleStatus } from "../overview-localization";
+import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
@@ -55,7 +56,8 @@ type Props = {
   events: TitleHistoryEvent[];
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
-  subtitleDownloads?: { id: string; mediaFileId: string; language: string; provider: string; hearingImpaired: boolean; forced: boolean }[];
+  subtitleDownloads?: SubtitleDownloadRecord[];
+  onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   onTitleChanged?: () => Promise<void>;
   onBackToList?: () => void;
@@ -66,6 +68,7 @@ type Props = {
   onRefreshAndScan?: () => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => Promise<void> | void;
   onAutoSearchInterstitialMovie?: (collection: TitleCollection) => Promise<void> | void;
+  acquisitionDiagnostics?: TitleAcquisitionDiagnostics | null;
   qualityProfiles?: { id: string; name: string }[];
   defaultRootFolder?: string;
   rootFolders?: { path: string; isDefault: boolean }[];
@@ -77,6 +80,7 @@ type Props = {
   seasonSearchLoadingByCollection?: Record<string, boolean>;
   onRunSeasonSearch?: (collection: TitleCollection) => Promise<void> | void;
   onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
+  onTriggerMismatchRecovery?: () => Promise<void> | void;
   monitoredUpdating?: boolean;
   searchMonitoredLoading?: boolean;
   hasDownloadClients: boolean;
@@ -97,6 +101,7 @@ export function SeriesOverviewView({
   episodesByCollection,
   mediaFilesByEpisode,
   subtitleDownloads,
+  onRefreshSubtitles,
   releaseBlocklistEntries,
   onTitleChanged,
   onBackToList,
@@ -107,6 +112,7 @@ export function SeriesOverviewView({
   onRefreshAndScan,
   onAutoSearchEpisode,
   onAutoSearchInterstitialMovie,
+  acquisitionDiagnostics,
   qualityProfiles,
   defaultRootFolder,
   rootFolders,
@@ -118,6 +124,7 @@ export function SeriesOverviewView({
   seasonSearchLoadingByCollection,
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
+  onTriggerMismatchRecovery,
   monitoredUpdating = false,
   searchMonitoredLoading = false,
   hasDownloadClients,
@@ -314,15 +321,9 @@ export function SeriesOverviewView({
   const handleQueueFromEpisodeSearch = React.useCallback(
     (episode: CollectionEpisode, release: Release) => {
       if (!title) return Promise.resolve();
-      if (release.qualityProfileDecision && release.qualityProfileDecision.allowed === false) {
-        const reason = release.qualityProfileDecision.blockCodes.join(", ") || "unknown";
-        setGlobalStatus(t("status.qualityProfileBlocked", { reason }));
-        return Promise.resolve();
-      }
 
-      const sourceHint = release.downloadUrl || release.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: title.name }));
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
         return Promise.resolve();
       }
 
@@ -330,11 +331,7 @@ export function SeriesOverviewView({
         input: {
           titleId: title.id,
           scope: { episode: episode.id },
-          release: {
-            sourceHint,
-            sourceKind: release.sourceKind ?? null,
-            sourceTitle: release.title,
-          },
+          candidateToken: release.candidateToken,
         },
       }).toPromise()
         .then(async ({ error: mutationError }) => {
@@ -451,18 +448,16 @@ export function SeriesOverviewView({
         <CardContent className="relative p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:gap-5">
             <div className="mx-auto shrink-0 sm:mx-0">
-              {(title.posterUrl || title.posterSourceUrl) ? (
-                <TitlePoster
-                  src={title.posterUrl}
-                  sourceSrc={title.posterSourceUrl}
-                  alt={title.name}
-                  className="block h-auto w-32 rounded-lg object-cover shadow-lg sm:w-[180px]"
-                />
-              ) : (
-                <div className="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]">
-                  {t("title.noPoster")}
-                </div>
-              )}
+              <TitlePosterSlot
+                src={title.posterUrl}
+                sourceSrc={title.posterSourceUrl}
+                metadataFetchedAt={title.metadataFetchedAt}
+                createdAt={title.createdAt}
+                alt={title.name}
+                className="block h-auto w-32 rounded-lg object-cover shadow-lg sm:w-[180px]"
+                placeholderClassName="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]"
+                emptyLabel={t("title.noPoster")}
+              />
             </div>
 
             <div className="min-w-0 flex-1 flex flex-col">
@@ -486,9 +481,6 @@ export function SeriesOverviewView({
                   {title.monitored
                     ? t("title.monitored")
                     : t("search.monitorType.unmonitored")}
-                </span>
-                <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
-                  {localizedFacetLabel(t, title.facet)}
                 </span>
                 {localizedTitleStatus(t, title.contentStatus) ? (
                   <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">
@@ -635,6 +627,69 @@ export function SeriesOverviewView({
         }
       />
 
+      {acquisitionDiagnostics ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-base">Acquisition diagnostics</CardTitle>
+              {acquisitionDiagnostics.mismatchRecoveryEligibleCount > 0 && onTriggerMismatchRecovery ? (
+                <Button size="sm" variant="secondary" onClick={() => void onTriggerMismatchRecovery()}>
+                  Recover mismatches
+                </Button>
+              ) : null}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="flex flex-wrap gap-4 text-muted-foreground">
+              <span>Latest decision: {formatDate(acquisitionDiagnostics.latestDecisionAt)}</span>
+              <span>Latest wanted search: {formatDate(acquisitionDiagnostics.latestWantedSearchAt)}</span>
+              <span>Mismatch recovery eligible: {acquisitionDiagnostics.mismatchRecoveryEligibleCount}</span>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Recent decision counts
+                </div>
+                <div className="space-y-1">
+                  {acquisitionDiagnostics.decisionCounts.map((item) => (
+                    <div key={item.code} className="flex items-center justify-between gap-3">
+                      <span>{item.code}</span>
+                      <span className="text-muted-foreground">{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Wanted status counts
+                </div>
+                <div className="space-y-1">
+                  {acquisitionDiagnostics.wantedStatusCounts.map((item) => (
+                    <div key={item.status} className="flex items-center justify-between gap-3">
+                      <span>{item.status}</span>
+                      <span className="text-muted-foreground">{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Pending release counts
+                </div>
+                <div className="space-y-1">
+                  {acquisitionDiagnostics.pendingReleaseCounts.map((item) => (
+                    <div key={item.status} className="flex items-center justify-between gap-3">
+                      <span>{item.status}</span>
+                      <span className="text-muted-foreground">{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <div>
         <Card className="relative overflow-hidden">
           <CardHeader>
@@ -681,6 +736,7 @@ export function SeriesOverviewView({
                     episodeActiveTab={episodePanel.episodeActiveTab}
                     mediaFilesByEpisode={mediaFilesByEpisode}
                     subtitleDownloads={subtitleDownloads}
+                    onRefreshSubtitles={onRefreshSubtitles}
                     releaseBlocklistEntries={releaseBlocklistEntries}
                     searchResultsByEpisode={episodePanel.searchResultsByEpisode}
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}

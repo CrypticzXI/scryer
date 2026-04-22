@@ -752,6 +752,7 @@ pub(crate) enum DbCommand {
         status: Option<String>,
         media_type: Option<String>,
         title_id: Option<String>,
+        latest_decision_code: Option<String>,
         limit: i64,
         offset: i64,
         reply: Sender<AppResult<Vec<WantedItem>>>,
@@ -760,6 +761,7 @@ pub(crate) enum DbCommand {
         status: Option<String>,
         media_type: Option<String>,
         title_id: Option<String>,
+        latest_decision_code: Option<String>,
         reply: Sender<AppResult<i64>>,
     },
     ListReleaseDecisionsForTitle {
@@ -2566,6 +2568,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     status,
                     media_type,
                     title_id,
+                    latest_decision_code,
                     limit,
                     offset,
                     reply,
@@ -2576,6 +2579,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             status.as_deref(),
                             media_type.as_deref(),
                             title_id.as_deref(),
+                            latest_decision_code.as_deref(),
                             limit,
                             offset,
                         )
@@ -2586,6 +2590,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     status,
                     media_type,
                     title_id,
+                    latest_decision_code,
                     reply,
                 } => {
                     let _ = reply.send(
@@ -2594,6 +2599,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             status.as_deref(),
                             media_type.as_deref(),
                             title_id.as_deref(),
+                            latest_decision_code.as_deref(),
                         )
                         .await,
                     );

@@ -1943,6 +1943,7 @@ async fn mark_wanted_completed_for_collection(
             Some("wanted"),
             Some("interstitial_movie"),
             Some(title_id),
+            None,
             100,
             0,
         )

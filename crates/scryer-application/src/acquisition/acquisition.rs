@@ -5,12 +5,19 @@ use crate::acquisition_decision_helpers::{
     FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, extract_grabbed_release_title,
     is_all_clients_failed_error, should_research_failed_grab,
 };
-use crate::acquisition_policy::{AcquisitionThresholds, compute_search_schedule, evaluate_upgrade};
-use crate::acquisition_search_queries::{build_search_queries, tvdb_id_from_external_ids};
+use crate::acquisition_policy::compute_search_schedule;
+use crate::acquisition_release_search::{
+    ReleaseAutoDecisionCode, annotate_auto_decision, interstitial_movie_search_title,
+    serialize_decision_explanation,
+};
+use crate::acquisition_search_queries::tvdb_id_from_external_ids;
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
-use crate::types::PendingReleaseStatus;
+use crate::types::{
+    DecisionCodeCount, PendingReleaseStatus, PendingReleaseStatusCount,
+    TitleAcquisitionDiagnostics, WantedStatusCount,
+};
 use chrono::{DateTime, Duration, Utc};
 use scryer_domain::{DomainEventPayload, DownloadFailedEventData, ReleaseGrabbedEventData};
 use std::collections::{HashMap, HashSet};
@@ -70,17 +77,90 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
     blocked_facets
 }
 
-fn candidate_matches_title(candidate: &IndexerSearchResult, title: &Title) -> bool {
-    if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
-        return parsed_candidate_matches_title(parsed, title);
-    }
+fn candidate_is_season_pack_for_season(candidate: &IndexerSearchResult, season_num: u32) -> bool {
+    let parsed_owned;
+    let parsed = if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
+        parsed
+    } else {
+        parsed_owned = crate::parse_release_metadata(&candidate.title);
+        &parsed_owned
+    };
 
-    let parsed = crate::parse_release_metadata(&candidate.title);
-    parsed_candidate_matches_title(&parsed, title)
+    parsed.episode.as_ref().is_some_and(|episode| {
+        episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+            && episode.season == Some(season_num)
+            && !episode.is_season_extra
+    })
 }
 
-fn parsed_candidate_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
-    crate::app_usecase_rss::parsed_release_matches_title(parsed, title)
+fn annotated_auto_decision_code(candidate: &IndexerSearchResult) -> ReleaseAutoDecisionCode {
+    candidate
+        .auto_decision_code
+        .as_deref()
+        .and_then(ReleaseAutoDecisionCode::parse)
+        .unwrap_or_else(|| {
+            warn!(
+                release_title = candidate.title.as_str(),
+                "candidate missing auto decision annotation; defaulting to quality_blocked"
+            );
+            ReleaseAutoDecisionCode::QualityBlocked
+        })
+}
+
+fn effective_auto_decision_code(
+    candidate: &IndexerSearchResult,
+    failed_source_kinds: &[DownloadSourceKind],
+) -> ReleaseAutoDecisionCode {
+    if let Some(source_kind) = candidate.source_kind
+        && failed_source_kinds.contains(&source_kind)
+    {
+        return ReleaseAutoDecisionCode::DownloadClientUnavailable;
+    }
+
+    annotated_auto_decision_code(candidate)
+}
+
+async fn record_release_decision(
+    app: &AppUseCase,
+    item: &WantedItem,
+    title: &Title,
+    candidate: &IndexerSearchResult,
+    decision_code: ReleaseAutoDecisionCode,
+    now: &DateTime<Utc>,
+) {
+    let candidate_score = candidate
+        .quality_profile_decision
+        .as_ref()
+        .map(|decision| decision.preference_score)
+        .unwrap_or(0);
+    let mut decision_candidate = candidate.clone();
+    annotate_auto_decision(&mut decision_candidate, decision_code);
+    let decision_record = ReleaseDecision {
+        id: Id::new().0,
+        wanted_item_id: item.id.clone(),
+        title_id: title.id.clone(),
+        release_title: decision_candidate.title.clone(),
+        release_url: decision_candidate
+            .download_url
+            .clone()
+            .or_else(|| decision_candidate.link.clone()),
+        release_size_bytes: decision_candidate.size_bytes,
+        decision_code: decision_code.as_str().to_string(),
+        candidate_score,
+        current_score: item.current_score,
+        score_delta: item
+            .current_score
+            .map(|current_score| candidate_score - current_score),
+        explanation_json: serialize_decision_explanation(&decision_candidate),
+        created_at: now.to_rfc3339(),
+    };
+
+    let _ = app
+        .services
+        .workflow
+        .wanted_items
+        .insert_release_decision(&decision_record)
+        .await;
 }
 
 impl AppUseCase {
@@ -189,6 +269,8 @@ impl AppUseCase {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
         };
@@ -306,6 +388,8 @@ impl AppUseCase {
                     status: WantedStatus::Wanted,
                     grabbed_release: None,
                     current_score: None,
+                    latest_release_decision: None,
+                    mismatch_recovery_eligible: false,
                     created_at: now.to_rfc3339(),
                     updated_at: now.to_rfc3339(),
                 };
@@ -412,6 +496,8 @@ impl AppUseCase {
                     status: WantedStatus::Wanted,
                     grabbed_release: None,
                     current_score: None,
+                    latest_release_decision: None,
+                    mismatch_recovery_eligible: false,
                     created_at: now.to_rfc3339(),
                     updated_at: now.to_rfc3339(),
                 };
@@ -452,7 +538,7 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(&title.id), 5000, 0)
+            .list_wanted_items(None, None, Some(&title.id), None, 5000, 0)
             .await
         {
             Ok(items) => items,
@@ -745,7 +831,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, None, 200, 0)
+        .list_wanted_items(Some("grabbed"), None, None, None, 200, 0)
         .await
     {
         Ok(items) => items,
@@ -1061,7 +1147,7 @@ async fn resolve_failure_wanted_item(
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, Some(title_id), 25, 0)
+        .list_wanted_items(Some("grabbed"), None, Some(title_id), None, 25, 0)
         .await
         .ok()?;
 
@@ -1391,34 +1477,8 @@ async fn process_single_wanted_item(
                 .shows
                 .get_collection_by_id(coll_id)
                 .await
-            && let Some(ref movie) = collection.interstitial_movie
         {
-            let mut t = title.clone();
-            t.name = movie.name.clone();
-            t.year = movie.year;
-            t.imdb_id = if movie.imdb_id.is_empty() {
-                None
-            } else {
-                Some(movie.imdb_id.clone())
-            };
-            // Add TMDB ID as external ID for indexer search
-            if let Some(ref tmdb_id) = movie.movie_tmdb_id {
-                t.external_ids.retain(|e| e.source != "tmdb");
-                t.external_ids.push(scryer_domain::ExternalId {
-                    source: "tmdb".into(),
-                    value: tmdb_id.clone(),
-                });
-            }
-            // Add AniDB ID as external ID for AnimeTosho searches
-            if let Some(ref anidb_id) = movie.movie_anidb_id {
-                t.external_ids.retain(|e| e.source != "anidb");
-                t.external_ids.push(scryer_domain::ExternalId {
-                    source: "anidb".into(),
-                    value: anidb_id.clone(),
-                });
-            }
-            t.aliases = vec![];
-            t
+            interstitial_movie_search_title(&title, &collection)
         } else {
             title.clone()
         }
@@ -1475,11 +1535,10 @@ async fn process_single_wanted_item(
         search_title
     };
 
-    // Build search queries based on media type
-    let sq = build_search_queries(&search_title, item, episode.as_ref(), &app.facet_registry);
-    let (queries, imdb_id, tvdb_id, anidb_id, category) =
-        (sq.queries, sq.imdb_id, sq.tvdb_id, sq.anidb_id, sq.category);
-    let (search_season, search_episode) = (sq.season, sq.episode);
+    let subject = app
+        .resolve_release_search_subject_for_wanted_item(&search_title, item, episode.as_ref())
+        .await;
+    let search_season = subject.season;
 
     // Derive the download client category separately — search_category ("series")
     // is for Newznab query type, download_category ("series") is for NZBGet routing.
@@ -1500,8 +1559,6 @@ async fn process_single_wanted_item(
 
         if due_count >= 2 && !season_pack_attempted.contains(&season_key) {
             season_pack_attempted.insert(season_key.clone());
-
-            let pack_queries = vec![format!("{} S{:0>2}", title.name, season_num)];
 
             // Load season episodes for runtime scoring and upgrade checking.
             let season_episodes = if let Some(ref coll_id) = item.collection_id {
@@ -1525,47 +1582,48 @@ async fn process_single_wanted_item(
                 title.runtime_minutes
             };
 
-            let pack_results = app
-                .search_and_score_releases(crate::app_usecase_discovery::ReleaseSearchRequest {
-                    queries: pack_queries,
-                    imdb_id: imdb_id.clone(),
-                    tvdb_id: tvdb_id.clone(),
-                    anidb_id: anidb_id.clone(),
-                    category: Some(category.clone()),
-                    facet: Some(title.facet.as_str().to_string()),
-                    title_id: Some(title.id.as_str()),
-                    title_tags: &title.tags,
-                    caller_label: "background_acquisition_season_pack",
-                    mode: SearchMode::Auto,
-                    runtime_minutes: pack_runtime,
-                    season: Some(season_num),
-                    episode: None,
-                    absolute_episode: None,
-                    tagged_aliases: &title.tagged_aliases,
-                })
+            let pack_subject = app
+                .resolve_release_search_subject_for_season_pack(
+                    &search_title,
+                    item,
+                    episode.as_ref(),
+                    season_num,
+                    pack_runtime,
+                )
+                .await?;
+
+            let pack_results = match app
+                .search_and_evaluate_subject(
+                    &search_title,
+                    &pack_subject,
+                    "background_acquisition_season_pack",
+                    SearchMode::Auto,
+                )
                 .await
-                .unwrap_or_default();
+            {
+                Ok(results) => results,
+                Err(err) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        season = season_num,
+                        error = %err,
+                        "season pack search failed"
+                    );
+                    Vec::new()
+                }
+            };
 
-            if let Some(best_pack) = pack_results.iter().find(|r| {
-                let parsed_owned;
-                let parsed = if let Some(parsed) = r.parsed_release_metadata.as_ref() {
-                    parsed
-                } else {
-                    parsed_owned = crate::parse_release_metadata(&r.title);
-                    &parsed_owned
-                };
-                let is_pack = parsed.episode.as_ref().is_some_and(|episode| {
-                    episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
-                        && episode.season == Some(season_num)
-                        && !episode.is_season_extra
-                });
+            for candidate in pack_results
+                .iter()
+                .filter(|candidate| candidate_is_season_pack_for_season(candidate, season_num))
+            {
+                let decision_code = annotated_auto_decision_code(candidate);
+                record_release_decision(app, item, &title, candidate, decision_code, now).await;
+            }
 
-                r.quality_profile_decision
-                    .as_ref()
-                    .map(|d| d.allowed)
-                    .unwrap_or(false)
-                    && is_pack
-                    && parsed_candidate_matches_title(parsed, &title)
+            if let Some(best_pack) = pack_results.iter().find(|candidate| {
+                candidate_is_season_pack_for_season(candidate, season_num)
+                    && candidate.auto_eligible == Some(true)
             }) {
                 // ── Season pack upgrade guard ───────────────────────────────
                 // Check whether grabbing this pack benefits at least 1 episode.
@@ -1812,7 +1870,7 @@ async fn process_single_wanted_item(
     // explicit routing category overrides this inside the router.
     let download_cat = app.derive_download_category(&title.facet).await;
 
-    if queries.is_empty() {
+    if subject.queries.is_empty() {
         info!(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
@@ -1825,43 +1883,21 @@ async fn process_single_wanted_item(
     debug!(
         title_id = title.id.as_str(),
         title_name = title.name.as_str(),
-        queries = ?queries,
-        imdb_id = imdb_id.as_deref().unwrap_or(""),
-        tvdb_id = tvdb_id.as_deref().unwrap_or(""),
-        category = category.as_str(),
+        queries = ?subject.queries,
+        imdb_id = subject.imdb_id.as_deref().unwrap_or(""),
+        tvdb_id = subject.tvdb_id.as_deref().unwrap_or(""),
+        category = subject.category.as_str(),
         "background acquisition: searching indexers"
     );
 
-    // Resolve per-item runtime for size scoring
-    let runtime_minutes = episode
-        .as_ref()
-        .and_then(|ep| ep.duration_seconds)
-        .map(|s| (s / 60) as i32)
-        .or(title.runtime_minutes);
-
     // Search and score releases
-    let absolute_episode = episode
-        .as_ref()
-        .and_then(|ep| ep.absolute_number.as_deref())
-        .and_then(|v| v.parse::<u32>().ok());
     let results = match app
-        .search_and_score_releases(crate::app_usecase_discovery::ReleaseSearchRequest {
-            queries,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category: Some(category.clone()),
-            facet: Some(title.facet.as_str().to_string()),
-            title_id: Some(title.id.as_str()),
-            title_tags: &title.tags,
-            caller_label: "background_acquisition",
-            mode: SearchMode::Auto,
-            runtime_minutes,
-            season: search_season,
-            episode: search_episode,
-            absolute_episode,
-            tagged_aliases: &title.tagged_aliases,
-        })
+        .search_and_evaluate_subject(
+            &search_title,
+            &subject,
+            "background_acquisition",
+            SearchMode::Auto,
+        )
         .await
     {
         Ok(r) => r,
@@ -1896,7 +1932,7 @@ async fn process_single_wanted_item(
 
     // Load DB-level blocklist (covers post-import failures like fake/non-video files,
     // in addition to the download-client snapshot checked below).
-    let db_blocklist: std::collections::HashSet<String> = app
+    let _db_blocklist: std::collections::HashSet<String> = app
         .services
         .workflow
         .release_attempts
@@ -1909,7 +1945,11 @@ async fn process_single_wanted_item(
         .collect();
 
     let upgrade_context = app
-        .resolve_upgrade_context_for_title(&title, item.grabbed_release.as_deref())
+        .resolve_upgrade_context_for_title_with_category(
+            &search_title,
+            item.grabbed_release.as_deref(),
+            Some(subject.category.as_str()),
+        )
         .await;
     let profile = &upgrade_context.profile;
 
@@ -1923,17 +1963,6 @@ async fn process_single_wanted_item(
         );
         return Ok(());
     }
-    let thresholds = &upgrade_context.thresholds;
-
-    // Load existing media files for repack group validation.
-    let existing_files = app
-        .services
-        .library
-        .media_files
-        .list_media_files_for_title(&title.id)
-        .await
-        .unwrap_or_default();
-
     let delay_profiles = app.load_delay_profiles().await;
 
     // ── Candidate fallthrough loop ──────────────────────────────────────────
@@ -1961,122 +1990,93 @@ async fn process_single_wanted_item(
 
         had_quality_allowed_candidate = true;
 
-        // Reject releases whose title doesn't contain the target title name.
-        // Prevents false matches from RSS feeds returning unrelated releases.
-        if !candidate_matches_title(candidate, &title) {
-            skipped_for_title_mismatch = true;
-            continue;
-        }
+        let decision_code = effective_auto_decision_code(candidate, &failed_source_kinds);
 
-        // Negative score lower bound — candidates are sorted by score descending,
-        // so once we see a negative score ALL remaining candidates are also negative.
-        // A negative total means penalties outweigh bonuses; not worth grabbing.
         let candidate_score = candidate
             .quality_profile_decision
             .as_ref()
             .map(|d| d.preference_score)
             .unwrap_or(0);
-        if candidate_score < 0 {
-            info!(
-                title_id = title.id.as_str(),
-                score = candidate_score,
-                "remaining candidates have negative scores, stopping candidate evaluation"
-            );
-            break;
+
+        if !matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+            had_allowed_candidate = true;
         }
-
-        had_allowed_candidate = true;
-
-        if dl_snapshot.is_active(&candidate.title) {
-            info!(
-                title = title.name.as_str(),
-                release = candidate.title.as_str(),
-                "skipping release already active in download client queue"
-            );
-            continue;
+        if matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+            skipped_for_title_mismatch = true;
         }
-
-        if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
-            warn!(
-                title = title.name.as_str(),
-                release = candidate.title.as_str(),
-                "skipping DB-blocklisted release"
-            );
+        if matches!(decision_code, ReleaseAutoDecisionCode::DbBlocklisted) {
             skipped_for_failed = true;
-            continue;
         }
 
-        // Skip candidates whose source kind already failed this cycle (all
-        // download clients for that protocol are unavailable).
-        if let Some(sk) = candidate.source_kind
-            && failed_source_kinds.contains(&sk)
-        {
-            info!(
-                title = title.name.as_str(),
-                release = candidate.title.as_str(),
-                source_kind = ?sk,
-                "skipping candidate — source kind failed earlier this cycle"
-            );
-            continue;
-        }
+        record_release_decision(app, item, &title, candidate, decision_code, now).await;
 
-        // ── Upgrade evaluation ──────────────────────────────────────────────
-        let decision = evaluate_upgrade(
-            candidate_score,
-            item.current_score,
-            profile.criteria.allow_upgrades,
-            item.last_search_at.as_deref(),
-            now,
-            thresholds,
-            profile.criteria.min_score_to_grab,
-        );
-
-        // Record the decision for every candidate we evaluate.
-        let decision_record = ReleaseDecision {
-            id: Id::new().0,
-            wanted_item_id: item.id.clone(),
-            title_id: title.id.clone(),
-            release_title: candidate.title.clone(),
-            release_url: candidate
-                .download_url
-                .clone()
-                .or_else(|| candidate.link.clone()),
-            release_size_bytes: candidate.size_bytes,
-            decision_code: decision.code().to_string(),
-            candidate_score,
-            current_score: item.current_score,
-            score_delta: item.current_score.map(|c| candidate_score - c),
-            explanation_json: candidate.quality_profile_decision.as_ref().map(|d| {
-                serde_json::to_string(
-                    &d.scoring_log
-                        .iter()
-                        .map(|e| serde_json::json!({"code": e.code, "delta": e.delta}))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-            }),
-            created_at: now.to_rfc3339(),
-        };
-
-        let _ = app
-            .services
-            .workflow
-            .wanted_items
-            .insert_release_decision(&decision_record)
-            .await;
-
-        if !decision.is_accept() {
+        if !decision_code.is_eligible() {
             app.emit_acquisition_candidate_rejected_event(
                 None,
                 &title,
                 candidate.title.clone(),
-                decision.code().to_string(),
+                decision_code.as_str().to_string(),
             )
             .await;
-            // Upgrade policy rejection is quality-based.  Candidates are sorted
-            // by score descending, so no lower-scored candidate can satisfy a
-            // stricter delta requirement.  Stop the loop entirely.
-            break;
+            if matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::NegativeScore
+                    | ReleaseAutoDecisionCode::UpgradeRejected
+                    | ReleaseAutoDecisionCode::CutoffReached
+            ) {
+                break;
+            }
+            if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
+                let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
+                    serde_json::to_string(
+                        &decision
+                            .scoring_log
+                            .iter()
+                            .map(|entry| serde_json::json!({"code": entry.code, "delta": entry.delta}))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap_or_default()
+                });
+
+                app.insert_pending_release(
+                    item,
+                    &title,
+                    &candidate.title,
+                    candidate
+                        .download_url
+                        .as_deref()
+                        .or(candidate.link.as_deref()),
+                    candidate.source_kind,
+                    candidate.size_bytes,
+                    candidate_score,
+                    scoring_json,
+                    Some(candidate.source.as_str()),
+                    candidate.guid.as_deref(),
+                    crate::delay_profile::resolve_delay_decision(
+                        &delay_profiles,
+                        &search_title.tags,
+                        &search_title.facet,
+                        candidate.source_kind,
+                        candidate
+                            .published_at
+                            .as_deref()
+                            .and_then(crate::quality_profile::parse_published_at),
+                        candidate_score,
+                        now,
+                    )
+                    .map(|delay| delay.effective_delay_minutes)
+                    .unwrap_or_default(),
+                    candidate.password_hint.as_deref(),
+                    candidate.published_at.as_deref(),
+                    candidate
+                        .extra
+                        .get("info_hash")
+                        .and_then(|value| value.as_str()),
+                )
+                .await;
+                return Ok(());
+            }
+            continue;
         }
 
         // ── Grab attempt ────────────────────────────────────────────────────
@@ -2151,70 +2151,6 @@ async fn process_single_wanted_item(
             )
             .await;
 
-        // Skip repacks from a different release group than the existing file.
-        if crate::acquisition_policy::should_skip_repack_group_mismatch(
-            candidate,
-            &existing_files,
-            item.episode_id.as_deref(),
-        ) {
-            info!(
-                title = title.name.as_str(),
-                release = candidate.title.as_str(),
-                "skipping repack — release group doesn't match existing file"
-            );
-            continue;
-        }
-
-        if let Some(delay_decision) = crate::delay_profile::resolve_delay_decision(
-            &delay_profiles,
-            &title.tags,
-            &title.facet,
-            candidate.source_kind,
-            candidate
-                .published_at
-                .as_deref()
-                .and_then(crate::quality_profile::parse_published_at),
-            candidate_score,
-            now,
-        ) && delay_decision.should_hold()
-        {
-            let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
-                serde_json::to_string(
-                    &decision
-                        .scoring_log
-                        .iter()
-                        .map(|entry| serde_json::json!({"code": entry.code, "delta": entry.delta}))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-            });
-
-            app.insert_pending_release(
-                item,
-                &title,
-                &candidate.title,
-                candidate
-                    .download_url
-                    .as_deref()
-                    .or(candidate.link.as_deref()),
-                candidate.source_kind,
-                candidate.size_bytes,
-                candidate_score,
-                scoring_json,
-                Some(candidate.source.as_str()),
-                candidate.guid.as_deref(),
-                delay_decision.effective_delay_minutes,
-                candidate.password_hint.as_deref(),
-                candidate.published_at.as_deref(),
-                candidate
-                    .extra
-                    .get("info_hash")
-                    .and_then(|value| value.as_str()),
-            )
-            .await;
-            return Ok(());
-        }
-
         let is_recent = app.is_recent_for_queue_priority(
             candidate
                 .published_at
@@ -2229,7 +2165,7 @@ async fn process_single_wanted_item(
             title = title.name.as_str(),
             release = candidate.title.as_str(),
             score = candidate_score,
-            decision = decision.code(),
+            decision = decision_code.as_str(),
             attempt = grab_attempts,
             "auto-grabbing release"
         );
@@ -2330,15 +2266,10 @@ async fn process_single_wanted_item(
                     app,
                     item,
                     &title,
-                    profile,
                     &results,
                     candidate_index + 1,
                     now,
-                    dl_snapshot,
-                    &db_blocklist,
-                    thresholds,
-                    &existing_files,
-                    &delay_profiles,
+                    &failed_source_kinds,
                 )
                 .await;
 
@@ -2613,15 +2544,10 @@ async fn persist_standby_candidates(
     app: &AppUseCase,
     item: &WantedItem,
     title: &Title,
-    profile: &QualityProfile,
     results: &[IndexerSearchResult],
     start_index: usize,
     now: &DateTime<Utc>,
-    dl_snapshot: &DownloadClientSnapshot,
-    db_blocklist: &std::collections::HashSet<String>,
-    thresholds: &AcquisitionThresholds,
-    existing_files: &[TitleMediaFile],
-    delay_profiles: &[crate::DelayProfile],
+    failed_source_kinds: &[DownloadSourceKind],
 ) {
     let _ = app
         .services
@@ -2638,70 +2564,16 @@ async fn persist_standby_candidates(
             break;
         }
 
-        let is_allowed = candidate
-            .quality_profile_decision
-            .as_ref()
-            .map(|decision| decision.allowed)
-            .unwrap_or(false);
-        if !is_allowed {
-            continue;
-        }
-
-        if !candidate_matches_title(candidate, title) {
-            continue;
-        }
-
-        let candidate_score = candidate
-            .quality_profile_decision
-            .as_ref()
-            .map(|decision| decision.preference_score)
-            .unwrap_or(0);
-        if candidate_score < 0 {
-            break;
-        }
-
-        let decision = evaluate_upgrade(
-            candidate_score,
-            item.current_score,
-            true,
-            item.last_search_at.as_deref(),
-            now,
-            thresholds,
-            profile.criteria.min_score_to_grab,
-        );
-        if !decision.is_accept() {
-            continue;
-        }
-
-        if dl_snapshot.is_active(&candidate.title) {
-            continue;
-        }
-
-        if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
-            continue;
-        }
-
-        if crate::acquisition_policy::should_skip_repack_group_mismatch(
-            candidate,
-            existing_files,
-            item.episode_id.as_deref(),
-        ) {
-            continue;
-        }
-
-        if let Some(delay_decision) = crate::delay_profile::resolve_delay_decision(
-            delay_profiles,
-            &title.tags,
-            &title.facet,
-            candidate.source_kind,
-            candidate
-                .published_at
-                .as_deref()
-                .and_then(crate::quality_profile::parse_published_at),
-            candidate_score,
-            now,
-        ) && delay_decision.should_hold()
-        {
+        let decision_code = effective_auto_decision_code(candidate, failed_source_kinds);
+        if !decision_code.is_eligible() {
+            if matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::NegativeScore
+                    | ReleaseAutoDecisionCode::UpgradeRejected
+                    | ReleaseAutoDecisionCode::CutoffReached
+            ) {
+                break;
+            }
             continue;
         }
 
@@ -2716,6 +2588,11 @@ async fn persist_standby_candidates(
             continue;
         }
 
+        let candidate_score = candidate
+            .quality_profile_decision
+            .as_ref()
+            .map(|decision| decision.preference_score)
+            .unwrap_or(0);
         let scoring_log_json = candidate
             .quality_profile_decision
             .as_ref()
@@ -2797,6 +2674,7 @@ impl AppUseCase {
             status,
             media_type,
             title_id,
+            latest_decision_code,
             limit,
             offset,
         } = query;
@@ -2808,6 +2686,7 @@ impl AppUseCase {
                 status.as_deref(),
                 media_type.as_deref(),
                 title_id.as_deref(),
+                latest_decision_code.as_deref(),
                 limit,
                 offset,
             )
@@ -2820,6 +2699,7 @@ impl AppUseCase {
                 status.as_deref(),
                 media_type.as_deref(),
                 title_id.as_deref(),
+                latest_decision_code.as_deref(),
             )
             .await?;
         Ok((items, total))
@@ -2878,6 +2758,167 @@ impl AppUseCase {
         Ok(queued)
     }
 
+    async fn wanted_item_is_mismatch_recovery_candidate(
+        &self,
+        item: &WantedItem,
+    ) -> AppResult<bool> {
+        let decisions = self
+            .services
+            .workflow
+            .wanted_items
+            .list_release_decisions_for_wanted_item(&item.id, 10)
+            .await?;
+        Ok(!decisions.is_empty()
+            && decisions
+                .iter()
+                .all(|decision| decision.decision_code == "title_mismatch"))
+    }
+
+    pub async fn wanted_item_mismatch_recovery_eligible(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<bool> {
+        let Some(item) = self
+            .services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(wanted_item_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+
+        self.wanted_item_is_mismatch_recovery_candidate(&item).await
+    }
+
+    pub async fn title_acquisition_diagnostics(
+        &self,
+        title_id: &str,
+    ) -> AppResult<TitleAcquisitionDiagnostics> {
+        let recent_decisions = self
+            .services
+            .workflow
+            .wanted_items
+            .list_release_decisions_for_title(title_id, 25)
+            .await?;
+        let wanted_items = self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(None, None, Some(title_id), None, 500, 0)
+            .await?;
+        let pending_releases = self
+            .services
+            .workflow
+            .pending_releases
+            .list_pending_releases_for_title(title_id)
+            .await?;
+
+        let mut decision_counts = HashMap::<String, i64>::new();
+        for decision in &recent_decisions {
+            *decision_counts
+                .entry(decision.decision_code.clone())
+                .or_insert(0) += 1;
+        }
+        let mut wanted_status_counts = HashMap::<String, i64>::new();
+        for item in &wanted_items {
+            *wanted_status_counts
+                .entry(item.status.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+        let mut pending_release_counts = HashMap::<String, i64>::new();
+        for release in &pending_releases {
+            *pending_release_counts
+                .entry(release.status.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+
+        let mismatch_recovery_eligible_count = wanted_items
+            .iter()
+            .filter(|item| item.status == WantedStatus::Wanted && item.mismatch_recovery_eligible)
+            .count() as i64;
+
+        let mut decision_counts = decision_counts
+            .into_iter()
+            .map(|(code, count)| DecisionCodeCount { code, count })
+            .collect::<Vec<_>>();
+        decision_counts.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.code.cmp(&right.code))
+        });
+
+        let mut wanted_status_counts = wanted_status_counts
+            .into_iter()
+            .map(|(status, count)| WantedStatusCount { status, count })
+            .collect::<Vec<_>>();
+        wanted_status_counts.sort_by(|left, right| left.status.cmp(&right.status));
+
+        let mut pending_release_counts = pending_release_counts
+            .into_iter()
+            .map(|(status, count)| PendingReleaseStatusCount { status, count })
+            .collect::<Vec<_>>();
+        pending_release_counts.sort_by(|left, right| left.status.cmp(&right.status));
+
+        let latest_wanted_search_at = wanted_items
+            .iter()
+            .filter_map(|item| item.last_search_at.clone())
+            .max();
+
+        Ok(TitleAcquisitionDiagnostics {
+            latest_decision_at: recent_decisions
+                .first()
+                .map(|decision| decision.created_at.clone()),
+            latest_wanted_search_at,
+            recent_decisions,
+            decision_counts,
+            wanted_status_counts,
+            pending_release_counts,
+            mismatch_recovery_eligible_count,
+        })
+    }
+
+    pub async fn trigger_title_mismatch_recovery_search(&self, title_id: &str) -> AppResult<usize> {
+        let items = self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(Some("wanted"), None, Some(title_id), None, 500, 0)
+            .await?;
+
+        let now = Utc::now();
+        let mut queued = 0usize;
+        for item in &items {
+            if !self
+                .wanted_item_is_mismatch_recovery_candidate(item)
+                .await?
+            {
+                continue;
+            }
+
+            self.services
+                .workflow
+                .wanted_items
+                .schedule_wanted_item_search(&WantedSearchTransition {
+                    id: item.id.clone(),
+                    next_search_at: Some(now.to_rfc3339()),
+                    last_search_at: item.last_search_at.clone(),
+                    search_count: item.search_count,
+                    current_score: item.current_score,
+                    grabbed_release: item.grabbed_release.clone(),
+                })
+                .await?;
+            queued += 1;
+        }
+
+        if queued > 0 {
+            self.runtime.acquisition.acquisition_wake.notify_one();
+        }
+
+        Ok(queued)
+    }
+
     pub async fn trigger_season_wanted_search(
         &self,
         title_id: &str,
@@ -2888,7 +2929,14 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(Some("wanted"), Some("episode"), Some(title_id), 500, 0)
+            .list_wanted_items(
+                Some("wanted"),
+                Some("episode"),
+                Some(title_id),
+                None,
+                500,
+                0,
+            )
             .await?;
 
         let now = Utc::now();
@@ -3093,6 +3141,8 @@ impl AppUseCase {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
         };
@@ -3194,6 +3244,8 @@ impl AppUseCase {
                     status: WantedStatus::Wanted,
                     grabbed_release: None,
                     current_score: None,
+                    latest_release_decision: None,
+                    mismatch_recovery_eligible: false,
                     created_at: now.to_rfc3339(),
                     updated_at: now.to_rfc3339(),
                 };

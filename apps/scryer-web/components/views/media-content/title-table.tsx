@@ -8,7 +8,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
   TableBody,
@@ -477,19 +477,17 @@ export function TitleTable({
               aria-label={t("media.posterAlt", { name: item.name })}
             >
               <div data-ui="poster-thumb" className="h-20 w-14 overflow-hidden rounded border border-border bg-muted">
-                {(posterThumbUrl || item.posterSourceUrl) ? (
-                  <TitlePoster
-                    src={posterThumbUrl}
-                    sourceSrc={item.posterSourceUrl}
-                    alt={t("media.posterAlt", { name: item.name })}
-                    className="h-full w-full object-cover"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
-                    {t("label.noArt")}
-                  </div>
-                )}
+                <TitlePosterSlot
+                  src={posterThumbUrl}
+                  sourceSrc={item.posterSourceUrl}
+                  metadataFetchedAt={item.metadataFetchedAt}
+                  createdAt={item.createdAt}
+                  alt={t("media.posterAlt", { name: item.name })}
+                  className="h-full w-full object-cover"
+                  placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                  emptyLabel={t("label.noArt")}
+                  loading="lazy"
+                />
               </div>
             </button>
           </TableCell>
@@ -643,6 +641,7 @@ export function TitleTable({
                   <SearchResultBuckets
                     results={interactiveSearchResults}
                     onQueue={(release) => onQueueFromInteractive(item, release)}
+                    requireCandidateToken
                   />
                 )}
               </div>

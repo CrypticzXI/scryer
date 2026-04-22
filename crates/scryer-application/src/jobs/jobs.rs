@@ -369,6 +369,24 @@ impl AppUseCase {
             .await;
     }
 
+    pub async fn clear_job_next_run_at(&self, job_key: JobKey) {
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .clear_next_run_at(job_key)
+            .await;
+        let _ = self
+            .append_domain_event(new_job_run_domain_event(
+                None,
+                job_key.as_str().to_string(),
+                DomainEventPayload::JobNextRunUpdated(JobNextRunUpdatedEventData {
+                    job_key: job_key.as_str().to_string(),
+                    next_run_at: None,
+                }),
+            ))
+            .await;
+    }
+
     async fn ensure_job_can_start(&self, job_key: JobKey) -> AppResult<()> {
         if self
             .runtime

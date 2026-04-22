@@ -413,6 +413,7 @@ impl WantedItemRepository for NullWantedItemRepository {
         _status: Option<&str>,
         _media_type: Option<&str>,
         _title_id: Option<&str>,
+        _latest_decision_code: Option<&str>,
         _limit: i64,
         _offset: i64,
     ) -> AppResult<Vec<WantedItem>> {
@@ -423,6 +424,7 @@ impl WantedItemRepository for NullWantedItemRepository {
         _status: Option<&str>,
         _media_type: Option<&str>,
         _title_id: Option<&str>,
+        _latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         Ok(0)
     }
@@ -950,6 +952,9 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
     }
+    async fn list_pending_releases_for_title(&self, _: &str) -> AppResult<Vec<PendingRelease>> {
+        Ok(vec![])
+    }
     async fn update_pending_release_status(
         &self,
         _: &str,
@@ -1058,6 +1063,12 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
         &self,
         _media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
+        Ok(Vec::new())
+    }
+    async fn list_blacklist_for_media_file(
+        &self,
+        _media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
         Ok(Vec::new())
     }
     async fn insert(&self, _download: &scryer_domain::SubtitleDownload) -> AppResult<()> {

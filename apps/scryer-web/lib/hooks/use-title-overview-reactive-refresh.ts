@@ -7,6 +7,7 @@ import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
 
 type UseTitleOverviewReactiveRefreshOptions<
   TTitle = unknown,
+  TDiagnostics = unknown,
   TEvent = unknown,
   TBlocklist = unknown,
   TSubtitle = unknown,
@@ -14,7 +15,13 @@ type UseTitleOverviewReactiveRefreshOptions<
   titleId?: string | null;
   blocklistLimit: number;
   applySnapshot: (
-    snapshot: TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle>,
+    snapshot: TitleOverviewSnapshot<
+      TTitle,
+      TDiagnostics,
+      TEvent,
+      TBlocklist,
+      TSubtitle
+    >,
   ) => void;
   importKinds: ReadonlySet<string>;
   pause?: boolean;
@@ -29,6 +36,7 @@ const HYDRATION_FAILED_KIND = "metadata_hydration_failed";
 
 export function useTitleOverviewReactiveRefresh<
   TTitle = unknown,
+  TDiagnostics = unknown,
   TEvent = unknown,
   TBlocklist = unknown,
   TSubtitle = unknown,
@@ -43,6 +51,7 @@ export function useTitleOverviewReactiveRefresh<
   onHydrationFailed,
 }: UseTitleOverviewReactiveRefreshOptions<
   TTitle,
+  TDiagnostics,
   TEvent,
   TBlocklist,
   TSubtitle
@@ -72,6 +81,7 @@ export function useTitleOverviewReactiveRefresh<
         applySnapshotRef.current(
           snapshot as TitleOverviewSnapshot<
             TTitle,
+            TDiagnostics,
             TEvent,
             TBlocklist,
             TSubtitle

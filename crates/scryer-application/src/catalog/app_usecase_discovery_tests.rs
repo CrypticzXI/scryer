@@ -128,6 +128,11 @@ fn make_search_result(
         extra: HashMap::new(),
         guid: None,
         info_url: None,
+        provenance: None,
+        candidate_token: None,
+        auto_eligible: None,
+        auto_decision_code: None,
+        auto_decision_summary: None,
     }
 }
 

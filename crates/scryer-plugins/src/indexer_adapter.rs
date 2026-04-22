@@ -218,11 +218,16 @@ impl IndexerClient for WasmIndexerClient {
                     indexer_subtitles: subtitles,
                     indexer_grabs: r.grabs,
                     password_hint: password_protected,
+                    candidate_token: None,
                     parsed_release_metadata: None,
                     quality_profile_decision: None,
                     extra: r.extra,
                     guid: r.guid,
                     info_url: r.info_url,
+                    provenance: None,
+                    auto_eligible: None,
+                    auto_decision_code: None,
+                    auto_decision_summary: None,
                 }
             })
             .collect();

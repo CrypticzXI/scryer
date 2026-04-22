@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use super::provider::{
-    SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery, compute_opensubtitles_hash,
-};
+use super::provider::{SubtitleMatch, SubtitleProvider, SubtitleQuery, compute_opensubtitles_hash};
 use crate::AppResult;
 
 /// Orchestrates subtitle searching: tries hash-based lookup first,
@@ -26,50 +24,16 @@ impl SubtitleSearchOrchestrator {
         &self,
         provider: &dyn SubtitleProvider,
         file_path: &Path,
-        media_kind: SubtitleMediaKind,
-        title: &str,
-        title_aliases: &[String],
-        year: Option<i32>,
-        imdb_id: Option<&str>,
-        series_imdb_id: Option<&str>,
-        season: Option<i32>,
-        episode: Option<i32>,
-        languages: &[String],
-        release_group: Option<&str>,
-        source: Option<&str>,
-        video_codec: Option<&str>,
-        audio_codec: Option<&str>,
-        resolution: Option<&str>,
-        hearing_impaired: Option<bool>,
-        include_ai_translated: bool,
-        include_machine_translated: bool,
+        query: &SubtitleQuery,
     ) -> AppResult<Vec<SubtitleMatch>> {
         // Try hash-based search first
         let file_hash = compute_opensubtitles_hash(file_path).ok();
 
         if file_hash.is_some() {
-            let query = SubtitleQuery {
-                media_kind,
-                file_hash: file_hash.clone(),
-                imdb_id: imdb_id.map(|s| s.to_string()),
-                series_imdb_id: series_imdb_id.map(|s| s.to_string()),
-                title: title.to_string(),
-                title_aliases: title_aliases.to_vec(),
-                year,
-                season,
-                episode,
-                languages: languages.to_vec(),
-                release_group: release_group.map(|s| s.to_string()),
-                source: source.map(|s| s.to_string()),
-                video_codec: video_codec.map(|s| s.to_string()),
-                audio_codec: audio_codec.map(|s| s.to_string()),
-                resolution: resolution.map(|s| s.to_string()),
-                hearing_impaired,
-                include_ai_translated,
-                include_machine_translated,
-            };
+            let mut hash_query = query.clone();
+            hash_query.file_hash = file_hash.clone();
 
-            match provider.search(&query).await {
+            match provider.search(&hash_query).await {
                 Ok(results) if results.iter().any(|r| r.score >= self.min_score) => {
                     return Ok(results);
                 }
@@ -85,26 +49,7 @@ impl SubtitleSearchOrchestrator {
                         // If we have hash results, use them even if below threshold
                         // (the metadata search might not find anything better)
                         let metadata_results = self
-                            .search_by_metadata(
-                                provider,
-                                media_kind,
-                                title,
-                                title_aliases,
-                                year,
-                                imdb_id,
-                                series_imdb_id,
-                                season,
-                                episode,
-                                languages,
-                                release_group,
-                                source,
-                                video_codec,
-                                audio_codec,
-                                resolution,
-                                hearing_impaired,
-                                include_ai_translated,
-                                include_machine_translated,
-                            )
+                            .search_by_metadata(provider, query)
                             .await
                             .unwrap_or_default();
 
@@ -118,72 +63,18 @@ impl SubtitleSearchOrchestrator {
         }
 
         // Metadata-based fallback
-        self.search_by_metadata(
-            provider,
-            media_kind,
-            title,
-            title_aliases,
-            year,
-            imdb_id,
-            series_imdb_id,
-            season,
-            episode,
-            languages,
-            release_group,
-            source,
-            video_codec,
-            audio_codec,
-            resolution,
-            hearing_impaired,
-            include_ai_translated,
-            include_machine_translated,
-        )
-        .await
+        self.search_by_metadata(provider, query).await
     }
 
     async fn search_by_metadata(
         &self,
         provider: &dyn SubtitleProvider,
-        media_kind: SubtitleMediaKind,
-        title: &str,
-        title_aliases: &[String],
-        year: Option<i32>,
-        imdb_id: Option<&str>,
-        series_imdb_id: Option<&str>,
-        season: Option<i32>,
-        episode: Option<i32>,
-        languages: &[String],
-        release_group: Option<&str>,
-        source: Option<&str>,
-        video_codec: Option<&str>,
-        audio_codec: Option<&str>,
-        resolution: Option<&str>,
-        hearing_impaired: Option<bool>,
-        include_ai_translated: bool,
-        include_machine_translated: bool,
+        query: &SubtitleQuery,
     ) -> AppResult<Vec<SubtitleMatch>> {
-        let query = SubtitleQuery {
-            media_kind,
-            file_hash: None,
-            imdb_id: imdb_id.map(|s| s.to_string()),
-            series_imdb_id: series_imdb_id.map(|s| s.to_string()),
-            title: title.to_string(),
-            title_aliases: title_aliases.to_vec(),
-            year,
-            season,
-            episode,
-            languages: languages.to_vec(),
-            release_group: release_group.map(|s| s.to_string()),
-            source: source.map(|s| s.to_string()),
-            video_codec: video_codec.map(|s| s.to_string()),
-            audio_codec: audio_codec.map(|s| s.to_string()),
-            resolution: resolution.map(|s| s.to_string()),
-            hearing_impaired,
-            include_ai_translated,
-            include_machine_translated,
-        };
+        let mut metadata_query = query.clone();
+        metadata_query.file_hash = None;
 
-        provider.search(&query).await
+        provider.search(&metadata_query).await
     }
 }
 

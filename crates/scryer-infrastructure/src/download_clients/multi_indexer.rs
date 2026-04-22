@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
     IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
-    SearchMode,
+    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
 };
 use scryer_domain::IndexerConfig;
 use tokio::sync::Mutex;
@@ -35,6 +35,16 @@ struct StrategyExecutionOutcome {
 enum TitleGuardMode {
     SkipTitleMatch,
     ExactTitleMatch,
+}
+
+struct FilterStrategyContext<'a> {
+    query: &'a str,
+    season: Option<u32>,
+    episode: Option<u32>,
+    tagged_aliases: &'a [scryer_domain::TaggedAlias],
+    title_guard_mode: TitleGuardMode,
+    strategy_label: &'a str,
+    is_rss_request: bool,
 }
 
 #[derive(Default)]
@@ -943,12 +953,15 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                                 filter_strategy_results(
                                     &mut response.results,
-                                    &search_query,
-                                    season,
-                                    episode,
-                                    &tagged_aliases_for_indexer,
-                                    outcome.title_guard_mode,
-                                    &outcome.label,
+                                    &FilterStrategyContext {
+                                        query: &search_query,
+                                        season,
+                                        episode,
+                                        tagged_aliases: &tagged_aliases_for_indexer,
+                                        title_guard_mode: outcome.title_guard_mode,
+                                        strategy_label: &outcome.label,
+                                        is_rss_request,
+                                    },
                                 );
                                 collected_results.append(&mut response.results);
                             }
@@ -1029,12 +1042,15 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                                     filter_strategy_results(
                                         &mut response.results,
-                                        &search_query,
-                                        season,
-                                        episode,
-                                        &tagged_aliases_for_indexer,
-                                        outcome.title_guard_mode,
-                                        &outcome.label,
+                                        &FilterStrategyContext {
+                                            query: &search_query,
+                                            season,
+                                            episode,
+                                            tagged_aliases: &tagged_aliases_for_indexer,
+                                            title_guard_mode: outcome.title_guard_mode,
+                                            strategy_label: &outcome.label,
+                                            is_rss_request,
+                                        },
                                     );
                                     collected_results.append(&mut response.results);
                                 }
@@ -1307,35 +1323,45 @@ fn parsed_title_candidates(parsed: &scryer_application::ParsedReleaseMetadata) -
 
 fn filter_strategy_results(
     results: &mut Vec<IndexerSearchResult>,
-    query: &str,
-    season: Option<u32>,
-    episode: Option<u32>,
-    tagged_aliases: &[scryer_domain::TaggedAlias],
-    title_guard_mode: TitleGuardMode,
-    strategy_label: &str,
+    context: &FilterStrategyContext<'_>,
 ) {
     if results.is_empty() {
         return;
     }
 
     for result in results.iter_mut() {
+        result.provenance = Some(ReleaseCandidateProvenance {
+            search_subject_kind: if context.is_rss_request {
+                ReleaseSearchSubjectKind::Rss
+            } else {
+                ReleaseSearchSubjectKind::Freetext
+            },
+            strategy_kind: scryer_application::release_strategy_kind_for_label(
+                context.strategy_label,
+                context.is_rss_request,
+            ),
+            title_validated_upstream: context.title_guard_mode == TitleGuardMode::SkipTitleMatch,
+        });
         if result.parsed_release_metadata.is_none() {
             result.parsed_release_metadata =
                 Some(scryer_release_parser::parse_release_metadata(&result.title));
         }
     }
 
-    if query.is_empty() && season.is_none() && episode.is_none() {
+    if context.query.is_empty() && context.season.is_none() && context.episode.is_none() {
         return;
     }
 
-    let mut expected_titles = if query.is_empty() {
+    let mut expected_titles = if context.query.is_empty() {
         Vec::new()
     } else {
-        parsed_title_candidates(&scryer_release_parser::parse_release_metadata(query))
+        parsed_title_candidates(&scryer_release_parser::parse_release_metadata(
+            context.query,
+        ))
     };
     expected_titles.extend(
-        tagged_aliases
+        context
+            .tagged_aliases
             .iter()
             .map(|alias| normalize_for_comparison(&alias.name))
             .filter(|alias| !alias.is_empty()),
@@ -1349,7 +1375,9 @@ fn filter_strategy_results(
             return true;
         };
 
-        if title_guard_mode == TitleGuardMode::ExactTitleMatch && !expected_titles.is_empty() {
+        if context.title_guard_mode == TitleGuardMode::ExactTitleMatch
+            && !expected_titles.is_empty()
+        {
             let release_titles = parsed_title_candidates(parsed);
             let title_ok = release_titles.iter().any(|release_title| {
                 expected_titles
@@ -1358,8 +1386,8 @@ fn filter_strategy_results(
             });
             if !title_ok {
                 tracing::debug!(
-                    strategy = strategy_label,
-                    query = %query,
+                    strategy = context.strategy_label,
+                    query = %context.query,
                     expected = ?expected_titles,
                     got = ?release_titles,
                     "title guard: title mismatch"
@@ -1368,14 +1396,14 @@ fn filter_strategy_results(
             }
         }
 
-        if let Some(expected_s) = season
+        if let Some(expected_s) = context.season
             && let Some(ref res_ep) = parsed.episode
             && let Some(rs) = res_ep.season
             && rs != expected_s
         {
             tracing::debug!(
-                strategy = strategy_label,
-                query = %query,
+                strategy = context.strategy_label,
+                query = %context.query,
                 expected_season = expected_s,
                 got_season = rs,
                 "title guard: season mismatch"
@@ -1383,14 +1411,14 @@ fn filter_strategy_results(
             return false;
         }
 
-        if let Some(expected_e) = episode
+        if let Some(expected_e) = context.episode
             && let Some(ref res_ep) = parsed.episode
             && !res_ep.episode_numbers.is_empty()
             && !res_ep.episode_numbers.contains(&expected_e)
         {
             tracing::debug!(
-                strategy = strategy_label,
-                query = %query,
+                strategy = context.strategy_label,
+                query = %context.query,
                 expected_episode = expected_e,
                 got_episodes = ?res_ep.episode_numbers,
                 "title guard: episode mismatch"
@@ -1404,7 +1432,7 @@ fn filter_strategy_results(
     let filtered = before - results.len();
     if filtered > 0 {
         debug!(
-            strategy = strategy_label,
+            strategy = context.strategy_label,
             before,
             after = results.len(),
             filtered,
@@ -1740,6 +1768,11 @@ mod tests {
             extra: HashMap::new(),
             guid: None,
             info_url: None,
+            provenance: None,
+            candidate_token: None,
+            auto_eligible: None,
+            auto_decision_code: None,
+            auto_decision_summary: None,
         }
     }
 

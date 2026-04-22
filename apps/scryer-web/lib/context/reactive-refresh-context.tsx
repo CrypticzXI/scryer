@@ -19,6 +19,7 @@ export type QueueCatalogTitleRefreshOptions = {
 
 export type QueueTitleOverviewRefreshOptions<
   TTitle = unknown,
+  TDiagnostics = unknown,
   TEvent = unknown,
   TBlocklist = unknown,
   TSubtitle = unknown,
@@ -26,7 +27,13 @@ export type QueueTitleOverviewRefreshOptions<
   titleId: string;
   blocklistLimit: number;
   apply: (
-    snapshot: TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle>,
+    snapshot: TitleOverviewSnapshot<
+      TTitle,
+      TDiagnostics,
+      TEvent,
+      TBlocklist,
+      TSubtitle
+    >,
   ) => void;
   onError?: ReactiveRefreshErrorHandler;
 };
@@ -46,12 +53,14 @@ export type ReactiveRefreshContextValue = {
   ) => void;
   queueTitleOverviewRefresh: <
     TTitle = unknown,
+    TDiagnostics = unknown,
     TEvent = unknown,
     TBlocklist = unknown,
     TSubtitle = unknown,
   >(
     options: QueueTitleOverviewRefreshOptions<
       TTitle,
+      TDiagnostics,
       TEvent,
       TBlocklist,
       TSubtitle

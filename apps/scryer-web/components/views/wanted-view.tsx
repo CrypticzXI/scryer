@@ -63,6 +63,8 @@ type WantedViewState = {
   setStatusFilter: (v: WantedStatus | undefined) => void;
   mediaTypeFilter: WantedMediaType | undefined;
   setMediaTypeFilter: (v: WantedMediaType | undefined) => void;
+  latestDecisionCodeFilter: string | undefined;
+  setLatestDecisionCodeFilter: (v: string | undefined) => void;
   offset: number;
   setOffset: (v: number) => void;
   limit: number;
@@ -75,13 +77,64 @@ type WantedViewState = {
   pauseItem: (id: string) => Promise<void>;
   resumeItem: (id: string) => Promise<void>;
   resetItem: (id: string) => Promise<void>;
+  triggerMismatchRecovery: (titleId: string) => Promise<void>;
 };
 
 const STATUS_OPTIONS: WantedStatus[] = ["wanted", "grabbed", "completed", "paused"];
 const MEDIA_TYPE_OPTIONS: WantedMediaType[] = ["movie", "episode", "interstitial_movie"];
+const LATEST_DECISION_OPTIONS = [
+  "title_mismatch",
+  "quality_blocked",
+  "upgrade_rejected",
+  "pending_delay",
+  "already_active",
+];
 
-function formatWantedMediaType(mediaType: WantedMediaType) {
-  return mediaType === "interstitial_movie" ? "franchise movie" : mediaType;
+function formatWantedMediaType(mediaType: WantedMediaType, t: Translate) {
+  const key: Record<WantedMediaType, string> = {
+    movie: "wanted.type.movie",
+    episode: "wanted.type.episode",
+    interstitial_movie: "wanted.type.interstitialMovie",
+  };
+  return t(key[mediaType]);
+}
+
+function formatWantedStatus(status: WantedStatus, t: Translate) {
+  const key: Record<WantedStatus, string> = {
+    wanted: "wanted.status.wanted",
+    grabbed: "wanted.status.grabbed",
+    completed: "wanted.status.completed",
+    paused: "wanted.status.paused",
+  };
+  return t(key[status]);
+}
+
+function formatWantedPhase(phase: WantedSearchPhase, t: Translate) {
+  const key: Record<WantedSearchPhase, string> = {
+    primary: "wanted.phase.primary",
+    pre_release: "wanted.phase.preRelease",
+    pre_air: "wanted.phase.preAir",
+    secondary: "wanted.phase.secondary",
+    long_tail: "wanted.phase.longTail",
+  };
+  return t(key[phase]);
+}
+
+function formatWantedDecisionCode(code: string, t: Translate) {
+  const key = {
+    eligible: "wanted.decision.eligible",
+    title_mismatch: "wanted.decision.titleMismatch",
+    quality_blocked: "wanted.decision.qualityBlocked",
+    upgrade_rejected: "wanted.decision.upgradeRejected",
+    pending_delay: "wanted.decision.pendingDelay",
+    already_active: "wanted.decision.alreadyActive",
+    accept_initial: "wanted.decision.acceptInitial",
+    accept_upgrade: "wanted.decision.acceptUpgrade",
+    reject_insufficient_delta: "wanted.decision.rejectInsufficientDelta",
+    reject_cooldown: "wanted.decision.rejectCooldown",
+    reject_not_allowed: "wanted.decision.rejectNotAllowed",
+  }[code];
+  return key ? t(key) : code;
 }
 
 function wantedItemContext(item: WantedItem, t: Translate) {
@@ -99,7 +152,7 @@ function wantedItemContext(item: WantedItem, t: Translate) {
   return t("wanted.context.movie");
 }
 
-function statusBadge(status: WantedStatus) {
+function statusBadge(status: WantedStatus, t: Translate) {
   const colors: Record<WantedStatus, string> = {
     wanted: "bg-blue-500/20 text-blue-400",
     grabbed: "bg-amber-500/20 text-amber-400",
@@ -110,12 +163,12 @@ function statusBadge(status: WantedStatus) {
     <span
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[status] ?? "bg-muted text-muted-foreground"}`}
     >
-      {status}
+      {formatWantedStatus(status, t)}
     </span>
   );
 }
 
-function phaseBadge(phase: WantedSearchPhase) {
+function phaseBadge(phase: WantedSearchPhase, t: Translate) {
   const colors: Record<WantedSearchPhase, string> = {
     primary: "bg-green-500/20 text-green-400",
     pre_release: "bg-purple-500/20 text-purple-400",
@@ -127,13 +180,21 @@ function phaseBadge(phase: WantedSearchPhase) {
     <span
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[phase] ?? "bg-muted text-muted-foreground"}`}
     >
-      {phase}
+      {formatWantedPhase(phase, t)}
     </span>
   );
 }
 
-function decisionBadge(code: string) {
+function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
+    eligible: "bg-green-500/20 text-green-400",
+    title_mismatch: "bg-red-500/20 text-red-400",
+    quality_blocked: "bg-red-500/20 text-red-400",
+    upgrade_rejected: "bg-amber-500/20 text-amber-400",
+    pending_delay: "bg-yellow-500/20 text-yellow-400",
+    already_active: "bg-muted text-muted-foreground",
+    download_client_unavailable: "bg-yellow-500/20 text-yellow-400",
+    repack_group_mismatch: "bg-red-500/20 text-red-400",
     accept_initial: "bg-green-500/20 text-green-400",
     accept_upgrade: "bg-green-500/20 text-green-400",
     reject_insufficient_delta: "bg-red-500/20 text-red-400",
@@ -144,7 +205,7 @@ function decisionBadge(code: string) {
     <span
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[code] ?? "bg-muted text-muted-foreground"}`}
     >
-      {code}
+      {formatWantedDecisionCode(code, t)}
     </span>
   );
 }
@@ -206,6 +267,8 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
     setStatusFilter,
     mediaTypeFilter,
     setMediaTypeFilter,
+    latestDecisionCodeFilter,
+    setLatestDecisionCodeFilter,
     offset,
     setOffset,
     limit,
@@ -218,6 +281,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
     pauseItem,
     resumeItem,
     resetItem,
+    triggerMismatchRecovery,
   } = state;
 
   const hasPrev = offset > 0;
@@ -257,7 +321,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
               <SelectItem value="__all__">{t("wanted.allStatuses")}</SelectItem>
               {STATUS_OPTIONS.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {formatWantedStatus(s, t)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -277,7 +341,27 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
               <SelectItem value="__all__">{t("wanted.allTypes")}</SelectItem>
               {MEDIA_TYPE_OPTIONS.map((m) => (
                 <SelectItem key={m} value={m}>
-                  {formatWantedMediaType(m)}
+                  {formatWantedMediaType(m, t)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={latestDecisionCodeFilter ?? "__all__"}
+            onValueChange={(v) => {
+              setLatestDecisionCodeFilter(v === "__all__" ? undefined : v);
+              setOffset(0);
+            }}
+          >
+            <SelectTrigger className="w-full sm:w-[200px]">
+              <SelectValue placeholder={t("wanted.filterLatestDecision")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">{t("wanted.allDecisions")}</SelectItem>
+              {LATEST_DECISION_OPTIONS.map((code) => (
+                <SelectItem key={code} value={code}>
+                  {formatWantedDecisionCode(code, t)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -310,10 +394,10 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                         </p>
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {statusBadge(item.status)}
-                        {phaseBadge(item.searchPhase)}
+                        {statusBadge(item.status, t)}
+                        {phaseBadge(item.searchPhase, t)}
                         <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                          {formatWantedMediaType(item.mediaType)}
+                          {formatWantedMediaType(item.mediaType, t)}
                         </span>
                       </div>
                     </div>
@@ -333,6 +417,17 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                     <div>
                       <span className="block">{t("wanted.colNextSearch")}</span>
                       <span className="text-foreground">{formatDate(item.nextSearchAt)}</span>
+                    </div>
+                    <div>
+                      <span className="block">{t("wanted.colLatestDecision")}</span>
+                      <span className="text-foreground">
+                        {item.latestReleaseDecision
+                          ? formatWantedDecisionCode(
+                              item.latestReleaseDecision.decisionCode,
+                              t,
+                            )
+                          : "—"}
+                      </span>
                     </div>
                     <div>
                       <span className="block">{t("wanted.colScore")}</span>
@@ -363,6 +458,17 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                       <RotateCcw className="h-4 w-4" />
                       <span>{t("wanted.reset")}</span>
                     </Button>
+                    {item.mismatchRecoveryEligible ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => void triggerMismatchRecovery(item.titleId)}
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        <span>{t("wanted.actionRecoverMismatch")}</span>
+                      </Button>
+                    ) : null}
                   </div>
                   {expandedItemId === item.id ? (
                     <div className="mt-3 border-t border-border pt-3">
@@ -376,7 +482,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                             <div key={d.id} className="rounded-lg border border-border bg-background/40 p-3">
                               <p className="break-words text-xs font-medium text-foreground">{d.releaseTitle}</p>
                               <div className="mt-2 flex flex-wrap gap-2">
-                                {decisionBadge(d.decisionCode)}
+                                {decisionBadge(d.decisionCode, t)}
                                 <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                                   {t("wanted.decScore")}: {d.candidateScore}
                                 </span>
@@ -416,6 +522,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                   <TableHead>{t("wanted.colType")}</TableHead>
                   <TableHead>{t("wanted.colStatus")}</TableHead>
                   <TableHead>{t("wanted.colPhase")}</TableHead>
+                  <TableHead>{t("wanted.colLatestDecision")}</TableHead>
                   <TableHead>{t("wanted.colNextSearch")}</TableHead>
                   <TableHead>{t("wanted.colScore")}</TableHead>
                   <TableHead>{t("wanted.colSearches")}</TableHead>
@@ -448,9 +555,21 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell>{formatWantedMediaType(item.mediaType)}</TableCell>
-                      <TableCell>{statusBadge(item.status)}</TableCell>
-                      <TableCell>{phaseBadge(item.searchPhase)}</TableCell>
+                      <TableCell>{formatWantedMediaType(item.mediaType, t)}</TableCell>
+                      <TableCell>{statusBadge(item.status, t)}</TableCell>
+                      <TableCell>{phaseBadge(item.searchPhase, t)}</TableCell>
+                      <TableCell className="text-xs">
+                        {item.latestReleaseDecision ? (
+                          <div className="space-y-1">
+                            {decisionBadge(item.latestReleaseDecision.decisionCode, t)}
+                            <div className="text-muted-foreground">
+                              {formatDate(item.latestReleaseDecision.createdAt)}
+                            </div>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
                       <TableCell className="text-xs">
                         {formatDate(item.nextSearchAt)}
                       </TableCell>
@@ -497,12 +616,23 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                           >
                             <RotateCcw className="h-3.5 w-3.5" />
                           </Button>
+                          {item.mismatchRecoveryEligible ? (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              title={t("wanted.actionRecoverMismatch")}
+                              onClick={() => void triggerMismatchRecovery(item.titleId)}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            </Button>
+                          ) : null}
                         </div>
                       </TableCell>
                     </TableRow>
                     {expandedItemId === item.id && (
                       <TableRow>
-                        <TableCell colSpan={9} className="bg-muted/30 p-4">
+                        <TableCell colSpan={10} className="bg-muted/30 p-4">
                           {decisionsLoading ? (
                             <p className="text-sm text-muted-foreground">
                               {t("wanted.loadingDecisions")}
@@ -533,7 +663,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                                       {d.releaseTitle}
                                     </TableCell>
                                     <TableCell>
-                                      {decisionBadge(d.decisionCode)}
+                                      {decisionBadge(d.decisionCode, t)}
                                     </TableCell>
                                     <TableCell>{d.candidateScore}</TableCell>
                                     <TableCell>{d.scoreDelta ?? "—"}</TableCell>
@@ -555,7 +685,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                 ))}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="text-center text-muted-foreground">
                       {t("wanted.noItems")}
                     </TableCell>
                   </TableRow>
@@ -595,15 +725,17 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
   );
 }
 
-function formatTimeRemaining(delayUntil: string): string {
+function formatTimeRemaining(delayUntil: string, t: Translate): string {
   const target = new Date(delayUntil).getTime();
   const now = Date.now();
   const diff = target - now;
-  if (diff <= 0) return "now";
+  if (diff <= 0) return t("wanted.timeNow");
   const hours = Math.floor(diff / (1000 * 60 * 60));
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  if (hours > 0) {
+    return t("wanted.timeHoursMinutes", { hours, minutes });
+  }
+  return t("wanted.timeMinutes", { minutes });
 }
 
 function PendingReleasesCard({ state }: { state: PendingViewState }) {
@@ -653,7 +785,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     <div>
                       <span className="block">{t("pending.colDelayUntil")}</span>
                       <span className="text-foreground" title={formatDate(item.delayUntil)}>
-                        {formatTimeRemaining(item.delayUntil)}
+                        {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </div>
                   </div>
@@ -700,7 +832,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     <TableCell className="text-xs">{formatDate(item.addedAt)}</TableCell>
                     <TableCell className="text-xs">
                       <span title={formatDate(item.delayUntil)}>
-                        {formatTimeRemaining(item.delayUntil)}
+                        {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </TableCell>
                     <TableCell>

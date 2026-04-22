@@ -306,6 +306,7 @@ impl TitleRepository for MockTitleRepo {
         title.studio = metadata.studio;
         title.country = metadata.country;
         title.aliases = metadata.aliases;
+        title.tagged_aliases = metadata.tagged_aliases;
         title.metadata_language = metadata.metadata_language;
         title.metadata_fetched_at = Some(chrono::Utc::now());
         Ok(title.clone())
@@ -1191,6 +1192,11 @@ impl IndexerClient for MockIndexerClient {
                 extra: Default::default(),
                 guid: None,
                 info_url: None,
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
             }],
             api_current: None,
             api_max: None,
@@ -1265,6 +1271,11 @@ impl IndexerClient for TrackingIndexerClient {
                 extra: Default::default(),
                 guid: Some(format!("guid-{release_slug}")),
                 info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
             }],
             api_current: None,
             api_max: None,
@@ -1325,7 +1336,80 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 extra: Default::default(),
                 guid: Some("guid-fixed-release".to_string()),
                 info_url: Some("https://example.invalid/info".to_string()),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
             }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct MultiReleaseIndexerClient {
+    release_titles: Vec<String>,
+}
+
+impl MultiReleaseIndexerClient {
+    fn new(release_titles: Vec<&str>) -> Self {
+        Self {
+            release_titles: release_titles.into_iter().map(str::to_string).collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl IndexerClient for MultiReleaseIndexerClient {
+    async fn search(
+        &self,
+        _query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        Ok(IndexerSearchResponse {
+            results: self
+                .release_titles
+                .iter()
+                .enumerate()
+                .map(|(index, release_title)| IndexerSearchResult {
+                    source: "nzbgeek".into(),
+                    title: release_title.clone(),
+                    link: Some(format!("https://example.invalid/info/{index}")),
+                    download_url: Some(format!("https://example.invalid/download/{index}.nzb")),
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    size_bytes: None,
+                    published_at: Some("1970-01-01T00:00:00Z".into()),
+                    thumbs_up: None,
+                    thumbs_down: None,
+                    indexer_languages: None,
+                    indexer_subtitles: None,
+                    indexer_grabs: None,
+                    password_hint: None,
+                    parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
+                    quality_profile_decision: None,
+                    extra: Default::default(),
+                    guid: Some(format!("guid-multi-release-{index}")),
+                    info_url: Some(format!("https://example.invalid/info/{index}")),
+                    provenance: None,
+                    auto_eligible: None,
+                    auto_decision_code: None,
+                    auto_decision_summary: None,
+                    candidate_token: None,
+                })
+                .collect(),
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -2318,18 +2402,29 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<WantedItem>> {
+        let latest_decisions = self.release_decisions.lock().await.clone();
         let items: Vec<WantedItem> = self
             .store
             .lock()
             .await
             .iter()
             .filter(|item| {
+                let latest_decision = latest_decisions
+                    .iter()
+                    .filter(|decision| decision.wanted_item_id == item.id)
+                    .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 status.is_none_or(|status| item.status.as_str() == status)
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
+                    && latest_decision_code.is_none_or(|code| {
+                        latest_decision
+                            .as_ref()
+                            .is_some_and(|decision| decision.decision_code == code)
+                    })
             })
             .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
@@ -2343,16 +2438,27 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
+        let latest_decisions = self.release_decisions.lock().await.clone();
         Ok(self
             .store
             .lock()
             .await
             .iter()
             .filter(|item| {
+                let latest_decision = latest_decisions
+                    .iter()
+                    .filter(|decision| decision.wanted_item_id == item.id)
+                    .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 status.is_none_or(|status| item.status.as_str() == status)
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
+                    && latest_decision_code.is_none_or(|code| {
+                        latest_decision
+                            .as_ref()
+                            .is_some_and(|decision| decision.decision_code == code)
+                    })
             })
             .count() as i64)
     }
@@ -2587,6 +2693,20 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
                 release.wanted_item_id == wanted_item_id
                     && release.status == PendingReleaseStatus::Waiting
             })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| release.title_id == title_id)
             .cloned()
             .collect())
     }
@@ -5612,6 +5732,285 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
     );
 }
 
+#[tokio::test]
+async fn queue_existing_title_download_from_candidate_token_accepts_authenticated_actor() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, admin) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &admin,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Token Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "token_queue_user",
+        "password123",
+        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+    )
+    .await;
+
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/token-queue.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Token.Queue.2026.1080p.WEB-DL".to_string()),
+    };
+    let candidate_token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            &title.id,
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("issue candidate token");
+
+    let (job_id, queued_release) = app
+        .queue_existing_title_download_from_candidate_token(
+            &authenticated_user,
+            &title.id,
+            &candidate_token,
+            SubmissionScope::Title,
+        )
+        .await
+        .expect("queue existing title download from candidate token");
+
+    assert_eq!(job_id, format!("job-for-{}", title.id));
+    assert_eq!(queued_release, selection);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Token Queue".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queue_best_release_prefers_first_auto_eligible_candidate() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
+        "Wrong.Show.2026.1080p.WEB-DL",
+        "Target.Show.2026.1080p.WEB-DL",
+    ]));
+    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        indexer_client,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Target Show".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let job_id = app
+        .queue_best_release(&user, &title.id, SubmissionScope::Title)
+        .await
+        .expect("queue best release");
+
+    assert_eq!(job_id, format!("job-for-{}", title.id));
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .clone(),
+        vec!["Target Show".to_string()]
+    );
+
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].source_title.as_deref(),
+        Some("Target.Show.2026.1080p.WEB-DL")
+    );
+    assert!(
+        submissions[0]
+            .request_signature
+            .as_deref()
+            .is_some_and(|signature| signature.contains("Target.Show.2026.1080p.WEB-DL"))
+    );
+}
+
+#[tokio::test]
+async fn queue_best_release_supports_interstitial_movie_collection_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
+        "Wrong.Show.2024.1080p.WEB-DL",
+        "Movie.1.2024.1080p.WEB-DL",
+    ]));
+    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        indexer_client,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Parent Series".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let collection = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Interstitial,
+            collection_index: "1.1".to_string(),
+            label: Some("Movie 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1.1".to_string()),
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
+                tvdb_id: "movie-1".to_string(),
+                name: "Movie 1".to_string(),
+                slug: "movie-1".to_string(),
+                year: Some(2024),
+                content_status: "released".to_string(),
+                overview: "Interstitial movie".to_string(),
+                poster_url: String::new(),
+                language: "ja".to_string(),
+                runtime_minutes: 110,
+                sort_title: "Movie 1".to_string(),
+                imdb_id: String::new(),
+                genres: vec!["action".to_string()],
+                studio: "Studio".to_string(),
+                digital_release_date: Some("2024-02-01".to_string()),
+                association_confidence: Some("high".to_string()),
+                continuity_status: Some("canon".to_string()),
+                movie_form: None,
+                confidence: None,
+                signal_summary: None,
+                placement: Some("between_seasons".to_string()),
+                movie_tmdb_id: None,
+                movie_mal_id: None,
+                movie_anidb_id: None,
+            }),
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create interstitial collection");
+
+    let job_id = app
+        .queue_best_release(
+            &user,
+            &title.id,
+            SubmissionScope::Collection {
+                collection_id: collection.id.clone(),
+            },
+        )
+        .await
+        .expect("queue best release for collection");
+
+    assert_eq!(job_id, format!("job-for-{}", title.id));
+
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].source_title.as_deref(),
+        Some("Movie.1.2024.1080p.WEB-DL")
+    );
+    assert_eq!(
+        submissions[0].scope,
+        SubmissionScope::Collection {
+            collection_id: collection.id
+        }
+    );
+}
+
 fn cutoff_projection_test_profile(id: &str, cutoff_tier: &str) -> QualityProfile {
     QualityProfile {
         id: id.to_string(),
@@ -5880,6 +6279,144 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
             .iter()
             .any(|entry| entry.code == "required_audio_languages_match")
     );
+}
+
+#[tokio::test]
+async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "BASTARD.Heavy.Metal.Dark.Fantasy.S01E01.1080p.NF.WEB-DL",
+    ));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let search_user = app
+        .create_user(
+            &user,
+            "title_search_user".to_string(),
+            "password123".to_string(),
+            vec![Entitlement::ViewCatalog],
+        )
+        .await
+        .expect("create search user");
+    let search_token = app
+        .issue_access_token(&search_user)
+        .expect("issue search token");
+    let authed_search_user = app
+        .authenticate_token(&search_token)
+        .await
+        .expect("authenticate search user");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Bastard!!".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "1309".to_string(),
+                }],
+                year: Some(2022),
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    app.services
+        .catalog
+        .titles
+        .update_title_hydrated_metadata(
+            &title.id,
+            TitleMetadataUpdate {
+                tagged_aliases: vec![scryer_domain::TaggedAlias {
+                    name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+                    language: "eng".to_string(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("persist tagged aliases");
+
+    let results = app
+        .search_indexers_for_title(&authed_search_user, title.id.clone())
+        .await
+        .expect("search indexers for title");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].auto_eligible, Some(true));
+    assert_eq!(results[0].auto_decision_code.as_deref(), Some("eligible"));
+    assert!(results[0].candidate_token.is_some());
+}
+
+#[tokio::test]
+async fn search_indexers_for_title_returns_results_when_candidate_token_attachment_fails() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "Failure.Recovery.2026.1080p.WEB-DL",
+    ));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Failure Recovery".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let ghost_actor = User {
+        id: "ghost-search-user".to_string(),
+        username: "ghost".to_string(),
+        password_hash: None,
+        entitlements: vec![Entitlement::ViewCatalog],
+    };
+
+    let results = app
+        .search_indexers_for_title(&ghost_actor, title.id.clone())
+        .await
+        .expect("search should still succeed without candidate signing key");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].candidate_token, None);
 }
 
 #[tokio::test]
@@ -7219,6 +7756,8 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             .to_string(),
         ),
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -7379,6 +7918,8 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             .to_string(),
         ),
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -7563,6 +8104,8 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                     .to_string(),
                 ),
                 current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
                 updated_at: Utc::now().to_rfc3339(),
             })
@@ -7746,6 +8289,8 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
                 updated_at: Utc::now().to_rfc3339(),
             })
@@ -7935,6 +8480,8 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
                 updated_at: Utc::now().to_rfc3339(),
             })
@@ -8045,6 +8592,8 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -8152,6 +8701,8 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -8273,6 +8824,8 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -8394,6 +8947,8 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -8468,6 +9023,8 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             .to_string(),
         ),
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -8581,6 +9138,8 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -8636,6 +9195,169 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
 }
 
 #[tokio::test]
+async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_items() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Mismatch Recovery".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let original_due_at = "2099-01-01T00:00:00Z".to_string();
+    let recovery_item = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        media_type: "movie".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: Some(original_due_at.clone()),
+        last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
+        search_count: 2,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    let untouched_item = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        episode_id: Some("episode-2".to_string()),
+        collection_id: None,
+        season_number: Some("1".to_string()),
+        media_type: "episode".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: Some(original_due_at.clone()),
+        last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
+        search_count: 2,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_wanted_item(&recovery_item)
+        .await
+        .expect("seed recovery item");
+    wanted_items
+        .upsert_wanted_item(&untouched_item)
+        .await
+        .expect("seed untouched item");
+
+    for suffix in 0..3 {
+        wanted_items
+            .insert_release_decision(&ReleaseDecision {
+                id: format!("decision-recovery-{suffix}"),
+                wanted_item_id: recovery_item.id.clone(),
+                title_id: title.id.clone(),
+                release_title: format!("Mismatch.Release.{suffix}"),
+                release_url: None,
+                release_size_bytes: None,
+                decision_code: "title_mismatch".to_string(),
+                candidate_score: 100,
+                current_score: None,
+                score_delta: None,
+                explanation_json: None,
+                created_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed mismatch decision");
+    }
+    wanted_items
+        .insert_release_decision(&ReleaseDecision {
+            id: "decision-untouched-1".to_string(),
+            wanted_item_id: untouched_item.id.clone(),
+            title_id: title.id.clone(),
+            release_title: "Mixed.Release".to_string(),
+            release_url: None,
+            release_size_bytes: None,
+            decision_code: "title_mismatch".to_string(),
+            candidate_score: 100,
+            current_score: None,
+            score_delta: None,
+            explanation_json: None,
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed mixed decision");
+    wanted_items
+        .insert_release_decision(&ReleaseDecision {
+            id: "decision-untouched-2".to_string(),
+            wanted_item_id: untouched_item.id.clone(),
+            title_id: title.id.clone(),
+            release_title: "Eligible.Release".to_string(),
+            release_url: None,
+            release_size_bytes: None,
+            decision_code: "eligible".to_string(),
+            candidate_score: 120,
+            current_score: None,
+            score_delta: None,
+            explanation_json: None,
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed non-mismatch decision");
+
+    let queued = app
+        .trigger_title_mismatch_recovery_search(&title.id)
+        .await
+        .expect("trigger mismatch recovery");
+
+    assert_eq!(queued, 1);
+
+    let updated_recovery = wanted_items
+        .get_wanted_item_by_id(&recovery_item.id)
+        .await
+        .expect("load recovery item")
+        .expect("recovery item exists");
+    let updated_untouched = wanted_items
+        .get_wanted_item_by_id(&untouched_item.id)
+        .await
+        .expect("load untouched item")
+        .expect("untouched item exists");
+
+    assert_ne!(
+        updated_recovery.next_search_at.as_deref(),
+        Some(original_due_at.as_str())
+    );
+    assert_eq!(
+        updated_untouched.next_search_at.as_deref(),
+        Some(original_due_at.as_str())
+    );
+}
+
+#[tokio::test]
 async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -8680,6 +9402,8 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -8923,6 +9647,8 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
                 status: WantedStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
                 updated_at: Utc::now().to_rfc3339(),
             })
@@ -8935,7 +9661,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .expect("monitor interstitial collection");
 
     let wanted = wanted_items
-        .list_wanted_items(None, None, Some(&title.id), 50, 0)
+        .list_wanted_items(None, None, Some(&title.id), None, 50, 0)
         .await
         .expect("list wanted items");
     assert_eq!(wanted.len(), 1);
@@ -10501,6 +11227,31 @@ fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlem
 
 const TEST_PASSWORD_HASH: &str = "v2$argon2id$v=19$m=19456,t=2,p=1$dGVzdHNhbHQ$dGVzdGhhc2g";
 
+async fn create_authenticated_user(
+    app: &AppUseCase,
+    admin: &User,
+    username: &str,
+    password: &str,
+    entitlements: Vec<Entitlement>,
+) -> (User, User) {
+    let created = app
+        .create_user(
+            admin,
+            username.to_string(),
+            password.to_string(),
+            entitlements,
+        )
+        .await
+        .expect("create user");
+    let token = app.issue_access_token(&created).expect("issue token");
+    let authenticated = app
+        .authenticate_token(&token)
+        .await
+        .expect("authenticate token");
+
+    (created, authenticated)
+}
+
 #[tokio::test]
 async fn issue_and_authenticate_token_round_trips() {
     let (app, _) = bootstrap();
@@ -10547,6 +11298,252 @@ async fn entitlements_survive_token_round_trip() {
         .expect("authenticate token");
     assert!(decoded.entitlements.contains(&Entitlement::ViewCatalog));
     assert!(decoded.entitlements.contains(&Entitlement::ManageTitle));
+}
+
+#[tokio::test]
+async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_user",
+        "password123",
+        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-1",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let decoded = app
+        .verify_release_candidate_token(
+            &authenticated_user,
+            "title-1",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await
+        .expect("candidate token should verify");
+
+    assert_eq!(decoded.source_hint, selection.source_hint);
+    assert_eq!(decoded.source_kind, selection.source_kind);
+    assert_eq!(decoded.source_title, selection.source_title);
+}
+
+#[tokio::test]
+async fn release_candidate_token_rejects_tampering() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_user_2",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-2",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let tampered = format!("{token}x");
+
+    assert!(
+        app.verify_release_candidate_token(
+            &authenticated_user,
+            "title-2",
+            &SubmissionScope::Title,
+            &tampered,
+        )
+        .await
+        .is_err(),
+        "tampered token should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_user_3",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+    let (_other_created, other_authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_user_4",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-3",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+
+    assert!(
+        app.verify_release_candidate_token(
+            &other_authenticated_user,
+            "title-3",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await
+        .is_err(),
+        "actor mismatch should be rejected"
+    );
+    assert!(
+        app.verify_release_candidate_token(
+            &authenticated_user,
+            "other-title",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await
+        .is_err(),
+        "title mismatch should be rejected"
+    );
+    assert!(
+        app.verify_release_candidate_token(
+            &authenticated_user,
+            "title-3",
+            &SubmissionScope::Episode {
+                episode_id: "episode-1".to_string(),
+            },
+            &token,
+        )
+        .await
+        .is_err(),
+        "scope mismatch should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn release_candidate_token_is_invalidated_by_password_rotation() {
+    let (app, admin) = bootstrap();
+    let (created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "candidate_pw_rotate",
+        "before-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+    };
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-password-rotate",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+
+    app.set_user_password(&admin, &created.id, "after-pass".to_string())
+        .await
+        .expect("rotate password");
+
+    let result = app
+        .verify_release_candidate_token(
+            &authenticated_user,
+            "title-password-rotate",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "candidate token should be rejected after password rotation"
+    );
+}
+
+#[tokio::test]
+async fn release_candidate_token_is_invalidated_by_entitlement_change() {
+    let (app, admin) = bootstrap();
+    let (created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "candidate_ent_rotate",
+        "same-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+    };
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-entitlement-rotate",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+
+    app.set_user_entitlements(
+        &admin,
+        &created.id,
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+    )
+    .await
+    .expect("update entitlements");
+
+    let result = app
+        .verify_release_candidate_token(
+            &authenticated_user,
+            "title-entitlement-rotate",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "candidate token should be rejected after entitlement change"
+    );
 }
 
 #[tokio::test]

@@ -496,6 +496,7 @@ impl AppUseCase {
             episode,
             absolute_episode,
             tagged_aliases,
+            search_subject_kind,
         } = request;
         let quality_profile_lookup = QualityProfileLookup {
             title_tags,
@@ -573,6 +574,15 @@ impl AppUseCase {
         while let Some(result) = set.join_next().await {
             match result {
                 Ok(Ok(mut response)) => {
+                    for result in &mut response.results {
+                        let provenance =
+                            result.provenance.get_or_insert(ReleaseCandidateProvenance {
+                                search_subject_kind,
+                                strategy_kind: ReleaseStrategyKind::Fallback,
+                                title_validated_upstream: false,
+                            });
+                        provenance.search_subject_kind = search_subject_kind;
+                    }
                     raw_results.append(&mut response.results);
                 }
                 Ok(Err(error)) => {
@@ -653,8 +663,42 @@ impl AppUseCase {
             episode,
             absolute_episode,
             tagged_aliases,
+            search_subject_kind: ReleaseSearchSubjectKind::Freetext,
         })
         .await
+    }
+
+    pub(crate) async fn search_and_evaluate_subject(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
+        let results = self
+            .search_and_score_releases(ReleaseSearchRequest {
+                queries: subject.queries.clone(),
+                imdb_id: subject.imdb_id.clone(),
+                tvdb_id: subject.tvdb_id.clone(),
+                anidb_id: subject.anidb_id.clone(),
+                category: Some(subject.category.clone()),
+                facet: Some(subject.facet.clone()),
+                title_id: Some(subject.title_id.as_str()),
+                title_tags: &subject.title_tags,
+                caller_label,
+                mode,
+                runtime_minutes: subject.runtime_minutes,
+                season: subject.season,
+                episode: subject.episode,
+                absolute_episode: subject.absolute_episode,
+                tagged_aliases: &title.tagged_aliases,
+                search_subject_kind: subject.subject_kind,
+            })
+            .await?;
+
+        Ok(self
+            .evaluate_search_results_for_subject(title, subject, results)
+            .await)
     }
 
     pub async fn search_indexers(
@@ -829,82 +873,66 @@ impl AppUseCase {
         Ok(results)
     }
 
-    pub async fn search_indexers_season(
-        &self,
-        actor: &User,
-        request: IndexerSeasonSearchRequest,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
-        let IndexerSeasonSearchRequest {
-            title,
-            season,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-        } = request;
-        let normalized_title = title.trim();
-        let season = season.trim();
-
-        if normalized_title.is_empty() || season.is_empty() {
-            return Err(AppError::Validation("title and season are required".into()));
-        }
-
-        let normalized_imdb_id = normalize_imdb_id(imdb_id);
-        let normalized_anidb_id = normalize_numeric_id(anidb_id);
-        let normalized_tvdb_id = normalize_numeric_id(tvdb_id);
-        let normalized_category = parse_search_facet(category);
-
-        let season_digits: String = season
-            .chars()
-            .filter(|value| value.is_ascii_digit())
-            .collect();
-
-        if season_digits.is_empty() {
-            return Err(AppError::Validation(
-                "season must include a numeric value".into(),
-            ));
-        }
-
-        let season_num = season_digits
-            .parse::<usize>()
-            .map_err(|_| AppError::Validation("invalid season value".into()))?;
-
-        let queries = vec![format!("{} S{:0>2}", normalized_title, season_num)];
-
-        let results = self
-            .search_indexer_queries(InteractiveReleaseSearchRequest {
-                queries,
-                imdb_id: normalized_imdb_id.clone(),
-                tvdb_id: normalized_tvdb_id.clone(),
-                anidb_id: normalized_anidb_id.clone(),
-                category: normalized_category.clone(),
-                facet: normalized_category.clone(),
-                caller_label: &actor.id,
-                season: Some(season_num as u32),
-                episode: None,
-                absolute_episode: None,
-                tagged_aliases: &[],
-            })
-            .await?;
-
-        let activity_media_label = activity_media_label(normalized_category.as_deref());
-
-        self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
-            activity_media_label.to_string(),
-            Some(format!("{} S{:0>2}", normalized_title, season_num)),
-            results.len() as i64,
-        )
-        .await;
-
-        Ok(results)
-    }
-
     /// Interactive search for a title (movie or standalone). Resolves all
     /// external IDs and search category from the title record so the frontend
     /// only needs to pass the title ID.
+    async fn attach_candidate_tokens(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope: &SubmissionScope,
+        results: &mut [IndexerSearchResult],
+    ) {
+        let signing_key = match self.release_candidate_signing_key_for_actor(actor).await {
+            Ok(signing_key) => signing_key,
+            Err(err) => {
+                warn!(
+                    actor = actor.id.as_str(),
+                    title_id,
+                    scope = ?scope,
+                    error = %err,
+                    "failed to resolve candidate-token signing key for title-aware search"
+                );
+                for result in results.iter_mut() {
+                    result.candidate_token = None;
+                }
+                return;
+            }
+        };
+
+        for result in results.iter_mut() {
+            let selection = QueuedReleaseSelection {
+                source_hint: result.download_url.clone().or(result.link.clone()),
+                source_kind: result.source_kind,
+                source_title: Some(result.title.clone()),
+            };
+            result.candidate_token = if selection.source_hint.is_some() {
+                match self.issue_release_candidate_token_with_signing_key(
+                    actor,
+                    title_id,
+                    scope,
+                    &selection,
+                    &signing_key,
+                ) {
+                    Ok(token) => Some(token),
+                    Err(err) => {
+                        warn!(
+                            actor = actor.id.as_str(),
+                            title_id,
+                            scope = ?scope,
+                            release_title = result.title.as_str(),
+                            error = %err,
+                            "failed to attach candidate token to title-aware search result"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+        }
+    }
+
     pub async fn search_indexers_for_title(
         &self,
         actor: &User,
@@ -919,56 +947,28 @@ impl AppUseCase {
             .get_by_id(&title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-
-        let imdb_id = normalize_imdb_id(title.imdb_id);
-        let tvdb_id = normalize_numeric_id(
-            crate::acquisition_search_queries::tvdb_id_from_external_ids(&title.external_ids),
-        );
-        let anidb_id = normalize_numeric_id(
-            crate::acquisition_search_queries::anidb_id_from_external_ids(&title.external_ids),
-        );
-        let category = self
-            .facet_registry
-            .get(&title.facet)
-            .map(|h| h.search_category().to_string())
-            .unwrap_or_else(|| "movie".to_string());
-        let facet = Some(title.facet.as_str().to_string());
-
-        let query = title.name.trim().to_string();
-        if query.is_empty() && imdb_id.is_none() && tvdb_id.is_none() && anidb_id.is_none() {
-            return Err(AppError::Validation(
-                "title has no name or external IDs".into(),
-            ));
-        }
+        let subject = self
+            .resolve_release_search_subject_for_title(&title)
+            .await?;
 
         info!(
             actor = actor.id.as_str(),
             title_id = title_id.as_str(),
-            query = query.as_str(),
-            category = category.as_str(),
+            query = subject.queries.first().map(String::as_str).unwrap_or(""),
+            category = subject.category.as_str(),
             "searching indexers for title"
         );
 
-        let results = self
-            .search_indexer_queries(InteractiveReleaseSearchRequest {
-                queries: vec![query.clone()],
-                imdb_id,
-                tvdb_id,
-                anidb_id,
-                category: Some(category.clone()),
-                facet,
-                caller_label: &actor.id,
-                season: None,
-                episode: None,
-                absolute_episode: None,
-                tagged_aliases: &title.tagged_aliases,
-            })
+        let mut results = self
+            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
+        self.attach_candidate_tokens(actor, &title.id, &subject.submission_scope, &mut results)
+            .await;
 
         self.emit_discovery_search_completed_event(
             Some(actor.id.clone()),
-            category,
-            Some(query),
+            subject.category.clone(),
+            subject.queries.first().cloned(),
             results.len() as i64,
         )
         .await;
@@ -995,121 +995,28 @@ impl AppUseCase {
             .get_by_id(&title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-
-        let season = season.trim().to_string();
-        let episode = episode.trim().to_string();
-        if season.is_empty() || episode.is_empty() {
-            return Err(AppError::Validation(
-                "season and episode are required".into(),
-            ));
-        }
-
-        let season_digits: String = season.chars().filter(|c| c.is_ascii_digit()).collect();
-        let episode_digits: String = episode.chars().filter(|c| c.is_ascii_digit()).collect();
-        if season_digits.is_empty() || episode_digits.is_empty() {
-            return Err(AppError::Validation(
-                "season and episode must include numeric values".into(),
-            ));
-        }
-
-        let season_num = season_digits
-            .parse::<usize>()
-            .map_err(|_| AppError::Validation("invalid season value".into()))?;
-        let episode_num = episode_digits
-            .parse::<usize>()
-            .map_err(|_| AppError::Validation("invalid episode value".into()))?;
-
-        let imdb_id = normalize_imdb_id(title.imdb_id.clone());
-        let tvdb_id = normalize_numeric_id(
-            crate::acquisition_search_queries::tvdb_id_from_external_ids(&title.external_ids),
-        );
-        let title_anidb_id = normalize_numeric_id(
-            crate::acquisition_search_queries::anidb_id_from_external_ids(&title.external_ids),
-        );
-        let category = self
-            .facet_registry
-            .get(&title.facet)
-            .map(|h| h.search_category().to_string())
-            .unwrap_or_else(|| "series".to_string());
-        let facet = Some(title.facet.as_str().to_string());
-
-        // Resolve episode-specific anidb_id from anibridge (e.g. Bleach S17E08 → 15449)
-        let anidb_id = if let Some(ref tvdb) = tvdb_id {
-            if let Ok(tvdb_num) = tvdb.parse::<i64>() {
-                match self
-                    .services
-                    .library
-                    .metadata_gateway
-                    .anibridge_mappings_for_episode(tvdb_num, season_num as i32, episode_num as i32)
-                    .await
-                {
-                    Ok(mappings) => mappings
-                        .iter()
-                        .find(|m| m.source_type == "anidb" && m.source_scope == "R")
-                        .map(|m| m.source_id.to_string())
-                        .or(title_anidb_id),
-                    Err(_) => title_anidb_id,
-                }
-            } else {
-                title_anidb_id
-            }
-        } else {
-            title_anidb_id
-        };
-
-        // Look up absolute episode number from the episode record
-        let absolute_episode: Option<u32> = self
-            .services
-            .catalog
-            .shows
-            .find_episode_by_title_and_numbers(&title_id, &season_digits, &episode_digits)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|ep| {
-                ep.absolute_number.as_ref().and_then(|n: &String| {
-                    n.trim()
-                        .replace(|c: char| !c.is_ascii_digit(), "")
-                        .parse::<u32>()
-                        .ok()
-                })
-            });
-
-        let queries = vec![format!(
-            "{} S{:0>2}E{:0>2}",
-            title.name.trim(),
-            season_num,
-            episode_num
-        )];
+        let subject = self
+            .resolve_release_search_subject_for_episode(&title, &season, &episode)
+            .await?;
 
         info!(
             actor = actor.id.as_str(),
             title_id = title_id.as_str(),
-            query = queries[0].as_str(),
-            category = category.as_str(),
+            query = subject.queries.first().map(String::as_str).unwrap_or(""),
+            category = subject.category.as_str(),
             "searching indexers for episode"
         );
 
-        let results = self
-            .search_indexer_queries(InteractiveReleaseSearchRequest {
-                queries: queries.clone(),
-                imdb_id,
-                tvdb_id,
-                anidb_id,
-                category: Some(category.clone()),
-                facet,
-                caller_label: &actor.id,
-                season: Some(season_num as u32),
-                episode: Some(episode_num as u32),
-                absolute_episode,
-                tagged_aliases: &title.tagged_aliases,
-            })
+        let mut results = self
+            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
+        self.attach_candidate_tokens(actor, &title.id, &subject.submission_scope, &mut results)
+            .await;
 
         self.emit_discovery_search_completed_event(
             Some(actor.id.clone()),
-            category,
-            queries.into_iter().next(),
+            subject.category.clone(),
+            subject.queries.first().cloned(),
             results.len() as i64,
         )
         .await;
@@ -1177,6 +1084,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) episode: Option<u32>,
     pub(crate) absolute_episode: Option<u32>,
     pub(crate) tagged_aliases: &'a [TaggedAlias],
+    pub(crate) search_subject_kind: ReleaseSearchSubjectKind,
 }
 
 struct InteractiveReleaseSearchRequest<'a> {

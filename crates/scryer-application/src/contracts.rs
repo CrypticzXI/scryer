@@ -181,16 +181,6 @@ pub struct IndexerEpisodeSearchRequest {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IndexerSeasonSearchRequest {
-    pub title: String,
-    pub season: String,
-    pub imdb_id: Option<String>,
-    pub tvdb_id: Option<String>,
-    pub anidb_id: Option<String>,
-    pub category: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QueuedReleaseSelection {
     pub source_hint: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
@@ -298,6 +288,7 @@ pub struct WantedItemsQuery {
     pub status: Option<String>,
     pub media_type: Option<String>,
     pub title_id: Option<String>,
+    pub latest_decision_code: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }

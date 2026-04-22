@@ -19,6 +19,7 @@ type SubtitleLanguagePickerProps = {
   buttonClassName?: string;
   compact?: boolean;
   disabled?: boolean;
+  singleSelect?: boolean;
 };
 
 function matchesFilter(lang: SubtitleLanguage, filter: string): boolean {
@@ -37,6 +38,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   buttonClassName,
   compact = false,
   disabled = false,
+  singleSelect = false,
 }: SubtitleLanguagePickerProps) {
   const t = useTranslate();
   const pickerRef = React.useRef<HTMLDivElement>(null);
@@ -122,6 +124,12 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   }, [pickerRect]);
 
   const toggleLanguage = (code: string) => {
+    if (singleSelect) {
+      onChange([code]);
+      setIsOpen(false);
+      return;
+    }
+
     const next = new Set(value);
     if (next.has(code)) {
       next.delete(code);

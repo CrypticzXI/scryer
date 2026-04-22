@@ -91,6 +91,31 @@ pub(crate) async fn list_pending_releases_for_wanted_item_query(
     Ok(out)
 }
 
+pub(crate) async fn list_pending_releases_for_title_query(
+    pool: &SqlitePool,
+    title_id: &str,
+) -> AppResult<Vec<PendingRelease>> {
+    let rows: Vec<SqliteRow> = sqlx::query(
+        "SELECT id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
+                source_kind, release_score, scoring_log_json, indexer_source, release_guid,
+                added_at, delay_until, status, grabbed_at,
+                source_password, published_at, info_hash
+         FROM pending_releases
+         WHERE title_id = ?
+         ORDER BY added_at DESC",
+    )
+    .bind(title_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(row_to_pending_release(row)?);
+    }
+    Ok(out)
+}
+
 pub(crate) async fn list_standby_pending_releases_for_wanted_item_query(
     pool: &SqlitePool,
     wanted_item_id: &str,

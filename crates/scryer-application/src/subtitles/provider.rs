@@ -31,6 +31,8 @@ pub struct SubtitleQuery {
     pub title: String,
     /// Alternate title names (aliases) for feature lookups.
     pub title_aliases: Vec<String>,
+    /// Refined title candidates derived from release metadata.
+    pub title_candidates: Vec<String>,
     /// Release year.
     pub year: Option<i32>,
     /// Season number (series only).
@@ -251,6 +253,14 @@ const EQUIVALENT_RELEASE_GROUPS: &[&[&str]] = &[
     &["ASAP", "IMMERSE", "FLEET"],
     &["AVS", "SVA"],
 ];
+const FEATURE_LOOKUP_TITLE_VARIANTS: &[(&str, &[&str])] = &[
+    ("superman and lois", &["Superman & Lois"]),
+    ("law and order", &["Law & Order"]),
+    (
+        "marvels agents of shield",
+        &["Marvel's Agents of S.H.I.E.L.D."],
+    ),
+];
 
 impl OpenSubtitlesProvider {
     pub fn new(api_key: String) -> Self {
@@ -400,45 +410,48 @@ impl OpenSubtitlesProvider {
         year: Option<i32>,
     ) -> AppResult<Option<String>> {
         for title in titles {
-            let params = vec![("query", title.to_ascii_lowercase())];
-            let resp = self
-                .send_request(Method::GET, "features", Some(&params), None)
-                .await?;
+            let wanted_variants = normalized_title_match_variants(title);
+            for query_title in feature_lookup_queries(title) {
+                let params = vec![("query", query_title.to_ascii_lowercase())];
+                let resp = self
+                    .send_request(Method::GET, "features", Some(&params), None)
+                    .await?;
 
-            if !resp.status().is_success() {
-                tracing::warn!(title, "OpenSubtitles feature lookup returned non-success");
-                continue;
-            }
-
-            let body: FeatureLookupResponse = match resp.json().await {
-                Ok(body) => body,
-                Err(err) => {
-                    tracing::warn!(error = %err, title, "OpenSubtitles feature lookup parse failed");
-                    continue;
+                if !resp.status().is_success() {
+                    return Err(response_error("feature lookup", resp).await);
                 }
-            };
 
-            let wanted = normalize_title_for_match(title);
-            let mut exact_year_match = None;
-            let mut fallback = None;
-
-            for result in body.data {
-                let Some(candidate_title) = result.attributes.title.as_deref() else {
-                    continue;
+                let body: FeatureLookupResponse = match resp.json().await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return Err(AppError::Repository(format!(
+                            "OpenSubtitles feature lookup parse error: {err}"
+                        )));
+                    }
                 };
-                if normalize_title_for_match(candidate_title) != wanted {
-                    continue;
+
+                let mut exact_year_match = None;
+                let mut fallback = None;
+
+                for result in body.data {
+                    let Some(candidate_title) = result.attributes.title.as_deref() else {
+                        continue;
+                    };
+                    let normalized_candidate = normalize_title_for_match(candidate_title);
+                    if !wanted_variants.contains(&normalized_candidate) {
+                        continue;
+                    }
+
+                    if year.is_some() && result.attributes.year == year {
+                        exact_year_match = Some(result.id);
+                        break;
+                    }
+                    fallback = Some(result.id);
                 }
 
-                if year.is_some() && result.attributes.year == year {
-                    exact_year_match = Some(result.id);
-                    break;
+                if let Some(id) = exact_year_match.or(fallback) {
+                    return Ok(Some(id));
                 }
-                fallback = Some(result.id);
-            }
-
-            if let Some(id) = exact_year_match.or(fallback) {
-                return Ok(Some(id));
             }
         }
 
@@ -469,9 +482,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
         let title_candidates = collect_title_candidates(query);
         let feature_id = if query.imdb_id.is_none() && query.series_imdb_id.is_none() {
             self.search_feature_id(&title_candidates, query.year)
-                .await
-                .ok()
-                .flatten()
+                .await?
         } else {
             None
         };
@@ -515,8 +526,8 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                 } else if let Some(feature_id) = feature_id.clone() {
                     params.push(("parent_feature_id", feature_id));
                     series_identifier_match = true;
-                } else {
-                    params.push(("query", query.title.clone()));
+                } else if query.file_hash.is_none() {
+                    return Ok(Vec::new());
                 }
             }
         }
@@ -764,10 +775,16 @@ impl SubtitleProvider for OpenSubtitlesProvider {
 }
 
 fn collect_title_candidates(query: &SubtitleQuery) -> Vec<String> {
-    let mut candidates = Vec::with_capacity(query.title_aliases.len() + 1);
+    let mut candidates =
+        Vec::with_capacity(query.title_candidates.len() + query.title_aliases.len() + 1);
     let mut seen = HashSet::new();
 
-    for candidate in std::iter::once(&query.title).chain(query.title_aliases.iter()) {
+    for candidate in query
+        .title_candidates
+        .iter()
+        .chain(std::iter::once(&query.title))
+        .chain(query.title_aliases.iter())
+    {
         let normalized = normalize_title_for_match(candidate);
         if normalized.is_empty() || !seen.insert(normalized) {
             continue;
@@ -816,21 +833,95 @@ fn sanitize_imdb_id(imdb_id: &str) -> Option<String> {
 }
 
 fn normalize_title_for_match(title: &str) -> String {
-    title
+    let normalized = title
         .chars()
-        .filter_map(|ch| {
+        .fold(String::with_capacity(title.len()), |mut acc, ch| {
             if ch.is_alphanumeric() {
-                Some(ch.to_ascii_lowercase())
-            } else if ch.is_whitespace() || matches!(ch, '.' | '-' | '_' | '&') {
-                Some(' ')
-            } else {
-                None
+                acc.push(ch.to_ascii_lowercase());
+            } else if ch == '&' {
+                acc.push_str(" and ");
+            } else if ch.is_whitespace() || matches!(ch, '.' | '-' | '_') {
+                acc.push(' ');
             }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+            acc
+        });
+
+    collapse_title_initialisms(normalized.split_whitespace().collect::<Vec<_>>()).join(" ")
+}
+
+fn collapse_title_initialisms<'a>(tokens: Vec<&'a str>) -> Vec<String> {
+    let mut collapsed = Vec::with_capacity(tokens.len());
+    let mut idx = 0;
+
+    while idx < tokens.len() {
+        if tokens[idx].len() == 1 && tokens[idx].chars().all(|ch| ch.is_ascii_alphabetic()) {
+            let start = idx;
+            while idx < tokens.len()
+                && tokens[idx].len() == 1
+                && tokens[idx].chars().all(|ch| ch.is_ascii_alphabetic())
+            {
+                idx += 1;
+            }
+
+            if idx - start > 1 {
+                collapsed.push(tokens[start..idx].concat());
+                continue;
+            }
+        }
+
+        collapsed.push(tokens[idx].to_string());
+        idx += 1;
+    }
+
+    collapsed
+}
+
+fn feature_lookup_queries(title: &str) -> Vec<String> {
+    let trimmed = title.trim();
+    let mut queries = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_query = |candidate: String| {
+        let trimmed_candidate = candidate.trim();
+        let normalized = normalize_title_for_match(trimmed_candidate);
+        let dedupe_key = trimmed_candidate.to_ascii_lowercase();
+        if !trimmed_candidate.is_empty() && !normalized.is_empty() && seen.insert(dedupe_key) {
+            queries.push(trimmed_candidate.to_string());
+        }
+    };
+
+    push_query(trimmed.to_string());
+
+    if trimmed.contains('&') {
+        push_query(trimmed.replace('&', "and"));
+    }
+    if trimmed.to_ascii_lowercase().contains(" and ") {
+        push_query(trimmed.replace(" and ", " & "));
+        push_query(trimmed.replace(" And ", " & "));
+    }
+
+    let normalized = normalize_title_for_match(trimmed);
+    if !normalized.is_empty() {
+        push_query(normalized.clone());
+    }
+
+    for (canonical, variants) in FEATURE_LOOKUP_TITLE_VARIANTS {
+        if normalized == *canonical {
+            for variant in *variants {
+                push_query((*variant).to_string());
+            }
+        }
+    }
+
+    queries
+}
+
+fn normalized_title_match_variants(title: &str) -> HashSet<String> {
+    feature_lookup_queries(title)
+        .into_iter()
+        .map(|candidate| normalize_title_for_match(&candidate))
+        .filter(|candidate| !candidate.is_empty())
+        .collect()
 }
 
 fn title_matches_query(candidate: Option<&str>, query: &SubtitleQuery) -> bool {
@@ -1136,6 +1227,7 @@ mod tests {
             series_imdb_id: Some("tt1234567".into()),
             title: "Breaking Bad".into(),
             title_aliases: vec!["Metastasis".into()],
+            title_candidates: vec!["Breaking Bad".into()],
             year: Some(2008),
             season: Some(1),
             episode: Some(3),
@@ -1165,6 +1257,7 @@ mod tests {
             series_imdb_id: None,
             title: "Test".into(),
             title_aliases: vec![],
+            title_candidates: vec![],
             year: None,
             season: None,
             episode: None,
@@ -1265,6 +1358,7 @@ mod tests {
                 series_imdb_id: Some("tt1234567".into()),
                 title: "Show Name".into(),
                 title_aliases: vec![],
+                title_candidates: vec![],
                 year: Some(2024),
                 season: Some(2),
                 episode: Some(5),
@@ -1321,6 +1415,7 @@ mod tests {
                 series_imdb_id: None,
                 title: "Movie Title".into(),
                 title_aliases: vec!["AKA Movie Title".into()],
+                title_candidates: vec![],
                 year: Some(2024),
                 season: None,
                 episode: None,
@@ -1338,6 +1433,157 @@ mod tests {
             .unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_search_returns_empty_without_parent_identifier_or_feature_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/features"))
+            .and(query_param("query", "unknown series"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenSubtitlesProvider::with_api_base(
+            "api-key".into(),
+            format!("{}/api/v1", server.uri()),
+        );
+        let results = provider
+            .search(&SubtitleQuery {
+                media_kind: SubtitleMediaKind::Episode,
+                file_hash: None,
+                imdb_id: None,
+                series_imdb_id: None,
+                title: "Unknown Series".into(),
+                title_aliases: vec![],
+                title_candidates: vec![],
+                year: Some(2024),
+                season: Some(1),
+                episode: Some(1),
+                languages: vec!["eng".into()],
+                release_group: None,
+                source: None,
+                video_codec: None,
+                audio_codec: None,
+                resolution: None,
+                hearing_impaired: None,
+                include_ai_translated: false,
+                include_machine_translated: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_search_uses_normalized_feature_lookup_variants() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/features"))
+            .and(query_param("query", "superman & lois"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/features"))
+            .and(query_param("query", "superman and lois"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{
+                    "id": "880",
+                    "attributes": { "title": "Superman & Lois", "year": 2021 }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .and(query_param("parent_feature_id", "880"))
+            .and(query_param("season_number", "1"))
+            .and(query_param("episode_number", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenSubtitlesProvider::with_api_base(
+            "api-key".into(),
+            format!("{}/api/v1", server.uri()),
+        );
+        let results = provider
+            .search(&SubtitleQuery {
+                media_kind: SubtitleMediaKind::Episode,
+                file_hash: None,
+                imdb_id: None,
+                series_imdb_id: None,
+                title: "Superman & Lois".into(),
+                title_aliases: vec![],
+                title_candidates: vec![],
+                year: Some(2021),
+                season: Some(1),
+                episode: Some(1),
+                languages: vec!["eng".into()],
+                release_group: None,
+                source: None,
+                video_codec: None,
+                audio_codec: None,
+                resolution: None,
+                hearing_impaired: None,
+                include_ai_translated: false,
+                include_machine_translated: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_search_surfaces_feature_lookup_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/features"))
+            .and(query_param("query", "unknown series"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenSubtitlesProvider::with_api_base(
+            "api-key".into(),
+            format!("{}/api/v1", server.uri()),
+        );
+        let err = provider
+            .search(&SubtitleQuery {
+                media_kind: SubtitleMediaKind::Episode,
+                file_hash: None,
+                imdb_id: None,
+                series_imdb_id: None,
+                title: "Unknown Series".into(),
+                title_aliases: vec![],
+                title_candidates: vec![],
+                year: Some(2024),
+                season: Some(1),
+                episode: Some(1),
+                languages: vec!["eng".into()],
+                release_group: None,
+                source: None,
+                video_codec: None,
+                audio_codec: None,
+                resolution: None,
+                hearing_impaired: None,
+                include_ai_translated: false,
+                include_machine_translated: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("feature lookup"));
     }
 
     #[tokio::test]
@@ -1417,6 +1663,7 @@ mod tests {
                 series_imdb_id: None,
                 title: "Movie".into(),
                 title_aliases: vec![],
+                title_candidates: vec![],
                 year: Some(2024),
                 season: None,
                 episode: None,
@@ -1470,10 +1717,11 @@ mod tests {
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Movie,
                 file_hash: None,
-                imdb_id: None,
+                imdb_id: Some("tt1234567".into()),
                 series_imdb_id: None,
                 title: "Movie".into(),
                 title_aliases: vec![],
+                title_candidates: vec![],
                 year: Some(2024),
                 season: None,
                 episode: None,

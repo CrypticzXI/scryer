@@ -4,8 +4,12 @@ use ring::hmac;
 
 use super::*;
 use crate::services::AppAssembly;
+use crate::types::ReleaseCandidateTokenClaims;
 
 impl AppUseCase {
+    const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
+    const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
+
     pub fn new(
         assembly: AppAssembly,
         auth: JwtAuthConfig,
@@ -232,6 +236,183 @@ impl AppUseCase {
             .map_err(|err| AppError::Repository(format!("failed to issue token: {err}")))?;
 
         Ok(token)
+    }
+
+    fn derive_release_candidate_signing_key(&self, jwt_signing_key: &[u8]) -> Vec<u8> {
+        let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, jwt_signing_key);
+        hmac::sign(&hmac_key, Self::RELEASE_CANDIDATE_TOKEN_KIND.as_bytes())
+            .as_ref()
+            .to_vec()
+    }
+
+    pub(crate) async fn release_candidate_signing_key_for_actor(
+        &self,
+        actor: &User,
+    ) -> AppResult<Vec<u8>> {
+        self.ensure_jwt_signing_keys_loaded().await?;
+        let cache = self.jwt_signing_keys.read().await;
+        let jwt_signing_key = cache.get(&actor.id).cloned().ok_or_else(|| {
+            AppError::Unauthorized(format!(
+                "cannot resolve release candidate signing key for actor {}",
+                actor.id
+            ))
+        })?;
+
+        Ok(self.derive_release_candidate_signing_key(&jwt_signing_key))
+    }
+
+    fn submission_scope_claims(scope: &SubmissionScope) -> (&'static str, Option<String>) {
+        match scope {
+            SubmissionScope::Episode { episode_id } => ("episode", Some(episode_id.clone())),
+            SubmissionScope::Collection { collection_id } => {
+                ("collection", Some(collection_id.clone()))
+            }
+            SubmissionScope::Title => ("title", None),
+            SubmissionScope::Orphan => ("orphan", None),
+        }
+    }
+
+    fn submission_scope_from_claims(
+        scope_kind: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<SubmissionScope> {
+        match scope_kind {
+            "episode" => Ok(SubmissionScope::Episode {
+                episode_id: scope_id.ok_or_else(|| {
+                    AppError::Unauthorized(
+                        "release candidate token missing episode scope id".into(),
+                    )
+                })?,
+            }),
+            "collection" => Ok(SubmissionScope::Collection {
+                collection_id: scope_id.ok_or_else(|| {
+                    AppError::Unauthorized(
+                        "release candidate token missing collection scope id".into(),
+                    )
+                })?,
+            }),
+            "title" => Ok(SubmissionScope::Title),
+            "orphan" => Ok(SubmissionScope::Orphan),
+            _ => Err(AppError::Unauthorized(
+                "release candidate token has unknown scope".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn issue_release_candidate_token_with_signing_key(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope: &SubmissionScope,
+        selection: &QueuedReleaseSelection,
+        signing_key: &[u8],
+    ) -> AppResult<String> {
+        let source_hint = selection
+            .source_hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation("release candidate token requires a source hint".into())
+            })?;
+        let source_title = selection
+            .source_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation("release candidate token requires a source title".into())
+            })?;
+
+        let now = Utc::now();
+        let iat = now.timestamp();
+        let exp = (now + Duration::seconds(Self::RELEASE_CANDIDATE_TOKEN_TTL_SECONDS)).timestamp();
+        let (scope_kind, scope_id) = Self::submission_scope_claims(scope);
+        let claims = ReleaseCandidateTokenClaims {
+            sub: actor.id.clone(),
+            exp,
+            iat,
+            iss: self.auth.issuer.clone(),
+            kind: Self::RELEASE_CANDIDATE_TOKEN_KIND.to_string(),
+            title_id: title_id.to_string(),
+            scope_kind: scope_kind.to_string(),
+            scope_id,
+            source_hint: source_hint.to_string(),
+            source_kind: selection.source_kind,
+            source_title: source_title.to_string(),
+        };
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        let key = jsonwebtoken::EncodingKey::from_secret(signing_key);
+
+        jsonwebtoken::encode(&header, &claims, &key).map_err(|err| {
+            AppError::Repository(format!("failed to issue release candidate token: {err}"))
+        })
+    }
+
+    pub async fn issue_release_candidate_token(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope: &SubmissionScope,
+        selection: &QueuedReleaseSelection,
+    ) -> AppResult<String> {
+        let signing_key = self.release_candidate_signing_key_for_actor(actor).await?;
+        self.issue_release_candidate_token_with_signing_key(
+            actor,
+            title_id,
+            scope,
+            selection,
+            &signing_key,
+        )
+    }
+
+    pub async fn verify_release_candidate_token(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope: &SubmissionScope,
+        token: &str,
+    ) -> AppResult<QueuedReleaseSelection> {
+        let signing_key = self.release_candidate_signing_key_for_actor(actor).await?;
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+        validation.validate_exp = true;
+        validation.set_issuer(&[self.auth.issuer.as_str()]);
+        let key = jsonwebtoken::DecodingKey::from_secret(&signing_key);
+        let claims = jsonwebtoken::decode::<ReleaseCandidateTokenClaims>(token, &key, &validation)
+            .map_err(|err| {
+                AppError::Unauthorized(format!("invalid release candidate token: {err}"))
+            })?
+            .claims;
+
+        if claims.kind != Self::RELEASE_CANDIDATE_TOKEN_KIND {
+            return Err(AppError::Unauthorized(
+                "invalid release candidate token kind".into(),
+            ));
+        }
+        if claims.sub != actor.id {
+            return Err(AppError::Unauthorized(
+                "release candidate token subject does not match actor".into(),
+            ));
+        }
+        if claims.title_id != title_id {
+            return Err(AppError::Unauthorized(
+                "release candidate token title does not match request".into(),
+            ));
+        }
+
+        let claimed_scope =
+            Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id)?;
+        if &claimed_scope != scope {
+            return Err(AppError::Unauthorized(
+                "release candidate token scope does not match request".into(),
+            ));
+        }
+
+        Ok(QueuedReleaseSelection {
+            source_hint: Some(claims.source_hint),
+            source_kind: claims.source_kind,
+            source_title: Some(claims.source_title),
+        })
     }
 
     pub async fn authenticate_token(&self, token: &str) -> AppResult<User> {

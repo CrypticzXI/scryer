@@ -7,21 +7,20 @@ import {
   cutoffUnmetTitlesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
-  searchQuery,
   wantedItemsQuery,
 } from "@/lib/graphql/queries";
 import {
   triggerWantedSearchMutation,
+  triggerTitleMismatchRecoverySearchMutation,
   pauseWantedItemMutation,
   resumeWantedItemMutation,
   resetWantedItemMutation,
-  queueExistingMutation,
+  queueBestReleaseMutation,
   forceGrabPendingReleaseMutation,
   dismissPendingReleaseMutation,
 } from "@/lib/graphql/mutations";
 import type {
   PendingReleaseItem,
-  Release,
   ReleaseDecisionItem,
   WantedItem,
   WantedMediaType,
@@ -47,6 +46,7 @@ export const WantedContainer = memo(function WantedContainer({
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<WantedStatus | undefined>(undefined);
   const [mediaTypeFilter, setMediaTypeFilter] = useState<WantedMediaType | undefined>(undefined);
+  const [latestDecisionCodeFilter, setLatestDecisionCodeFilter] = useState<string | undefined>(undefined);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -58,6 +58,7 @@ export const WantedContainer = memo(function WantedContainer({
   const [, executePause] = useMutation(pauseWantedItemMutation);
   const [, executeResume] = useMutation(resumeWantedItemMutation);
   const [, executeReset] = useMutation(resetWantedItemMutation);
+  const [, executeMismatchRecovery] = useMutation(triggerTitleMismatchRecoverySearchMutation);
 
   // --- Cutoff state ---
   const [cutoffItems, setCutoffItems] = useState<CutoffUnmetItem[]>([]);
@@ -129,6 +130,7 @@ export const WantedContainer = memo(function WantedContainer({
         .query(wantedItemsQuery, {
           status: statusFilter,
           mediaType: mediaTypeFilter,
+          latestDecisionCode: latestDecisionCodeFilter,
           limit,
           offset,
         })
@@ -142,7 +144,7 @@ export const WantedContainer = memo(function WantedContainer({
     } finally {
       setLoading(false);
     }
-  }, [client, statusFilter, mediaTypeFilter, offset, t, setGlobalStatus]);
+  }, [client, statusFilter, mediaTypeFilter, latestDecisionCodeFilter, offset, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "wanted") {
@@ -250,59 +252,28 @@ export const WantedContainer = memo(function WantedContainer({
     [executeReset, refreshItems, setGlobalStatus],
   );
 
+  const triggerMismatchRecovery = useCallback(
+    async (titleId: string) => {
+      const { data, error } = await executeMismatchRecovery({ input: { titleId } });
+      if (error) {
+        setGlobalStatus(error.message);
+      } else {
+        setGlobalStatus(`queued ${data?.triggerTitleMismatchRecoverySearch ?? 0} mismatch recovery items`);
+        void refreshItems();
+      }
+    },
+    [executeMismatchRecovery, refreshItems, setGlobalStatus],
+  );
+
   // --- Cutoff search actions ---
 
   const searchAndQueueTitle = useCallback(
     async (cutoffItem: CutoffUnmetItem) => {
-      const imdbId =
-        cutoffItem.externalIds
-          ?.find((e) => e.source.toLowerCase() === "imdb")
-          ?.value?.trim() || null;
-      const tvdbId =
-        cutoffItem.externalIds
-          ?.find((e) => e.source.toLowerCase() === "tvdb")
-          ?.value?.trim() || null;
-
-      const { data, error } = await client
-        .query(searchQuery, {
-          query: cutoffItem.name,
-          imdbId,
-          tvdbId,
-          category:
-            cutoffItem.facet === "movie"
-              ? "movie"
-              : cutoffItem.facet === "series"
-                ? "series"
-                : "anime",
-          limit: cutoffItem.facet === "movie" ? 50 : 15,
-        })
-        .toPromise();
-
-      if (error) throw error;
-
-      const results: Release[] = data?.searchReleases ?? [];
-      const top = results.find((r) => r.qualityProfileDecision?.allowed ?? true);
-      if (!top) {
-        setGlobalStatus(t("status.noReleaseForTitle", { name: cutoffItem.name }));
-        return;
-      }
-
-      const sourceHint = top.downloadUrl || top.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: cutoffItem.name }));
-        return;
-      }
-
       const { error: queueError } = await client
-        .mutation(queueExistingMutation, {
+        .mutation(queueBestReleaseMutation, {
           input: {
             titleId: cutoffItem.id,
             scope: { title: true },
-            release: {
-              sourceHint,
-              sourceKind: top.sourceKind ?? null,
-              sourceTitle: top.title,
-            },
           },
         })
         .toPromise();
@@ -371,6 +342,8 @@ export const WantedContainer = memo(function WantedContainer({
           setStatusFilter,
           mediaTypeFilter,
           setMediaTypeFilter,
+          latestDecisionCodeFilter,
+          setLatestDecisionCodeFilter,
           offset,
           setOffset,
           limit,
@@ -383,6 +356,7 @@ export const WantedContainer = memo(function WantedContainer({
           pauseItem,
           resumeItem,
           resetItem,
+          triggerMismatchRecovery,
         }}
         cutoffState={{
           items: cutoffItems,

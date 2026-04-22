@@ -1,14 +1,17 @@
 import * as React from "react";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Subtitles } from "lucide-react";
+import { CircleAlert, Loader2, Subtitles } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import type { SubtitleSettings } from "@/lib/types/settings";
+import { getSubtitleLanguage } from "@/lib/constants/subtitle-languages";
 
 type Props = {
   settings: SubtitleSettings;
   setSettings: (s: SubtitleSettings) => void;
+  passwordDraft: string;
+  onPasswordCommit: (value: string) => void;
   saving: boolean;
   loading: boolean;
 };
@@ -68,6 +71,8 @@ function BlurIntegerInput({ value, onCommit, disabled }: { value: number; onComm
 export function SettingsSubtitlesSection({
   settings,
   setSettings,
+  passwordDraft,
+  onPasswordCommit,
   saving,
   loading,
 }: Props) {
@@ -89,6 +94,10 @@ export function SettingsSubtitlesSection({
 
   const disabled = !settings.enabled;
   const syncDisabled = disabled || !settings.syncEnabled;
+  const showApiKeyWarning = settings.enabled && !settings.hasOpenSubtitlesApiKey;
+  const usernameLooksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    settings.openSubtitlesUsername.trim(),
+  );
 
   if (loading) {
     return (
@@ -110,6 +119,20 @@ export function SettingsSubtitlesSection({
       <Toggle checked={settings.enabled} onChange={(v) => update({ enabled: v })} label={t("settings.sub.enabled")} />
 
       <div className={`space-y-6 ${disabled ? "pointer-events-none select-none opacity-40" : ""}`}>
+        {showApiKeyWarning ? (
+          <div
+            role="alert"
+            className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+          >
+            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <div className="space-y-1">
+              <p className="font-medium">{t("settings.sub.apiKeyRequiredTitle")}</p>
+              <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                {t("settings.sub.apiKeyRequiredBody")}
+              </p>
+            </div>
+          </div>
+        ) : null}
         {/* OpenSubtitles Credentials */}
         <div className="space-y-1">
           <Label className="text-sm font-medium">{t("settings.sub.credentials")}</Label>
@@ -120,14 +143,21 @@ export function SettingsSubtitlesSection({
                 value={settings.openSubtitlesUsername}
                 onCommit={(v) => update({ openSubtitlesUsername: v })}
                 disabled={disabled}
+                aria-invalid={usernameLooksLikeEmail}
               />
+              {usernameLooksLikeEmail ? (
+                <div className="flex items-start gap-2 pt-1 text-xs text-amber-600 dark:text-amber-400">
+                  <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{t("settings.sub.usernameEmailWarning")}</span>
+                </div>
+              ) : null}
             </div>
             <div className="space-y-1">
               <Label>{t("settings.sub.password")}</Label>
               <BlurInput
                 type="password"
-                value={settings.openSubtitlesPassword}
-                onCommit={(v) => update({ openSubtitlesPassword: v })}
+                value={passwordDraft}
+                onCommit={onPasswordCommit}
                 disabled={disabled}
                 placeholder={settings.hasOpenSubtitlesPassword ? "••••••••" : ""}
               />
@@ -142,6 +172,58 @@ export function SettingsSubtitlesSection({
             value={settings.languages.map((language) => language.code)}
             onChange={updateLanguageCodes}
           />
+          {settings.languages.length > 0 ? (
+            <div className="space-y-2 pt-2">
+              {settings.languages.map((language) => {
+                const subtitleLanguage = getSubtitleLanguage(language.code);
+                return (
+                  <div
+                    key={language.code}
+                    className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">
+                        {subtitleLanguage?.name ?? language.code}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {subtitleLanguage?.nativeName ?? language.code} · {language.code}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <Toggle
+                        checked={language.hearingImpaired}
+                        onChange={(value) =>
+                          update({
+                            languages: settings.languages.map((entry) =>
+                              entry.code === language.code
+                                ? { ...entry, hearingImpaired: value }
+                                : entry,
+                            ),
+                          })
+                        }
+                        label={t("settings.sub.hiPreference")}
+                        disabled={disabled}
+                      />
+                      <Toggle
+                        checked={language.forced}
+                        onChange={(value) =>
+                          update({
+                            languages: settings.languages.map((entry) =>
+                              entry.code === language.code
+                                ? { ...entry, forced: value }
+                                : entry,
+                            ),
+                          })
+                        }
+                        label={t("settings.sub.forcedOnly")}
+                        disabled={disabled}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
 
         {/* Score Thresholds & Search */}

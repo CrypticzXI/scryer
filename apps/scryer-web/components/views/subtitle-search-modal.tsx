@@ -1,8 +1,8 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { Search, Download, Loader2, Hash } from "lucide-react";
+import { Search, Download, Loader2, Hash, Ban, CircleAlert } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -18,19 +18,35 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  searchSubtitlesMutation,
-  downloadSubtitleMutation,
+  blacklistSubtitleMutation,
   type SubtitleSearchResult,
+  downloadSubtitleMutation,
+  searchSubtitlesMutation,
 } from "@/lib/graphql/mutations";
+import {
+  deleteSubtitlePreviewQuery,
+  subtitleBlacklistEntriesQuery,
+  subtitleSettingsQuery,
+} from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
+import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
+import type {
+  SubtitleBlacklistEntryRecord,
+  SubtitleDownloadRecord,
+} from "@/lib/types/subtitles";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
+import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mediaFileId: string;
   filePath: string;
-  onDownloaded: () => void;
+  downloads: SubtitleDownloadRecord[];
+  onChanged: () => void | Promise<void>;
 };
 
 export function SubtitleSearchModal({
@@ -38,41 +54,168 @@ export function SubtitleSearchModal({
   onOpenChange,
   mediaFileId,
   filePath,
-  onDownloaded,
+  downloads,
+  onChanged,
 }: Props) {
   const t = useTranslate();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [language, setLanguage] = React.useState("eng");
   const [results, setResults] = React.useState<SubtitleSearchResult[]>([]);
+  const [hasSearched, setHasSearched] = React.useState(false);
   const [searching, setSearching] = React.useState(false);
+  const [hasOpenSubtitlesApiKey, setHasOpenSubtitlesApiKey] = React.useState<boolean | null>(null);
+  const [openSubtitlesUsername, setOpenSubtitlesUsername] = React.useState("");
+  const [hasOpenSubtitlesPassword, setHasOpenSubtitlesPassword] = React.useState<boolean | null>(null);
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null);
+  const [blacklistEntries, setBlacklistEntries] = React.useState<
+    SubtitleBlacklistEntryRecord[]
+  >([]);
+  const [subtitleToBlacklist, setSubtitleToBlacklist] =
+    React.useState<SubtitleDownloadRecord | null>(null);
+  const [blacklisting, setBlacklisting] = React.useState(false);
+  const [typedConfirmation, setTypedConfirmation] = React.useState("");
+  const subtitleDeletePreviewVariables = React.useMemo(
+    () =>
+      subtitleToBlacklist
+        ? { input: { subtitleDownloadId: subtitleToBlacklist.id } }
+        : null,
+    [subtitleToBlacklist],
+  );
+  const {
+    preview: subtitleDeletePreview,
+    loading: subtitleDeletePreviewLoading,
+    error: subtitleDeletePreviewError,
+  } = useDeletePreview(
+    deleteSubtitlePreviewQuery,
+    "deleteSubtitlePreview",
+    subtitleDeletePreviewVariables,
+    subtitleToBlacklist !== null,
+  );
+
+  const loadBlacklistEntries = React.useCallback(async () => {
+    const { data, error } = await client
+      .query(
+        subtitleBlacklistEntriesQuery,
+        { mediaFileId },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise();
+    if (error) {
+      throw error;
+    }
+    setBlacklistEntries(
+      (data?.subtitleBlacklistEntries ?? []) as SubtitleBlacklistEntryRecord[],
+    );
+  }, [client, mediaFileId]);
+
+  const runSearch = React.useCallback(
+    async (
+      nextLanguage: string,
+      options?: {
+        announceNoResults?: boolean;
+      },
+    ) => {
+      setSearching(true);
+      setHasSearched(true);
+      setResults([]);
+      try {
+        const { data, error } = await client
+          .mutation(searchSubtitlesMutation, {
+            input: { mediaFileId, language: nextLanguage.trim() },
+          })
+          .toPromise();
+        if (error) throw error;
+        const sorted = [...(data?.searchSubtitles ?? [])].sort(
+          (a: SubtitleSearchResult, b: SubtitleSearchResult) => b.score - a.score,
+        );
+        setResults(sorted);
+        if ((options?.announceNoResults ?? true) && sorted.length === 0) {
+          setGlobalStatus(t("subtitle.noResults"));
+        }
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.apiError"),
+        );
+      } finally {
+        setSearching(false);
+      }
+    },
+    [client, mediaFileId, setGlobalStatus, t],
+  );
+
+  React.useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let cancelled = false;
+    setResults([]);
+    setHasSearched(false);
+    setHasOpenSubtitlesApiKey(null);
+    setOpenSubtitlesUsername("");
+    setHasOpenSubtitlesPassword(null);
+    setSubtitleToBlacklist(null);
+    setTypedConfirmation("");
+    void Promise.all([
+      client.query(subtitleSettingsQuery, {}, { requestPolicy: "network-only" }).toPromise(),
+      client
+        .query(
+          subtitleBlacklistEntriesQuery,
+          { mediaFileId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise(),
+    ])
+      .then(([settingsResult, blacklistResult]) => {
+        if (cancelled) {
+          return;
+        }
+        if (settingsResult.error) {
+          throw settingsResult.error;
+        }
+        if (blacklistResult.error) {
+          throw blacklistResult.error;
+        }
+        const preferredLanguage =
+          settingsResult.data?.subtitleSettings?.languages?.[0]?.code ?? "eng";
+        setHasOpenSubtitlesApiKey(
+          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesApiKey ?? false,
+        );
+        setOpenSubtitlesUsername(
+          settingsResult.data?.subtitleSettings?.openSubtitlesUsername ?? "",
+        );
+        setHasOpenSubtitlesPassword(
+          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesPassword ?? false,
+        );
+        setLanguage(preferredLanguage);
+        setBlacklistEntries(
+          (blacklistResult.data?.subtitleBlacklistEntries ?? []) as SubtitleBlacklistEntryRecord[],
+        );
+        const hasApiKey =
+          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesApiKey === true;
+        const hasCredentials =
+          (settingsResult.data?.subtitleSettings?.openSubtitlesUsername ?? "").trim().length > 0 &&
+          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesPassword === true;
+        if (hasApiKey && hasCredentials) {
+          void runSearch(preferredLanguage, { announceNoResults: false });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setGlobalStatus(
+            error instanceof Error ? error.message : t("status.apiError"),
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, mediaFileId, open, runSearch, setGlobalStatus, t]);
 
   const handleSearch = React.useCallback(async () => {
-    setSearching(true);
-    setResults([]);
-    try {
-      const { data, error } = await client
-        .mutation(searchSubtitlesMutation, {
-          input: { mediaFileId, language: language.trim() },
-        })
-        .toPromise();
-      if (error) throw error;
-      const sorted = [...(data?.searchSubtitles ?? [])].sort(
-        (a: SubtitleSearchResult, b: SubtitleSearchResult) => b.score - a.score,
-      );
-      setResults(sorted);
-      if (sorted.length === 0) {
-        setGlobalStatus(t("subtitle.noResults"));
-      }
-    } catch (error) {
-      setGlobalStatus(
-        error instanceof Error ? error.message : t("status.apiError"),
-      );
-    } finally {
-      setSearching(false);
-    }
-  }, [client, mediaFileId, language, setGlobalStatus, t]);
+    await runSearch(language);
+  }, [language, runSearch]);
 
   const handleDownload = React.useCallback(
     async (result: SubtitleSearchResult) => {
@@ -96,7 +239,7 @@ export function SubtitleSearchModal({
           .toPromise();
         if (error) throw error;
         setGlobalStatus(t("subtitle.download") + " \u2714");
-        onDownloaded();
+        await onChanged();
       } catch (error) {
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.apiError"),
@@ -105,12 +248,68 @@ export function SubtitleSearchModal({
         setDownloadingId(null);
       }
     },
-    [client, mediaFileId, setGlobalStatus, t, onDownloaded],
+    [client, mediaFileId, onChanged, setGlobalStatus, t],
   );
 
+  const handleConfirmBlacklist = React.useCallback(async () => {
+    if (!subtitleToBlacklist || !subtitleDeletePreview) {
+      return;
+    }
+    setBlacklisting(true);
+    try {
+      const { error } = await client
+        .mutation(blacklistSubtitleMutation, {
+          input: {
+            subtitleDownloadId: subtitleToBlacklist.id,
+            previewFingerprint: subtitleDeletePreview.fingerprint,
+            typedConfirmation: typedConfirmation.trim() || undefined,
+          },
+        })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      setGlobalStatus(t("subtitle.blacklisted"));
+      setSubtitleToBlacklist(null);
+      setTypedConfirmation("");
+      await Promise.all([onChanged(), loadBlacklistEntries()]);
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.apiError"),
+      );
+    } finally {
+      setBlacklisting(false);
+    }
+  }, [
+    client,
+    loadBlacklistEntries,
+    onChanged,
+    setGlobalStatus,
+    subtitleDeletePreview,
+    subtitleToBlacklist,
+    t,
+    typedConfirmation,
+  ]);
+
+  const blacklistConfirmDisabled =
+    blacklisting ||
+    subtitleDeletePreviewLoading ||
+    !!subtitleDeletePreviewError ||
+    !subtitleDeletePreview ||
+    (subtitleDeletePreview.requiresTypedConfirmation &&
+      typedConfirmation.trim() !== "DELETE");
+  const hasOpenSubtitlesCredentials =
+    openSubtitlesUsername.trim().length > 0 && hasOpenSubtitlesPassword === true;
+  const canSearchSubtitles =
+    hasOpenSubtitlesApiKey === true && hasOpenSubtitlesCredentials;
+  const credentialsRequiredTitle = t("subtitle.credentialsRequiredTitle");
+  const credentialsRequiredBody = t("subtitle.credentialsRequiredBody");
+  const credentialsRequiredAction = t("subtitle.credentialsRequiredAction");
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Search className="h-4 w-4" />
@@ -121,14 +320,64 @@ export function SubtitleSearchModal({
           </p>
         </DialogHeader>
 
-        <div className="flex items-center gap-2">
-          <Input
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            placeholder={t("subtitle.selectLanguage")}
-            className="max-w-[200px]"
-          />
-          <Button onClick={handleSearch} disabled={searching || !language.trim()}>
+        <div className="flex flex-col gap-3">
+          {hasOpenSubtitlesApiKey === false ? (
+            <div
+              role="alert"
+              className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+            >
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <div className="space-y-1">
+                <p className="font-medium">{t("subtitle.apiKeyRequiredTitle")}</p>
+                <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  {t("subtitle.apiKeyRequiredBody")}
+                </p>
+              </div>
+            </div>
+          ) : !hasOpenSubtitlesCredentials ? (
+            <div
+              role="alert"
+              className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+            >
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <div className="space-y-1">
+                <p className="font-medium">
+                  {credentialsRequiredTitle}
+                </p>
+                <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  {credentialsRequiredBody}
+                </p>
+                <Button
+                  asChild
+                  size="sm"
+                  variant="outline"
+                  className="border-amber-500/30 bg-background/80"
+                >
+                  <Link to="/settings/subtitles" onClick={() => onOpenChange(false)}>
+                    {credentialsRequiredAction}
+                  </Link>
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <SubtitleLanguagePicker
+                value={language ? [language] : []}
+                onChange={(codes) => setLanguage(codes[0] ?? "")}
+                singleSelect
+                compact
+                disabled={!canSearchSubtitles}
+              />
+            </div>
+          <Button
+            onClick={handleSearch}
+            disabled={
+              searching ||
+              !language.trim() ||
+              !canSearchSubtitles
+            }
+          >
             {searching ? (
               <Loader2 className="mr-1 h-4 w-4 animate-spin" />
             ) : (
@@ -136,6 +385,65 @@ export function SubtitleSearchModal({
             )}
             {searching ? t("subtitle.searching") : t("subtitle.search")}
           </Button>
+        </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ExternalSubtitleSection
+              downloads={downloads}
+              renderActions={(download) => (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setSubtitleToBlacklist(download);
+                    setTypedConfirmation("");
+                  }}
+                >
+                  <Ban className="mr-1 h-3.5 w-3.5" />
+                  {t("subtitle.blacklist")}
+                </Button>
+              )}
+            />
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                {t("subtitle.blacklist")}
+              </p>
+              {blacklistEntries.length === 0 ? (
+                <p className="text-xs text-muted-foreground/70">
+                  {t("subtitle.noResults")}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {blacklistEntries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                          {entry.language}
+                        </span>
+                        <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {entry.provider}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {new Date(entry.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                        {entry.providerFileId}
+                      </p>
+                      {entry.reason ? (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {entry.reason}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto">
@@ -147,7 +455,9 @@ export function SubtitleSearchModal({
                   <TableHead className="text-center">
                     {t("subtitle.score")}
                   </TableHead>
-                  <TableHead className="text-center">Flags</TableHead>
+                  <TableHead className="text-center">
+                    {t("subtitle.flags")}
+                  </TableHead>
                   <TableHead>{t("subtitle.provider")}</TableHead>
                   <TableHead className="text-right" />
                 </TableRow>
@@ -221,13 +531,39 @@ export function SubtitleSearchModal({
                 ))}
               </TableBody>
             </Table>
-          ) : !searching ? (
+          ) : hasSearched && !searching ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               {t("subtitle.noResults")}
             </p>
           ) : null}
         </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        open={subtitleToBlacklist !== null}
+        title={t("subtitle.blacklist")}
+        description={subtitleToBlacklist?.filePath ?? t("subtitle.blacklist")}
+        confirmLabel={t("subtitle.blacklist")}
+        cancelLabel={t("label.cancel")}
+        isBusy={blacklisting}
+        confirmDisabled={blacklistConfirmDisabled}
+        onConfirm={handleConfirmBlacklist}
+        onCancel={() => {
+          if (blacklisting) {
+            return;
+          }
+          setSubtitleToBlacklist(null);
+          setTypedConfirmation("");
+        }}
+      >
+        <DeletePreviewSummary
+          preview={subtitleDeletePreview}
+          loading={subtitleDeletePreviewLoading}
+          error={subtitleDeletePreviewError}
+          typedConfirmation={typedConfirmation}
+          onTypedConfirmationChange={setTypedConfirmation}
+        />
+      </ConfirmDialog>
+    </>
   );
 }

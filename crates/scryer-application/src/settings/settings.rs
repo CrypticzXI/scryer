@@ -8,6 +8,7 @@ use tracing::warn;
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
+use crate::subtitles::provider::OpenSubtitlesProvider;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
@@ -2584,9 +2585,35 @@ impl AppUseCase {
         let username = normalize_optional_string(Some(input.open_subtitles_username));
         let languages = normalize_subtitle_languages(input.languages);
         let should_update_api_key = input.open_subtitles_api_key.is_some();
-        let should_update_password = input.open_subtitles_password.is_some();
         let api_key_update = normalize_optional_string(input.open_subtitles_api_key);
+        let should_update_password = input.open_subtitles_password.is_some();
         let password_update = normalize_optional_string(input.open_subtitles_password);
+        let next_api_key = if should_update_api_key {
+            api_key_update
+                .clone()
+                .or_else(|| current.open_subtitles_api_key.clone())
+        } else {
+            current.open_subtitles_api_key.clone()
+        };
+        let next_password = if should_update_password {
+            password_update
+                .clone()
+                .or_else(|| current.open_subtitles_password.clone())
+        } else {
+            current.open_subtitles_password.clone()
+        };
+
+        if let (Some(api_key), Some(username), Some(password)) = (
+            next_api_key.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            username.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            next_password
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+        ) {
+            let provider = OpenSubtitlesProvider::new(api_key.to_string());
+            provider.login(username, password).await?;
+        }
 
         self.upsert_system_setting_json(
             SUBTITLES_ENABLED_KEY,
@@ -2684,7 +2711,6 @@ impl AppUseCase {
         ];
 
         if should_update_api_key {
-            let next_api_key = api_key_update.or(current.open_subtitles_api_key);
             self.upsert_system_setting_json(
                 SUBTITLES_OPENSUBTITLES_API_KEY,
                 &next_api_key,
@@ -2695,7 +2721,6 @@ impl AppUseCase {
         }
 
         if should_update_password {
-            let next_password = password_update.or(current.open_subtitles_password);
             self.upsert_system_setting_json(
                 SUBTITLES_OPENSUBTITLES_PASSWORD_KEY,
                 &next_password,

@@ -469,10 +469,46 @@ pub(crate) async fn get_wanted_item_by_id_query(
         "SELECT w.id, w.title_id, t.name AS title_name, w.episode_id, w.collection_id,
                 e.season_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
-                w.current_score, w.created_at, w.updated_at
+                w.current_score,
+                latest_decision.id AS latest_decision_id,
+                latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
+                latest_decision.title_id AS latest_decision_title_id,
+                latest_decision.release_title AS latest_decision_release_title,
+                latest_decision.release_url AS latest_decision_release_url,
+                latest_decision.release_size_bytes AS latest_decision_release_size_bytes,
+                latest_decision.decision_code AS latest_decision_decision_code,
+                latest_decision.candidate_score AS latest_decision_candidate_score,
+                latest_decision.current_score AS latest_decision_current_score,
+                latest_decision.score_delta AS latest_decision_score_delta,
+                latest_decision.explanation_json AS latest_decision_explanation_json,
+                latest_decision.created_at AS latest_decision_created_at,
+                CASE
+                    WHEN w.status = 'wanted'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM release_decisions mismatch_any
+                         WHERE mismatch_any.wanted_item_id = w.id
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM release_decisions mismatch_other
+                         WHERE mismatch_other.wanted_item_id = w.id
+                           AND mismatch_other.decision_code <> 'title_mismatch'
+                     )
+                    THEN 1
+                    ELSE 0
+                END AS mismatch_recovery_eligible,
+                w.created_at, w.updated_at
          FROM wanted_items w
          LEFT JOIN titles t ON t.id = w.title_id
          LEFT JOIN episodes e ON e.id = w.episode_id
+         LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
+             SELECT rd.id
+             FROM release_decisions rd
+             WHERE rd.wanted_item_id = w.id
+             ORDER BY rd.created_at DESC
+             LIMIT 1
+         )
          WHERE w.id = ?",
     )
     .bind(id)
@@ -491,6 +527,7 @@ pub(crate) async fn list_wanted_items_query(
     status: Option<&str>,
     media_type: Option<&str>,
     title_id: Option<&str>,
+    latest_decision_code: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<WantedItem>> {
@@ -498,10 +535,46 @@ pub(crate) async fn list_wanted_items_query(
         "SELECT w.id, w.title_id, t.name AS title_name, w.episode_id, w.collection_id,
                 e.season_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status,
-                w.grabbed_release, w.current_score, w.created_at, w.updated_at
+                w.grabbed_release, w.current_score,
+                latest_decision.id AS latest_decision_id,
+                latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
+                latest_decision.title_id AS latest_decision_title_id,
+                latest_decision.release_title AS latest_decision_release_title,
+                latest_decision.release_url AS latest_decision_release_url,
+                latest_decision.release_size_bytes AS latest_decision_release_size_bytes,
+                latest_decision.decision_code AS latest_decision_decision_code,
+                latest_decision.candidate_score AS latest_decision_candidate_score,
+                latest_decision.current_score AS latest_decision_current_score,
+                latest_decision.score_delta AS latest_decision_score_delta,
+                latest_decision.explanation_json AS latest_decision_explanation_json,
+                latest_decision.created_at AS latest_decision_created_at,
+                CASE
+                    WHEN w.status = 'wanted'
+                     AND EXISTS (
+                         SELECT 1
+                         FROM release_decisions mismatch_any
+                         WHERE mismatch_any.wanted_item_id = w.id
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM release_decisions mismatch_other
+                         WHERE mismatch_other.wanted_item_id = w.id
+                           AND mismatch_other.decision_code <> 'title_mismatch'
+                     )
+                    THEN 1
+                    ELSE 0
+                END AS mismatch_recovery_eligible,
+                w.created_at, w.updated_at
          FROM wanted_items w
          LEFT JOIN titles t ON t.id = w.title_id
          LEFT JOIN episodes e ON e.id = w.episode_id
+         LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
+             SELECT rd.id
+             FROM release_decisions rd
+             WHERE rd.wanted_item_id = w.id
+             ORDER BY rd.created_at DESC
+             LIMIT 1
+         )
          WHERE 1=1",
     );
     let mut binds: Vec<String> = Vec::new();
@@ -517,6 +590,10 @@ pub(crate) async fn list_wanted_items_query(
     if let Some(tid) = title_id {
         sql.push_str(" AND w.title_id = ?");
         binds.push(tid.to_string());
+    }
+    if let Some(code) = latest_decision_code {
+        sql.push_str(" AND latest_decision.decision_code = ?");
+        binds.push(code.to_string());
     }
 
     sql.push_str(" ORDER BY w.updated_at DESC LIMIT ? OFFSET ?");
@@ -544,21 +621,37 @@ pub(crate) async fn count_wanted_items_query(
     status: Option<&str>,
     media_type: Option<&str>,
     title_id: Option<&str>,
+    latest_decision_code: Option<&str>,
 ) -> AppResult<i64> {
-    let mut sql = String::from("SELECT COUNT(*) as cnt FROM wanted_items WHERE 1=1");
+    let mut sql = String::from(
+        "SELECT COUNT(*) as cnt
+         FROM wanted_items w
+         LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
+             SELECT rd.id
+             FROM release_decisions rd
+             WHERE rd.wanted_item_id = w.id
+             ORDER BY rd.created_at DESC
+             LIMIT 1
+         )
+         WHERE 1=1",
+    );
     let mut binds: Vec<String> = Vec::new();
 
     if let Some(s) = status {
-        sql.push_str(" AND status = ?");
+        sql.push_str(" AND w.status = ?");
         binds.push(s.to_string());
     }
     if let Some(mt) = media_type {
-        sql.push_str(" AND media_type = ?");
+        sql.push_str(" AND w.media_type = ?");
         binds.push(mt.to_string());
     }
     if let Some(tid) = title_id {
-        sql.push_str(" AND title_id = ?");
+        sql.push_str(" AND w.title_id = ?");
         binds.push(tid.to_string());
+    }
+    if let Some(code) = latest_decision_code {
+        sql.push_str(" AND latest_decision.decision_code = ?");
+        binds.push(code.to_string());
     }
 
     let mut query = sqlx::query(&sql);
@@ -661,6 +754,40 @@ fn row_to_release_decision(row: &SqliteRow) -> AppResult<ReleaseDecision> {
 }
 
 fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
+    let latest_release_decision = match row.try_get::<Option<String>, _>("latest_decision_id") {
+        Ok(Some(id)) => Some(ReleaseDecision {
+            id,
+            wanted_item_id: row
+                .try_get("latest_decision_wanted_item_id")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+            title_id: row
+                .try_get("latest_decision_title_id")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+            release_title: row
+                .try_get("latest_decision_release_title")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+            release_url: row.try_get("latest_decision_release_url").unwrap_or(None),
+            release_size_bytes: row
+                .try_get("latest_decision_release_size_bytes")
+                .unwrap_or(None),
+            decision_code: row
+                .try_get("latest_decision_decision_code")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+            candidate_score: row
+                .try_get("latest_decision_candidate_score")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+            current_score: row.try_get("latest_decision_current_score").unwrap_or(None),
+            score_delta: row.try_get("latest_decision_score_delta").unwrap_or(None),
+            explanation_json: row
+                .try_get("latest_decision_explanation_json")
+                .unwrap_or(None),
+            created_at: row
+                .try_get("latest_decision_created_at")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+        }),
+        _ => None,
+    };
+
     Ok(WantedItem {
         id: row
             .try_get("id")
@@ -692,6 +819,11 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         },
         grabbed_release: row.try_get("grabbed_release").unwrap_or(None),
         current_score: row.try_get("current_score").unwrap_or(None),
+        latest_release_decision,
+        mismatch_recovery_eligible: row
+            .try_get::<i64, _>("mismatch_recovery_eligible")
+            .map(|value| value != 0)
+            .unwrap_or(false),
         created_at: row
             .try_get("created_at")
             .map_err(|e| AppError::Repository(e.to_string()))?,

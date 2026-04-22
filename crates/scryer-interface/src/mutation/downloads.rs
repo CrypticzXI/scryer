@@ -1,10 +1,9 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
-use scryer_application::{AppUseCase, QueuedReleaseSelection};
+use scryer_application::AppUseCase;
 use scryer_domain::User;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::types::*;
-use crate::utils::parse_download_source_kind;
 
 #[derive(Default)]
 pub(crate) struct DownloadMutations;
@@ -53,24 +52,14 @@ impl DownloadMutations {
         let actor = actor_from_ctx(ctx)?;
         let QueueDownloadInput {
             title_id,
-            release,
+            candidate_token,
             scope,
         } = input;
-        let ReleaseSelectionInput {
-            source_hint,
-            source_kind: raw_source_kind,
-            source_title,
-        } = release;
-        let source_kind = parse_download_source_kind(raw_source_kind);
-        let job_id = app
-            .queue_existing_title_download(
+        let (job_id, queued_release) = app
+            .queue_existing_title_download_from_candidate_token(
                 &actor,
                 &title_id,
-                QueuedReleaseSelection {
-                    source_hint,
-                    source_kind,
-                    source_title: source_title.clone(),
-                },
+                &candidate_token,
                 scope.into_application(),
             )
             .await
@@ -85,8 +74,36 @@ impl DownloadMutations {
             job_id,
             title_id: title.id,
             title_name: title.name,
-            source_title,
-            source_kind: source_kind.map(DownloadSourceKindValue::from_application),
+            source_title: queued_release.source_title,
+            source_kind: queued_release
+                .source_kind
+                .map(DownloadSourceKindValue::from_application),
+        })
+    }
+
+    async fn queue_best_release(
+        &self,
+        ctx: &Context<'_>,
+        input: QueueBestReleaseInput,
+    ) -> GqlResult<QueueDownloadPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let title = app
+            .get_title_for_trigger_actions(&actor, &input.title_id)
+            .await
+            .map_err(to_gql_error)?
+            .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;
+        let job_id = app
+            .queue_best_release(&actor, &input.title_id, input.scope.into_application())
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(QueueDownloadPayload {
+            job_id,
+            title_id: title.id,
+            title_name: title.name,
+            source_title: None,
+            source_kind: None,
         })
     }
 

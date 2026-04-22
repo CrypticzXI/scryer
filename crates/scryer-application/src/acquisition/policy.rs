@@ -60,6 +60,7 @@ pub enum UpgradeDecision {
 }
 
 impl UpgradeDecision {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn code(&self) -> &'static str {
         match self {
             Self::AcceptInitial => "accept_initial",

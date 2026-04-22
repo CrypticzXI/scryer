@@ -500,11 +500,10 @@ async fn multi_indexer_url_trace_season_pack() {
     // season=Some(2), episode=None signals a season pack search.
     // The acquisition loop builds "Title S02" as the query.
     let _results = app
-        .search_indexers_season(
+        .search_indexers(
             &user,
-            scryer_application::IndexerSeasonSearchRequest {
-                title: "Demon Slayer".into(),
-                season: "02".into(),
+            scryer_application::IndexerSearchRequest {
+                query: "Demon Slayer S02".into(),
                 imdb_id: None,
                 tvdb_id: Some("348545".into()),
                 anidb_id: Some("1535".into()),

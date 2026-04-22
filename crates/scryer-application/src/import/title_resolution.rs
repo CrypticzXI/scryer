@@ -29,13 +29,8 @@ impl MonitoredTitleMatcher {
         for title in titles.into_iter().filter(|title| title.monitored) {
             let index = matcher.titles.len();
 
-            for candidate in
-                std::iter::once(title.name.as_str()).chain(title.aliases.iter().map(String::as_str))
+            for normalized in crate::acquisition_release_search::canonical_title_lookup_keys(&title)
             {
-                let normalized = crate::app_usecase_rss::normalize_for_matching(candidate);
-                if normalized.is_empty() {
-                    continue;
-                }
                 matcher
                     .normalized_title_index
                     .entry(normalized)
@@ -362,6 +357,10 @@ fn title_matches_normalized_candidate(title: &Title, candidate: &str) -> bool {
         .aliases
         .iter()
         .any(|alias| crate::app_usecase_rss::normalize_for_matching(alias) == candidate)
+        || title
+            .tagged_aliases
+            .iter()
+            .any(|alias| crate::app_usecase_rss::normalize_for_matching(&alias.name) == candidate)
 }
 
 fn find_title_by_external_ids<'a>(

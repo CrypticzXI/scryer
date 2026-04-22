@@ -26,6 +26,11 @@ export type WantedItem = {
   status: WantedStatus;
   grabbedRelease: string | null;
   currentScore: number | null;
+  latestReleaseDecision?: {
+    decisionCode: string;
+    createdAt: string;
+  } | null;
+  mismatchRecoveryEligible?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -58,4 +63,14 @@ export type ReleaseDecisionItem = {
   scoreDelta: number | null;
   explanationJson: string | null;
   createdAt: string;
+};
+
+export type TitleAcquisitionDiagnostics = {
+  recentDecisions: ReleaseDecisionItem[];
+  decisionCounts: { code: string; count: number }[];
+  wantedStatusCounts: { status: WantedStatus; count: number }[];
+  pendingReleaseCounts: { status: PendingReleaseStatus; count: number }[];
+  mismatchRecoveryEligibleCount: number;
+  latestDecisionAt: string | null;
+  latestWantedSearchAt: string | null;
 };

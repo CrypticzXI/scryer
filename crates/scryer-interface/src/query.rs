@@ -16,9 +16,9 @@ use crate::mappers::{
     from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
     from_media_settings, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_system_health, from_title, from_title_history_page,
-    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
-    from_user, from_wanted_item,
+    from_service_settings, from_system_health, from_title, from_title_acquisition_diagnostics,
+    from_title_history_page, from_title_history_record, from_title_media_file,
+    from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -1328,6 +1328,7 @@ impl QueryRoot {
         status: Option<WantedStatusValue>,
         media_type: Option<WantedMediaTypeValue>,
         title_id: Option<String>,
+        latest_decision_code: Option<String>,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
     ) -> GqlResult<WantedItemsListPayload> {
@@ -1341,6 +1342,7 @@ impl QueryRoot {
                 status: status.map(|value| value.as_str().to_string()),
                 media_type: media_type.map(|value| value.as_str().to_string()),
                 title_id,
+                latest_decision_code,
                 limit,
                 offset,
             })
@@ -1387,6 +1389,23 @@ impl QueryRoot {
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
+    }
+
+    async fn title_acquisition_diagnostics(
+        &self,
+        ctx: &Context<'_>,
+        title_id: String,
+    ) -> GqlResult<TitleAcquisitionDiagnosticsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
+            return Err(async_graphql::Error::new("insufficient entitlements"));
+        }
+        let diagnostics = app
+            .title_acquisition_diagnostics(&title_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_title_acquisition_diagnostics(diagnostics))
     }
 
     // ── Rule Sets ──────────────────────────────────────────────────────
@@ -1907,6 +1926,32 @@ impl QueryRoot {
             })
             .collect())
     }
+
+    /// List subtitle blacklist entries for a specific media file.
+    async fn subtitle_blacklist_entries(
+        &self,
+        ctx: &Context<'_>,
+        media_file_id: String,
+    ) -> GqlResult<Vec<SubtitleBlacklistEntryPayload>> {
+        let _actor = actor_from_ctx(ctx)?;
+        let app = app_from_ctx(ctx)?;
+        let entries = app
+            .list_subtitle_blacklist_for_media_file(&media_file_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| SubtitleBlacklistEntryPayload {
+                id: entry.id,
+                media_file_id: entry.media_file_id,
+                provider: entry.provider,
+                provider_file_id: entry.provider_file_id,
+                language: entry.language,
+                reason: entry.reason,
+                created_at: entry.created_at,
+            })
+            .collect())
+    }
 }
 
 #[ComplexObject]
@@ -1984,6 +2029,7 @@ impl TitlePayload {
                 status,
                 media_type: None,
                 title_id: Some(self.id.clone()),
+                latest_decision_code: None,
                 limit: 500,
                 offset: 0,
             })

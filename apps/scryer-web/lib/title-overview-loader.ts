@@ -4,8 +4,9 @@ import type { Facet } from "@/lib/types";
 
 import { titleBySlugQuery, titleOverviewInitQuery } from "@/lib/graphql/queries";
 
-export type TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle> = {
+export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
+  acquisitionDiagnostics: TDiagnostics | null;
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
   subtitleDownloads: TSubtitle[];
@@ -22,6 +23,7 @@ export type ResolvedTitleOverviewTarget = {
 // network-only title detail fetch and normalization.
 export async function fetchTitleOverviewSnapshot<
   TTitle,
+  TDiagnostics = unknown,
   TEvent = unknown,
   TBlocklist = unknown,
   TSubtitle = unknown,
@@ -29,7 +31,7 @@ export async function fetchTitleOverviewSnapshot<
   client: Client,
   titleId: string,
   blocklistLimit: number,
-): Promise<TitleOverviewSnapshot<TTitle, TEvent, TBlocklist, TSubtitle>> {
+): Promise<TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
   const { data, error } = await client
     .query(
       titleOverviewInitQuery,
@@ -44,6 +46,7 @@ export async function fetchTitleOverviewSnapshot<
 
   return {
     title: (data?.title ?? null) as TTitle | null,
+    acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
     titleEvents: (data?.titleEvents ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],

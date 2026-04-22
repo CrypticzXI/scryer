@@ -1,5 +1,9 @@
 use super::*;
-use crate::acquisition_policy::evaluate_upgrade;
+use crate::acquisition_release_search::{
+    AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
+    canonical_title_evidence, canonical_title_lookup_keys, evaluate_auto_candidate,
+    parsed_release_matches_title_evidence, serialize_decision_explanation,
+};
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use chrono::{DateTime, Utc};
@@ -15,8 +19,6 @@ pub(crate) fn normalize_for_matching(title: &str) -> String {
     crate::title_matching::canonical_lookup_key(title)
 }
 
-/// Build a lookup index: normalized title name → Vec<(title, category, tvdb_id, imdb_id)>
-/// Includes aliases for broader matching.
 fn build_title_lookup(titles: &[Title]) -> HashMap<String, Vec<TitleMatchInfo>> {
     let mut lookup: HashMap<String, Vec<TitleMatchInfo>> = HashMap::new();
 
@@ -30,21 +32,8 @@ fn build_title_lookup(titles: &[Title]) -> HashMap<String, Vec<TitleMatchInfo>> 
             year: title.year,
         };
 
-        // Index by primary name
-        let normalized = normalize_for_matching(&title.name);
-        if !normalized.is_empty() {
-            lookup.entry(normalized).or_default().push(info.clone());
-        }
-
-        // Index by aliases
-        for alias in &title.aliases {
-            let normalized_alias = normalize_for_matching(alias);
-            if !normalized_alias.is_empty() {
-                lookup
-                    .entry(normalized_alias)
-                    .or_default()
-                    .push(info.clone());
-            }
+        for key in canonical_title_lookup_keys(title) {
+            lookup.entry(key).or_default().push(info.clone());
         }
     }
 
@@ -134,9 +123,9 @@ fn match_release_to_title<'a>(
     None
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
-    let lookup = build_title_lookup(std::slice::from_ref(title));
-    match_release_to_title(parsed, &lookup).is_some_and(|matched| matched.title_id == title.id)
+    parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }
 
 impl AppUseCase {
@@ -666,7 +655,6 @@ impl AppUseCase {
         report: &mut RssSyncReport,
         now: &DateTime<Utc>,
     ) {
-        // Load DB blocklist
         let db_blocklist: HashSet<String> = self
             .services
             .workflow
@@ -678,6 +666,37 @@ impl AppUseCase {
             .filter_map(|e| e.source_title)
             .map(|t| t.to_ascii_lowercase())
             .collect();
+        let episode = match wanted.episode_id.as_deref() {
+            Some(episode_id) => self
+                .services
+                .catalog
+                .shows
+                .get_episode_by_id(episode_id)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        let subject = self
+            .resolve_release_search_subject_for_wanted_item(title, wanted, episode.as_ref())
+            .await;
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let upgrade_context = self
+            .resolve_upgrade_context_for_title_with_category(
+                title,
+                wanted.grabbed_release.as_deref(),
+                Some(category),
+            )
+            .await;
+        if upgrade_context.cutoff_reached {
+            return;
+        }
 
         let mut selected: Option<&IndexerSearchResult> = None;
 
@@ -697,12 +716,99 @@ impl AppUseCase {
             if dl_snapshot.failed_item(&candidate.title).is_some() {
                 continue;
             }
-            if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
-                continue;
+
+            let evaluation_context = AutoCandidateEvaluationContext {
+                title,
+                subject: &subject,
+                current_score: wanted.current_score,
+                last_search_at: wanted.last_search_at.as_deref(),
+                profile: &upgrade_context.profile,
+                thresholds: &upgrade_context.thresholds,
+                cutoff_reached: upgrade_context.cutoff_reached,
+                now,
+                dl_snapshot: Some(dl_snapshot),
+                db_blocklist: &db_blocklist,
+                existing_files: &existing_files,
+                delay_profiles,
+                failed_source_kinds: None,
+            };
+            let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
+            let candidate_score = candidate
+                .quality_profile_decision
+                .as_ref()
+                .map(|d| d.preference_score)
+                .unwrap_or(0);
+            let mut decision_candidate = candidate.clone();
+            annotate_auto_decision(&mut decision_candidate, decision_code);
+
+            let decision_record = ReleaseDecision {
+                id: Id::new().0,
+                wanted_item_id: wanted.id.clone(),
+                title_id: title.id.clone(),
+                release_title: decision_candidate.title.clone(),
+                release_url: decision_candidate
+                    .download_url
+                    .clone()
+                    .or_else(|| decision_candidate.link.clone()),
+                release_size_bytes: decision_candidate.size_bytes,
+                decision_code: decision_code.as_str().to_string(),
+                candidate_score,
+                current_score: wanted.current_score,
+                score_delta: wanted.current_score.map(|c| candidate_score - c),
+                explanation_json: serialize_decision_explanation(&decision_candidate),
+                created_at: now.to_rfc3339(),
+            };
+
+            let _ = self
+                .services
+                .workflow
+                .wanted_items
+                .insert_release_decision(&decision_record)
+                .await;
+
+            if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
+                let delay_minutes = crate::delay_profile::resolve_delay_decision(
+                    delay_profiles,
+                    &title.tags,
+                    &title.facet,
+                    candidate.source_kind,
+                    candidate
+                        .published_at
+                        .as_deref()
+                        .and_then(crate::quality_profile::parse_published_at),
+                    candidate_score,
+                    now,
+                )
+                .map(|delay| delay.effective_delay_minutes)
+                .unwrap_or_default();
+                self.insert_pending_release(
+                    wanted,
+                    title,
+                    &candidate.title,
+                    candidate
+                        .download_url
+                        .as_deref()
+                        .or(candidate.link.as_deref()),
+                    candidate.source_kind,
+                    candidate.size_bytes,
+                    candidate_score,
+                    serialize_decision_explanation(&decision_candidate),
+                    Some(candidate.source.as_str()),
+                    candidate.guid.as_deref(),
+                    delay_minutes,
+                    candidate.password_hint.as_deref(),
+                    candidate.published_at.as_deref(),
+                    candidate.extra.get("info_hash").and_then(|v| v.as_str()),
+                )
+                .await;
+                report.releases_held += 1;
+                return;
             }
 
-            selected = Some(candidate);
-            break;
+            if decision_code.is_eligible() {
+                selected = Some(candidate);
+                break;
+            }
         }
 
         let Some(best) = selected else {
@@ -715,129 +821,11 @@ impl AppUseCase {
             .map(|d| d.preference_score)
             .unwrap_or(0);
 
-        let upgrade_context = self
-            .resolve_upgrade_context_for_title_with_category(
-                title,
-                wanted.grabbed_release.as_deref(),
-                Some(category),
-            )
-            .await;
-
-        if upgrade_context.cutoff_reached {
-            return;
-        }
-        let decision = evaluate_upgrade(
-            candidate_score,
-            wanted.current_score,
-            upgrade_context.profile.criteria.allow_upgrades,
-            wanted.last_search_at.as_deref(),
-            now,
-            &upgrade_context.thresholds,
-            upgrade_context.profile.criteria.min_score_to_grab,
-        );
-
-        // Record the decision
-        let decision_record = ReleaseDecision {
-            id: Id::new().0,
-            wanted_item_id: wanted.id.clone(),
-            title_id: title.id.clone(),
-            release_title: best.title.clone(),
-            release_url: best.download_url.clone().or_else(|| best.link.clone()),
-            release_size_bytes: best.size_bytes,
-            decision_code: decision.code().to_string(),
-            candidate_score,
-            current_score: wanted.current_score,
-            score_delta: wanted.current_score.map(|c| candidate_score - c),
-            explanation_json: best.quality_profile_decision.as_ref().map(|d| {
-                serde_json::to_string(
-                    &d.scoring_log
-                        .iter()
-                        .map(|e| serde_json::json!({"code": e.code, "delta": e.delta}))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-            }),
-            created_at: now.to_rfc3339(),
-        };
-
-        let _ = self
-            .services
-            .workflow
-            .wanted_items
-            .insert_release_decision(&decision_record)
-            .await;
-
-        if !decision.is_accept() {
-            return;
-        }
-
-        // Skip repacks from a different release group than the existing file.
-        {
-            let existing_files = self
-                .services
-                .library
-                .media_files
-                .list_media_files_for_title(&title.id)
-                .await
-                .unwrap_or_default();
-            if crate::acquisition_policy::should_skip_repack_group_mismatch(
-                best,
-                &existing_files,
-                wanted.episode_id.as_deref(),
-            ) {
-                return;
-            }
-        }
-
-        if let Some(delay_decision) = crate::delay_profile::resolve_delay_decision(
-            delay_profiles,
-            &title.tags,
-            &title.facet,
-            best.source_kind,
-            best.published_at
-                .as_deref()
-                .and_then(crate::quality_profile::parse_published_at),
-            candidate_score,
-            now,
-        ) && delay_decision.should_hold()
-        {
-            let scoring_json = best.quality_profile_decision.as_ref().map(|d| {
-                serde_json::to_string(
-                    &d.scoring_log
-                        .iter()
-                        .map(|e| serde_json::json!({"code": e.code, "delta": e.delta}))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-            });
-            self.insert_pending_release(
-                wanted,
-                title,
-                &best.title,
-                best.download_url.as_deref().or(best.link.as_deref()),
-                best.source_kind,
-                best.size_bytes,
-                candidate_score,
-                scoring_json,
-                Some(best.source.as_str()),
-                best.guid.as_deref(),
-                delay_decision.effective_delay_minutes,
-                best.password_hint.as_deref(),
-                best.published_at.as_deref(),
-                best.extra.get("info_hash").and_then(|v| v.as_str()),
-            )
-            .await;
-            report.releases_held += 1;
-            return;
-        }
-
-        // Submit to download client
         let source_hint = best.download_url.clone().or_else(|| best.link.clone());
-
         if let Some(url) = source_hint.as_deref()
             && !grabbed_urls.insert(url.to_string())
         {
-            return; // Already submitted this cycle
+            return;
         }
 
         let source_title = Some(best.title.clone());
@@ -933,21 +921,6 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let episode = if wanted.media_type == "episode" {
-                    match wanted.episode_id.as_deref() {
-                        Some(episode_id) => self
-                            .services
-                            .catalog
-                            .shows
-                            .get_episode_by_id(episode_id)
-                            .await
-                            .ok()
-                            .flatten(),
-                        None => None,
-                    }
-                } else {
-                    None
-                };
                 let submission_scope =
                     super::acquisition::download_submission_scope_for_release_title(
                         wanted,

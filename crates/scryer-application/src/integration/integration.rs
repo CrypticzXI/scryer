@@ -2141,7 +2141,7 @@ pub async fn start_download_queue_poller(
                                     client_state = ?td.client_item.state,
                                     match_type = ?td.match_type,
                                     title_id = ?td.title_id,
-                                    title_name = %td.client_item.title_name,
+                                    client_title_name = %td.client_item.title_name,
                                     "tracked: new download"
                                 );
                             }

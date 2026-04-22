@@ -2527,6 +2527,7 @@ impl DbRuntime {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<scryer_application::WantedItem>> {
@@ -2536,6 +2537,7 @@ impl DbRuntime {
                 status: status.map(str::to_string),
                 media_type: media_type.map(str::to_string),
                 title_id: title_id.map(str::to_string),
+                latest_decision_code: latest_decision_code.map(str::to_string),
                 limit,
                 offset,
                 reply: reply_tx,
@@ -2553,6 +2555,7 @@ impl DbRuntime {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
@@ -2560,6 +2563,7 @@ impl DbRuntime {
                 status: status.map(str::to_string),
                 media_type: media_type.map(str::to_string),
                 title_id: title_id.map(str::to_string),
+                latest_decision_code: latest_decision_code.map(str::to_string),
                 reply: reply_tx,
             })
             .await

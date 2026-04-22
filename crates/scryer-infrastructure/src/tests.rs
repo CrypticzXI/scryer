@@ -5,10 +5,11 @@ use scryer_application::{
     DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate, ImportRepository,
     InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
-    ShowRepository, SubmissionScope, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRepository, UserRepository, WantedItemRepository, WantedStatus,
+    NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ShowRepository, SubmissionScope, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
+    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -2550,6 +2551,8 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -2569,6 +2572,8 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -2588,6 +2593,8 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -2609,6 +2616,134 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "wanted-series-episode");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_wanted_items_filters_on_latest_decision_code() {
+    let (services, db) = temp_services("scryer_wanted_latest_decision").await;
+    let workflow = library_state_store(&services);
+    let catalog = catalog_store(&services);
+    let now = Utc::now();
+
+    let title = make_test_title("title-latest-decision", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    let other_title = make_test_title("title-latest-decision-other", None);
+    TitleRepository::create(&catalog, other_title.clone())
+        .await
+        .expect("other title should insert");
+
+    let wanted_mismatch = WantedItem {
+        id: "wanted-mismatch".to_string(),
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        media_type: "movie".to_string(),
+        search_phase: "primary".to_string(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+    };
+    let wanted_quality_blocked = WantedItem {
+        id: "wanted-quality-blocked".to_string(),
+        title_id: other_title.id.clone(),
+        title_name: Some(other_title.name.clone()),
+        ..wanted_mismatch.clone()
+    };
+
+    workflow
+        .upsert_wanted_item(&wanted_mismatch)
+        .await
+        .expect("first wanted item should insert");
+    workflow
+        .upsert_wanted_item(&wanted_quality_blocked)
+        .await
+        .expect("second wanted item should insert");
+
+    workflow
+        .insert_release_decision(&ReleaseDecision {
+            id: "decision-1".to_string(),
+            wanted_item_id: wanted_mismatch.id.clone(),
+            title_id: title.id.clone(),
+            release_title: "Mismatch Release".to_string(),
+            release_url: None,
+            release_size_bytes: None,
+            decision_code: "title_mismatch".to_string(),
+            candidate_score: 0,
+            current_score: None,
+            score_delta: None,
+            explanation_json: None,
+            created_at: now.to_rfc3339(),
+        })
+        .await
+        .expect("mismatch decision should insert");
+    workflow
+        .insert_release_decision(&ReleaseDecision {
+            id: "decision-2".to_string(),
+            wanted_item_id: wanted_quality_blocked.id.clone(),
+            title_id: other_title.id.clone(),
+            release_title: "Old Mismatch Release".to_string(),
+            release_url: None,
+            release_size_bytes: None,
+            decision_code: "title_mismatch".to_string(),
+            candidate_score: 0,
+            current_score: None,
+            score_delta: None,
+            explanation_json: None,
+            created_at: (now - chrono::Duration::minutes(2)).to_rfc3339(),
+        })
+        .await
+        .expect("older mismatch decision should insert");
+    workflow
+        .insert_release_decision(&ReleaseDecision {
+            id: "decision-3".to_string(),
+            wanted_item_id: wanted_quality_blocked.id.clone(),
+            title_id: other_title.id.clone(),
+            release_title: "New Blocked Release".to_string(),
+            release_url: None,
+            release_size_bytes: None,
+            decision_code: "quality_blocked".to_string(),
+            candidate_score: 0,
+            current_score: None,
+            score_delta: None,
+            explanation_json: None,
+            created_at: now.to_rfc3339(),
+        })
+        .await
+        .expect("latest blocked decision should insert");
+
+    let items = workflow
+        .list_wanted_items(None, None, None, Some("title_mismatch"), 50, 0)
+        .await
+        .expect("filtered wanted items should load");
+    let count = workflow
+        .count_wanted_items(None, None, None, Some("title_mismatch"))
+        .await
+        .expect("filtered wanted count should load");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(count, 1);
+    assert_eq!(items[0].id, wanted_mismatch.id);
+    assert!(items[0].mismatch_recovery_eligible);
+    let latest_decision = items[0]
+        .latest_release_decision
+        .as_ref()
+        .expect("latest decision should be hydrated");
+    assert_eq!(latest_decision.decision_code, "title_mismatch");
+    assert_eq!(latest_decision.release_title, "Mismatch Release");
 
     let _ = std::fs::remove_file(db);
 }

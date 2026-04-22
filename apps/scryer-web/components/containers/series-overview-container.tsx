@@ -3,8 +3,6 @@ import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
-  searchQuery,
-  searchForEpisodeQuery,
   seriesOverviewSettingsInitQuery,
   titleDownloadQueueItemsQuery,
 } from "@/lib/graphql/queries";
@@ -13,15 +11,17 @@ import {
   deleteTitleMutation,
   scanTitleLibraryMutation,
   setCollectionMonitoredMutation,
+  queueBestReleaseMutation,
   queueExistingMutation,
   setEpisodeMonitoredMutation,
   setTitleMonitoredMutation,
+  triggerTitleMismatchRecoverySearchMutation,
   triggerTitleWantedSearchMutation,
   triggerSeasonWantedSearchMutation,
   updateTitleMutation,
 } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
-import type { Release } from "@/lib/types";
+import type { Release, TitleAcquisitionDiagnostics } from "@/lib/types";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
 import { useClient } from "urql";
@@ -40,6 +40,7 @@ import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 
 export type TitleDetail = {
   id: string;
@@ -252,8 +253,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [mediaFilesByEpisode, setMediaFilesByEpisode] = React.useState<
     Record<string, EpisodeMediaFile[]>
   >({});
+  const [acquisitionDiagnostics, setAcquisitionDiagnostics] =
+    React.useState<TitleAcquisitionDiagnostics | null>(null);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<
-    import("@/components/containers/movie-overview-container").SubtitleDownloadRecord[]
+    SubtitleDownloadRecord[]
   >([]);
   const [completedDownloads, setCompletedDownloads] = React.useState<DownloadQueueItem[]>([]);
   const [manualImportItem, setManualImportItem] = React.useState<DownloadQueueItem | null>(null);
@@ -340,9 +343,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     (
       snapshot: TitleOverviewSnapshot<
         SeriesOverviewSnapshotTitle,
+        TitleAcquisitionDiagnostics,
         TitleHistoryEvent,
         TitleReleaseBlocklistEntry,
-        import("@/components/containers/movie-overview-container").SubtitleDownloadRecord
+        SubtitleDownloadRecord
       >,
     ) => {
       const nextTitle = snapshot.title;
@@ -365,6 +369,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
       setSubtitleDownloads(snapshot.subtitleDownloads);
+      setAcquisitionDiagnostics(snapshot.acquisitionDiagnostics);
       setHasDownloadClients(snapshot.hasDownloadClients);
 
       if (!nextTitle) {
@@ -398,9 +403,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
       SeriesOverviewSnapshotTitle,
+      TitleAcquisitionDiagnostics,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
-      import("@/components/containers/movie-overview-container").SubtitleDownloadRecord
+      SubtitleDownloadRecord
     >(client, titleId, 300);
     applyTitleDetailSnapshot(snapshot);
   }, [applyTitleDetailSnapshot, titleId, client]);
@@ -416,6 +422,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEpisodesByCollection({});
       setMediaFilesByEpisode({});
       setSubtitleDownloads([]);
+      setAcquisitionDiagnostics(null);
       setCompletedDownloads([]);
       setManualImportItem(null);
       setHydratingFromActivity(false);
@@ -775,44 +782,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     async (episode: CollectionEpisode) => {
       if (!title) return;
 
-      const collection = collections.find((item) => item.id === episode.collectionId);
-      const seasonNum =
-        episode.seasonNumber?.trim().replace(/\D+/g, "") ||
-        collection?.collectionIndex?.trim().replace(/\D+/g, "") ||
-        "1";
-      const episodeNum = episode.episodeNumber?.trim().replace(/\D+/g, "") || "1";
-
-      const { data: payload, error } = await client.query(searchForEpisodeQuery, {
-        titleId: title.id,
-        season: seasonNum,
-        episode: episodeNum,
-      }).toPromise();
-      if (error) throw error;
-
-      const top = payload.searchReleases.find(
-        (release: Release) => release.qualityProfileDecision?.allowed ?? true,
-      );
-      if (!top) {
-        setGlobalStatus(t("status.noReleaseForTitle", { name: title.name }));
-        return;
-      }
-
-      const sourceHint = top.downloadUrl || top.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: title.name }));
-        return;
-      }
-
       try {
-        const { error } = await client.mutation(queueExistingMutation, {
+        const { error } = await client.mutation(queueBestReleaseMutation, {
           input: {
             titleId: title.id,
             scope: { episode: episode.id },
-            release: {
-              sourceHint,
-              sourceKind: top.sourceKind ?? null,
-              sourceTitle: top.title,
-            },
           },
         }).toPromise();
         if (error) throw error;
@@ -822,52 +796,20 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       }
     },
-    [collections, refreshTitleDetail, client, title, t, setGlobalStatus],
+    [refreshTitleDetail, client, title, t, setGlobalStatus],
   );
 
   const handleAutoSearchInterstitialMovie = React.useCallback(
     async (collection: TitleCollection) => {
       if (!title || !collection.interstitialMovie) return;
-      const movie = collection.interstitialMovie;
-      const imdbId = movie.imdbId || null;
-      const movieQuery = movie.year ? `${movie.name} ${movie.year}` : movie.name;
-
-      const { data, error } = await client.query(searchQuery, {
-        query: movieQuery,
-        imdbId,
-        tvdbId: null,
-        category: "movies",
-        limit: 25,
-      }).toPromise();
-      if (error) throw error;
-
-      const top = data.searchReleases.find(
-        (release: Release) => release.qualityProfileDecision?.allowed ?? true,
-      );
-      if (!top) {
-        setGlobalStatus(t("status.noReleaseForTitle", { name: movie.name }));
-        return;
-      }
-
-      const sourceHint = top.downloadUrl || top.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: movie.name }));
-        return;
-      }
-
-      const { error: queueError } = await client.mutation(queueExistingMutation, {
+      const { error } = await client.mutation(queueBestReleaseMutation, {
         input: {
           titleId: title.id,
           scope: { collection: collection.id },
-          release: {
-            sourceHint,
-            sourceKind: top.sourceKind ?? null,
-            sourceTitle: top.title,
-          },
         },
       }).toPromise();
-      if (queueError) throw queueError;
-      setGlobalStatus(t("status.queuedLatest", { name: movie.name }));
+      if (error) throw error;
+      setGlobalStatus(t("status.queuedLatest", { name: collection.interstitialMovie.name }));
       await refreshTitleDetail();
     },
     [refreshTitleDetail, client, title, t, setGlobalStatus],
@@ -903,19 +845,17 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const handleQueueFromSeasonSearch = React.useCallback(
     async (collection: TitleCollection, release: Release) => {
       if (!title) return;
-      const sourceHint = release.downloadUrl || release.link;
-      if (!sourceHint) return;
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
       try {
         const { error } = await client
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
               scope: { collection: collection.id },
-              release: {
-                sourceHint,
-                sourceKind: release.sourceKind ?? null,
-                sourceTitle: release.title,
-              },
+              candidateToken: release.candidateToken,
             },
           })
           .toPromise();
@@ -928,6 +868,20 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     },
     [client, title, refreshTitleDetail, setGlobalStatus, t],
   );
+
+  const triggerMismatchRecovery = React.useCallback(async () => {
+    if (!title) return;
+    const { data, error } = await client.mutation(
+      triggerTitleMismatchRecoverySearchMutation,
+      { input: { titleId: title.id } },
+    ).toPromise();
+    if (error) {
+      setGlobalStatus(error.message);
+      return;
+    }
+    setGlobalStatus(`queued ${data?.triggerTitleMismatchRecoverySearch ?? 0} mismatch recovery items`);
+    await refreshTitleDetail();
+  }, [client, refreshTitleDetail, setGlobalStatus, title]);
 
   const handleOpenManualImport = React.useCallback(
     (item: DownloadQueueItem) => {
@@ -979,6 +933,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         episodesByCollection={episodesByCollection}
         mediaFilesByEpisode={mediaFilesByEpisode}
         subtitleDownloads={subtitleDownloads}
+        onRefreshSubtitles={refreshTitleDetail}
         releaseBlocklistEntries={releaseBlocklistEntries}
         onTitleChanged={refreshTitleDetail}
         onBackToList={onBackToList}
@@ -988,6 +943,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onSearchMonitored={handleSearchMonitored}
         onAutoSearchEpisode={handleAutoSearchEpisode}
         onAutoSearchInterstitialMovie={handleAutoSearchInterstitialMovie}
+        acquisitionDiagnostics={acquisitionDiagnostics}
         hasDownloadClients={hasDownloadClients}
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         qualityProfiles={qualityProfiles}
@@ -1001,6 +957,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         seasonSearchLoadingByCollection={seasonSearchLoadingByCollection}
         onRunSeasonSearch={handleRunSeasonSearch}
         onQueueFromSeasonSearch={handleQueueFromSeasonSearch}
+        onTriggerMismatchRecovery={triggerMismatchRecovery}
         monitoredUpdating={monitoredUpdating}
         searchMonitoredLoading={searchMonitoredLoading}
         onRefreshAndScan={handleRefreshAndScan}

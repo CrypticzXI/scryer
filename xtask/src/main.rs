@@ -176,12 +176,14 @@ enum VersionBump {
 #[derive(Clone)]
 struct TaskContext {
     repo_root: PathBuf,
+    rtk_available: bool,
 }
 
 impl TaskContext {
     fn new() -> Self {
         Self {
             repo_root: repo_root(),
+            rtk_available: command_available("rtk").unwrap_or(false),
         }
     }
 
@@ -196,6 +198,29 @@ impl TaskContext {
     fn command_in(&self, program: impl AsRef<OsStr>, cwd: &Path) -> Command {
         let mut command = Command::new(program);
         command.current_dir(cwd);
+        command
+    }
+
+    fn release_command(&self, program: impl AsRef<OsStr>) -> Command {
+        self.release_command_impl(program, None)
+    }
+
+    fn release_command_in(&self, program: impl AsRef<OsStr>, cwd: &Path) -> Command {
+        self.release_command_impl(program, Some(cwd))
+    }
+
+    fn release_command_impl(&self, program: impl AsRef<OsStr>, cwd: Option<&Path>) -> Command {
+        let program = program.as_ref();
+        let mut command = if self.rtk_available {
+            let mut command = Command::new("rtk");
+            command.arg(program);
+            command
+        } else {
+            Command::new(program)
+        };
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
         command
     }
 }
@@ -458,7 +483,7 @@ fn git_checkout_paths(ctx: &TaskContext, paths: &[PathBuf]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let mut command = ctx.command_in("git", &ctx.repo_root);
+    let mut command = ctx.release_command_in("git", &ctx.repo_root);
     command.arg("checkout").arg("--");
     command.args(paths);
     run_checked(&mut command)
@@ -594,7 +619,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         }
         step("Building trash guide scraper");
         let bin = NamedTempFile::new()?;
-        let mut build = ctx.command_in("go", &smg_dir);
+        let mut build = ctx.release_command_in("go", &smg_dir);
         build.args(["build", "-o"]);
         build.arg(bin.path());
         build.arg("./cmd/scrape-trash-guides");
@@ -666,7 +691,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         prompt.push_str("\n</trash-guides-json>\n");
         fs::write(combined_prompt.path(), &prompt)?;
 
-        let mut command = ctx.command("claude");
+        let mut command = ctx.release_command("claude");
         command.env("CLAUDECODE", "").arg("-p").arg(prompt).args([
             "--model",
             "claude-opus-4-6",
@@ -710,7 +735,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     ));
 
     step("Running cargo check after version bump");
-    let mut cargo_check = ctx.command_in("cargo", &ctx.repo_root);
+    let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
     cargo_check.arg("check");
     run_checked(&mut cargo_check)?;
     ok("cargo check passed");
@@ -745,11 +770,11 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         changed.push(npm_lock.clone());
     }
     if !changed.is_empty() {
-        let mut add = ctx.command_in("git", &ctx.repo_root);
+        let mut add = ctx.release_command_in("git", &ctx.repo_root);
         add.arg("add");
         add.args(&changed);
         run_checked(&mut add)?;
-        let mut commit = ctx.command_in("git", &ctx.repo_root);
+        let mut commit = ctx.release_command_in("git", &ctx.repo_root);
         commit.args([
             "commit",
             "-m",
@@ -764,16 +789,16 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     prune_scryer_release_history(ctx)?;
 
     step(format!("Creating signed tag {tag_name}"));
-    let mut tag = ctx.command_in("git", &ctx.repo_root);
+    let mut tag = ctx.release_command_in("git", &ctx.repo_root);
     tag.args(["tag", "-s", &tag_name, "-m", &format!("Release {tag_name}")]);
     run_checked(&mut tag)?;
     ok(format!("Tag {tag_name} created"));
 
     step("Pushing to origin");
-    let mut push_branch = ctx.command_in("git", &ctx.repo_root);
+    let mut push_branch = ctx.release_command_in("git", &ctx.repo_root);
     push_branch.args(["push", "origin", &branch]);
     run_checked(&mut push_branch)?;
-    let mut push_tag = ctx.command_in("git", &ctx.repo_root);
+    let mut push_tag = ctx.release_command_in("git", &ctx.repo_root);
     push_tag.args(["push", "origin", &tag_name]);
     run_checked(&mut push_tag)?;
     ok(format!("Pushed {branch} and tag {tag_name}"));
@@ -806,19 +831,19 @@ fn release_validation_due(path: &Path) -> Result<Option<i64>> {
 fn run_scryer_web_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
     let web_dir = ctx.path("apps/scryer-web");
     prefixed_step(prefix, "Running npm audit fix");
-    let mut audit = ctx.command_in("npm", &web_dir);
+    let mut audit = ctx.release_command_in("npm", &web_dir);
     audit.args(["audit", "fix"]);
     run_streaming(&mut audit, prefix)?;
     prefixed_ok(prefix, "npm audit fix complete");
 
     prefixed_step(prefix, "Running TypeScript type check");
-    let mut lint = ctx.command_in("npm", &web_dir);
+    let mut lint = ctx.release_command_in("npm", &web_dir);
     lint.args(["run", "lint"]);
     run_streaming(&mut lint, prefix)?;
     prefixed_ok(prefix, "TypeScript type check passed");
 
     prefixed_step(prefix, "Running web build");
-    let mut build = ctx.command_in("npm", &web_dir);
+    let mut build = ctx.release_command_in("npm", &web_dir);
     build
         .env("SCRYER_GRAPHQL_URL", "/graphql")
         .env(
@@ -833,13 +858,13 @@ fn run_scryer_web_validation(ctx: &TaskContext, prefix: &'static str) -> Result<
 
 fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
     prefixed_step(prefix, "Running cargo fmt --all --check");
-    let mut fmt = ctx.command_in("cargo", &ctx.repo_root);
+    let mut fmt = ctx.release_command_in("cargo", &ctx.repo_root);
     fmt.args(["fmt", "--all", "--check"]);
     run_streaming(&mut fmt, prefix)?;
     prefixed_ok(prefix, "cargo fmt passed");
 
     prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
-    let mut update = ctx.command_in("cargo", &ctx.repo_root);
+    let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
     update.arg("update");
     run_streaming(&mut update, prefix)?;
     prefixed_ok(prefix, "Cargo.lock updated");
@@ -847,7 +872,7 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     prefixed_step(prefix, "Running cargo audit");
     if !command_available("cargo-audit")? {
         warn("cargo-audit not installed — installing");
-        let mut install = ctx.command_in("cargo", &ctx.repo_root);
+        let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
         install.args(["install", "--locked", "cargo-audit"]);
         run_streaming(&mut install, prefix)?;
     }
@@ -874,7 +899,7 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         "Ignoring advisories pending upstream fixes: {}",
         ignores.join(" ")
     ));
-    let mut audit = ctx.command_in("cargo", &ctx.repo_root);
+    let mut audit = ctx.release_command_in("cargo", &ctx.repo_root);
     audit.arg("audit");
     for advisory in ignores {
         audit.args(["--ignore", advisory]);
@@ -883,7 +908,7 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     prefixed_ok(prefix, "cargo audit passed");
 
     prefixed_step(prefix, "Running cargo clippy");
-    let mut clippy = ctx.command_in("cargo", &ctx.repo_root);
+    let mut clippy = ctx.release_command_in("cargo", &ctx.repo_root);
     clippy.args(["clippy", "--workspace", "--", "-D", "warnings"]);
     run_streaming(&mut clippy, prefix)?;
     prefixed_ok(prefix, "Clippy passed");
@@ -894,11 +919,11 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     );
     if !command_available("cargo-nextest")? {
         warn("cargo-nextest not installed — installing");
-        let mut install = ctx.command_in("cargo", &ctx.repo_root);
+        let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
         install.args(["install", "--locked", "cargo-nextest"]);
         run_streaming(&mut install, prefix)?;
     }
-    let mut nextest = ctx.command_in("cargo", &ctx.repo_root);
+    let mut nextest = ctx.release_command_in("cargo", &ctx.repo_root);
     nextest.args(["nextest", "run", "--workspace", "--locked"]);
     run_streaming(&mut nextest, prefix)?;
     prefixed_ok(prefix, "Rust tests passed");
@@ -934,7 +959,7 @@ fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
     } else {
         for tag in &releases_to_delete {
             println!("   deleting release: {tag}");
-            let mut delete = ctx.command_in("gh", &ctx.repo_root);
+            let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
             delete.args(["release", "delete", tag, "--yes"]);
             if let Err(error) = run_checked(&mut delete) {
                 warn(format!("failed to delete release {tag}: {error:#}"));
@@ -973,7 +998,7 @@ fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
         if keep_tags.iter().any(|tag| tag == branch) {
             continue;
         }
-        let mut delete = ctx.command_in("gh", &ctx.repo_root);
+        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
         delete.args([
             "api",
             "-X",
@@ -989,7 +1014,7 @@ fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
         ok(format!("Deleted {deleted} old artifact(s)"));
     }
 
-    let mut package_check = ctx.command_in("gh", &ctx.repo_root);
+    let mut package_check = ctx.release_command_in("gh", &ctx.repo_root);
     package_check.args(["api", "orgs/scryer-media/packages/container/scryer"]);
     if !run_status(&mut package_check)?.success() {
         ok("No GHCR package found — skipping Docker cleanup");
@@ -1042,7 +1067,7 @@ fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
         if created_at >= cutoff {
             continue;
         }
-        let mut delete = ctx.command_in("gh", &ctx.repo_root);
+        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
         delete.args([
             "api",
             "--method",

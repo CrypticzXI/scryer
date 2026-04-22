@@ -1527,6 +1527,10 @@ pub struct IndexerSearchResultPayload {
     pub info_hash: Option<String>,
     pub freeleech: Option<bool>,
     pub download_volume_factor: Option<f64>,
+    pub candidate_token: Option<String>,
+    pub auto_eligible: Option<bool>,
+    pub auto_decision_code: Option<String>,
+    pub auto_decision_summary: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2190,16 +2194,15 @@ pub struct PolicyInputPayload {
 }
 
 #[derive(InputObject)]
-pub struct ReleaseSelectionInput {
-    pub source_hint: Option<String>,
-    pub source_kind: Option<DownloadSourceKindValue>,
-    pub source_title: Option<String>,
+pub struct QueueDownloadInput {
+    pub title_id: String,
+    pub candidate_token: String,
+    pub scope: QueueDownloadScopeInput,
 }
 
 #[derive(InputObject)]
-pub struct QueueDownloadInput {
+pub struct QueueBestReleaseInput {
     pub title_id: String,
-    pub release: ReleaseSelectionInput,
     pub scope: QueueDownloadScopeInput,
 }
 
@@ -2777,6 +2780,8 @@ pub struct WantedItemPayload {
     pub status: WantedStatusValue,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
+    pub latest_release_decision: Option<ReleaseDecisionPayload>,
+    pub mismatch_recovery_eligible: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2785,6 +2790,35 @@ pub struct WantedItemPayload {
 pub struct WantedItemsListPayload {
     pub items: Vec<WantedItemPayload>,
     pub total: i64,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DecisionCodeCountPayload {
+    pub code: String,
+    pub count: i64,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct WantedStatusCountPayload {
+    pub status: WantedStatusValue,
+    pub count: i64,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingReleaseStatusCountPayload {
+    pub status: PendingReleaseStatusValue,
+    pub count: i64,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleAcquisitionDiagnosticsPayload {
+    pub recent_decisions: Vec<ReleaseDecisionPayload>,
+    pub decision_counts: Vec<DecisionCodeCountPayload>,
+    pub wanted_status_counts: Vec<WantedStatusCountPayload>,
+    pub pending_release_counts: Vec<PendingReleaseStatusCountPayload>,
+    pub mismatch_recovery_eligible_count: i64,
+    pub latest_decision_at: Option<String>,
+    pub latest_wanted_search_at: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3439,6 +3473,17 @@ pub struct SubtitleDownloadPayload {
     pub release_info: Option<String>,
     pub synced: bool,
     pub downloaded_at: String,
+}
+
+#[derive(async_graphql::SimpleObject)]
+pub struct SubtitleBlacklistEntryPayload {
+    pub id: String,
+    pub media_file_id: String,
+    pub provider: String,
+    pub provider_file_id: String,
+    pub language: String,
+    pub reason: Option<String>,
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------

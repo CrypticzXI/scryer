@@ -176,6 +176,8 @@ async fn seed_movie_wanted_item(
         status,
         grabbed_release: None,
         current_score,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
@@ -258,6 +260,8 @@ async fn seed_episode_wanted_item(
         status,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };

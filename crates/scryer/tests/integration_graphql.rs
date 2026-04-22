@@ -1220,7 +1220,7 @@ async fn series_monitoring_summary(
         .expect("episode");
     let wanted_count = ctx
         .library_state
-        .count_wanted_items(None, None, Some(title_id))
+        .count_wanted_items(None, None, Some(title_id), None)
         .await
         .expect("count wanted items");
 
@@ -2910,6 +2910,9 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
           qualityProfileCriteriaInput: __type(name: "QualityProfileCriteriaInput") {
             inputFields { name }
           }
+          updateSubtitleSettingsInput: __type(name: "UpdateSubtitleSettingsInput") {
+            inputFields { name }
+          }
           updateGeneralSettingsInput: __type(name: "UpdateGeneralSettingsInput") {
             inputFields { name }
           }
@@ -2966,8 +2969,20 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert!(subtitle_names.contains(&"openSubtitlesUsername"));
+    assert!(subtitle_names.contains(&"hasOpenSubtitlesApiKey"));
     assert!(subtitle_names.contains(&"hasOpenSubtitlesPassword"));
     assert!(subtitle_names.contains(&"languages"));
+
+    let subtitle_input_fields = body["data"]["updateSubtitleSettingsInput"]["inputFields"]
+        .as_array()
+        .expect("UpdateSubtitleSettingsInput should expose input fields");
+    let subtitle_input_names: Vec<&str> = subtitle_input_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(subtitle_input_names.contains(&"openSubtitlesUsername"));
+    assert!(subtitle_input_names.contains(&"openSubtitlesPassword"));
+    assert!(!subtitle_input_names.contains(&"openSubtitlesApiKey"));
 
     let acquisition_fields = body["data"]["acquisitionSettings"]["fields"]
         .as_array()
@@ -3295,12 +3310,24 @@ async fn graphql_typed_service_settings_round_trip() {
 async fn graphql_typed_subtitle_settings_round_trip() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "subtitles.opensubtitles_api_key",
+            None,
+            json!("smg-managed-key").to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("subtitle api key should seed");
     let update = gql(
         &ctx,
         r#"
         mutation UpdateSubtitleSettings($input: UpdateSubtitleSettingsInput!) {
           updateSubtitleSettings(input: $input) {
             enabled
+            hasOpenSubtitlesApiKey
             openSubtitlesUsername
             hasOpenSubtitlesPassword
             languages { code hearingImpaired forced }
@@ -3346,6 +3373,10 @@ async fn graphql_typed_subtitle_settings_round_trip() {
         "subtitle-user"
     );
     assert_eq!(
+        update["data"]["updateSubtitleSettings"]["hasOpenSubtitlesApiKey"],
+        true
+    );
+    assert_eq!(
         update["data"]["updateSubtitleSettings"]["hasOpenSubtitlesPassword"],
         true
     );
@@ -3356,6 +3387,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
         query SubtitleSettings {
           subtitleSettings {
             enabled
+            hasOpenSubtitlesApiKey
             openSubtitlesUsername
             hasOpenSubtitlesPassword
             languages { code hearingImpaired forced }
@@ -3379,6 +3411,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
 
     let settings = &read["data"]["subtitleSettings"];
     assert_eq!(settings["enabled"], true);
+    assert_eq!(settings["hasOpenSubtitlesApiKey"], true);
     assert_eq!(settings["openSubtitlesUsername"], "subtitle-user");
     assert_eq!(settings["hasOpenSubtitlesPassword"], true);
     assert_eq!(settings["autoDownloadOnImport"], true);
@@ -4344,6 +4377,8 @@ async fn graphql_traverses_core_graph_relationships() {
         status: scryer_application::WantedStatus::Wanted,
         grabbed_release: None,
         current_score: Some(120),
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: "2026-03-20T00:00:00Z".to_string(),
         updated_at: "2026-03-20T00:00:00Z".to_string(),
     };
@@ -6943,6 +6978,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
             status: None,
             media_type: None,
             title_id: Some(hydrated_title.id.clone()),
+            latest_decision_code: None,
             limit: 10,
             offset: 0,
         })
@@ -7998,6 +8034,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
             status: None,
             media_type: None,
             title_id: Some(hydrated_title.id.clone()),
+            latest_decision_code: None,
             limit: 10,
             offset: 0,
         })
@@ -8179,6 +8216,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             status: scryer_application::WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: "2026-03-12T00:00:00Z".to_string(),
             updated_at: "2026-03-12T00:00:00Z".to_string(),
         })
@@ -8234,7 +8273,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 
     assert!(
         ctx.db
-            .list_wanted_items(None, None, Some(&id), 10, 0)
+            .list_wanted_items(None, None, Some(&id), None, 10, 0)
             .await
             .expect("wanted items")
             .is_empty()
@@ -8365,6 +8404,21 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Broken NZB Movie", "movie").await;
     let source_hint = format!("{}/invalid.nzb", ctx.nzbget_server.uri());
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let candidate_token = ctx
+        .app
+        .issue_release_candidate_token(
+            &admin,
+            &title_id,
+            &scryer_application::SubmissionScope::Title,
+            &scryer_application::QueuedReleaseSelection {
+                source_hint: Some(source_hint.clone()),
+                source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
+                source_title: Some("Broken.NZB.Movie.2024".to_string()),
+            },
+        )
+        .await
+        .expect("issue candidate token");
 
     Mock::given(method("GET"))
         .and(path("/invalid.nzb"))
@@ -8384,12 +8438,8 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
         json!({
             "input": {
                 "titleId": title_id,
+                "candidateToken": candidate_token,
                 "scope": { "title": true },
-                "release": {
-                    "sourceHint": source_hint,
-                    "sourceKind": "nzbFile",
-                    "sourceTitle": "Broken.NZB.Movie.2024"
-                }
             }
         }),
     )

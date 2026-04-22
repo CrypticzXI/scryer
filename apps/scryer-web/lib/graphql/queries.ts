@@ -254,6 +254,15 @@ const SUBTITLE_DOWNLOAD_FIELDS = `
     synced
     downloadedAt`;
 
+const SUBTITLE_BLACKLIST_FIELDS = `
+    id
+    mediaFileId
+    provider
+    providerFileId
+    language
+    reason
+    createdAt`;
+
   const IMPORT_HISTORY_FIELDS = `
     id
     sourceSystem
@@ -341,6 +350,37 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
 export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $blocklistLimit: Int) {
   title(id: $id) {${TITLE_OVERVIEW_FIELDS}
   }
+  titleAcquisitionDiagnostics(titleId: $id) {
+    recentDecisions {
+      id
+      wantedItemId
+      titleId
+      releaseTitle
+      releaseUrl
+      releaseSizeBytes
+      decisionCode
+      candidateScore
+      currentScore
+      scoreDelta
+      explanationJson
+      createdAt
+    }
+    decisionCounts {
+      code
+      count
+    }
+    wantedStatusCounts {
+      status
+      count
+    }
+    pendingReleaseCounts {
+      status
+      count
+    }
+    mismatchRecoveryEligibleCount
+    latestDecisionAt
+    latestWantedSearchAt
+  }
   titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
   }
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
@@ -372,6 +412,11 @@ export const deleteMediaFilePreviewQuery = `query DeleteMediaFilePreview($input:
 
 export const deleteSubtitlePreviewQuery = `query DeleteSubtitlePreview($input: DeleteSubtitlePreviewInput!) {
   deleteSubtitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+  }
+}`;
+
+export const subtitleBlacklistEntriesQuery = `query SubtitleBlacklistEntries($mediaFileId: String!) {
+  subtitleBlacklistEntries(mediaFileId: $mediaFileId) {${SUBTITLE_BLACKLIST_FIELDS}
   }
 }`;
 
@@ -428,6 +473,9 @@ export const searchQuery = `query SearchIndexers($query: String!, $imdbId: Strin
     infoHash
     freeleech
     downloadVolumeFactor
+    autoEligible
+    autoDecisionCode
+    autoDecisionSummary
   }
 }`;
 
@@ -487,6 +535,9 @@ export const searchSeriesEpisodeQuery = `query SearchIndexersEpisode($title: Str
     infoHash
     freeleech
     downloadVolumeFactor
+    autoEligible
+    autoDecisionCode
+    autoDecisionSummary
   }
 }`;
 
@@ -496,6 +547,7 @@ export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: Strin
     title
     link
     downloadUrl
+    candidateToken
     sourceKind
     sizeBytes
     publishedAt
@@ -537,6 +589,9 @@ export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: Strin
     infoHash
     freeleech
     downloadVolumeFactor
+    autoEligible
+    autoDecisionCode
+    autoDecisionSummary
   }
 }`;
 
@@ -550,6 +605,7 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
     title
     link
     downloadUrl
+    candidateToken
     sourceKind
     sizeBytes
     publishedAt
@@ -591,6 +647,9 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
     infoHash
     freeleech
     downloadVolumeFactor
+    autoEligible
+    autoDecisionCode
+    autoDecisionSummary
   }
 }`;
 
@@ -673,6 +732,7 @@ export type ReactiveRefreshQueryActionPlan =
       key: string;
       kind: "titleOverview";
       titleAlias: string;
+      titleAcquisitionDiagnosticsAlias: string;
       titleEventsAlias: string;
       titleReleaseBlocklistAlias: string;
       subtitleDownloadsAlias: string;
@@ -720,6 +780,8 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
+        const titleAcquisitionDiagnosticsAlias =
+          `titleOverviewDiagnosticsAction${index}`;
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
         const titleReleaseBlocklistAlias =
           `titleOverviewBlocklistAction${index}`;
@@ -731,6 +793,9 @@ export function buildReactiveRefreshQuery(
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${titleAcquisitionDiagnosticsAlias}: titleAcquisitionDiagnostics(titleId: $${titleIdVariableName}) {\n    recentDecisions {\n      id\n      wantedItemId\n      titleId\n      releaseTitle\n      releaseUrl\n      releaseSizeBytes\n      decisionCode\n      candidateScore\n      currentScore\n      scoreDelta\n      explanationJson\n      createdAt\n    }\n    decisionCounts {\n      code\n      count\n    }\n    wantedStatusCounts {\n      status\n      count\n    }\n    pendingReleaseCounts {\n      status\n      count\n    }\n    mismatchRecoveryEligibleCount\n    latestDecisionAt\n    latestWantedSearchAt\n  }`,
         );
         fields.push(
           `  ${titleEventsAlias}: titleEvents(titleId: $${titleIdVariableName}, limit: 50, offset: 0) {\n${TITLE_EVENT_FIELDS}\n  }`,
@@ -750,6 +815,7 @@ export function buildReactiveRefreshQuery(
           key: action.key,
           kind: action.kind,
           titleAlias,
+          titleAcquisitionDiagnosticsAlias,
           titleEventsAlias,
           titleReleaseBlocklistAlias,
           subtitleDownloadsAlias,
@@ -1454,8 +1520,8 @@ export const previewManualImportQuery = `query PreviewManualImport($downloadClie
   }
 }`;
 
-export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $mediaType: WantedMediaTypeValue, $titleId: String, $limit: Int, $offset: Int) {
-  wantedItems(status: $status, mediaType: $mediaType, titleId: $titleId, limit: $limit, offset: $offset) {
+export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $mediaType: WantedMediaTypeValue, $titleId: String, $latestDecisionCode: String, $limit: Int, $offset: Int) {
+  wantedItems(status: $status, mediaType: $mediaType, titleId: $titleId, latestDecisionCode: $latestDecisionCode, limit: $limit, offset: $offset) {
     items {
       id
       titleId
@@ -1472,6 +1538,11 @@ export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $
       status
       grabbedRelease
       currentScore
+      latestReleaseDecision {
+        decisionCode
+        createdAt
+      }
+      mismatchRecoveryEligible
       createdAt
       updatedAt
     }

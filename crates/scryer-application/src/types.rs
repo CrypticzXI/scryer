@@ -549,6 +549,8 @@ pub struct WantedItem {
     pub status: WantedStatus,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
+    pub latest_release_decision: Option<ReleaseDecision>,
+    pub mismatch_recovery_eligible: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -567,6 +569,35 @@ pub struct ReleaseDecision {
     pub score_delta: Option<i32>,
     pub explanation_json: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DecisionCodeCount {
+    pub code: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct WantedStatusCount {
+    pub status: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingReleaseStatusCount {
+    pub status: String,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TitleAcquisitionDiagnostics {
+    pub recent_decisions: Vec<ReleaseDecision>,
+    pub decision_counts: Vec<DecisionCodeCount>,
+    pub wanted_status_counts: Vec<WantedStatusCount>,
+    pub pending_release_counts: Vec<PendingReleaseStatusCount>,
+    pub mismatch_recovery_eligible_count: i64,
+    pub latest_decision_at: Option<String>,
+    pub latest_wanted_search_at: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -800,6 +831,53 @@ pub struct TitleReleaseBlocklistEntry {
     pub attempted_at: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseSearchSubjectKind {
+    Title,
+    Episode,
+    Season,
+    Freetext,
+    Rss,
+}
+
+impl ReleaseSearchSubjectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Episode => "episode",
+            Self::Season => "season",
+            Self::Freetext => "freetext",
+            Self::Rss => "rss",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseStrategyKind {
+    IdBacked,
+    Freetext,
+    Fallback,
+    RssFeed,
+}
+
+impl ReleaseStrategyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IdBacked => "id_backed",
+            Self::Freetext => "freetext",
+            Self::Fallback => "fallback",
+            Self::RssFeed => "rss_feed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseCandidateProvenance {
+    pub search_subject_kind: ReleaseSearchSubjectKind,
+    pub strategy_kind: ReleaseStrategyKind,
+    pub title_validated_upstream: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchResult {
     pub source: String,
@@ -822,6 +900,11 @@ pub struct IndexerSearchResult {
     pub extra: HashMap<String, serde_json::Value>,
     pub guid: Option<String>,
     pub info_url: Option<String>,
+    pub provenance: Option<ReleaseCandidateProvenance>,
+    pub candidate_token: Option<String>,
+    pub auto_eligible: Option<bool>,
+    pub auto_decision_code: Option<String>,
+    pub auto_decision_summary: Option<String>,
 }
 
 /// Wrapper around search results that also carries API limit metadata
@@ -852,6 +935,21 @@ pub(crate) struct JwtClaims {
     pub username: String,
     #[serde(default)]
     pub entitlements: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ReleaseCandidateTokenClaims {
+    pub sub: String,
+    pub exp: i64,
+    pub iat: i64,
+    pub iss: String,
+    pub kind: String,
+    pub title_id: String,
+    pub scope_kind: String,
+    pub scope_id: Option<String>,
+    pub source_hint: String,
+    pub source_kind: Option<DownloadSourceKind>,
+    pub source_title: String,
 }
 
 /// Lightweight summary of the collection that should represent a title in list

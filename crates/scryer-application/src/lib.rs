@@ -43,6 +43,7 @@ pub(crate) use acquisition::acquisition as acquisition_workflow;
 pub(crate) use acquisition::decision_helpers as acquisition_decision_helpers;
 pub(crate) use acquisition::delay_profile;
 pub(crate) use acquisition::policy as acquisition_policy;
+pub(crate) use acquisition::release_search as acquisition_release_search;
 pub(crate) use acquisition::rss as app_usecase_rss;
 pub(crate) use acquisition::search_queries as acquisition_search_queries;
 pub(crate) use catalog::catalog as catalog_workflow;
@@ -135,10 +136,10 @@ pub use contracts::{
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
     DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate,
     IndexerEpisodeSearchRequest, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSearchRequest,
-    IndexerSeasonSearchRequest, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
-    NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection,
-    ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope, SubtitleStreamDetail,
-    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
+    InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis, NewBlocklistEntry,
+    NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection, ReleaseDecisionsQuery,
+    SearchMode, StagedNzbRef, SubmissionScope, SubtitleStreamDetail, SuccessfulGrabCommit,
+    TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,
@@ -183,6 +184,7 @@ pub use subtitles::orchestration::{
 };
 
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 4;
+pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
 pub(crate) use helpers::statvfs_path;
@@ -284,26 +286,30 @@ pub use settings::keys::{
 pub(crate) use types::JwtClaims;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
-    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetTitle, DiskSpaceInfo,
-    DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
-    DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
-    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, FixTitleMatchResult,
-    HealthCheckResult, HealthCheckStatus, HousekeepingReport, IndexerQueryStats,
-    IndexerSearchResponse, IndexerSearchResult, JwtAuthConfig, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedSearchAttempt, PendingImportConnection, PendingImportCounts,
-    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PendingReleaseStatus,
-    PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
-    SortDirection, SystemHealth, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetTitle, DecisionCodeCount,
+    DiskSpaceInfo, DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult,
+    DownloadHistoryFilter, DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey,
+    DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind,
+    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
+    IndexerQueryStats, JwtAuthConfig, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
+    PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome,
+    ReleaseDownloadFailureSignature, ResolvePendingImportResult, SortDirection, SystemHealth,
+    TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
     TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
     TitleReleaseBlocklistEntry, WantedCompleteTransition, WantedGrabTransition, WantedItem,
-    WantedPauseTransition, WantedSearchTransition, WantedStatus,
+    WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
 };
 pub use types::{
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
     ExternalImportMonitorSnapshot, ExternalImportMonitorSnapshotPayload,
+};
+pub use types::{
+    IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,
+    ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
 
 #[derive(Debug, thiserror::Error)]

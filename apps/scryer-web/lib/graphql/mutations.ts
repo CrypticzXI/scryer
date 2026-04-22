@@ -473,6 +473,20 @@ export const queueExistingMutation = `mutation QueueExisting($input: QueueDownlo
   }
 }`;
 
+export const triggerTitleMismatchRecoverySearchMutation = `mutation TriggerTitleMismatchRecoverySearch($input: TitleIdInput!) {
+  triggerTitleMismatchRecoverySearch(input: $input)
+}`;
+
+export const queueBestReleaseMutation = `mutation QueueBestRelease($input: QueueBestReleaseInput!) {
+  queueBestRelease(input: $input) {
+    jobId
+    titleId
+    titleName
+    sourceTitle
+    sourceKind
+  }
+}`;
+
 export const queueManualImportMutation = `mutation QueueManualImport($input: QueueManualImportInput!) {
   queueManualImport(input: $input) {
     kind

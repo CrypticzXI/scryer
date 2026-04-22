@@ -3,6 +3,7 @@ import { MediaContentView } from "@/components/views/media-content-view";
 import {
   addTitleMutation,
   addTitleAndQueueMutation,
+  queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
   deleteTitleMutation,
@@ -13,6 +14,7 @@ import {
   deleteTitlePreviewQuery,
   ruleSetsQuery,
   routingPageInitQuery,
+  searchForTitleQuery,
   titlesQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -84,7 +86,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     queueFacet,
     setQueueFacet,
     runTvdbSearch,
-    runSearch,
     searchNzbForSelectedTvdb,
     selectedTvdb,
     tvdbCandidates,
@@ -511,17 +512,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const queueFromSearch = React.useCallback(
     async (release: Release) => {
-      if (
-        release.qualityProfileDecision &&
-        release.qualityProfileDecision.allowed === false
-      ) {
-        const reason =
-          release.qualityProfileDecision.blockCodes.join(", ") ||
-          t("settings.qualityProfileUnknown", { id: t("label.default") });
-        setGlobalStatus(t("status.qualityProfileBlocked", { reason }));
-        return;
-      }
-
       const queuedTitle = selectedTvdb?.name || release.title;
       if (!titleNameForQueue) {
         setTitleNameForQueue(queuedTitle);
@@ -609,45 +599,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const queueExisting = React.useCallback(
     async (title: TitleRecord) => {
-      const imdbId =
-        title.imdbId?.trim() ||
-        title.externalIds
-          ?.find((externalId) => externalId.source.toLowerCase() === "imdb")
-          ?.value?.trim() ||
-        null;
-      const tvdbId =
-        title.externalIds
-          ?.find((externalId) => externalId.source.toLowerCase() === "tvdb")
-          ?.value?.trim() || null;
-      const payload = await runSearch(title.name, title.facet, {
-        imdbId,
-        tvdbId,
-        limit: title.facet === "movie" ? 50 : 15,
-      });
-      const top = payload.find(
-        (result) => result.qualityProfileDecision?.allowed ?? true,
-      );
-      if (!top) {
-        setGlobalStatus(t("status.noReleaseForTitle", { name: title.name }));
-        return;
-      }
-      const sourceHint = top.downloadUrl || top.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: title.name }));
-        return;
-      }
-
       try {
         const { error } = await client
-          .mutation(queueExistingMutation, {
+          .mutation(queueBestReleaseMutation, {
             input: {
               titleId: title.id,
               scope: { title: true },
-              release: {
-                sourceHint,
-                sourceKind: top.sourceKind ?? null,
-                sourceTitle: top.title,
-              },
             },
           })
           .toPromise();
@@ -660,47 +617,31 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
       }
     },
-    [client, runSearch, setGlobalStatus, t],
+    [client, setGlobalStatus, t],
   );
 
   const runInteractiveSearchForTitle = React.useCallback(
     async (title: TitleRecord) => {
-      const imdbId =
-        title.imdbId?.trim() ||
-        title.externalIds
-          ?.find((externalId) => externalId.source.toLowerCase() === "imdb")
-          ?.value?.trim() ||
-        null;
-      const tvdbId =
-        title.externalIds
-          ?.find((externalId) => externalId.source.toLowerCase() === "tvdb")
-          ?.value?.trim() || null;
-
-      return runSearch(title.name, title.facet, {
-        imdbId,
-        tvdbId,
-        limit: title.facet === "movie" ? 50 : 15,
-      });
+      try {
+        const { data, error } = await client
+          .query(searchForTitleQuery, { titleId: title.id })
+          .toPromise();
+        if (error) throw error;
+        return (data?.searchIndexersForTitle ?? []) as Release[];
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.searchFailed"),
+        );
+        return [];
+      }
     },
-    [runSearch],
+    [client, setGlobalStatus, t],
   );
 
   const queueExistingFromRelease = React.useCallback(
     async (title: TitleRecord, release: Release) => {
-      if (
-        release.qualityProfileDecision &&
-        release.qualityProfileDecision.allowed === false
-      ) {
-        const reason =
-          release.qualityProfileDecision.blockCodes.join(", ") ||
-          t("settings.qualityProfileUnknown", { id: t("label.default") });
-        setGlobalStatus(t("status.qualityProfileBlocked", { reason }));
-        return;
-      }
-
-      const sourceHint = release.downloadUrl || release.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noSource", { name: title.name }));
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
         return;
       }
 
@@ -710,11 +651,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             input: {
               titleId: title.id,
               scope: { title: true },
-              release: {
-                sourceHint,
-                sourceKind: release.sourceKind ?? null,
-                sourceTitle: release.title,
-              },
+              candidateToken: release.candidateToken,
             },
           })
           .toPromise();

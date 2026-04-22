@@ -667,6 +667,11 @@ impl JobRunTracker {
         state.next_run_at.insert(job_key, next_run_at);
     }
 
+    pub async fn clear_next_run_at(&self, job_key: JobKey) {
+        let mut state = self.state.lock().await;
+        state.next_run_at.remove(&job_key);
+    }
+
     pub async fn next_run_at(&self, job_key: JobKey) -> Option<DateTime<Utc>> {
         let state = self.state.lock().await;
         state.next_run_at.get(&job_key).copied()

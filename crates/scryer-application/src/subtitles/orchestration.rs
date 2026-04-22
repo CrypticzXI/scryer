@@ -3,15 +3,58 @@ use std::path::Path;
 use chrono::Utc;
 use tracing::{debug, info, warn};
 
-use crate::subtitles::provider::{OpenSubtitlesProvider, SubtitleMediaKind};
+use crate::subtitles::provider::{OpenSubtitlesProvider, SubtitleMediaKind, SubtitleQuery};
 use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
 use crate::{
     AppError, AppResult, AppUseCase, JobKey, JobTriggerSource,
-    SubtitleSettings as AppSubtitleSettings,
+    SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
 };
-use scryer_domain::{SubtitleDownload, User};
+use scryer_domain::{SubtitleDownload, Title, User};
+
+fn required_opensubtitles_api_key(settings: &AppSubtitleSettings) -> AppResult<&str> {
+    settings
+        .open_subtitles_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Validation("Subtitle service is unavailable".to_string()))
+}
+
+fn required_opensubtitles_credentials(settings: &AppSubtitleSettings) -> AppResult<(&str, &str)> {
+    let username = settings
+        .open_subtitles_username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "OpenSubtitles username and password must be configured".to_string(),
+            )
+        })?;
+    let password = settings
+        .open_subtitles_password
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "OpenSubtitles username and password must be configured".to_string(),
+            )
+        })?;
+    Ok((username, password))
+}
+
+async fn authenticated_opensubtitles_provider(
+    settings: &AppSubtitleSettings,
+) -> AppResult<OpenSubtitlesProvider> {
+    let provider =
+        OpenSubtitlesProvider::new(required_opensubtitles_api_key(settings)?.to_string());
+    let (username, password) = required_opensubtitles_credentials(settings)?;
+    provider.login(username, password).await?;
+    Ok(provider)
+}
 
 impl AppUseCase {
     pub async fn list_subtitle_downloads_for_title(
@@ -22,6 +65,17 @@ impl AppUseCase {
             .workflow
             .subtitle_downloads
             .list_for_title(title_id)
+            .await
+    }
+
+    pub async fn list_subtitle_blacklist_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
+        self.services
+            .workflow
+            .subtitle_downloads
+            .list_blacklist_for_media_file(media_file_id)
             .await
     }
 
@@ -46,47 +100,39 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
         let settings = self.subtitle_settings().await?;
-        let api_key = settings.open_subtitles_api_key.clone().ok_or_else(|| {
-            AppError::Validation("OpenSubtitles API key not configured".to_string())
-        })?;
+        let provider = authenticated_opensubtitles_provider(&settings).await?;
 
-        let provider = OpenSubtitlesProvider::new(api_key);
-        if let (Some(username), Some(password)) = (
-            settings.open_subtitles_username.as_deref(),
-            settings.open_subtitles_password.as_deref(),
-        ) && !username.is_empty()
-            && !password.is_empty()
-        {
-            let _ = provider.login(username, password).await;
+        let languages = vec![language.trim().to_string()];
+        let episode_context = media_file_episode_context(self, &media_file).await;
+        let query = build_subtitle_query(
+            &title,
+            &media_file,
+            &episode_context,
+            &languages,
+            None,
+            settings.include_ai_translated,
+            settings.include_machine_translated,
+        );
+
+        let results = SubtitleSearchOrchestrator::new(0)
+            .search(&provider, Path::new(&media_file.file_path), &query)
+            .await?;
+
+        let mut filtered = Vec::with_capacity(results.len());
+        for result in results {
+            let is_blacklisted = self
+                .services
+                .workflow
+                .subtitle_downloads
+                .is_blacklisted(media_file_id, &result.provider, &result.provider_file_id)
+                .await
+                .unwrap_or(false);
+            if !is_blacklisted {
+                filtered.push(result);
+            }
         }
 
-        let (imdb_id, series_imdb_id) = title_imdb_ids(&title);
-        let (season_num, episode_num) = media_file_episode_context(self, &media_file).await;
-        let languages = vec![language.trim().to_string()];
-
-        SubtitleSearchOrchestrator::new(0)
-            .search(
-                &provider,
-                Path::new(&media_file.file_path),
-                subtitle_media_kind(&title),
-                &title.name,
-                &title.aliases,
-                title.year,
-                imdb_id,
-                series_imdb_id,
-                season_num,
-                episode_num,
-                &languages,
-                media_file.release_group.as_deref(),
-                media_file.source_type.as_deref(),
-                media_file.video_codec_parsed.as_deref(),
-                media_file.audio_codec_parsed.as_deref(),
-                media_file.resolution.as_deref(),
-                None,
-                settings.include_ai_translated,
-                settings.include_machine_translated,
-            )
-            .await
+        Ok(filtered)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -119,19 +165,7 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
         let settings = self.subtitle_settings().await?;
-        let api_key = settings.open_subtitles_api_key.clone().ok_or_else(|| {
-            AppError::Validation("OpenSubtitles API key not configured".to_string())
-        })?;
-
-        let provider = OpenSubtitlesProvider::new(api_key);
-        if let (Some(username), Some(password)) = (
-            settings.open_subtitles_username.as_deref(),
-            settings.open_subtitles_password.as_deref(),
-        ) && !username.is_empty()
-            && !password.is_empty()
-        {
-            let _ = provider.login(username, password).await;
-        }
+        let provider = authenticated_opensubtitles_provider(&settings).await?;
 
         let file_path = Path::new(&media_file.file_path);
         let (dest_path, _) = crate::subtitles::download::download_and_save(
@@ -202,58 +236,73 @@ pub async fn start_background_subtitle_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    let settings = match app.subtitle_settings().await {
-        Ok(settings) => settings,
-        Err(err) => {
-            warn!(error = %err, "failed to load subtitle settings");
-            return;
-        }
-    };
-
-    if !settings.enabled {
-        debug!("subtitle poller disabled (subtitles.enabled != true)");
-        return;
-    }
-
     info!("background subtitle poller started");
-
-    let interval_hours = settings.search_interval_hours.max(1) as u64;
-    app.set_job_next_run_at(
-        JobKey::SubtitleSearch,
-        Utc::now() + chrono::Duration::seconds(120),
-    )
-    .await;
-
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_hours * 3600));
-    interval.tick().await; // consume first tick
-
-    // Initial delay to let services fully initialize
-    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-
-    if let Err(err) = app
-        .run_scheduled_job_now(JobKey::SubtitleSearch, JobTriggerSource::ScheduledStartup)
-        .await
-    {
-        warn!(error = %err, "initial subtitle search cycle failed");
-    }
+    let mut settings_changed = app.runtime.events.settings_changed_broadcast.subscribe();
+    let mut settings = load_poller_settings(&app).await;
+    let mut next_trigger_source = if settings.as_ref().is_some_and(|current| current.enabled) {
+        JobTriggerSource::ScheduledStartup
+    } else {
+        JobTriggerSource::ScheduledInterval
+    };
+    let mut next_run_at =
+        schedule_subtitle_poller(&app, settings.as_ref(), next_trigger_source).await;
 
     loop {
-        tokio::select! {
-            _ = token.cancelled() => {
-                info!("subtitle poller shutting down");
-                return;
+        if let Some(when) = next_run_at {
+            let delay = when
+                .signed_duration_since(Utc::now())
+                .to_std()
+                .unwrap_or_default();
+            tokio::select! {
+                _ = token.cancelled() => {
+                    info!("subtitle poller shutting down");
+                    app.clear_job_next_run_at(JobKey::SubtitleSearch).await;
+                    return;
+                }
+                changed = settings_changed.recv() => {
+                    if !should_reload_subtitle_poller(changed) {
+                        continue;
+                    }
+                    let was_enabled = settings.as_ref().is_some_and(|current| current.enabled);
+                    settings = load_poller_settings(&app).await;
+                    next_trigger_source = if settings.as_ref().is_some_and(|current| current.enabled) && !was_enabled {
+                        JobTriggerSource::ScheduledStartup
+                    } else {
+                        JobTriggerSource::ScheduledInterval
+                    };
+                    next_run_at = schedule_subtitle_poller(&app, settings.as_ref(), next_trigger_source).await;
+                }
+                _ = tokio::time::sleep(delay) => {
+                    if let Err(err) = app
+                        .run_scheduled_job_now(JobKey::SubtitleSearch, next_trigger_source)
+                        .await
+                    {
+                        warn!(error = %err, "subtitle search cycle failed");
+                    }
+                    settings = load_poller_settings(&app).await;
+                    next_trigger_source = JobTriggerSource::ScheduledInterval;
+                    next_run_at = schedule_subtitle_poller(&app, settings.as_ref(), next_trigger_source).await;
+                }
             }
-            _ = interval.tick() => {
-                app.set_job_next_run_at(
-                    JobKey::SubtitleSearch,
-                    Utc::now() + chrono::Duration::hours(interval_hours as i64),
-                )
-                .await;
-                if let Err(err) = app
-                    .run_scheduled_job_now(JobKey::SubtitleSearch, JobTriggerSource::ScheduledInterval)
-                    .await
-                {
-                    warn!(error = %err, "subtitle search cycle failed");
+        } else {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    info!("subtitle poller shutting down");
+                    app.clear_job_next_run_at(JobKey::SubtitleSearch).await;
+                    return;
+                }
+                changed = settings_changed.recv() => {
+                    if !should_reload_subtitle_poller(changed) {
+                        continue;
+                    }
+                    let was_enabled = settings.as_ref().is_some_and(|current| current.enabled);
+                    settings = load_poller_settings(&app).await;
+                    next_trigger_source = if settings.as_ref().is_some_and(|current| current.enabled) && !was_enabled {
+                        JobTriggerSource::ScheduledStartup
+                    } else {
+                        JobTriggerSource::ScheduledInterval
+                    };
+                    next_run_at = schedule_subtitle_poller(&app, settings.as_ref(), next_trigger_source).await;
                 }
             }
         }
@@ -283,18 +332,30 @@ fn subtitle_media_kind(title: &scryer_domain::Title) -> SubtitleMediaKind {
     }
 }
 
-fn title_imdb_ids(title: &scryer_domain::Title) -> (Option<&str>, Option<&str>) {
+fn title_imdb_ids(
+    title: &Title,
+    preferred_release: Option<&scryer_release_parser::ParsedReleaseMetadata>,
+) -> (Option<String>, Option<String>) {
     let imdb_id = title
         .external_ids
         .iter()
         .find(|external_id| external_id.source == "imdb")
-        .map(|external_id| external_id.value.as_str());
+        .map(|external_id| external_id.value.clone());
 
     if is_series_title(title) {
         (None, imdb_id)
     } else {
-        (imdb_id, None)
+        (
+            imdb_id.or_else(|| preferred_release.and_then(|release| release.imdb_id.clone())),
+            None,
+        )
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SubtitleEpisodeContext {
+    season: Option<i32>,
+    episode: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -320,6 +381,52 @@ fn read_subtitle_sync_settings(settings: &AppSubtitleSettings) -> SubtitleSyncSe
         threshold_series: settings.sync_threshold_series,
         threshold_movie: settings.sync_threshold_movie,
         max_offset_seconds: settings.sync_max_offset_seconds as i64,
+    }
+}
+
+async fn load_poller_settings(app: &AppUseCase) -> Option<AppSubtitleSettings> {
+    match app.subtitle_settings().await {
+        Ok(settings) => Some(settings),
+        Err(err) => {
+            warn!(error = %err, "failed to load subtitle settings");
+            None
+        }
+    }
+}
+
+async fn schedule_subtitle_poller(
+    app: &AppUseCase,
+    settings: Option<&AppSubtitleSettings>,
+    trigger_source: JobTriggerSource,
+) -> Option<chrono::DateTime<Utc>> {
+    let settings = match settings {
+        Some(settings) if settings.enabled => settings,
+        _ => {
+            debug!("subtitle poller idle");
+            app.clear_job_next_run_at(JobKey::SubtitleSearch).await;
+            return None;
+        }
+    };
+
+    let next_run_at = match trigger_source {
+        JobTriggerSource::ScheduledStartup => Utc::now() + chrono::Duration::seconds(120),
+        _ => Utc::now() + chrono::Duration::hours(settings.search_interval_hours.max(1) as i64),
+    };
+    app.set_job_next_run_at(JobKey::SubtitleSearch, next_run_at)
+        .await;
+    Some(next_run_at)
+}
+
+fn should_reload_subtitle_poller(
+    changed: Result<Vec<String>, tokio::sync::broadcast::error::RecvError>,
+) -> bool {
+    match changed {
+        Ok(keys) => keys.iter().any(|key| key.starts_with("subtitles.")),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+            debug!(skipped, "subtitle poller lagged settings updates");
+            true
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => false,
     }
 }
 
@@ -388,12 +495,65 @@ fn sync_summary_suffix(result: Option<&sync::SyncResult>) -> String {
         .unwrap_or_default()
 }
 
+fn parse_release_metadata_candidate(
+    raw: Option<&str>,
+) -> Option<scryer_release_parser::ParsedReleaseMetadata> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_release_metadata)
+}
+
+fn release_title_candidates(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if !parsed.normalized_title.is_empty() {
+        candidates.push(parsed.normalized_title.clone());
+    }
+    candidates.extend(parsed.normalized_title_variants.clone());
+
+    let mut deduped = Vec::with_capacity(candidates.len());
+    let mut seen = std::collections::HashSet::new();
+    for candidate in candidates {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+            deduped.push(trimmed.to_string());
+        }
+    }
+
+    deduped
+}
+
+fn release_audio_codec(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> Option<String> {
+    parsed
+        .audio
+        .clone()
+        .or_else(|| parsed.audio_codecs.first().cloned())
+}
+
+fn parsed_episode_context(
+    parsed: &scryer_release_parser::ParsedReleaseMetadata,
+) -> SubtitleEpisodeContext {
+    let episode = parsed
+        .episode
+        .as_ref()
+        .and_then(|episode| episode.episode_numbers.first().copied())
+        .map(|episode| episode as i32);
+
+    SubtitleEpisodeContext {
+        season: parsed
+            .episode
+            .as_ref()
+            .and_then(|episode| episode.season.map(|season| season as i32)),
+        episode,
+    }
+}
+
 async fn media_file_episode_context(
     app: &AppUseCase,
     media_file: &crate::TitleMediaFile,
-) -> (Option<i32>, Option<i32>) {
+) -> SubtitleEpisodeContext {
     let Some(episode_id) = media_file.episode_id.as_deref() else {
-        return (None, None);
+        return SubtitleEpisodeContext::default();
     };
 
     match app
@@ -403,17 +563,88 @@ async fn media_file_episode_context(
         .get_episode_by_id(episode_id)
         .await
     {
-        Ok(Some(episode)) => (
-            episode
+        Ok(Some(episode)) => SubtitleEpisodeContext {
+            season: episode
                 .season_number
                 .as_deref()
                 .and_then(|value| value.parse::<i32>().ok()),
-            episode
+            episode: episode
                 .episode_number
                 .as_deref()
                 .and_then(|value| value.parse::<i32>().ok()),
-        ),
-        _ => (None, None),
+        },
+        _ => SubtitleEpisodeContext::default(),
+    }
+}
+
+fn build_subtitle_query(
+    title: &Title,
+    media_file: &crate::TitleMediaFile,
+    episode_context: &SubtitleEpisodeContext,
+    languages: &[String],
+    hearing_impaired: Option<bool>,
+    include_ai_translated: bool,
+    include_machine_translated: bool,
+) -> SubtitleQuery {
+    let scene_release = parse_release_metadata_candidate(media_file.scene_name.as_deref());
+    let grabbed_release =
+        parse_release_metadata_candidate(media_file.grabbed_release_title.as_deref());
+
+    let preferred_release = scene_release.as_ref().or(grabbed_release.as_ref());
+    let fallback_episode_context = preferred_release
+        .map(parsed_episode_context)
+        .unwrap_or_default();
+    let episode_context = SubtitleEpisodeContext {
+        season: episode_context.season.or(fallback_episode_context.season),
+        episode: episode_context.episode.or(fallback_episode_context.episode),
+    };
+
+    let title_candidates = scene_release
+        .as_ref()
+        .map(release_title_candidates)
+        .filter(|candidates| !candidates.is_empty())
+        .or_else(|| {
+            grabbed_release
+                .as_ref()
+                .map(release_title_candidates)
+                .filter(|candidates| !candidates.is_empty())
+        })
+        .unwrap_or_default();
+
+    let (imdb_id, series_imdb_id) = title_imdb_ids(title, preferred_release);
+
+    SubtitleQuery {
+        media_kind: subtitle_media_kind(title),
+        file_hash: None,
+        imdb_id,
+        series_imdb_id,
+        title: title.name.clone(),
+        title_aliases: title.aliases.clone(),
+        title_candidates,
+        year: title
+            .year
+            .or_else(|| preferred_release.and_then(|release| release.year.map(|year| year as i32))),
+        season: episode_context.season,
+        episode: episode_context.episode,
+        languages: languages.to_vec(),
+        release_group: preferred_release
+            .and_then(|release| release.release_group.clone())
+            .or_else(|| media_file.release_group.clone()),
+        source: preferred_release
+            .and_then(|release| release.source.clone())
+            .or_else(|| media_file.source_type.clone()),
+        video_codec: preferred_release
+            .and_then(|release| release.video_codec.clone())
+            .or_else(|| media_file.video_codec_parsed.clone()),
+        audio_codec: preferred_release
+            .and_then(release_audio_codec)
+            .or_else(|| media_file.audio_codec_parsed.clone()),
+        resolution: preferred_release
+            .and_then(|release| release.quality.clone())
+            .or_else(|| media_file.resolution.clone()),
+        hearing_impaired,
+        include_ai_translated,
+        include_machine_translated,
     }
 }
 
@@ -450,18 +681,11 @@ async fn run_subtitle_search_for_file(
         return Ok(());
     }
 
-    let api_key = match settings.open_subtitles_api_key.clone() {
-        Some(key) if !key.is_empty() => key,
-        _ => return Ok(()),
-    };
-
     let wanted_languages: Vec<SubtitleLanguagePref> = settings.languages.clone();
     if wanted_languages.is_empty() {
         return Ok(());
     }
 
-    let username = settings.open_subtitles_username.clone().unwrap_or_default();
-    let password = settings.open_subtitles_password.clone().unwrap_or_default();
     let include_ai = settings.include_ai_translated;
     let include_machine = settings.include_machine_translated;
 
@@ -488,10 +712,13 @@ async fn run_subtitle_search_for_file(
     };
     let sync_settings = read_subtitle_sync_settings(&settings);
 
-    let provider = OpenSubtitlesProvider::new(api_key);
-    if !username.is_empty() && !password.is_empty() {
-        let _ = provider.login(&username, &password).await;
-    }
+    let provider = match authenticated_opensubtitles_provider(&settings).await {
+        Ok(provider) => provider,
+        Err(err) => {
+            warn!(error = %err, title_id, media_file_id, "skipping on-import subtitle search");
+            return Ok(());
+        }
+    };
 
     let existing = app
         .services
@@ -504,36 +731,20 @@ async fn run_subtitle_search_for_file(
     let missing = compute_missing_subtitles_from_streams(&wanted_languages, &existing, &embedded);
 
     let orchestrator = SubtitleSearchOrchestrator::new(min_score);
-    let media_kind = subtitle_media_kind(&title);
-    let (imdb_id, series_imdb_id) = title_imdb_ids(&title);
-    let (season_num, episode_num) = media_file_episode_context(app, &mf).await;
+    let episode_context = media_file_episode_context(app, &mf).await;
     let file_path = Path::new(&mf.file_path);
 
     for lang_pref in &missing {
-        let results = match orchestrator
-            .search(
-                &provider,
-                file_path,
-                media_kind,
-                &title.name,
-                &title.aliases,
-                title.year,
-                imdb_id,
-                series_imdb_id,
-                season_num,
-                episode_num,
-                std::slice::from_ref(&lang_pref.code),
-                mf.release_group.as_deref(),
-                mf.source_type.as_deref(),
-                mf.video_codec_parsed.as_deref(),
-                mf.audio_codec_parsed.as_deref(),
-                mf.resolution.as_deref(),
-                Some(lang_pref.hearing_impaired),
-                include_ai,
-                include_machine,
-            )
-            .await
-        {
+        let query = build_subtitle_query(
+            &title,
+            &mf,
+            &episode_context,
+            std::slice::from_ref(&lang_pref.code),
+            Some(lang_pref.hearing_impaired),
+            include_ai,
+            include_machine,
+        );
+        let results = match orchestrator.search(&provider, file_path, &query).await {
             Ok(r) => r,
             Err(err) => {
                 warn!(error = %err, language = %lang_pref.code, "on-import subtitle search failed");
@@ -614,7 +825,7 @@ async fn run_subtitle_search_for_file(
                 let sync_result = maybe_sync_downloaded_subtitle(
                     app,
                     sync_settings,
-                    media_kind,
+                    query.media_kind,
                     file_path,
                     &dest_path,
                     record_inserted.then_some(record_id.as_str()),
@@ -648,17 +859,6 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
         return Ok(());
     }
 
-    let api_key = match settings.open_subtitles_api_key.clone() {
-        Some(key) if !key.is_empty() => key,
-        _ => {
-            debug!("no OpenSubtitles API key configured, skipping subtitle search");
-            return Ok(());
-        }
-    };
-
-    let username = settings.open_subtitles_username.clone().unwrap_or_default();
-    let password = settings.open_subtitles_password.clone().unwrap_or_default();
-
     let include_ai = settings.include_ai_translated;
     let include_machine = settings.include_machine_translated;
     let min_score_series: i32 = settings.minimum_score_series;
@@ -673,14 +873,13 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
 
     let sync_settings = read_subtitle_sync_settings(&settings);
 
-    // Initialize provider
-    let provider = OpenSubtitlesProvider::new(api_key);
-    if !username.is_empty()
-        && !password.is_empty()
-        && let Err(err) = provider.login(&username, &password).await
-    {
-        warn!(error = %err, "OpenSubtitles login failed, continuing without auth");
-    }
+    let provider = match authenticated_opensubtitles_provider(&settings).await {
+        Ok(provider) => provider,
+        Err(err) => {
+            warn!(error = %err, "skipping subtitle search cycle");
+            return Ok(());
+        }
+    };
 
     // Get all monitored titles with media files
     let titles = app
@@ -729,40 +928,22 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
             };
 
             let orchestrator = SubtitleSearchOrchestrator::new(min_score);
-            let media_kind = subtitle_media_kind(title);
-            let (imdb_id, series_imdb_id) = title_imdb_ids(title);
-
             let file_path = Path::new(&mf.file_path);
-
-            let (season_num, episode_num) = media_file_episode_context(app, mf).await;
+            let episode_context = media_file_episode_context(app, mf).await;
 
             for lang_pref in &missing {
                 searched += 1;
+                let query = build_subtitle_query(
+                    title,
+                    mf,
+                    &episode_context,
+                    std::slice::from_ref(&lang_pref.code),
+                    Some(lang_pref.hearing_impaired),
+                    include_ai,
+                    include_machine,
+                );
 
-                let results = match orchestrator
-                    .search(
-                        &provider,
-                        file_path,
-                        media_kind,
-                        &title.name,
-                        &title.aliases,
-                        title.year,
-                        imdb_id,
-                        series_imdb_id,
-                        season_num,
-                        episode_num,
-                        std::slice::from_ref(&lang_pref.code),
-                        mf.release_group.as_deref(),
-                        mf.source_type.as_deref(),
-                        mf.video_codec_parsed.as_deref(),
-                        mf.audio_codec_parsed.as_deref(),
-                        mf.resolution.as_deref(),
-                        Some(lang_pref.hearing_impaired),
-                        include_ai,
-                        include_machine,
-                    )
-                    .await
-                {
+                let results = match orchestrator.search(&provider, file_path, &query).await {
                     Ok(r) => r,
                     Err(err) => {
                         warn!(
@@ -862,7 +1043,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                         let sync_result = maybe_sync_downloaded_subtitle(
                             app,
                             sync_settings,
-                            media_kind,
+                            query.media_kind,
                             file_path,
                             &dest_path,
                             record_inserted.then_some(record.id.as_str()),
@@ -927,4 +1108,191 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
 
     info!(searched, downloaded, "subtitle search cycle completed");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use scryer_domain::{ExternalId, MediaFacet, Title};
+
+    fn sample_title(facet: MediaFacet, year: Option<i32>) -> Title {
+        Title {
+            id: "title-1".into(),
+            name: "Canonical Title".into(),
+            facet,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![ExternalId {
+                source: "imdb".into(),
+                value: "tt7654321".into(),
+            }],
+            created_by: None,
+            created_at: Utc::now(),
+            year,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec!["Canonical Alt".into()],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    fn sample_media_file(
+        scene_name: Option<&str>,
+        grabbed_release_title: Option<&str>,
+    ) -> crate::TitleMediaFile {
+        crate::TitleMediaFile {
+            id: "mf-1".into(),
+            title_id: "title-1".into(),
+            episode_id: Some("episode-1".into()),
+            file_path: "/tmp/video.mkv".into(),
+            size_bytes: 1024,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: None,
+            scan_status: "scanned".into(),
+            created_at: Utc::now().to_rfc3339(),
+            video_codec: None,
+            video_width: None,
+            video_height: None,
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_profile: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: vec![],
+            audio_streams: vec![],
+            subtitle_languages: vec![],
+            subtitle_codecs: vec![],
+            subtitle_streams: vec![],
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+            scene_name: scene_name.map(str::to_string),
+            release_group: Some("fallback-group".into()),
+            source_type: Some("BluRay".into()),
+            resolution: Some("720p".into()),
+            video_codec_parsed: Some("x265".into()),
+            audio_codec_parsed: Some("DTS".into()),
+            audio_channels_parsed: None,
+            acquisition_score: None,
+            scoring_log: None,
+            indexer_source: None,
+            grabbed_release_title: grabbed_release_title.map(str::to_string),
+            grabbed_at: None,
+            edition: None,
+            original_file_path: None,
+            release_hash: None,
+        }
+    }
+
+    #[test]
+    fn build_subtitle_query_prefers_scene_release_metadata_over_grabbed_and_stored_fields() {
+        let scene_name = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let grabbed = "Wrong.Show.S01E01.720p.BluRay.x265-Different";
+        let parsed = parse_release_metadata(scene_name);
+        let title = sample_title(MediaFacet::Series, None);
+        let media_file = sample_media_file(Some(scene_name), Some(grabbed));
+        let episode_context = SubtitleEpisodeContext {
+            season: Some(2),
+            episode: Some(5),
+        };
+
+        let query = build_subtitle_query(
+            &title,
+            &media_file,
+            &episode_context,
+            &["eng".into()],
+            Some(false),
+            false,
+            false,
+        );
+
+        assert_eq!(query.media_kind, SubtitleMediaKind::Episode);
+        assert_eq!(query.title_candidates, release_title_candidates(&parsed));
+        assert_eq!(query.release_group, parsed.release_group);
+        assert_eq!(query.source, parsed.source);
+        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(query.audio_codec, release_audio_codec(&parsed));
+        assert_eq!(query.resolution, parsed.quality);
+        assert_eq!(query.season, Some(2));
+        assert_eq!(query.episode, Some(5));
+        assert_eq!(query.year, parsed.year.map(|year| year as i32));
+    }
+
+    #[test]
+    fn build_subtitle_query_uses_grabbed_release_title_when_scene_name_is_missing() {
+        let grabbed = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let parsed = parse_release_metadata(grabbed);
+        let title = sample_title(MediaFacet::Series, None);
+        let media_file = sample_media_file(None, Some(grabbed));
+
+        let query = build_subtitle_query(
+            &title,
+            &media_file,
+            &SubtitleEpisodeContext::default(),
+            &["eng".into()],
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(query.title_candidates, release_title_candidates(&parsed));
+        assert_eq!(query.release_group, parsed.release_group);
+        assert_eq!(query.source, parsed.source);
+        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(query.audio_codec, release_audio_codec(&parsed));
+        assert_eq!(query.resolution, parsed.quality);
+        assert_eq!(query.season, Some(1));
+        assert_eq!(query.episode, Some(1));
+    }
+
+    #[test]
+    fn build_subtitle_query_keeps_movie_imdb_id_and_falls_back_to_release_year() {
+        let scene_name = "Movie.Title.2024.1080p.WEB-DL.H.264-Group";
+        let parsed = parse_release_metadata(scene_name);
+        let title = sample_title(MediaFacet::Movie, None);
+        let media_file = sample_media_file(Some(scene_name), None);
+
+        let query = build_subtitle_query(
+            &title,
+            &media_file,
+            &SubtitleEpisodeContext::default(),
+            &["eng".into()],
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(query.media_kind, SubtitleMediaKind::Movie);
+        assert_eq!(query.imdb_id.as_deref(), Some("tt7654321"));
+        assert!(query.series_imdb_id.is_none());
+        assert_eq!(query.year, parsed.year.map(|year| year as i32));
+    }
 }

@@ -20,7 +20,8 @@ use crate::queries::media_file::{
 };
 use crate::queries::subtitle::{
     get_subtitle_download, is_blacklisted as is_subtitle_blacklisted,
-    list_subtitle_downloads_for_media_file, list_subtitle_downloads_for_title,
+    list_blacklist_for_media_file, list_subtitle_downloads_for_media_file,
+    list_subtitle_downloads_for_title,
 };
 use crate::queries::workflow::get_library_probe_signature_query;
 use crate::title_images::{get_title_image_blob_query, list_titles_requiring_image_refresh_query};
@@ -303,11 +304,19 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<WantedItem>> {
         self.db
-            .list_wanted_items(status, media_type, title_id, limit, offset)
+            .list_wanted_items(
+                status,
+                media_type,
+                title_id,
+                latest_decision_code,
+                limit,
+                offset,
+            )
             .await
     }
 
@@ -316,9 +325,10 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         self.db
-            .count_wanted_items(status, media_type, title_id)
+            .count_wanted_items(status, media_type, title_id, latest_decision_code)
             .await
     }
 
@@ -435,6 +445,17 @@ impl PendingReleaseRepository for SqliteLibraryStateStore {
         self.db
             .list_pending_releases_for_wanted_item(wanted_item_id)
             .await
+    }
+
+    async fn list_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        crate::queries::pending_releases::list_pending_releases_for_title_query(
+            &self.db.pool,
+            title_id,
+        )
+        .await
     }
 
     async fn update_pending_release_status(
@@ -554,6 +575,13 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
         list_subtitle_downloads_for_media_file(self.db.pool(), media_file_id).await
+    }
+
+    async fn list_blacklist_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
+        list_blacklist_for_media_file(self.db.pool(), media_file_id).await
     }
 
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()> {

@@ -8,7 +8,6 @@ export type SubtitleSettings = {
   enabled: boolean;
   hasOpenSubtitlesApiKey: boolean;
   openSubtitlesUsername: string;
-  openSubtitlesPassword: string;
   hasOpenSubtitlesPassword: boolean;
   languages: SubtitleLanguagePreference[];
   autoDownloadOnImport: boolean;

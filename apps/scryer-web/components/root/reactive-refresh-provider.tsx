@@ -33,7 +33,13 @@ type TitleOverviewAction = {
   titleId: string;
   blocklistLimit: number;
   apply: (
-    snapshot: TitleOverviewSnapshot<unknown, unknown, unknown, unknown>,
+    snapshot: TitleOverviewSnapshot<
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown
+    >,
   ) => void;
   onError?: QueueTitleOverviewRefreshOptions["onError"];
 };
@@ -122,9 +128,29 @@ function applyReactiveRefreshActionResult(
       >;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
-        titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["titleEvents"],
-        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["titleReleaseBlocklist"],
-        subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewSnapshot<unknown, unknown, unknown, unknown>["subtitleDownloads"],
+        acquisitionDiagnostics:
+          payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
+        titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<
+          unknown,
+          unknown,
+          unknown,
+          unknown,
+          unknown
+        >["titleEvents"],
+        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewSnapshot<
+          unknown,
+          unknown,
+          unknown,
+          unknown,
+          unknown
+        >["titleReleaseBlocklist"],
+        subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewSnapshot<
+          unknown,
+          unknown,
+          unknown,
+          unknown,
+          unknown
+        >["subtitleDownloads"],
         hasDownloadClients: (payload[typedActionPlan.setupStatusAlias] as { hasDownloadClients?: boolean } | null | undefined)?.hasDownloadClients === true,
       });
       return;
@@ -157,6 +183,7 @@ function reactiveRefreshActionAliases(
     case "titleOverview":
       return [
         actionPlan.titleAlias,
+        actionPlan.titleAcquisitionDiagnosticsAlias,
         actionPlan.titleEventsAlias,
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.subtitleDownloadsAlias,
@@ -371,12 +398,14 @@ export function ReactiveRefreshProvider({
       },
       queueTitleOverviewRefresh<
         TTitle = unknown,
+        TDiagnostics = unknown,
         TEvent = unknown,
         TBlocklist = unknown,
         TSubtitle = unknown,
       >(
         options: QueueTitleOverviewRefreshOptions<
           TTitle,
+          TDiagnostics,
           TEvent,
           TBlocklist,
           TSubtitle

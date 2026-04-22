@@ -80,6 +80,8 @@ async fn seed_wanted_item(
         status,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -597,6 +599,7 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
             status: None,
             media_type: None,
             title_id: None,
+            latest_decision_code: None,
             limit: 50,
             offset: 0,
         })
@@ -611,6 +614,7 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
             status: None,
             media_type: None,
             title_id: None,
+            latest_decision_code: None,
             limit: 50,
             offset: 0,
         })
@@ -663,6 +667,8 @@ async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -723,6 +729,8 @@ async fn ensure_wanted_item_seeded_preserves_existing_schedule_after_search_acti
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -787,6 +795,8 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     };
@@ -850,6 +860,8 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })
@@ -905,6 +917,8 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
             status: WantedStatus::Wanted,
             grabbed_release: None,
             current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         })

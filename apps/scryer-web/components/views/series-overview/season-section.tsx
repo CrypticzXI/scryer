@@ -45,6 +45,7 @@ import type {
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
 import type { EpisodePanelTab } from "./episode-panel-reducer";
+import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 import {
   buildSpecialsMovieEpisodeMatches,
   isSpecialsCollection,
@@ -97,6 +98,8 @@ export function SeasonSection({
   episodeActiveTab,
   mediaFilesByEpisode,
   releaseBlocklistEntries,
+  subtitleDownloads,
+  onRefreshSubtitles,
   searchResultsByEpisode,
   searchLoadingByEpisode,
   searchBlockedByEpisode,
@@ -126,7 +129,8 @@ export function SeasonSection({
   expandedEpisodeRows: Set<string>;
   episodeActiveTab: Record<string, EpisodePanelTab>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
-  subtitleDownloads?: { id: string; mediaFileId: string; language: string; provider: string; hearingImpaired: boolean; forced: boolean }[];
+  subtitleDownloads?: SubtitleDownloadRecord[];
+  onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchResultsByEpisode: Record<string, Release[]>;
   searchLoadingByEpisode: Record<string, boolean>;
@@ -311,6 +315,8 @@ export function SeasonSection({
           <EpisodeDetailsPanel
             episode={episode}
             mediaFiles={episodeFiles}
+            subtitleDownloads={subtitleDownloads ?? []}
+            onRefreshSubtitles={onRefreshSubtitles}
             linkedMovie={linkedMovie}
             onDeleteFile={onDeleteFile}
           />
@@ -346,6 +352,7 @@ export function SeasonSection({
             <SearchResultBuckets
               results={episodeResults}
               onQueue={(release) => onQueueFromEpisodeSearch(episode, release)}
+              requireCandidateToken
             />
           )}
         </TabsContent>
@@ -356,7 +363,19 @@ export function SeasonSection({
         </TabsContent>
       </Tabs>
     ),
-    [collection, linkedMovieByEpisodeId, onDeleteFile, onEpisodeTabChange, onQueueFromEpisodeSearch, onRunEpisodeSearch, releaseBlocklistEntries, searchBlockedByEpisode, t],
+    [
+      collection,
+      linkedMovieByEpisodeId,
+      onDeleteFile,
+      onEpisodeTabChange,
+      onQueueFromEpisodeSearch,
+      onRefreshSubtitles,
+      onRunEpisodeSearch,
+      releaseBlocklistEntries,
+      searchBlockedByEpisode,
+      subtitleDownloads,
+      t,
+    ],
   );
 
   return (
@@ -515,6 +534,7 @@ export function SeasonSection({
                 <SearchResultBuckets
                   results={seasonSearchResults}
                   onQueue={(release) => onQueueFromSeasonSearch(collection, release)}
+                  requireCandidateToken
                 />
               </div>
             ) : null}

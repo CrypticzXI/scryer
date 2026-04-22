@@ -1910,6 +1910,102 @@ impl AppUseCase {
         Ok(job_id)
     }
 
+    pub async fn queue_existing_title_download_from_candidate_token(
+        &self,
+        actor: &User,
+        title_id: &str,
+        candidate_token: &str,
+        scope: SubmissionScope,
+    ) -> AppResult<(String, QueuedReleaseSelection)> {
+        let queued_release = self
+            .verify_release_candidate_token(actor, title_id, &scope, candidate_token)
+            .await?;
+        let job_id = self
+            .queue_existing_title_download(actor, title_id, queued_release.clone(), scope)
+            .await?;
+        Ok((job_id, queued_release))
+    }
+
+    pub async fn queue_best_release(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope: SubmissionScope,
+    ) -> AppResult<String> {
+        require(actor, &Entitlement::TriggerActions)?;
+
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+
+        let (search_title, subject) = match &scope {
+            SubmissionScope::Title | SubmissionScope::Orphan => (
+                title.clone(),
+                self.resolve_release_search_subject_for_title(&title)
+                    .await?,
+            ),
+            SubmissionScope::Episode { episode_id } => {
+                let episode = self
+                    .services
+                    .catalog
+                    .shows
+                    .get_episode_by_id(episode_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
+                let season = episode.season_number.clone().ok_or_else(|| {
+                    AppError::Validation("episode is missing season number".into())
+                })?;
+                let episode_number = episode.episode_number.clone().ok_or_else(|| {
+                    AppError::Validation("episode is missing episode number".into())
+                })?;
+                (
+                    title.clone(),
+                    self.resolve_release_search_subject_for_episode(
+                        &title,
+                        &season,
+                        &episode_number,
+                    )
+                    .await?,
+                )
+            }
+            SubmissionScope::Collection { collection_id } => {
+                let collection = self
+                    .services
+                    .catalog
+                    .shows
+                    .get_collection_by_id(collection_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+                self.resolve_release_search_subject_for_collection(&title, &collection)
+                    .await?
+            }
+        };
+
+        let results = self
+            .search_and_evaluate_subject(&search_title, &subject, &actor.id, SearchMode::Auto)
+            .await?;
+        let best = results
+            .into_iter()
+            .find(|candidate| candidate.auto_eligible == Some(true))
+            .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
+
+        self.queue_existing_title_download(
+            actor,
+            title_id,
+            QueuedReleaseSelection {
+                source_hint: best.download_url.clone().or(best.link.clone()),
+                source_kind: best.source_kind,
+                source_title: Some(best.title.clone()),
+            },
+            scope,
+        )
+        .await
+    }
+
     /// Resolve the per-facet fallback category used when the selected client
     /// does not declare an explicit routing category.
     pub(crate) async fn derive_download_category(&self, facet: &MediaFacet) -> String {

@@ -1,5 +1,6 @@
 use super::*;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,8 @@ fn base_episode_wanted_item() -> WantedItem {
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: now.clone(),
         updated_at: now,
     }
@@ -99,6 +102,8 @@ fn base_interstitial_wanted_item() -> WantedItem {
         status: WantedStatus::Wanted,
         grabbed_release: None,
         current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: now.clone(),
         updated_at: now,
     }
@@ -125,6 +130,38 @@ fn base_episode() -> Episode {
         tvdb_id: None,
         monitored: true,
         created_at: now_utc(),
+    }
+}
+
+fn test_search_result_with_decision(
+    title: &str,
+    source_kind: Option<DownloadSourceKind>,
+    decision_code: &str,
+) -> IndexerSearchResult {
+    IndexerSearchResult {
+        source: "indexer".to_string(),
+        title: title.to_string(),
+        link: None,
+        download_url: Some(format!("https://example.invalid/{title}.nzb")),
+        source_kind,
+        size_bytes: None,
+        published_at: None,
+        thumbs_up: None,
+        thumbs_down: None,
+        indexer_languages: None,
+        indexer_subtitles: None,
+        indexer_grabs: None,
+        password_hint: None,
+        parsed_release_metadata: None,
+        quality_profile_decision: None,
+        extra: HashMap::new(),
+        guid: None,
+        info_url: None,
+        provenance: None,
+        candidate_token: None,
+        auto_eligible: Some(decision_code == "eligible"),
+        auto_decision_code: Some(decision_code.to_string()),
+        auto_decision_summary: None,
     }
 }
 
@@ -336,6 +373,8 @@ fn old_failed_grab_titles_do_not_research_immediately() {
         status: WantedStatus::Grabbed,
         grabbed_release: None,
         current_score: Some(100),
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
     };
@@ -363,6 +402,8 @@ fn fresh_failed_grab_titles_require_stale_last_search() {
         status: WantedStatus::Grabbed,
         grabbed_release: None,
         current_score: Some(100),
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
     };
@@ -455,4 +496,17 @@ fn interstitial_movie_blocking_is_collection_scoped() {
         &wanted,
         wanted.collection_id.as_deref(),
     ));
+}
+
+#[test]
+fn effective_auto_decision_code_marks_failed_source_kind_unavailable() {
+    let candidate = test_search_result_with_decision(
+        "Failed.Source.Kind",
+        Some(DownloadSourceKind::NzbUrl),
+        "eligible",
+    );
+
+    let decision = effective_auto_decision_code(&candidate, &[DownloadSourceKind::NzbUrl]);
+
+    assert_eq!(decision, ReleaseAutoDecisionCode::DownloadClientUnavailable);
 }

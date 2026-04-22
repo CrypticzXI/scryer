@@ -269,6 +269,10 @@ pub(crate) fn from_search_result(result: IndexerSearchResult) -> IndexerSearchRe
         info_hash,
         freeleech,
         download_volume_factor,
+        candidate_token: result.candidate_token,
+        auto_eligible: result.auto_eligible,
+        auto_decision_code: result.auto_decision_code,
+        auto_decision_summary: result.auto_decision_summary,
     }
 }
 
@@ -1087,6 +1091,8 @@ pub(crate) fn from_wanted_item(item: scryer_application::WantedItem) -> WantedIt
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
         current_score: item.current_score,
+        latest_release_decision: item.latest_release_decision.map(from_release_decision),
+        mismatch_recovery_eligible: item.mismatch_recovery_eligible,
         created_at: item.created_at,
         updated_at: item.updated_at,
     }
@@ -1108,6 +1114,67 @@ pub(crate) fn from_release_decision(
         score_delta: decision.score_delta,
         explanation_json: decision.explanation_json,
         created_at: decision.created_at,
+    }
+}
+
+pub(crate) fn from_decision_code_count(
+    item: scryer_application::DecisionCodeCount,
+) -> DecisionCodeCountPayload {
+    DecisionCodeCountPayload {
+        code: item.code,
+        count: item.count,
+    }
+}
+
+pub(crate) fn from_wanted_status_count(
+    item: scryer_application::WantedStatusCount,
+) -> WantedStatusCountPayload {
+    WantedStatusCountPayload {
+        status: scryer_application::WantedStatus::parse(&item.status)
+            .map(WantedStatusValue::from_application)
+            .unwrap_or(WantedStatusValue::Wanted),
+        count: item.count,
+    }
+}
+
+pub(crate) fn from_pending_release_status_count(
+    item: scryer_application::PendingReleaseStatusCount,
+) -> PendingReleaseStatusCountPayload {
+    PendingReleaseStatusCountPayload {
+        status: scryer_application::PendingReleaseStatus::parse(&item.status)
+            .map(PendingReleaseStatusValue::from_application)
+            .unwrap_or(PendingReleaseStatusValue::Waiting),
+        count: item.count,
+    }
+}
+
+pub(crate) fn from_title_acquisition_diagnostics(
+    value: scryer_application::TitleAcquisitionDiagnostics,
+) -> TitleAcquisitionDiagnosticsPayload {
+    TitleAcquisitionDiagnosticsPayload {
+        recent_decisions: value
+            .recent_decisions
+            .into_iter()
+            .map(from_release_decision)
+            .collect(),
+        decision_counts: value
+            .decision_counts
+            .into_iter()
+            .map(from_decision_code_count)
+            .collect(),
+        wanted_status_counts: value
+            .wanted_status_counts
+            .into_iter()
+            .map(from_wanted_status_count)
+            .collect(),
+        pending_release_counts: value
+            .pending_release_counts
+            .into_iter()
+            .map(from_pending_release_status_count)
+            .collect(),
+        mismatch_recovery_eligible_count: value.mismatch_recovery_eligible_count,
+        latest_decision_at: value.latest_decision_at,
+        latest_wanted_search_at: value.latest_wanted_search_at,
     }
 }
 

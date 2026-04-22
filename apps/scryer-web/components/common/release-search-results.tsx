@@ -64,11 +64,13 @@ function SearchResultRow({
   result,
   onQueue,
   blocked,
+  requireCandidateToken = false,
   mobile = false,
 }: {
   result: Release;
   onQueue: (r: Release) => Promise<void> | void;
   blocked: boolean;
+  requireCandidateToken?: boolean;
   mobile?: boolean;
 }) {
   const t = useTranslate();
@@ -112,9 +114,15 @@ function SearchResultRow({
         .filter((value) => value !== null && value !== undefined && typeof value === "object")
         .map((entry) => entry as { label: string; className: string })
     : [];
+  const queueUnavailableReason =
+    requireCandidateToken && !blocked && !result.candidateToken
+      ? t("queue.manualUnavailableForResult")
+      : null;
+  const queueDisabled = blocked || queueRequested || queueUnavailableReason !== null;
+  const queueButtonMuted = blocked || queueUnavailableReason !== null;
 
   const handleQueueClick = React.useCallback(() => {
-    if (blocked || queueRequested) {
+    if (queueDisabled) {
       return;
     }
 
@@ -130,7 +138,7 @@ function SearchResultRow({
     } catch {
       setQueueRequested(false);
     }
-  }, [blocked, onQueue, queueRequested, result]);
+  }, [onQueue, queueDisabled, result]);
 
   if (mobile) {
     return (
@@ -173,18 +181,21 @@ function SearchResultRow({
           {decision && decision.blockCodes.length > 0 ? (
             <p className="text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
           ) : null}
+          {queueUnavailableReason ? (
+            <p className="text-xs text-muted-foreground">{queueUnavailableReason}</p>
+          ) : null}
           <Button
             size="sm"
             onClick={handleQueueClick}
-            disabled={blocked || queueRequested}
+            disabled={queueDisabled}
             className={
-              blocked
+              queueButtonMuted
                 ? "mt-1 w-full"
                 : queueRequested
                   ? "mt-1 w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
                   : "mt-1 w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
             }
-            variant={blocked ? "ghost" : "default"}
+            variant={queueButtonMuted ? "ghost" : "default"}
           >
             {queueRequested ? (
               <span className="inline-flex items-center gap-1.5">
@@ -236,6 +247,9 @@ function SearchResultRow({
             {decision && decision.blockCodes.length > 0 ? (
               <p className="mt-1 text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
             ) : null}
+            {queueUnavailableReason ? (
+              <p className="mt-1 text-xs text-muted-foreground">{queueUnavailableReason}</p>
+            ) : null}
           </div>
         </td>
         <td className="border border-border border-x-0 px-4 py-2 text-center align-middle">
@@ -263,15 +277,15 @@ function SearchResultRow({
           <Button
             size="default"
             onClick={handleQueueClick}
-            disabled={blocked || queueRequested}
+            disabled={queueDisabled}
             className={
-              blocked
+              queueButtonMuted
                 ? "h-10"
                 : queueRequested
                   ? "h-10 border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
                   : "h-10 bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
             }
-            variant={blocked ? "ghost" : "default"}
+            variant={queueButtonMuted ? "ghost" : "default"}
           >
             {queueRequested ? (
               <span className="inline-flex items-center gap-1.5">
@@ -338,9 +352,11 @@ function SearchResultRow({
 export function SearchResultBuckets({
   results,
   onQueue,
+  requireCandidateToken = false,
 }: {
   results: Release[];
   onQueue: (r: Release) => Promise<void> | void;
+  requireCandidateToken?: boolean;
 }) {
   const t = useTranslate();
   const considered = React.useMemo(
@@ -417,6 +433,7 @@ export function SearchResultBuckets({
                 result={result}
                 onQueue={onQueue}
                 blocked={isBlocked}
+                requireCandidateToken={requireCandidateToken}
                 mobile
               />
             ))}
@@ -455,6 +472,7 @@ export function SearchResultBuckets({
                     result={result}
                     onQueue={onQueue}
                     blocked={isBlocked}
+                    requireCandidateToken={requireCandidateToken}
                   />
                 ))}
               </tbody>
@@ -463,7 +481,7 @@ export function SearchResultBuckets({
         </div>
       );
     },
-    [handleSort, onQueue, renderSortIcon, sortKey],
+    [handleSort, onQueue, renderSortIcon, requireCandidateToken, sortKey],
   );
 
   return (

@@ -5,7 +5,7 @@ import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 
 const QP_TAG_PREFIX = "scryer:quality-profile:";
 
@@ -134,20 +134,18 @@ function PosterCard({
             aria-label={title.name}
           >
             <div className="relative aspect-[2/3]">
-              {(posterUrl || title.posterSourceUrl) ? (
-                <TitlePoster
-                  src={posterUrl}
-                  sourceSrc={title.posterSourceUrl}
-                  alt={t("media.posterAlt", { name: title.name })}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                  decoding="async"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
-                  {t("label.noArt")}
-                </div>
-              )}
+              <TitlePosterSlot
+                src={posterUrl}
+                sourceSrc={title.posterSourceUrl}
+                metadataFetchedAt={title.metadataFetchedAt}
+                createdAt={title.createdAt}
+                alt={t("media.posterAlt", { name: title.name })}
+                className="h-full w-full object-cover"
+                placeholderClassName="flex h-full w-full items-center justify-center text-sm text-muted-foreground"
+                emptyLabel={t("label.noArt")}
+                loading="lazy"
+                decoding="async"
+              />
 
               {!isMobile ? (
                 <>
