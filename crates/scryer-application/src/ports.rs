@@ -32,6 +32,10 @@ pub trait TitleRepository: Send + Sync {
         limit: usize,
         excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<PendingTitleHydration>>;
+    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<String>>;
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
     async fn schedule_title_metadata_hydration_retry(
         &self,
@@ -99,6 +103,10 @@ pub trait TitleImageProcessor: Send + Sync {
 #[async_trait]
 pub trait ShowRepository: Send + Sync {
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>>;
+    async fn list_collection_external_ids(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>>;
     async fn list_collections_for_titles(
         &self,
         title_ids: &[String],
@@ -138,6 +146,8 @@ pub trait ShowRepository: Send + Sync {
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>>;
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>>;
+    async fn list_episode_external_ids(&self, episode_id: &str)
+    -> AppResult<Vec<ScopedExternalId>>;
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
@@ -163,6 +173,12 @@ pub trait ShowRepository: Send + Sync {
         start_date: &str,
         end_date: &str,
     ) -> AppResult<Vec<CalendarEpisode>>;
+    async fn replace_anibridge_scoped_external_ids_for_title(
+        &self,
+        title_id: &str,
+        collection_ids: Vec<ScopedExternalId>,
+        episode_ids: Vec<ScopedExternalId>,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -212,6 +228,18 @@ pub trait DownloadClientConfigRepository: Send + Sync {
     async fn update(&self, update: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait SubtitleProviderConfigRepository: Send + Sync {
+    async fn list(&self, provider_type: Option<String>) -> AppResult<Vec<SubtitleProviderConfig>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<SubtitleProviderConfig>>;
+    async fn create(&self, config: SubtitleProviderConfig) -> AppResult<SubtitleProviderConfig>;
+    async fn update(
+        &self,
+        update: SubtitleProviderConfigUpdate,
+    ) -> AppResult<SubtitleProviderConfig>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -344,13 +372,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn find_by_client_item_id(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>>;
 
     async fn list_for_client_items(
         &self,
-        client_items: &[(String, String)],
+        client_items: &[(Option<String>, String, String)],
     ) -> AppResult<Vec<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
@@ -362,10 +391,16 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
 
-    async fn delete_by_client_item_id(&self, download_client_item_id: &str) -> AppResult<()>;
+    async fn delete_by_client_item_id(
+        &self,
+        download_client_id: Option<&str>,
+        download_client_type: Option<&str>,
+        download_client_item_id: &str,
+    ) -> AppResult<()>;
 
     async fn update_tracked_state(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
         tracked_state: &str,
@@ -373,6 +408,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn get_tracked_state(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<String>>;
@@ -553,6 +589,7 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
 pub trait DownloadQueueCommandRepository: Send + Sync {
     async fn queue_delete_command(
         &self,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
@@ -574,7 +611,7 @@ pub trait DownloadQueueCommandRepository: Send + Sync {
 
     async fn list_latest_delete_commands_for_sources(
         &self,
-        sources: &[(String, String, bool)],
+        sources: &[(Option<String>, String, String, bool)],
     ) -> AppResult<Vec<crate::DownloadQueueCommandRecord>>;
 
     async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32>;
@@ -623,6 +660,12 @@ pub trait MediaFileRepository: Send + Sync {
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()>;
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>>;
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>>;
 
     async fn list_title_media_size_summaries(
         &self,
@@ -1001,6 +1044,7 @@ pub trait PluginInstallationRepository: Send + Sync {
         name: &str,
         description: &str,
         version: &str,
+        plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()>;
     async fn store_registry_cache(&self, json: &str) -> AppResult<()>;
@@ -1113,12 +1157,53 @@ pub trait NotificationClient: Send + Sync {
     ) -> AppResult<()>;
 }
 
+#[async_trait]
+pub trait SubtitleProviderClient: Send + Sync {
+    async fn search(
+        &self,
+        query: &crate::subtitles::SubtitleQuery,
+    ) -> AppResult<Vec<crate::subtitles::SubtitleMatch>>;
+    async fn download(&self, provider_file_id: &str) -> AppResult<crate::subtitles::SubtitleFile>;
+    async fn validate_connection(&self) -> AppResult<SubtitleProviderValidationResult>;
+    async fn generate(
+        &self,
+        _request: &SubtitleGenerationInput,
+    ) -> AppResult<crate::subtitles::SubtitleFile> {
+        Err(AppError::Repository(
+            "subtitle generation is not supported for this provider".to_string(),
+        ))
+    }
+    fn name(&self) -> &str;
+}
+
 pub trait NotificationPluginProvider: Send + Sync {
     fn client_for_channel(
         &self,
         config: &scryer_domain::NotificationChannelConfig,
     ) -> Option<Arc<dyn NotificationClient>>;
     fn available_provider_types(&self) -> Vec<String>;
+    fn config_fields_for_provider(&self, provider_type: &str)
+    -> Vec<scryer_domain::ConfigFieldDef>;
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
+    fn reload_plugins(
+        &self,
+        external_wasm_bytes: &[&[u8]],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (external_wasm_bytes, disabled_builtins);
+        Err("this provider does not support dynamic reload".to_string())
+    }
+}
+
+pub trait SubtitlePluginProvider: Send + Sync {
+    fn client_for_config(
+        &self,
+        config: &scryer_domain::SubtitleProviderConfig,
+        host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
+    ) -> Option<Arc<dyn SubtitleProviderClient>>;
+    fn available_provider_types(&self) -> Vec<String>;
+    fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool;
+    fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String>;
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
@@ -1266,16 +1351,33 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn pause_queue_item_for_client(&self, _client_id: &str, id: &str) -> AppResult<()> {
+        self.pause_queue_item(id).await
+    }
+
     async fn resume_queue_item(&self, _id: &str) -> AppResult<()> {
         Err(AppError::Repository(
             "resume is not supported for this download client".to_string(),
         ))
     }
 
+    async fn resume_queue_item_for_client(&self, _client_id: &str, id: &str) -> AppResult<()> {
+        self.resume_queue_item(id).await
+    }
+
     async fn delete_queue_item(&self, _id: &str, _is_history: bool) -> AppResult<()> {
         Err(AppError::Repository(
             "delete is not supported for this download client".to_string(),
         ))
+    }
+
+    async fn delete_queue_item_for_client_id(
+        &self,
+        _client_id: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        self.delete_queue_item(id, is_history).await
     }
 
     async fn delete_queue_item_for_client(

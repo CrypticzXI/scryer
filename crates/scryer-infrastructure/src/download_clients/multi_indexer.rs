@@ -1147,7 +1147,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         for result in &mut all_results {
             if result.parsed_release_metadata.is_none() {
                 result.parsed_release_metadata =
-                    Some(scryer_release_parser::parse_release_metadata(&result.title));
+                    Some(scryer_application::parse_release_metadata(&result.title));
             }
         }
 
@@ -1344,7 +1344,7 @@ fn filter_strategy_results(
         });
         if result.parsed_release_metadata.is_none() {
             result.parsed_release_metadata =
-                Some(scryer_release_parser::parse_release_metadata(&result.title));
+                Some(scryer_application::parse_release_metadata(&result.title));
         }
     }
 
@@ -1355,9 +1355,7 @@ fn filter_strategy_results(
     let mut expected_titles = if context.query.is_empty() {
         Vec::new()
     } else {
-        parsed_title_candidates(&scryer_release_parser::parse_release_metadata(
-            context.query,
-        ))
+        parsed_title_candidates(&scryer_application::parse_release_metadata(context.query))
     };
     expected_titles.extend(
         context
@@ -1770,6 +1768,7 @@ mod tests {
             info_url: None,
             provenance: None,
             candidate_token: None,
+            queue_scope: None,
             auto_eligible: None,
             auto_decision_code: None,
             auto_decision_summary: None,

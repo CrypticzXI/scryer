@@ -85,7 +85,7 @@ pub(crate) fn build_rule_input(
             is_season_pack,
             is_multi_episode,
             release_group: parsed.release_group.clone(),
-            year: parsed.year,
+            year: parsed.year.and_then(|year| u32::try_from(year).ok()),
             parse_confidence: parsed.parse_confidence,
             size_bytes: release_runtime.size_bytes,
             age_days: release_runtime
@@ -148,24 +148,26 @@ fn release_type_details(parsed: &ParsedReleaseMetadata) -> (Option<String>, bool
     };
 
     let kind = match episode.release_type {
-        scryer_release_parser::ParsedEpisodeReleaseType::SingleEpisode => "single_episode",
-        scryer_release_parser::ParsedEpisodeReleaseType::MultiEpisode => "multi_episode",
-        scryer_release_parser::ParsedEpisodeReleaseType::SeasonPack => "season_pack",
-        scryer_release_parser::ParsedEpisodeReleaseType::Unknown => "unknown",
+        crate::ParsedEpisodeReleaseType::SingleEpisode => "single_episode",
+        crate::ParsedEpisodeReleaseType::MultiEpisode => "multi_episode",
+        crate::ParsedEpisodeReleaseType::RangePack => "multi_episode",
+        crate::ParsedEpisodeReleaseType::SeasonPack => "season_pack",
+        crate::ParsedEpisodeReleaseType::Daily => "single_episode",
+        crate::ParsedEpisodeReleaseType::Unknown => "unknown",
     };
 
     (
         Some(kind.to_string()),
         matches!(
             episode.release_type,
-            scryer_release_parser::ParsedEpisodeReleaseType::SeasonPack
+            crate::ParsedEpisodeReleaseType::SeasonPack
         ) || episode.full_season
             || episode.is_partial_season
             || episode.is_multi_season,
         matches!(
             episode.release_type,
-            scryer_release_parser::ParsedEpisodeReleaseType::MultiEpisode
-                | scryer_release_parser::ParsedEpisodeReleaseType::SeasonPack
+            crate::ParsedEpisodeReleaseType::MultiEpisode
+                | crate::ParsedEpisodeReleaseType::SeasonPack
         ) || episode.episode_numbers.len() > 1
             || episode.absolute_episode_numbers.len() > 1,
     )
@@ -378,6 +380,7 @@ mod tests {
                 info_url: None,
                 provenance: None,
                 candidate_token: None,
+                queue_scope: None,
                 auto_eligible: None,
                 auto_decision_code: None,
                 auto_decision_summary: None,

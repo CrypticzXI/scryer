@@ -10,7 +10,6 @@ use crate::acquisition_release_search::{
     ReleaseAutoDecisionCode, annotate_auto_decision, interstitial_movie_search_title,
     serialize_decision_explanation,
 };
-use crate::acquisition_search_queries::tvdb_id_from_external_ids;
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
@@ -78,12 +77,8 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
 }
 
 fn candidate_is_season_pack_for_season(candidate: &IndexerSearchResult, season_num: u32) -> bool {
-    let parsed_owned;
-    let parsed = if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
-        parsed
-    } else {
-        parsed_owned = crate::parse_release_metadata(&candidate.title);
-        &parsed_owned
+    let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
+        return false;
     };
 
     parsed.episode.as_ref().is_some_and(|episode| {
@@ -608,12 +603,28 @@ pub(crate) struct DownloadClientSnapshot {
     /// Download client item IDs of items currently queued/downloading.
     /// Used for episode-level dedup (check by submission ID, not title name).
     active_client_ids: std::collections::HashSet<String>,
+    /// Raw native item ID counts for legacy rows that predate configured
+    /// client IDs. Used only when the raw ID is unique in the snapshot.
+    active_raw_item_id_counts: std::collections::HashMap<String, usize>,
     /// Download client item IDs of items that completed successfully.
     completed_client_ids: std::collections::HashSet<String>,
+    completed_raw_item_id_counts: std::collections::HashMap<String, usize>,
     /// Failed history items keyed by download client job ID (NZBGet NZBID,
     /// SABnzbd nzo_id, Weaver job UUID). Matched against `download_submissions`
     /// table to find which scryer title a failed download belongs to.
     failed_by_download_id: std::collections::HashMap<String, FailedDownloadSnapshot>,
+}
+
+fn download_client_item_identity(client_id: Option<&str>, item_id: &str) -> String {
+    let client_id = client_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+    if client_id.is_empty() {
+        return item_id.to_string();
+    }
+
+    format!("{client_id}:{item_id}")
 }
 
 #[derive(Clone, Debug)]
@@ -646,7 +657,9 @@ impl DownloadClientSnapshot {
     pub(crate) async fn fetch(app: &AppUseCase) -> Self {
         let mut active_titles = std::collections::HashSet::new();
         let mut active_client_ids = std::collections::HashSet::new();
+        let mut active_raw_item_id_counts = std::collections::HashMap::new();
         let mut completed_client_ids = std::collections::HashSet::new();
+        let mut completed_raw_item_id_counts = std::collections::HashMap::new();
         let mut failed_by_download_id = std::collections::HashMap::new();
 
         // Fetch current queue
@@ -657,7 +670,13 @@ impl DownloadClientSnapshot {
                     | DownloadQueueState::Downloading
                     | DownloadQueueState::Paused => {
                         active_titles.insert(item.title_name.to_ascii_lowercase());
-                        active_client_ids.insert(item.download_client_item_id.clone());
+                        active_client_ids.insert(download_client_item_identity(
+                            Some(item.client_id.as_str()),
+                            &item.download_client_item_id,
+                        ));
+                        *active_raw_item_id_counts
+                            .entry(item.download_client_item_id.clone())
+                            .or_insert(0) += 1;
                     }
                     _ => {}
                 }
@@ -681,7 +700,13 @@ impl DownloadClientSnapshot {
         {
             for item in &history {
                 if item.state == DownloadQueueState::Completed {
-                    completed_client_ids.insert(item.download_client_item_id.clone());
+                    completed_client_ids.insert(download_client_item_identity(
+                        Some(item.client_id.as_str()),
+                        &item.download_client_item_id,
+                    ));
+                    *completed_raw_item_id_counts
+                        .entry(item.download_client_item_id.clone())
+                        .or_insert(0) += 1;
                 } else if item.state == DownloadQueueState::Failed {
                     let reason = item
                         .attention_reason
@@ -689,7 +714,10 @@ impl DownloadClientSnapshot {
                         .unwrap_or("unknown")
                         .to_ascii_uppercase();
                     failed_by_download_id.insert(
-                        item.download_client_item_id.clone(),
+                        download_client_item_identity(
+                            Some(item.client_id.as_str()),
+                            &item.download_client_item_id,
+                        ),
                         FailedDownloadSnapshot {
                             reason,
                             download_client_item_id: item.download_client_item_id.clone(),
@@ -709,7 +737,9 @@ impl DownloadClientSnapshot {
         Self {
             active_titles,
             active_client_ids,
+            active_raw_item_id_counts,
             completed_client_ids,
+            completed_raw_item_id_counts,
             failed_by_download_id,
         }
     }
@@ -724,9 +754,30 @@ impl DownloadClientSnapshot {
     /// reason, returns the failure snapshot.
     pub(crate) fn failed_item(
         &self,
+        client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> Option<&FailedDownloadSnapshot> {
-        self.failed_by_download_id.get(download_client_item_id)
+        self.failed_by_download_id
+            .get(&download_client_item_identity(
+                client_id,
+                download_client_item_id,
+            ))
+            .or_else(|| self.failed_by_download_id.get(download_client_item_id))
+    }
+
+    fn has_active_or_completed_client_item(
+        &self,
+        client_id: Option<&str>,
+        download_client_item_id: &str,
+    ) -> bool {
+        let exact_key = download_client_item_identity(client_id, download_client_item_id);
+        self.active_client_ids.contains(&exact_key)
+            || self.completed_client_ids.contains(&exact_key)
+            || self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
+            || self
+                .completed_raw_item_id_counts
+                .get(download_client_item_id)
+                == Some(&1)
     }
 }
 
@@ -796,12 +847,10 @@ fn submission_is_active_or_completed(
     submission: &DownloadSubmission,
     dl_snapshot: &DownloadClientSnapshot,
 ) -> bool {
-    dl_snapshot
-        .active_client_ids
-        .contains(&submission.download_client_item_id)
-        || dl_snapshot
-            .completed_client_ids
-            .contains(&submission.download_client_item_id)
+    dl_snapshot.has_active_or_completed_client_item(
+        submission.download_client_id.as_deref(),
+        &submission.download_client_item_id,
+    )
 }
 
 fn submission_blocks_wanted_item(
@@ -814,6 +863,12 @@ fn submission_blocks_wanted_item(
         SubmissionScope::Title => true,
         SubmissionScope::Episode { episode_id } => {
             item.media_type == "episode" && item.episode_id.as_deref() == Some(episode_id.as_str())
+        }
+        SubmissionScope::EpisodeSet { episode_ids } => {
+            item.media_type == "episode"
+                && item.episode_id.as_ref().is_some_and(|episode_id| {
+                    episode_ids.iter().any(|candidate| candidate == episode_id)
+                })
         }
         SubmissionScope::Collection { collection_id } => match item.media_type.as_str() {
             "episode" => episode_collection_id == Some(collection_id.as_str()),
@@ -902,7 +957,10 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
 
         let failed = submissions.iter().find_map(|sub| {
             dl_snapshot
-                .failed_item(&sub.download_client_item_id)
+                .failed_item(
+                    sub.download_client_id.as_deref(),
+                    &sub.download_client_item_id,
+                )
                 .map(|f| (f, sub.source_title.clone()))
         });
 
@@ -1111,7 +1169,7 @@ pub(crate) async fn process_download_failure(
             .services
             .integrations
             .download_client
-            .delete_queue_item(&context.client_item_id, true)
+            .delete_queue_item_for_client_id(&context.client_id, &context.client_item_id, true)
             .await
     {
         warn!(
@@ -1127,7 +1185,11 @@ pub(crate) async fn process_download_failure(
         .services
         .workflow
         .download_submissions
-        .delete_by_client_item_id(&context.client_item_id)
+        .delete_by_client_item_id(
+            Some(context.client_id.as_str()),
+            None,
+            &context.client_item_id,
+        )
         .await;
 
     outcome
@@ -1486,48 +1548,18 @@ async fn process_single_wanted_item(
         title.clone()
     };
 
-    // Resolve episode-specific anidb_id from anibridge (e.g. Bleach S17E08 → 15449)
     let search_title = if item.media_type == "episode" {
-        if let Some(ref ep) = episode {
-            if let (Ok(s), Ok(e)) = (
-                ep.season_number.as_deref().unwrap_or("").parse::<i32>(),
-                ep.episode_number.as_deref().unwrap_or("").parse::<i32>(),
-            ) {
-                if let Some(tvdb_str) = tvdb_id_from_external_ids(&search_title.external_ids) {
-                    if let Ok(tvdb_num) = tvdb_str.parse::<i64>() {
-                        if let Ok(mappings) = app
-                            .services
-                            .library
-                            .metadata_gateway
-                            .anibridge_mappings_for_episode(tvdb_num, s, e)
-                            .await
-                        {
-                            if let Some(m) = mappings
-                                .iter()
-                                .find(|m| m.source_type == "anidb" && m.source_scope == "R")
-                            {
-                                let mut t = search_title;
-                                t.external_ids.retain(|e| e.source != "anidb");
-                                t.external_ids.push(scryer_domain::ExternalId {
-                                    source: "anidb".into(),
-                                    value: m.source_id.to_string(),
-                                });
-                                t
-                            } else {
-                                search_title
-                            }
-                        } else {
-                            search_title
-                        }
-                    } else {
-                        search_title
-                    }
-                } else {
-                    search_title
-                }
-            } else {
-                search_title
-            }
+        if let Some(anidb_id) = app
+            .local_scoped_anidb_id_for_episode(episode.as_ref())
+            .await
+        {
+            let mut title = search_title;
+            title.external_ids.retain(|id| id.source != "anidb");
+            title.external_ids.push(scryer_domain::ExternalId {
+                source: "anidb".into(),
+                value: anidb_id,
+            });
+            title
         } else {
             search_title
         }
@@ -1777,6 +1809,7 @@ async fn process_single_wanted_item(
                                     .record_submission(DownloadSubmission {
                                         title_id: title.id.clone(),
                                         facet: facet_str.trim_matches('"').to_string(),
+                                        download_client_id: grab.client_id,
                                         download_client_type: grab.client_type,
                                         download_client_item_id: grab.job_id,
                                         source_hint: None,
@@ -2234,8 +2267,35 @@ async fn process_single_wanted_item(
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
-                let submission_scope =
-                    direct_download_submission_scope_for_wanted_item(item, episode.as_ref());
+                let submission_scope = if let Some(parsed) =
+                    candidate.parsed_release_metadata.as_ref()
+                {
+                    let catalog_episodes = app
+                        .services
+                        .catalog
+                        .shows
+                        .list_episodes_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    let catalog_collections = app
+                        .services
+                        .catalog
+                        .shows
+                        .list_collections_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    crate::acquisition_coverage::resolve_release_coverage(
+                        parsed,
+                        &catalog_episodes,
+                        &catalog_collections,
+                        episode.as_ref(),
+                    )
+                    .submission_scope_or(
+                        &direct_download_submission_scope_for_wanted_item(item, episode.as_ref()),
+                    )
+                } else {
+                    direct_download_submission_scope_for_wanted_item(item, episode.as_ref())
+                };
 
                 app.services
                     .workflow
@@ -2249,6 +2309,7 @@ async fn process_single_wanted_item(
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
+                            download_client_id: grab.client_id,
                             download_client_type: grab.client_type,
                             download_client_item_id: grab.job_id,
                             source_hint: None,

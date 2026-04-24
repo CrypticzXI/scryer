@@ -649,3 +649,170 @@ fn facet_to_category_hint_values() {
     assert_eq!(facet_to_category_hint(&MediaFacet::Series), "series");
     assert_eq!(facet_to_category_hint(&MediaFacet::Anime), "anime");
 }
+
+fn scoped_media_file(
+    id: &str,
+    file_path: &str,
+    acquisition_score: i32,
+    episode_ids: &[&str],
+) -> crate::EpisodeScopedMediaFile {
+    crate::EpisodeScopedMediaFile {
+        media_file: crate::TitleMediaFile {
+            id: id.to_string(),
+            title_id: "title-1".to_string(),
+            episode_id: episode_ids.first().map(|value| (*value).to_string()),
+            file_path: file_path.to_string(),
+            size_bytes: 1_000,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: Some("1080p".to_string()),
+            scan_status: "scanned".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            video_codec: None,
+            video_width: None,
+            video_height: None,
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_profile: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: Vec::new(),
+            audio_streams: Vec::new(),
+            subtitle_languages: Vec::new(),
+            subtitle_codecs: Vec::new(),
+            subtitle_streams: Vec::new(),
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+            scene_name: None,
+            release_group: None,
+            source_type: None,
+            resolution: None,
+            video_codec_parsed: None,
+            audio_codec_parsed: None,
+            audio_channels_parsed: None,
+            acquisition_score: Some(acquisition_score),
+            scoring_log: None,
+            indexer_source: None,
+            grabbed_release_title: None,
+            grabbed_at: None,
+            edition: None,
+            original_file_path: None,
+            release_hash: None,
+        },
+        episode_ids: episode_ids
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+    }
+}
+
+#[test]
+fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_higher() {
+    let incumbents = vec![scoped_media_file(
+        "file-1",
+        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 720p.mkv",
+        510,
+        &["ep-1"],
+    )];
+
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+        .expect("upgrade plan should accept higher-scored replacement");
+
+    assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
+    assert_eq!(plan.previous_best_score, 510);
+    assert!(plan.additional_superseded.is_empty());
+}
+
+#[test]
+fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher() {
+    let incumbents = vec![scoped_media_file(
+        "file-1",
+        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+        820,
+        &["ep-1"],
+    )];
+
+    let rejection =
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700).unwrap_err();
+
+    assert_eq!(
+        rejection.skip_reason,
+        Some(ImportSkipReason::AlreadyImported)
+    );
+    assert!(rejection.message.contains("equal or better"));
+}
+
+#[test]
+fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_set() {
+    let incumbents = vec![scoped_media_file(
+        "file-pack",
+        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01-E02.mkv",
+        400,
+        &["ep-1", "ep-2"],
+    )];
+
+    let rejection =
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900).unwrap_err();
+
+    assert_eq!(
+        rejection.skip_reason,
+        Some(ImportSkipReason::PolicyMismatch)
+    );
+    assert!(rejection.message.contains("broader episode set"));
+}
+
+#[test]
+fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_target_set() {
+    let incumbents = vec![
+        scoped_media_file(
+            "file-1",
+            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 720p.mkv",
+            300,
+            &["ep-1"],
+        ),
+        scoped_media_file(
+            "file-2",
+            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+            500,
+            &["ep-1"],
+        ),
+    ];
+
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+        .expect("higher score should supersede all incumbents");
+
+    assert_eq!(plan.primary_incumbent.media_file.id, "file-2");
+    assert_eq!(plan.additional_superseded.len(), 1);
+    assert_eq!(plan.additional_superseded[0].media_file.id, "file-1");
+}
+
+#[test]
+fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_of_them() {
+    let incumbents = vec![
+        scoped_media_file(
+            "file-1",
+            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01.mkv",
+            300,
+            &["ep-1"],
+        ),
+        scoped_media_file(
+            "file-2",
+            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E02.mkv",
+            450,
+            &["ep-2"],
+        ),
+    ];
+
+    let plan =
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900)
+            .expect("season pack should replace lower-scored singles");
+
+    assert_eq!(plan.previous_best_score, 450);
+    assert_eq!(plan.additional_superseded.len(), 1);
+}

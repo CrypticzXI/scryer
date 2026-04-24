@@ -25,12 +25,13 @@ const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
-pub(crate) type CompletedDownloadLookup = HashMap<(String, String), CompletedDownload>;
+pub(crate) type CompletedDownloadLookup = HashMap<(String, String, String), CompletedDownload>;
 
 enum ExpectedEpisodeResolution {
     NotApplicable,
     Unresolved,
     Resolved(HashSet<String>),
+    AtLeastOne(HashSet<String>),
 }
 
 /// Phase 1: evaluate a tracked download whose client reports completion.
@@ -290,6 +291,15 @@ pub async fn verify_import(
                 .iter()
                 .all(|unit| successful_units.contains(unit));
         }
+        ExpectedEpisodeResolution::AtLeastOne(expected_episode_units) => {
+            if expected_episode_units.is_empty() {
+                return false;
+            }
+
+            return expected_episode_units
+                .iter()
+                .any(|unit| successful_units.contains(unit));
+        }
         ExpectedEpisodeResolution::Unresolved => {
             if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
                 return true;
@@ -371,6 +381,7 @@ fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDown
         .map(|completed| {
             (
                 completed_download_lookup_key(
+                    Some(&completed.client_id),
                     &completed.client_type,
                     &completed.download_client_item_id,
                 ),
@@ -380,8 +391,20 @@ fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDown
         .collect()
 }
 
-fn completed_download_lookup_key(client_type: &str, item_id: &str) -> (String, String) {
-    (client_type.to_string(), item_id.to_string())
+fn completed_download_lookup_key(
+    client_id: Option<&str>,
+    client_type: &str,
+    item_id: &str,
+) -> (String, String, String) {
+    (
+        client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
+            .to_string(),
+        client_type.to_string(),
+        item_id.to_string(),
+    )
 }
 
 async fn find_completed_download(
@@ -399,13 +422,11 @@ async fn find_completed_download(
             }
         },
     };
-    let key =
-        completed_download_lookup_key(&td.client_type, &td.client_item.download_client_item_id);
     let completed = match completed_lookup {
-        Some(lookup) => lookup.get(&key).cloned(),
+        Some(lookup) => find_completed_download_in_lookup(lookup, td),
         None => lookup
             .as_ref()
-            .and_then(|indexed| indexed.get(&key).cloned()),
+            .and_then(|indexed| find_completed_download_in_lookup(indexed, td)),
     };
     match completed {
         Some(completed) => Some(with_tracked_metadata(td, completed)),
@@ -419,6 +440,43 @@ async fn find_completed_download(
             None
         }
     }
+}
+
+fn find_completed_download_in_lookup(
+    lookup: &CompletedDownloadLookup,
+    td: &TrackedDownload,
+) -> Option<CompletedDownload> {
+    let key = completed_download_lookup_key(
+        Some(&td.client_id),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
+    if let Some(completed) = lookup.get(&key) {
+        return Some(completed.clone());
+    }
+
+    if !td.client_id.trim().is_empty() {
+        return None;
+    }
+
+    let mut legacy_matches = lookup
+        .iter()
+        .filter(|((_, client_type, item_id), _)| {
+            client_type == &td.client_type && item_id == &td.client_item.download_client_item_id
+        })
+        .map(|(_, completed)| completed.clone());
+    let first = legacy_matches.next()?;
+    if legacy_matches.next().is_some() {
+        tracing::warn!(
+            id = %td.id,
+            item_id = %td.client_item.download_client_item_id,
+            client_type = %td.client_type,
+            "find_completed_download: legacy tracked download matched multiple configured clients; refusing ambiguous import"
+        );
+        return None;
+    }
+
+    Some(first)
 }
 
 async fn maybe_resolve_title_from_completed_download(
@@ -670,7 +728,8 @@ async fn expected_episode_units(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(td.client_item.title_name.as_str());
-    let parsed = crate::parse_release_metadata(release_title);
+    let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
+    let parsed = crate::parse_release_metadata_for_target(release_title, &parse_context);
     let Some(ep_meta) = parsed.episode.as_ref() else {
         return ExpectedEpisodeResolution::NotApplicable;
     };
@@ -685,6 +744,13 @@ async fn expected_episode_units(
     let expected_lookup_count = if ep_meta.season.is_some() && !ep_meta.episode_numbers.is_empty() {
         ep_meta
             .episode_numbers
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+    } else if !ep_meta.absolute_episode_numbers.is_empty() {
+        ep_meta
+            .absolute_episode_numbers
             .iter()
             .copied()
             .collect::<HashSet<_>>()
@@ -708,7 +774,22 @@ async fn expected_episode_units(
         return ExpectedEpisodeResolution::Unresolved;
     }
 
-    ExpectedEpisodeResolution::Resolved(episodes.into_iter().map(|episode| episode.id).collect())
+    let expected_episode_ids = episodes
+        .into_iter()
+        .filter(|episode| episode.monitored)
+        .map(|episode| episode.id)
+        .collect::<HashSet<_>>();
+
+    if ep_meta.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+        && ep_meta.is_partial_season
+        && ep_meta.episode_numbers.is_empty()
+        && ep_meta.absolute_episode_numbers.is_empty()
+        && ep_meta.special_absolute_episode_numbers.is_empty()
+    {
+        return ExpectedEpisodeResolution::AtLeastOne(expected_episode_ids);
+    }
+
+    ExpectedEpisodeResolution::Resolved(expected_episode_ids)
 }
 
 async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload) {
@@ -808,7 +889,8 @@ mod tests {
         CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
         DownloadGrabResult, EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
         IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, QualityProfile,
-        QualityProfileRepository, ShowRepository, TitleMetadataUpdate, TitleRepository,
+        QualityProfileRepository, ScopedExternalId, ShowRepository, TitleMetadataUpdate,
+        TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -977,6 +1059,13 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+            &self,
+            _: usize,
+        ) -> AppResult<Vec<String>> {
+            Ok(vec![])
+        }
+
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1057,6 +1146,10 @@ mod tests {
                 .filter(|collection| collection.title_id == title_id)
                 .cloned()
                 .collect())
+        }
+
+        async fn list_collection_external_ids(&self, _: &str) -> AppResult<Vec<ScopedExternalId>> {
+            Ok(vec![])
         }
 
         async fn list_collections_for_titles(
@@ -1162,6 +1255,10 @@ mod tests {
                 .collect())
         }
 
+        async fn list_episode_external_ids(&self, _: &str) -> AppResult<Vec<ScopedExternalId>> {
+            Ok(vec![])
+        }
+
         async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
             let episodes = self.episodes.lock().await;
             Ok(episodes
@@ -1232,6 +1329,15 @@ mod tests {
             _: &str,
         ) -> AppResult<Vec<CalendarEpisode>> {
             Ok(vec![])
+        }
+
+        async fn replace_anibridge_scoped_external_ids_for_title(
+            &self,
+            _: &str,
+            _: Vec<ScopedExternalId>,
+            _: Vec<ScopedExternalId>,
+        ) -> AppResult<()> {
+            Ok(())
         }
     }
 
@@ -1695,6 +1801,7 @@ mod tests {
             client_item: DownloadQueueItem {
                 id: Id::new().0,
                 title_id: Some(title_id.to_string()),
+                episode_id: None,
                 title_name: release_title.to_string(),
                 facet: Some(facet.to_string()),
                 client_id: "client-1".to_string(),
@@ -1753,6 +1860,28 @@ mod tests {
             completed_at: None,
             parameters: vec![],
         }
+    }
+
+    #[test]
+    fn completed_download_lookup_keeps_same_native_id_from_different_clients() {
+        let first = build_completed_download("Paperman.2012.1080p", "/downloads/a", Some("movie"));
+        let mut second =
+            build_completed_download("Paperman.2012.1080p", "/downloads/b", Some("movie"));
+        second.client_id = "client-2".to_string();
+
+        let lookup = index_completed_downloads(vec![first, second]);
+
+        assert_eq!(lookup.len(), 2);
+        assert!(lookup.contains_key(&completed_download_lookup_key(
+            Some("client-1"),
+            "nzbget",
+            "dl-1"
+        )));
+        assert!(lookup.contains_key(&completed_download_lookup_key(
+            Some("client-2"),
+            "nzbget",
+            "dl-1"
+        )));
     }
 
     #[test]
@@ -2045,6 +2174,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_import_absolute_range_requires_all_monitored_episodes_only() {
+        let title = build_title("title-1", "One Piece", MediaFacet::Anime);
+        let collection = build_collection("season-22", "title-1", "22");
+        let mut unmonitored =
+            build_episode("ep-1123", "title-1", "season-22", "22", "2", Some("1123"));
+        unmonitored.monitored = false;
+        let episodes = vec![
+            build_episode("ep-1122", "title-1", "season-22", "22", "1", Some("1122")),
+            unmonitored,
+            build_episode("ep-1124", "title-1", "season-22", "22", "3", Some("1124")),
+        ];
+        let artifacts = vec![
+            build_artifact("dl-1", "ep-1122", "1122.mkv"),
+            build_artifact("dl-1", "ep-1124", "1124.mkv"),
+        ];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "anime",
+            "[HatSubs] One Piece 1122-1124 (WEB 1080p)",
+        );
+
+        match expected_episode_units(&app, &td).await {
+            ExpectedEpisodeResolution::Resolved(expected) => {
+                assert_eq!(
+                    expected,
+                    HashSet::from(["ep-1122".to_string(), "ep-1124".to_string()])
+                );
+            }
+            _ => panic!("expected monitored range episode set"),
+        }
+
+        assert!(verify_import(&app, &td, 0).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_absolute_range_blocks_when_monitored_episode_missing() {
+        let title = build_title("title-1", "One Piece", MediaFacet::Anime);
+        let collection = build_collection("season-22", "title-1", "22");
+        let episodes = vec![
+            build_episode("ep-1122", "title-1", "season-22", "22", "1", Some("1122")),
+            build_episode("ep-1123", "title-1", "season-22", "22", "2", Some("1123")),
+            build_episode("ep-1124", "title-1", "season-22", "22", "3", Some("1124")),
+        ];
+        let artifacts = vec![
+            build_artifact("dl-1", "ep-1122", "1122.mkv"),
+            build_artifact("dl-1", "ep-1123", "1123.mkv"),
+        ];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "anime",
+            "[HatSubs] One Piece 1122-1124 (WEB 1080p)",
+        );
+
+        assert!(!verify_import(&app, &td, 0).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_partial_pack_accepts_one_monitored_episode() {
+        let title = build_title(
+            "title-1",
+            "Bastard!! Heavy Metal, Dark Fantasy",
+            MediaFacet::Anime,
+        );
+        let collection = build_collection("season-1", "title-1", "1");
+        let episodes = vec![
+            build_episode("ep-14", "title-1", "season-1", "1", "14", Some("14")),
+            build_episode("ep-15", "title-1", "season-1", "1", "15", Some("15")),
+        ];
+        let artifacts = vec![build_artifact("dl-1", "ep-14", "S01E14.mkv")];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "anime",
+            "[EMBER] BASTARD‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Batch)",
+        );
+        match expected_episode_units(&app, &td).await {
+            ExpectedEpisodeResolution::AtLeastOne(expected) => {
+                assert!(expected.contains("ep-14"));
+                assert!(expected.contains("ep-15"));
+            }
+            _ => panic!("expected partial pack monitored episode set"),
+        }
+
+        assert!(verify_import(&app, &td, 0).await);
+    }
+
+    #[tokio::test]
     async fn verify_import_resolves_daily_episode_by_air_date() {
         let title = build_title("title-1", "Series Title", MediaFacet::Series);
         let collection = build_collection("season-1", "title-1", "1");
@@ -2161,6 +2379,7 @@ mod tests {
             client_item: DownloadQueueItem {
                 id: Id::new().0,
                 title_id: None,
+                episode_id: None,
                 title_name: "Unknown.Show.S01.Complete.1080p".to_string(),
                 facet: Some("series".to_string()),
                 client_id: "client-1".to_string(),

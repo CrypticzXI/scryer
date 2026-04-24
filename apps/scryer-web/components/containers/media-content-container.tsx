@@ -2,7 +2,6 @@ import * as React from "react";
 import { MediaContentView } from "@/components/views/media-content-view";
 import {
   addTitleMutation,
-  addTitleAndQueueMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
@@ -27,6 +26,7 @@ import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/comp
 import {
   toProfileOptions,
 } from "@/lib/utils/quality-profiles";
+import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
@@ -86,12 +86,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     queueFacet,
     setQueueFacet,
     runTvdbSearch,
-    searchNzbForSelectedTvdb,
-    selectedTvdb,
     tvdbCandidates,
-    selectedTvdbId,
-    selectTvdbCandidate,
-    searchResults,
   } = searchState;
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -142,6 +137,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     libraryScanSummary,
     setLibraryScanSummary,
   } = useTitleManagementState();
+  const libraryScanInProgress =
+    libraryScanLoading ||
+    Boolean(activeLibraryScanSession) ||
+    Boolean(startedLibraryScanSessionId);
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       titleToDelete && deleteFilesOnDisk
@@ -417,11 +416,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return;
       }
 
-      const tvdbResults = await runTvdbSearch(titleNameForQueue.trim());
-      if (!tvdbResults.length) {
-        return;
-      }
-      setGlobalStatus(t("status.tvdbQueueTip"));
+      await runTvdbSearch(titleNameForQueue.trim());
     },
     [queueFacet, runTvdbSearch, setGlobalStatus, titleNameForQueue, t],
   );
@@ -510,93 +505,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     ],
   );
 
-  const queueFromSearch = React.useCallback(
-    async (release: Release) => {
-      const queuedTitle = selectedTvdb?.name || release.title;
-      if (!titleNameForQueue) {
-        setTitleNameForQueue(queuedTitle);
-      }
-      const sourceHint = release.downloadUrl || release.link;
-      if (!sourceHint) {
-        setGlobalStatus(t("status.noReleaseSource"));
-        return;
-      }
-
-      const queueMonitorType = monitoredForQueue ? "allEpisodes" : "none";
-      try {
-        const { data, error } = await client
-          .mutation(addTitleAndQueueMutation, {
-            input: {
-              name: queuedTitle,
-              facet: queueFacet,
-              monitored: monitoredForQueue,
-              tags: [],
-              options: {
-                monitorType: queueMonitorType,
-                ...(queueFacet === "movie"
-                  ? {}
-                  : { useSeasonFolders: seasonFoldersForQueue }),
-                ...(queueFacet === "anime"
-                  ? {
-                      monitorSpecials: false,
-                      interSeasonMovies: true,
-                    }
-                  : {}),
-              },
-              externalIds: [
-                ...(selectedTvdb
-                  ? [{ source: "tvdb", value: String(selectedTvdb.tvdbId) }]
-                  : []),
-                ...(selectedTvdb?.imdbId
-                  ? [{ source: "imdb", value: selectedTvdb.imdbId.trim() }]
-                  : []),
-              ],
-              sourceHint,
-              sourceKind: release.sourceKind ?? null,
-              sourceTitle: release.title,
-              ...(queueFacet === "movie"
-                ? { minAvailability: minAvailabilityForQueue }
-                : {}),
-            },
-          })
-          .toPromise();
-        if (error) throw error;
-        const queuedName = data.addTitleAndQueueDownload.title.name;
-        const queuedMessage = t("status.queueSuccess", { name: queuedName });
-        setGlobalStatus(queuedMessage);
-        if (shouldLoadCatalogTitles && data?.addTitleAndQueueDownload?.title) {
-          setMonitoredTitles((current) => {
-            const next = upsertCatalogTitleRecord(
-              current,
-              data.addTitleAndQueueDownload.title as TitleRecord,
-            );
-            setTitleStatus(t("title.statusTemplate", { count: next.length }));
-            return next;
-          });
-        }
-      } catch (error) {
-        setGlobalStatus(
-          error instanceof Error ? error.message : t("status.queueFailed"),
-        );
-      }
-    },
-    [
-      minAvailabilityForQueue,
-      monitoredForQueue,
-      queueFacet,
-      client,
-      selectedTvdb,
-      shouldLoadCatalogTitles,
-      setMonitoredTitles,
-      setGlobalStatus,
-      setTitleStatus,
-      titleNameForQueue,
-      t,
-      seasonFoldersForQueue,
-      setTitleNameForQueue,
-    ],
-  );
-
   const queueExisting = React.useCallback(
     async (title: TitleRecord) => {
       try {
@@ -650,7 +558,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
-              scope: { title: true },
+              scope: releaseQueueScopeInput(release, { title: true }),
               candidateToken: release.candidateToken,
             },
           })
@@ -1025,14 +933,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setSeasonFoldersForQueue,
           minAvailabilityForQueue,
           setMinAvailabilityForQueue,
-          selectedTvdb,
           tvdbCandidates,
-          selectedTvdbId,
-          selectTvdbCandidate,
-          searchNzbForSelectedTvdb,
-          searchResults,
           onAddSubmit,
-          queueFromSearch,
           titleFilter,
           setTitleFilter,
           refreshTitles,
@@ -1068,10 +970,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           rulesLoading,
           rulesSaving,
           onToggleRuleFacet,
-          libraryScanLoading:
-            libraryScanLoading || Boolean(activeLibraryScanSession),
-          libraryScanDisabled:
-            libraryScanLoading || Boolean(activeLibraryScanSession),
+          libraryScanLoading: libraryScanInProgress,
+          libraryScanDisabled: libraryScanInProgress,
           libraryScanNotice,
           libraryScanSummary,
           onOpenOverview,

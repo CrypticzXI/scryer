@@ -129,6 +129,38 @@ function OverviewContainerForView({
   return <MovieOverviewContainer {...props} onTitleResolved={onTitleResolved} />;
 }
 
+type OverviewNavigationState = {
+  scryerOverviewTarget?: {
+    view?: unknown;
+    id?: unknown;
+    slug?: unknown;
+  };
+};
+
+function readOverviewTargetFromLocationState(
+  state: unknown,
+  view: ViewId,
+  parsedOverviewSlug: string | null,
+): OverviewTitleTarget | null {
+  if (!parsedOverviewSlug || state == null || typeof state !== "object") {
+    return null;
+  }
+
+  const overviewState = state as OverviewNavigationState;
+  const target = overviewState.scryerOverviewTarget;
+  if (!target || target.view !== view) {
+    return null;
+  }
+
+  const id = typeof target.id === "string" ? target.id.trim() : "";
+  const slug = typeof target.slug === "string" ? target.slug.trim() : "";
+  if (!id || !slug || slug !== parsedOverviewSlug) {
+    return null;
+  }
+
+  return { id, slug };
+}
+
 /**
  * Renders the main content area.
  */
@@ -300,7 +332,8 @@ function AuthenticatedHomePage({
   const isOnline = useOnlineStatus();
   const { canPrompt, isInstalled, isIosSafari, promptInstall } = useInstallPrompt();
 
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -346,6 +379,11 @@ function AuthenticatedHomePage({
     if (!isMediaView(view) || contentSettingsSection !== "overview" || parsedOverviewSlug) return null;
     return searchParams.get("id")?.trim() || null;
   }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
+
+  const navigationOverviewTarget = useMemo(
+    () => readOverviewTargetFromLocationState(location.state, view, parsedOverviewSlug),
+    [location.state, parsedOverviewSlug, view],
+  );
 
   const overviewEpisodeId = useMemo(() =>
     searchParams.get("episodeId")?.trim() || null, [searchParams]);
@@ -557,9 +595,18 @@ function AuthenticatedHomePage({
       const nextQuery = nextParams.toString();
       const nextPathWithQuery = `${targetPath}${nextQuery ? `?${nextQuery}` : ""}`;
       const currentPathWithQuery = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
+      const state = normalizedSlug
+        ? {
+            scryerOverviewTarget: {
+              view: targetView,
+              id: normalizedTitleId,
+              slug: normalizedSlug,
+            },
+          }
+        : undefined;
 
       if (nextPathWithQuery !== currentPathWithQuery) {
-        navigate(nextPathWithQuery, { replace });
+        navigate(nextPathWithQuery, { replace, state });
       }
     },
     [navigate, pathname, searchParams],
@@ -567,6 +614,14 @@ function AuthenticatedHomePage({
 
   useEffect(() => {
     let cancelled = false;
+
+    if (navigationOverviewTarget) {
+      setResolvedOverviewTarget(navigationOverviewTarget);
+      setOverviewSlugLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (!isMediaView(view) || contentSettingsSection !== "overview" || !parsedOverviewSlug) {
       setResolvedOverviewTarget(null);
@@ -626,6 +681,7 @@ function AuthenticatedHomePage({
     contentSettingsSection,
     navigateTo,
     navigateToOverview,
+    navigationOverviewTarget,
     overviewEpisodeId,
     parsedOverviewSlug,
     setGlobalStatus,
@@ -634,9 +690,12 @@ function AuthenticatedHomePage({
   ]);
 
   const overviewTitleId = parsedOverviewSlug
-    ? resolvedOverviewTarget?.id ?? null
+    ? navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null
     : legacyOverviewTitleId;
-  const overviewLoading = Boolean(parsedOverviewSlug) && (overviewSlugLoading || overviewTitleId === null);
+  const overviewLoading =
+    Boolean(parsedOverviewSlug) &&
+    !navigationOverviewTarget &&
+    (overviewSlugLoading || overviewTitleId === null);
 
   const handleOpenOverview = useCallback(
     (targetView: ViewId, overviewTarget: OverviewTitleTarget, episodeId?: string) => {

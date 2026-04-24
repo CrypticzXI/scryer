@@ -13,7 +13,7 @@ use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
 };
-use scryer_domain::{Entitlement, User};
+use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle, User};
 use scryer_infrastructure::{
     FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient,
     SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore,
@@ -261,10 +261,42 @@ async fn setup() -> (
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog],
+        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     };
 
     (app, user, tosho_server, nzbgeek_server, torznab_server)
+}
+
+async fn add_search_title(
+    app: &AppUseCase,
+    user: &User,
+    name: &str,
+    facet: MediaFacet,
+    external_ids: Vec<ExternalId>,
+) -> String {
+    let title = app
+        .add_title(
+            user,
+            NewTitle {
+                name: name.to_string(),
+                facet,
+                monitored: true,
+                tags: vec![],
+                external_ids,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("add search title");
+
+    title.id
+}
+
+fn external_id(source: &str, value: &str) -> ExternalId {
+    ExternalId {
+        source: source.to_string(),
+        value: value.to_string(),
+    }
 }
 
 async fn captured_urls(server: &MockServer) -> Vec<String> {
@@ -328,21 +360,17 @@ fn assert_id_only_then_fallback(urls: &[String], id_fragment: &str, fallback_que
 #[tokio::test]
 async fn multi_indexer_url_trace_anime_episode() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let title_id = add_search_title(
+        &app,
+        &user,
+        "Demon Slayer",
+        MediaFacet::Anime,
+        vec![external_id("tvdb", "348545"), external_id("anidb", "1535")],
+    )
+    .await;
 
     let _results = app
-        .search_indexers_episode(
-            &user,
-            scryer_application::IndexerEpisodeSearchRequest {
-                title: "Demon Slayer".into(),
-                season: "02".into(),
-                episode: "03".into(),
-                imdb_id: None,
-                tvdb_id: Some("348545".into()),
-                anidb_id: Some("1535".into()),
-                category: Some("anime".into()),
-                absolute_episode: None,
-            },
-        )
+        .search_indexers_for_episode(&user, title_id, "02".into(), "03".into())
         .await
         .expect("search should succeed");
 
@@ -361,21 +389,17 @@ async fn multi_indexer_url_trace_anime_episode() {
 #[tokio::test]
 async fn multi_indexer_url_trace_series_episode() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let title_id = add_search_title(
+        &app,
+        &user,
+        "Breaking Bad",
+        MediaFacet::Series,
+        vec![external_id("tvdb", "81189")],
+    )
+    .await;
 
     let _results = app
-        .search_indexers_episode(
-            &user,
-            scryer_application::IndexerEpisodeSearchRequest {
-                title: "Breaking Bad".into(),
-                season: "05".into(),
-                episode: "01".into(),
-                imdb_id: None,
-                tvdb_id: Some("81189".into()),
-                anidb_id: None,
-                category: Some("series".into()),
-                absolute_episode: None,
-            },
-        )
+        .search_indexers_for_episode(&user, title_id, "05".into(), "01".into())
         .await
         .expect("search should succeed");
 
@@ -401,18 +425,17 @@ async fn multi_indexer_url_trace_series_episode() {
 #[tokio::test]
 async fn multi_indexer_url_trace_movie() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let title_id = add_search_title(
+        &app,
+        &user,
+        "The Matrix",
+        MediaFacet::Movie,
+        vec![external_id("imdb", "tt0133093")],
+    )
+    .await;
 
     let _results = app
-        .search_indexers(
-            &user,
-            scryer_application::IndexerSearchRequest {
-                query: "The Matrix".into(),
-                imdb_id: Some("tt0133093".into()),
-                tvdb_id: None,
-                anidb_id: None,
-                category: Some("movie".into()),
-            },
-        )
+        .search_indexers_for_title(&user, title_id)
         .await
         .expect("search should succeed");
 
@@ -438,6 +461,17 @@ async fn multi_indexer_url_trace_movie() {
 #[tokio::test]
 async fn multi_indexer_url_trace_movie_spirited_away() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let title_id = add_search_title(
+        &app,
+        &user,
+        "Sen to Chihiro no Kamikakushi",
+        MediaFacet::Movie,
+        vec![
+            external_id("imdb", "tt0245429"),
+            external_id("anidb", "112"),
+        ],
+    )
+    .await;
 
     let nzbgeek_fixture = load_fixture("nzbgeek/search_movie.json").replace(
         "Movie.Title.2024.2160p.UHD.BluRay.REMUX.DV.HDR.DTS-HD.MA.7.1.HEVC-GROUP",
@@ -452,16 +486,7 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
         .await;
 
     let results = app
-        .search_indexers(
-            &user,
-            scryer_application::IndexerSearchRequest {
-                query: "Spirited Away".into(),
-                imdb_id: Some("tt0245429".into()),
-                tvdb_id: None,
-                anidb_id: Some("112".into()),
-                category: Some("movie".into()),
-            },
-        )
+        .search_indexers_for_title(&user, title_id)
         .await
         .expect("search should succeed");
 
@@ -485,40 +510,4 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
 
     println!("\n=== Spirited Away (movie, imdb=tt0245429, anidb=112) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
-}
-
-// ---------------------------------------------------------------------------
-// Demon Slayer Season 2 pack — background acquisition path
-// (season=Some, episode=None, query=title name only)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn multi_indexer_url_trace_season_pack() {
-    let (app, user, tosho, nzbgeek, torznab) = setup().await;
-
-    // Call the indexer client directly as the background acquisition loop would.
-    // season=Some(2), episode=None signals a season pack search.
-    // The acquisition loop builds "Title S02" as the query.
-    let _results = app
-        .search_indexers(
-            &user,
-            scryer_application::IndexerSearchRequest {
-                query: "Demon Slayer S02".into(),
-                imdb_id: None,
-                tvdb_id: Some("348545".into()),
-                anidb_id: Some("1535".into()),
-                category: Some("anime".into()),
-            },
-        )
-        .await
-        .expect("search should succeed");
-
-    println!(
-        "\n=== Demon Slayer Season 2 Pack (anime, tvdb=348545, anidb=1535, season=2, ep=None) ==="
-    );
-    print_summary(
-        &captured_urls(&tosho).await,
-        &captured_urls(&nzbgeek).await,
-        &captured_urls(&torznab).await,
-    );
 }

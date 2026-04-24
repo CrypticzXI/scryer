@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeUpdate,
-    InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
-    ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
+    AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeScopedMediaFile,
+    EpisodeUpdate, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease,
+    ReleaseDecision, ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -113,6 +113,19 @@ impl MediaFileRepository for FailingMediaFileRepo {
         <SqliteLibraryStateStore as MediaFileRepository>::list_media_files_for_title(
             &self.inner,
             title_id,
+        )
+        .await
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        <SqliteLibraryStateStore as MediaFileRepository>::list_live_media_files_for_episode_ids(
+            &self.inner,
+            title_id,
+            episode_ids,
         )
         .await
     }
@@ -235,6 +248,13 @@ impl ShowRepository for FailingShowRepo {
         self.inner.list_collections_for_title(title_id).await
     }
 
+    async fn list_collection_external_ids(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        self.inner.list_collection_external_ids(collection_id).await
+    }
+
     async fn list_collections_for_titles(
         &self,
         title_ids: &[String],
@@ -331,6 +351,13 @@ impl ShowRepository for FailingShowRepo {
         self.inner.list_episodes_for_title(title_id).await
     }
 
+    async fn list_episode_external_ids(
+        &self,
+        episode_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        self.inner.list_episode_external_ids(episode_id).await
+    }
+
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
         self.inner.get_episode_by_id(episode_id).await
     }
@@ -388,6 +415,17 @@ impl ShowRepository for FailingShowRepo {
     ) -> AppResult<Vec<scryer_application::PrimaryCollectionSummary>> {
         self.inner
             .list_primary_collection_summaries(title_ids)
+            .await
+    }
+
+    async fn replace_anibridge_scoped_external_ids_for_title(
+        &self,
+        title_id: &str,
+        collection_ids: Vec<ScopedExternalId>,
+        episode_ids: Vec<ScopedExternalId>,
+    ) -> AppResult<()> {
+        self.inner
+            .replace_anibridge_scoped_external_ids_for_title(title_id, collection_ids, episode_ids)
             .await
     }
 }
@@ -2968,10 +3006,10 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert!(subtitle_names.contains(&"openSubtitlesUsername"));
-    assert!(subtitle_names.contains(&"hasOpenSubtitlesApiKey"));
-    assert!(subtitle_names.contains(&"hasOpenSubtitlesPassword"));
     assert!(subtitle_names.contains(&"languages"));
+    assert!(!subtitle_names.contains(&"openSubtitlesUsername"));
+    assert!(!subtitle_names.contains(&"hasOpenSubtitlesApiKey"));
+    assert!(!subtitle_names.contains(&"hasOpenSubtitlesPassword"));
 
     let subtitle_input_fields = body["data"]["updateSubtitleSettingsInput"]["inputFields"]
         .as_array()
@@ -2980,8 +3018,8 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert!(subtitle_input_names.contains(&"openSubtitlesUsername"));
-    assert!(subtitle_input_names.contains(&"openSubtitlesPassword"));
+    assert!(!subtitle_input_names.contains(&"openSubtitlesUsername"));
+    assert!(!subtitle_input_names.contains(&"openSubtitlesPassword"));
     assert!(!subtitle_input_names.contains(&"openSubtitlesApiKey"));
 
     let acquisition_fields = body["data"]["acquisitionSettings"]["fields"]
@@ -3327,9 +3365,6 @@ async fn graphql_typed_subtitle_settings_round_trip() {
         mutation UpdateSubtitleSettings($input: UpdateSubtitleSettingsInput!) {
           updateSubtitleSettings(input: $input) {
             enabled
-            hasOpenSubtitlesApiKey
-            openSubtitlesUsername
-            hasOpenSubtitlesPassword
             languages { code hearingImpaired forced }
             autoDownloadOnImport
             minimumScoreSeries
@@ -3347,8 +3382,6 @@ async fn graphql_typed_subtitle_settings_round_trip() {
         json!({
           "input": {
             "enabled": true,
-            "openSubtitlesUsername": "subtitle-user",
-            "openSubtitlesPassword": "secret-pass",
             "languages": [
               { "code": "eng", "hearingImpaired": true, "forced": false },
               { "code": "spa", "hearingImpaired": false, "forced": true }
@@ -3368,18 +3401,6 @@ async fn graphql_typed_subtitle_settings_round_trip() {
     )
     .await;
     assert_no_errors(&update);
-    assert_eq!(
-        update["data"]["updateSubtitleSettings"]["openSubtitlesUsername"],
-        "subtitle-user"
-    );
-    assert_eq!(
-        update["data"]["updateSubtitleSettings"]["hasOpenSubtitlesApiKey"],
-        true
-    );
-    assert_eq!(
-        update["data"]["updateSubtitleSettings"]["hasOpenSubtitlesPassword"],
-        true
-    );
 
     let read = gql(
         &ctx,
@@ -3387,9 +3408,6 @@ async fn graphql_typed_subtitle_settings_round_trip() {
         query SubtitleSettings {
           subtitleSettings {
             enabled
-            hasOpenSubtitlesApiKey
-            openSubtitlesUsername
-            hasOpenSubtitlesPassword
             languages { code hearingImpaired forced }
             autoDownloadOnImport
             minimumScoreSeries
@@ -3411,9 +3429,6 @@ async fn graphql_typed_subtitle_settings_round_trip() {
 
     let settings = &read["data"]["subtitleSettings"];
     assert_eq!(settings["enabled"], true);
-    assert_eq!(settings["hasOpenSubtitlesApiKey"], true);
-    assert_eq!(settings["openSubtitlesUsername"], "subtitle-user");
-    assert_eq!(settings["hasOpenSubtitlesPassword"], true);
     assert_eq!(settings["autoDownloadOnImport"], true);
     assert_eq!(settings["minimumScoreSeries"], 255);
     assert_eq!(settings["minimumScoreMovie"], 85);
@@ -6430,6 +6445,161 @@ async fn graphql_scan_title_library() {
 }
 
 #[tokio::test]
+async fn graphql_scan_title_library_removes_stale_media_file_when_file_deleted_on_disk() {
+    let ctx = TestContext::new().await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let (title, collection) =
+        create_series_scan_title(&ctx, media_root.path(), "Stale Scan Show", vec![]).await;
+    let episode = create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
+
+    let season_dir = media_root.path().join(&title.name).join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    let file_path = season_dir.join("Stale.Scan.Show.S01E01.1080p.WEB-DL.mkv");
+    std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
+
+    let body = gql(
+        &ctx,
+        r#"mutation($input: TitleIdInput!) {
+            scanTitleLibrary(input: $input) {
+                scanned
+                matched
+                imported
+                skipped
+                unmatched
+            }
+        }"#,
+        json!({ "input": { "titleId": title.id.clone() } }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["scanTitleLibrary"]["scanned"], 1);
+    assert_eq!(body["data"]["scanTitleLibrary"]["matched"], 1);
+    assert_eq!(body["data"]["scanTitleLibrary"]["imported"], 1);
+
+    let body = gql(
+        &ctx,
+        r#"query($id: String!) {
+            title(id: $id) {
+                mediaFiles {
+                    episodeId
+                    filePath
+                }
+            }
+        }"#,
+        json!({ "id": title.id.clone() }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let files = body["data"]["title"]["mediaFiles"]
+        .as_array()
+        .expect("media files array");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["episodeId"], episode.id);
+
+    std::fs::remove_file(&file_path).expect("remove scanned file from disk");
+
+    let body = gql(
+        &ctx,
+        r#"mutation($input: TitleIdInput!) {
+            scanTitleLibrary(input: $input) {
+                scanned
+                matched
+                imported
+                skipped
+                unmatched
+            }
+        }"#,
+        json!({ "input": { "titleId": title.id.clone() } }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["scanTitleLibrary"]["scanned"], 0);
+    assert_eq!(body["data"]["scanTitleLibrary"]["matched"], 0);
+    assert_eq!(body["data"]["scanTitleLibrary"]["imported"], 0);
+    assert_eq!(body["data"]["scanTitleLibrary"]["unmatched"], 0);
+
+    let body = gql(
+        &ctx,
+        r#"query($id: String!) {
+            title(id: $id) {
+                mediaFiles {
+                    episodeId
+                    filePath
+                }
+            }
+        }"#,
+        json!({ "id": title.id.clone() }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let files = body["data"]["title"]["mediaFiles"]
+        .as_array()
+        .expect("media files array");
+    assert!(
+        files.is_empty(),
+        "title scan should delete stale media_files rows when the file no longer exists on disk"
+    );
+}
+
+#[tokio::test]
+async fn graphql_scan_title_library_matches_x_episode_numbering_with_title_context() {
+    let ctx = TestContext::new().await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let (title, collection) =
+        create_series_scan_title(&ctx, media_root.path(), "Scan Show", vec![]).await;
+    let episode = create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
+
+    let season_dir = media_root.path().join(&title.name).join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    let file_path = season_dir.join("Scan Show - 01x01 - Pilot WEBDL-1080p.mkv");
+    std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
+
+    let body = gql(
+        &ctx,
+        r#"mutation($input: TitleIdInput!) {
+            scanTitleLibrary(input: $input) {
+                scanned
+                matched
+                imported
+                skipped
+                unmatched
+            }
+        }"#,
+        json!({ "input": { "titleId": title.id.clone() } }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["scanTitleLibrary"]["scanned"], 1);
+    assert_eq!(body["data"]["scanTitleLibrary"]["matched"], 1);
+    assert_eq!(body["data"]["scanTitleLibrary"]["imported"], 1);
+    assert_eq!(body["data"]["scanTitleLibrary"]["unmatched"], 0);
+
+    let body = gql(
+        &ctx,
+        r#"query($id: String!) {
+            title(id: $id) {
+                mediaFiles {
+                    episodeId
+                    filePath
+                }
+            }
+        }"#,
+        json!({ "id": title.id.clone() }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let files = body["data"]["title"]["mediaFiles"]
+        .as_array()
+        .expect("media files array");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["episodeId"], episode.id);
+    assert_eq!(
+        files[0]["filePath"],
+        file_path.to_string_lossy().to_string()
+    );
+}
+
+#[tokio::test]
 async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_in_name() {
     let ctx = TestContext::new().await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
@@ -8251,6 +8421,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         .record_submission(scryer_application::DownloadSubmission {
             title_id: id.clone(),
             facet: "movie".to_string(),
+            download_client_id: None,
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-delete".to_string(),
             source_hint: None,

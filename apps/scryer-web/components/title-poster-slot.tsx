@@ -4,7 +4,7 @@ import { Loader2 } from "lucide-react";
 
 import { TitlePoster } from "@/components/title-poster";
 
-const HYDRATION_POSTER_GRACE_MS = 2 * 60 * 1000;
+const HYDRATION_POSTER_GRACE_MS = 5 * 60 * 1000;
 
 type TitlePosterSlotProps = Omit<ComponentProps<"img">, "src"> & {
   src?: string | null;

@@ -3,97 +3,158 @@ use std::path::Path;
 use super::provider::{SubtitleMatch, SubtitleProvider, SubtitleQuery, compute_opensubtitles_hash};
 use crate::AppResult;
 
-/// Orchestrates subtitle searching: tries hash-based lookup first,
-/// falls back to metadata-based search if no good matches found.
-pub struct SubtitleSearchOrchestrator {
-    min_score: i32,
-}
+/// Orchestrates subtitle searching by enriching the provider query with a file hash
+/// when one can be computed and leaving the provider to combine hash and metadata.
+pub struct SubtitleSearchOrchestrator;
 
 impl SubtitleSearchOrchestrator {
-    pub fn new(min_score: i32) -> Self {
-        Self { min_score }
+    pub fn new(_min_score: i32) -> Self {
+        Self
     }
 
     /// Search for subtitles for a media file.
     ///
     /// Strategy:
-    /// 1. Compute file hash and search with it (highest confidence matches).
-    /// 2. If no results above min_score, fall back to metadata search (IMDB ID, title+year).
-    /// 3. Return all results sorted by score descending.
+    /// 1. Compute an OpenSubtitles hash when possible.
+    /// 2. Send one provider query containing both the hash and metadata.
+    /// 3. Let the provider decide how to combine those inputs.
     pub async fn search(
         &self,
         provider: &dyn SubtitleProvider,
         file_path: &Path,
         query: &SubtitleQuery,
     ) -> AppResult<Vec<SubtitleMatch>> {
-        // Try hash-based search first
-        let file_hash = compute_opensubtitles_hash(file_path).ok();
-
-        if file_hash.is_some() {
-            let mut hash_query = query.clone();
-            hash_query.file_hash = file_hash.clone();
-
-            match provider.search(&hash_query).await {
-                Ok(results) if results.iter().any(|r| r.score >= self.min_score) => {
-                    return Ok(results);
-                }
-                Ok(results) => {
-                    tracing::debug!(
-                        provider = provider.name(),
-                        hash = ?file_hash,
-                        results = results.len(),
-                        "hash search returned results below min_score, trying metadata fallback"
-                    );
-                    // Keep hash results, we'll merge with metadata results
-                    if !results.is_empty() {
-                        // If we have hash results, use them even if below threshold
-                        // (the metadata search might not find anything better)
-                        let metadata_results = self
-                            .search_by_metadata(provider, query)
-                            .await
-                            .unwrap_or_default();
-
-                        return Ok(merge_results(results, metadata_results));
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "hash-based subtitle search failed, trying metadata");
-                }
-            }
+        let mut combined_query = query.clone();
+        if combined_query.file_hash.is_none() {
+            combined_query.file_hash = compute_opensubtitles_hash(file_path).ok();
         }
 
-        // Metadata-based fallback
-        self.search_by_metadata(provider, query).await
-    }
-
-    async fn search_by_metadata(
-        &self,
-        provider: &dyn SubtitleProvider,
-        query: &SubtitleQuery,
-    ) -> AppResult<Vec<SubtitleMatch>> {
-        let mut metadata_query = query.clone();
-        metadata_query.file_hash = None;
-
-        provider.search(&metadata_query).await
+        provider.search(&combined_query).await
     }
 }
 
-/// Merge two result sets, deduplicating by provider_file_id, keeping higher scores.
-fn merge_results(primary: Vec<SubtitleMatch>, secondary: Vec<SubtitleMatch>) -> Vec<SubtitleMatch> {
-    let mut seen = std::collections::HashSet::new();
-    let mut merged = Vec::new();
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Mutex;
 
-    for r in primary {
-        if seen.insert(r.provider_file_id.clone()) {
-            merged.push(r);
+    use tempfile::NamedTempFile;
+
+    use super::*;
+    use crate::subtitles::provider::{SubtitleFile, SubtitleMediaKind};
+
+    fn subtitle_match(provider_file_id: &str, score: i32) -> SubtitleMatch {
+        SubtitleMatch {
+            provider: "opensubtitles".to_string(),
+            provider_file_id: provider_file_id.to_string(),
+            language: "eng".to_string(),
+            release_info: None,
+            score,
+            hearing_impaired: false,
+            forced: false,
+            ai_translated: false,
+            machine_translated: false,
+            uploader: None,
+            download_count: None,
+            hash_matched: false,
         }
     }
-    for r in secondary {
-        if seen.insert(r.provider_file_id.clone()) {
-            merged.push(r);
+
+    #[derive(Default)]
+    struct RecordingProvider {
+        queries: Mutex<Vec<SubtitleQuery>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SubtitleProvider for RecordingProvider {
+        async fn search(&self, query: &SubtitleQuery) -> AppResult<Vec<SubtitleMatch>> {
+            self.queries
+                .lock()
+                .expect("recording provider mutex poisoned")
+                .push(query.clone());
+            Ok(vec![subtitle_match("file-1", 90)])
+        }
+
+        async fn download(&self, _provider_file_id: &str) -> AppResult<SubtitleFile> {
+            unreachable!("download is not used in these tests")
+        }
+
+        fn name(&self) -> &str {
+            "opensubtitles"
         }
     }
 
-    merged.sort_by(|a, b| b.score.cmp(&a.score));
-    merged
+    fn base_query() -> SubtitleQuery {
+        SubtitleQuery {
+            media_kind: SubtitleMediaKind::Movie,
+            facet: Some("movie".to_string()),
+            file_hash: None,
+            imdb_id: Some("tt1234567".to_string()),
+            series_imdb_id: None,
+            title: "Example Movie".to_string(),
+            title_aliases: vec!["Example Alt".to_string()],
+            title_candidates: vec!["Example Candidate".to_string()],
+            year: Some(2024),
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            external_ids: Default::default(),
+            languages: vec!["eng".to_string()],
+            release_group: Some("GROUP".to_string()),
+            source: Some("web".to_string()),
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+            resolution: Some("1080p".to_string()),
+            hearing_impaired: Some(false),
+            include_ai_translated: false,
+            include_machine_translated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_calls_provider_once_with_combined_hash_and_metadata_query() {
+        let mut file = NamedTempFile::new().expect("temp subtitle search file");
+        file.write_all(&vec![0u8; 131_072])
+            .expect("write hashable file");
+
+        let provider = RecordingProvider::default();
+        let orchestrator = SubtitleSearchOrchestrator::new(120);
+        let query = base_query();
+
+        let results = orchestrator
+            .search(&provider, file.path(), &query)
+            .await
+            .expect("combined search succeeds");
+
+        assert_eq!(results.len(), 1);
+
+        let recorded = provider
+            .queries
+            .lock()
+            .expect("recording provider mutex poisoned");
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].file_hash.is_some());
+        assert_eq!(recorded[0].imdb_id.as_deref(), Some("tt1234567"));
+        assert_eq!(recorded[0].title, "Example Movie");
+    }
+
+    #[tokio::test]
+    async fn search_calls_provider_once_without_hash_when_file_is_not_hashable() {
+        let provider = RecordingProvider::default();
+        let orchestrator = SubtitleSearchOrchestrator::new(120);
+        let query = base_query();
+        let missing_path = Path::new("/tmp/definitely-missing-subtitle-search-file");
+
+        orchestrator
+            .search(&provider, missing_path, &query)
+            .await
+            .expect("metadata-only search succeeds");
+
+        let recorded = provider
+            .queries
+            .lock()
+            .expect("recording provider mutex poisoned");
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].file_hash.is_none());
+    }
 }

@@ -40,6 +40,7 @@ pub mod testing;
 mod types;
 
 pub(crate) use acquisition::acquisition as acquisition_workflow;
+pub(crate) use acquisition::coverage as acquisition_coverage;
 pub(crate) use acquisition::decision_helpers as acquisition_decision_helpers;
 pub(crate) use acquisition::delay_profile;
 pub(crate) use acquisition::policy as acquisition_policy;
@@ -94,7 +95,8 @@ use scryer_domain::{
     DownloadQueueState, Entitlement, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
     ImportRecord, ImportResult, ImportStatus, IndexerConfig, MediaFacet, NewDomainEvent,
     NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginInstallation, PolicyInput,
-    PolicyOutput, RuleSet, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord, User,
+    PolicyOutput, RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType,
+    TitleHistoryRecord, User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -114,6 +116,7 @@ pub use acquisition_workflow::start_background_acquisition_poller;
 pub use app_usecase_integration::derive_download_queue_display_state;
 pub use app_usecase_integration::enrich_download_queue_items_from_submissions;
 pub use app_usecase_integration::matches_download_activity_filter;
+pub use app_usecase_integration::matches_download_queue_filter;
 pub use app_usecase_integration::start_download_queue_poller;
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
@@ -134,12 +137,12 @@ pub use catalog::title_images::start_background_poster_loop;
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate,
-    IndexerEpisodeSearchRequest, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSearchRequest,
-    InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis, NewBlocklistEntry,
-    NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection, ReleaseDecisionsQuery,
-    SearchMode, StagedNzbRef, SubmissionScope, SubtitleStreamDetail, SuccessfulGrabCommit,
-    TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
+    DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate, IndexerRoutingEntry,
+    IndexerRoutingPlan, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
+    NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection,
+    ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope, SubtitleGenerationInput,
+    SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
+    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,
@@ -202,11 +205,11 @@ pub use jobs::definitions::{
 };
 pub use library::user_delete::DeletePreview;
 pub use library_scan::{
-    AnibridgeSourceMapping, AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkMetadataResult,
-    EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,
-    LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner, MetadataGateway,
-    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
-    RichMetadataSearchItem, SeasonMetadata, SeriesMetadata, source_signature_from_std_metadata,
+    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkMetadataResult, EpisodeMetadata,
+    LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch, LibraryFileBatchReceiver,
+    LibraryScanSummary, LibraryScanner, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
+    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
+    SeriesMetadata, source_signature_from_std_metadata,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,
@@ -237,13 +240,18 @@ pub use ports::{
     NotificationSubscriptionRepository, PendingReleaseRepository, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
     RuleSetRepository, SettingsRepository, ShowRepository, StagedNzbStore,
-    SubtitleDownloadRepository, SystemInfoProvider, TitleImageProcessor, TitleImageRepository,
-    TitleRepository, UserRepository, WantedItemRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
+    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
+    TitleImageRepository, TitleRepository, UserRepository, WantedItemRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    parse_release_metadata,
+    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata,
+    ParsedReleaseMetadataV2, ParsedSpecialKind, ReleaseParseAnalysis, ReleaseParseContext,
+    TargetedReleaseParseAnalysis, analyze_release_against_targets_v2,
+    analyze_release_for_target_v2, best_parse_v2, build_candidate_bank_contexts,
+    build_release_parse_context, build_release_parse_context_for_title, parse_release_metadata,
+    parse_release_metadata_for_target,
 };
 pub use quality::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, build_weights, build_weights_for_category,
@@ -290,17 +298,18 @@ pub use types::{
     DiskSpaceInfo, DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult,
     DownloadHistoryFilter, DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey,
     DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind,
-    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
-    IndexerQueryStats, JwtAuthConfig, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
-    PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, ResolvePendingImportResult, SortDirection, SystemHealth,
-    TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
-    TitleReleaseBlocklistEntry, WantedCompleteTransition, WantedGrabTransition, WantedItem,
-    WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
+    EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult, HealthCheckStatus,
+    HousekeepingReport, IndexerQueryStats, JwtAuthConfig, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedSearchAttempt, PendingImportConnection, PendingImportCounts,
+    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PendingReleaseStatus,
+    PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
+    TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
+    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
+    WantedSearchTransition, WantedStatus, WantedStatusCount,
 };
 pub use types::{
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,

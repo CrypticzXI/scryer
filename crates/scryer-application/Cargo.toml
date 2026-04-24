@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 scryer-domain = { path = "../scryer-domain" }
-scryer-release-parser = { path = "../scryer-release-parser" }
+scryer-release-parser-v2 = { path = "../scryer-release-parser-v2" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo" }
 jsonwebtoken = { workspace = true }
@@ -24,8 +24,14 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
-weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.2.2" }
+weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.2.9" }
 sevenz-rust2 = { version = "0.20", features = ["aes256", "bzip2", "deflate", "zstd"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+zstd = "0.13"
+lzma-rs = "0.3"
+tempfile = "3"
 alass-core = "2.0.0"
 chardetng = "0.1"
 encoding_rs = "0.8"
@@ -36,5 +42,4 @@ unicode-normalization = "0.1"
 libc = "0.2"
 
 [dev-dependencies]
-tempfile = "3"
 wiremock = { workspace = true }

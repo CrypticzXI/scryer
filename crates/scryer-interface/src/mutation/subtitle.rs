@@ -24,6 +24,7 @@ pub struct SearchSubtitlesInput {
 #[derive(InputObject)]
 pub struct DownloadSubtitleInput {
     pub media_file_id: String,
+    pub provider: Option<String>,
     pub provider_file_id: String,
     pub language: String,
     pub forced: Option<bool>,
@@ -98,6 +99,7 @@ impl SubtitleMutations {
         app.download_subtitle_for_media_file(
             &actor,
             &input.media_file_id,
+            input.provider.as_deref().unwrap_or("opensubtitles"),
             &input.provider_file_id,
             &input.language,
             input.forced.unwrap_or(false),

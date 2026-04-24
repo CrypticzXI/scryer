@@ -127,11 +127,13 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
 
     async fn find_by_client_item_id(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
         crate::queries::workflow::find_download_submission_query(
             &self.pool,
+            download_client_id,
             download_client_type,
             download_client_item_id,
         )
@@ -140,7 +142,7 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[(String, String)],
+        client_items: &[(Option<String>, String, String)],
     ) -> AppResult<Vec<DownloadSubmission>> {
         crate::queries::workflow::list_download_submissions_for_client_items_query(
             &self.pool,
@@ -173,30 +175,47 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
             .await
     }
 
-    async fn delete_by_client_item_id(&self, download_client_item_id: &str) -> AppResult<()> {
+    async fn delete_by_client_item_id(
+        &self,
+        download_client_id: Option<&str>,
+        download_client_type: Option<&str>,
+        download_client_item_id: &str,
+    ) -> AppResult<()> {
         self.db
-            .delete_download_submission_by_client_item_id(download_client_item_id)
+            .delete_download_submission_by_client_item_id(
+                download_client_id,
+                download_client_type,
+                download_client_item_id,
+            )
             .await
     }
 
     async fn update_tracked_state(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
         tracked_state: &str,
     ) -> AppResult<()> {
         self.db
-            .update_tracked_state(download_client_type, download_client_item_id, tracked_state)
+            .update_tracked_state(
+                download_client_id,
+                download_client_type,
+                download_client_item_id,
+                tracked_state,
+            )
             .await
     }
 
     async fn get_tracked_state(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<String>> {
         crate::queries::workflow::get_tracked_state_query(
             &self.pool,
+            download_client_id,
             download_client_type,
             download_client_item_id,
         )
@@ -457,6 +476,7 @@ impl ExternalImportMonitorSnapshotRepository for SqliteWorkflowStore {
 impl DownloadQueueCommandRepository for SqliteWorkflowStore {
     async fn queue_delete_command(
         &self,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
@@ -464,6 +484,7 @@ impl DownloadQueueCommandRepository for SqliteWorkflowStore {
     ) -> AppResult<DownloadQueueCommandRecord> {
         self.db
             .queue_delete_download_command(
+                client_id,
                 client_type,
                 download_client_item_id,
                 is_history,
@@ -510,7 +531,7 @@ impl DownloadQueueCommandRepository for SqliteWorkflowStore {
 
     async fn list_latest_delete_commands_for_sources(
         &self,
-        sources: &[(String, String, bool)],
+        sources: &[(Option<String>, String, String, bool)],
     ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
         crate::queries::workflow::list_latest_delete_download_commands_for_sources_query(
             &self.pool, sources,

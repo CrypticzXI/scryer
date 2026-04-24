@@ -102,14 +102,17 @@ export function EpisodeDetailsPanel({
                       {t("subtitle.search")}
                     </Button>
                     {onDeleteFile ? (
-                      <button
+                      <Button
                         type="button"
+                        size="icon-sm"
+                        variant="secondary"
                         onClick={() => onDeleteFile(file.id)}
                         className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
                         title={t("mediaFile.delete")}
+                        aria-label={t("mediaFile.delete")}
                       >
                         <Trash2 className="h-4 w-4" />
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                   <MediaInfoBadges file={file} />

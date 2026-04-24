@@ -54,6 +54,7 @@ export const RootHeader = React.memo(function RootHeader({
     resolveDefaultQualityProfileIdForFacet,
     addMetadataSearchResultToCatalog,
     closeGlobalSearchPanel,
+    resetGlobalSearch,
     openGlobalSearchPanel,
     forceSearchGlobal,
     setGlobalSearch,
@@ -98,12 +99,18 @@ export const RootHeader = React.memo(function RootHeader({
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
       const titleId = await addMetadataSearchResultToCatalog(result, facet, options);
       if (titleId) {
+        resetGlobalSearch();
+        globalSearchInputRef.current?.blur();
         onOpenOverview?.(viewFromFacet(facet), { id: titleId, slug: result.slug ?? null });
-        closeGlobalSearchPanel();
       }
       return titleId;
     },
-    [addMetadataSearchResultToCatalog, closeGlobalSearchPanel, onOpenOverview],
+    [
+      addMetadataSearchResultToCatalog,
+      globalSearchInputRef,
+      onOpenOverview,
+      resetGlobalSearch,
+    ],
   );
 
   const handleSearchSubmit = React.useCallback(
@@ -155,8 +162,9 @@ export const RootHeader = React.memo(function RootHeader({
             key={title.id}
             type="button"
             onClick={() => {
-              closeGlobalSearchPanel();
-              onOpenOverview?.(targetView, title);
+              resetGlobalSearch();
+              globalSearchInputRef.current?.blur();
+              onOpenOverview?.(targetView, { id: title.id, slug: title.slug ?? null });
             }}
             className="block w-full rounded-lg border border-border bg-card/60 p-3 text-left hover:bg-accent/80"
             aria-label={title.name}
@@ -187,7 +195,7 @@ export const RootHeader = React.memo(function RootHeader({
         );
       });
     },
-    [closeGlobalSearchPanel, onOpenOverview, t],
+    [globalSearchInputRef, onOpenOverview, resetGlobalSearch, t],
   );
 
   const handleSearchPanelBackdropMouseDown = React.useCallback(() => {

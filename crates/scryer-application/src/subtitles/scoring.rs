@@ -143,7 +143,7 @@ pub fn compute_verified_score(
 
     match kind {
         SubtitleScoreKind::Movie => {
-            if expanded.contains("imdb_id") {
+            if expanded.contains("imdb_id") || expanded.contains("external_id") {
                 expanded.insert("title".to_string());
                 expanded.insert("year".to_string());
             }
@@ -160,6 +160,13 @@ pub fn compute_verified_score(
                 expanded.insert("series".to_string());
                 expanded.insert("year".to_string());
                 expanded.insert("season".to_string());
+                expanded.insert("episode".to_string());
+            }
+            if expanded.contains("external_id") {
+                expanded.insert("series".to_string());
+                expanded.insert("year".to_string());
+            }
+            if expanded.contains("absolute_episode") {
                 expanded.insert("episode".to_string());
             }
             if is_special

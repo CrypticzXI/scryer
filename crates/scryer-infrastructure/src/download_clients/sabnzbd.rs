@@ -369,6 +369,7 @@ impl DownloadClient for SabnzbdDownloadClient {
 
             Ok(DownloadGrabResult {
                 job_id: nzo_id,
+                client_id: None,
                 client_type: "sabnzbd".to_string(),
             })
         }
@@ -490,6 +491,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
                     title_id: None,
+                    episode_id: None,
                     title_name,
                     facet: None,
                     client_id: String::new(),
@@ -561,6 +563,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
                     title_id: None,
+                    episode_id: None,
                     title_name,
                     facet: None,
                     client_id: String::new(),
@@ -637,6 +640,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
                     title_id: None,
+                    episode_id: None,
                     title_name,
                     facet: None,
                     client_id: String::new(),

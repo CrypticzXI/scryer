@@ -1,4 +1,9 @@
-import { JOB_RUN_FIELDS, TITLE_CORE_FIELDS } from "./queries";
+import {
+  JOB_RUN_FIELDS,
+  SUBTITLE_PROVIDER_CONFIG_FIELDS,
+  SUBTITLE_SETTINGS_FIELDS,
+  TITLE_CORE_FIELDS,
+} from "./queries";
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
@@ -272,26 +277,29 @@ export const applyMediaRenameBulkMutation = `mutation ApplyMediaRenameBulk($inpu
 }`;
 
 export const updateSubtitleSettingsMutation = `mutation UpdateSubtitleSettings($input: UpdateSubtitleSettingsInput!) {
-  updateSubtitleSettings(input: $input) {
-    enabled
-    hasOpenSubtitlesApiKey
-    openSubtitlesUsername
-    hasOpenSubtitlesPassword
-    languages {
-      code
-      hearingImpaired
-      forced
-    }
-    autoDownloadOnImport
-    minimumScoreSeries
-    minimumScoreMovie
-    searchIntervalHours
-    includeAiTranslated
-    includeMachineTranslated
-    syncEnabled
-    syncThresholdSeries
-    syncThresholdMovie
-    syncMaxOffsetSeconds
+  updateSubtitleSettings(input: $input) {${SUBTITLE_SETTINGS_FIELDS}
+  }
+}`;
+
+export const createSubtitleProviderConfigMutation = `mutation CreateSubtitleProviderConfig($input: CreateSubtitleProviderConfigInput!) {
+  createSubtitleProviderConfig(input: $input) {${SUBTITLE_PROVIDER_CONFIG_FIELDS}
+  }
+}`;
+
+export const updateSubtitleProviderConfigMutation = `mutation UpdateSubtitleProviderConfig($input: UpdateSubtitleProviderConfigInput!) {
+  updateSubtitleProviderConfig(input: $input) {${SUBTITLE_PROVIDER_CONFIG_FIELDS}
+  }
+}`;
+
+export const deleteSubtitleProviderConfigMutation = `mutation DeleteSubtitleProviderConfig($input: DeleteSubtitleProviderConfigInput!) {
+  deleteSubtitleProviderConfig(input: $input)
+}`;
+
+export const testSubtitleProviderConnectionMutation = `mutation TestSubtitleProviderConnection($input: TestSubtitleProviderConnectionInput!) {
+  testSubtitleProviderConnection(input: $input) {
+    status
+    message
+    retryAfterSeconds
   }
 }`;
 
@@ -491,12 +499,15 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
   queueManualImport(input: $input) {
     kind
     downloadClientItemId
+    clientId
+    clientType
     importId
     removed
     queueItem {
       id
       titleId
       titleName
+      clientId
       clientType
       downloadClientItemId
       state
@@ -512,9 +523,12 @@ export const pauseDownloadMutation = `mutation PauseDownload($input: PauseDownlo
   pauseDownload(input: $input) {
     kind
     downloadClientItemId
+    clientId
+    clientType
     removed
     queueItem {
       id
+      clientId
       clientType
       downloadClientItemId
       state
@@ -526,9 +540,12 @@ export const resumeDownloadMutation = `mutation ResumeDownload($input: ResumeDow
   resumeDownload(input: $input) {
     kind
     downloadClientItemId
+    clientId
+    clientType
     removed
     queueItem {
       id
+      clientId
       clientType
       downloadClientItemId
       state
@@ -540,11 +557,13 @@ export const deleteDownloadMutation = `mutation DeleteDownload($input: DeleteDow
   deleteDownload(input: $input) {
     kind
     downloadClientItemId
+    clientId
     commandId
     removed
     clientType
     queueItem {
       id
+      clientId
       clientType
       downloadClientItemId
       state
@@ -553,6 +572,36 @@ export const deleteDownloadMutation = `mutation DeleteDownload($input: DeleteDow
     }
   }
 }`;
+
+export function buildIgnoreTrackedDownloadBatchMutation(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: IgnoreTrackedDownloadInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) => `item${index}: ignoreTrackedDownload(input: $input${index}) { kind }`,
+  ).join("\n");
+
+  return `mutation IgnoreTrackedDownloads(${variables}) {
+${fields}
+}`;
+}
+
+export function buildDeleteDownloadBatchMutation(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: DeleteDownloadInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) => `item${index}: deleteDownload(input: $input${index}) { kind removed commandId }`,
+  ).join("\n");
+
+  return `mutation DeleteDownloads(${variables}) {
+${fields}
+}`;
+}
 
 export const setCollectionMonitoredMutation = `mutation SetCollectionMonitored($input: SetCollectionMonitoredInput!) {
   setCollectionMonitored(input: $input) {
@@ -1003,12 +1052,14 @@ export const ignoreTrackedDownloadMutation = `mutation IgnoreTrackedDownload($in
   ignoreTrackedDownload(input: $input) {
     kind
     downloadClientItemId
+    clientId
     clientType
     removed
     queueItem {
       id
       titleId
       titleName
+      clientId
       clientType
       downloadClientItemId
       state
@@ -1022,6 +1073,7 @@ export const assignTrackedDownloadTitleMutation = `mutation AssignTrackedDownloa
   assignTrackedDownloadTitle(input: $input) {
     kind
     downloadClientItemId
+    clientId
     clientType
     removed
     queueItem {
@@ -1029,6 +1081,7 @@ export const assignTrackedDownloadTitleMutation = `mutation AssignTrackedDownloa
       titleId
       titleName
       facet
+      clientId
       clientType
       downloadClientItemId
       state

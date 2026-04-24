@@ -8,7 +8,6 @@ use tracing::warn;
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
-use crate::subtitles::provider::OpenSubtitlesProvider;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
@@ -26,9 +25,6 @@ const ACQUISITION_SYNC_INTERVAL_SECONDS_KEY: &str = "acquisition.sync_interval_s
 const ACQUISITION_BATCH_SIZE_KEY: &str = "acquisition.batch_size";
 
 const SUBTITLES_ENABLED_KEY: &str = "subtitles.enabled";
-const SUBTITLES_OPENSUBTITLES_API_KEY: &str = "subtitles.opensubtitles_api_key";
-const SUBTITLES_OPENSUBTITLES_USERNAME_KEY: &str = "subtitles.opensubtitles_username";
-const SUBTITLES_OPENSUBTITLES_PASSWORD_KEY: &str = "subtitles.opensubtitles_password";
 const SUBTITLES_LANGUAGES_KEY: &str = "subtitles.languages";
 const SUBTITLES_AUTO_DOWNLOAD_ON_IMPORT_KEY: &str = "subtitles.auto_download_on_import";
 const SUBTITLES_MINIMUM_SCORE_SERIES_KEY: &str = "subtitles.minimum_score_series";
@@ -44,9 +40,6 @@ const SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY: &str = "subtitles.sync_max_offset_s
 #[derive(Debug, Clone)]
 pub struct SubtitleSettings {
     pub enabled: bool,
-    pub open_subtitles_api_key: Option<String>,
-    pub open_subtitles_username: Option<String>,
-    pub open_subtitles_password: Option<String>,
     pub languages: Vec<SubtitleLanguagePref>,
     pub auto_download_on_import: bool,
     pub minimum_score_series: i32,
@@ -63,9 +56,6 @@ pub struct SubtitleSettings {
 #[derive(Debug, Clone)]
 pub struct UpdateSubtitleSettings {
     pub enabled: bool,
-    pub open_subtitles_api_key: Option<String>,
-    pub open_subtitles_username: String,
-    pub open_subtitles_password: Option<String>,
     pub languages: Vec<SubtitleLanguagePref>,
     pub auto_download_on_import: bool,
     pub minimum_score_series: i32,
@@ -1152,18 +1142,6 @@ impl AppUseCase {
                 .read_setting_bool_value(SUBTITLES_ENABLED_KEY, None)
                 .await?
                 .unwrap_or(false),
-            open_subtitles_api_key: normalize_optional_string(
-                self.read_setting_string_value(SUBTITLES_OPENSUBTITLES_API_KEY, None)
-                    .await?,
-            ),
-            open_subtitles_username: normalize_optional_string(
-                self.read_setting_string_value(SUBTITLES_OPENSUBTITLES_USERNAME_KEY, None)
-                    .await?,
-            ),
-            open_subtitles_password: normalize_optional_string(
-                self.read_setting_string_value(SUBTITLES_OPENSUBTITLES_PASSWORD_KEY, None)
-                    .await?,
-            ),
             languages: normalize_subtitle_languages(
                 self.read_setting_json_value::<Vec<SubtitleLanguagePref>>(
                     SUBTITLES_LANGUAGES_KEY,
@@ -2581,49 +2559,10 @@ impl AppUseCase {
             ));
         }
 
-        let current = self.load_subtitle_settings().await?;
-        let username = normalize_optional_string(Some(input.open_subtitles_username));
         let languages = normalize_subtitle_languages(input.languages);
-        let should_update_api_key = input.open_subtitles_api_key.is_some();
-        let api_key_update = normalize_optional_string(input.open_subtitles_api_key);
-        let should_update_password = input.open_subtitles_password.is_some();
-        let password_update = normalize_optional_string(input.open_subtitles_password);
-        let next_api_key = if should_update_api_key {
-            api_key_update
-                .clone()
-                .or_else(|| current.open_subtitles_api_key.clone())
-        } else {
-            current.open_subtitles_api_key.clone()
-        };
-        let next_password = if should_update_password {
-            password_update
-                .clone()
-                .or_else(|| current.open_subtitles_password.clone())
-        } else {
-            current.open_subtitles_password.clone()
-        };
-
-        if let (Some(api_key), Some(username), Some(password)) = (
-            next_api_key.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-            username.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-            next_password
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty()),
-        ) {
-            let provider = OpenSubtitlesProvider::new(api_key.to_string());
-            provider.login(username, password).await?;
-        }
-
         self.upsert_system_setting_json(
             SUBTITLES_ENABLED_KEY,
             &input.enabled,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            SUBTITLES_OPENSUBTITLES_USERNAME_KEY,
-            &username,
             Some(actor.id.clone()),
         )
         .await?;
@@ -2694,9 +2633,8 @@ impl AppUseCase {
         )
         .await?;
 
-        let mut changed_keys = vec![
+        let changed_keys = vec![
             SUBTITLES_ENABLED_KEY.to_string(),
-            SUBTITLES_OPENSUBTITLES_USERNAME_KEY.to_string(),
             SUBTITLES_LANGUAGES_KEY.to_string(),
             SUBTITLES_AUTO_DOWNLOAD_ON_IMPORT_KEY.to_string(),
             SUBTITLES_MINIMUM_SCORE_SERIES_KEY.to_string(),
@@ -2710,26 +2648,6 @@ impl AppUseCase {
             SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY.to_string(),
         ];
 
-        if should_update_api_key {
-            self.upsert_system_setting_json(
-                SUBTITLES_OPENSUBTITLES_API_KEY,
-                &next_api_key,
-                Some(actor.id.clone()),
-            )
-            .await?;
-            changed_keys.push(SUBTITLES_OPENSUBTITLES_API_KEY.to_string());
-        }
-
-        if should_update_password {
-            self.upsert_system_setting_json(
-                SUBTITLES_OPENSUBTITLES_PASSWORD_KEY,
-                &next_password,
-                Some(actor.id.clone()),
-            )
-            .await?;
-            changed_keys.push(SUBTITLES_OPENSUBTITLES_PASSWORD_KEY.to_string());
-        }
-
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
             "subtitle_settings",
@@ -2742,7 +2660,6 @@ impl AppUseCase {
             .events
             .settings_changed_broadcast
             .send(changed_keys);
-
         self.load_subtitle_settings().await
     }
 

@@ -130,6 +130,7 @@ fn make_search_result(
         info_url: None,
         provenance: None,
         candidate_token: None,
+        queue_scope: None,
         auto_eligible: None,
         auto_decision_code: None,
         auto_decision_summary: None,

@@ -216,6 +216,7 @@ impl AppUseCase {
             "NZBGeek Indexer",
             "NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)",
             "0.1.0",
+            "usenet_indexer",
             "nzbgeek",
         )
         .await?;
@@ -224,6 +225,7 @@ impl AppUseCase {
             "DogNZB Indexer",
             "DogNZB-specific Newznab indexer with rating, genre, and comment metadata",
             "0.1.0",
+            "usenet_indexer",
             "dognzb",
         )
         .await?;
@@ -232,7 +234,26 @@ impl AppUseCase {
             "Newznab Indexer",
             "Generic Newznab protocol indexer for compatible services",
             "0.1.0",
+            "usenet_indexer",
             "newznab",
+        )
+        .await?;
+        repo.seed_builtin(
+            "opensubtitles",
+            "OpenSubtitles",
+            "OpenSubtitles subtitle provider with provider-managed auth, search, and download",
+            "0.1.0",
+            "subtitle_provider",
+            "opensubtitles",
+        )
+        .await?;
+        repo.seed_builtin(
+            "jimaku",
+            "Jimaku",
+            "Jimaku anime subtitle provider",
+            "0.1.0",
+            "subtitle_provider",
+            "jimaku",
         )
         .await?;
         Ok(())
@@ -289,6 +310,19 @@ impl AppUseCase {
                     AppError::Repository(format!(
                         "failed to reload download client plugin provider: {e}"
                     ))
+                })?;
+        }
+
+        if let Some(provider) = self
+            .services
+            .integrations
+            .subtitle_plugin_provider
+            .available()
+        {
+            provider
+                .reload_plugins(&external_refs, &disabled_builtins)
+                .map_err(|e| {
+                    AppError::Repository(format!("failed to reload subtitle plugin provider: {e}"))
                 })?;
         }
 

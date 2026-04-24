@@ -1297,7 +1297,8 @@ const ko: LocaleDictionary = {
   "subtitle.download": "다운로드",
   "subtitle.downloading": "다운로드 중...",
   "subtitle.noResults": "자막을 찾을 수 없습니다",
-  "subtitle.score": "점수: {{score}}",
+  "subtitle.score": "점수",
+  "subtitle.scoreWithValue": "점수: {{score}}",
   "subtitle.hashMatch": "해시 일치",
   "subtitle.hearingImpaired": "청각 장애",
   "subtitle.forced": "강제",
@@ -1419,6 +1420,8 @@ const ko: LocaleDictionary = {
   "status.indexerUpdated": "인덱서가 업데이트되었습니다.",
   "status.searchMonitoredQueued":
     "{{count}}개 모니터링 항목이 백그라운드 검색 대기열에 추가되었습니다.",
+  "status.mismatchRecoveryQueued":
+    "불일치 복구 항목 {{count}}개를 대기열에 추가했습니다.",
   "status.searchMonitoredEmpty": "현재 검색 가능한 모니터링 항목이 없습니다.",
   "status.titleScanSuccess":
     "스캔 완료. {{imported}}개 가져옴, {{skipped}}개 건너뜀, {{unmatched}}개 매칭 안됨.",

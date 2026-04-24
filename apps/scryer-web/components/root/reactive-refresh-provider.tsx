@@ -130,6 +130,22 @@ function applyReactiveRefreshActionResult(
         title: payload[typedActionPlan.titleAlias] ?? null,
         acquisitionDiagnostics:
           payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
+        downloadQueueItems:
+          (payload[typedActionPlan.downloadQueueItemsAlias] ?? []) as TitleOverviewSnapshot<
+            unknown,
+            unknown,
+            unknown,
+            unknown,
+            unknown
+          >["downloadQueueItems"],
+        completedDownloadQueueItems:
+          (payload[typedActionPlan.completedDownloadQueueItemsAlias] ?? []) as TitleOverviewSnapshot<
+            unknown,
+            unknown,
+            unknown,
+            unknown,
+            unknown
+          >["completedDownloadQueueItems"],
         titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<
           unknown,
           unknown,
@@ -181,11 +197,13 @@ function reactiveRefreshActionAliases(
     case "catalogTitle":
       return [actionPlan.titleAlias];
     case "titleOverview":
-      return [
-        actionPlan.titleAlias,
-        actionPlan.titleAcquisitionDiagnosticsAlias,
-        actionPlan.titleEventsAlias,
-        actionPlan.titleReleaseBlocklistAlias,
+        return [
+          actionPlan.titleAlias,
+          actionPlan.downloadQueueItemsAlias,
+          actionPlan.completedDownloadQueueItemsAlias,
+          actionPlan.titleAcquisitionDiagnosticsAlias,
+          actionPlan.titleEventsAlias,
+          actionPlan.titleReleaseBlocklistAlias,
         actionPlan.subtitleDownloadsAlias,
         actionPlan.setupStatusAlias,
       ];

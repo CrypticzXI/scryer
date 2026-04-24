@@ -1,12 +1,14 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
-use scryer_application::{DownloadClientConfigUpdate, IndexerConfigUpdate};
+use scryer_application::{
+    DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
+};
 use scryer_domain::{Entitlement, NewDownloadClientConfig, NewIndexerConfig};
 use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
     from_download_client_config, from_housekeeping_report, from_indexer_config,
-    from_rss_sync_report,
+    from_rss_sync_report, from_subtitle_provider_config,
 };
 use crate::types::*;
 
@@ -258,6 +260,102 @@ impl ConfigMutations {
         }
 
         Ok(true)
+    }
+
+    async fn create_subtitle_provider_config(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateSubtitleProviderConfigInput,
+    ) -> GqlResult<SubtitleProviderConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let config = app
+            .create_subtitle_provider_config(
+                &actor,
+                input.name,
+                input.provider_type,
+                input.config_json,
+                input.enabled_facets.map(|facets| {
+                    facets
+                        .into_iter()
+                        .map(|facet| facet.as_scope_id().to_string())
+                        .collect()
+                }),
+                input.is_enabled.unwrap_or(true),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let config_fields = app.subtitle_provider_config_fields(&config.provider_type);
+        Ok(from_subtitle_provider_config(config, &config_fields))
+    }
+
+    async fn update_subtitle_provider_config(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateSubtitleProviderConfigInput,
+    ) -> GqlResult<SubtitleProviderConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let config = app
+            .update_subtitle_provider_config(
+                &actor,
+                SubtitleProviderConfigUpdate {
+                    id: input.id,
+                    name: input.name,
+                    provider_type: input.provider_type,
+                    config_json: input.config_json,
+                    enabled_facets: input.enabled_facets.map(|facets| {
+                        facets
+                            .into_iter()
+                            .map(|facet| facet.as_scope_id().to_string())
+                            .collect()
+                    }),
+                    is_enabled: input.is_enabled,
+                    last_health_status: None,
+                    last_error: None,
+                    last_error_at: None,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let config_fields = app.subtitle_provider_config_fields(&config.provider_type);
+        Ok(from_subtitle_provider_config(config, &config_fields))
+    }
+
+    async fn delete_subtitle_provider_config(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteSubtitleProviderConfigInput,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.delete_subtitle_provider_config(&actor, &input.id)
+            .await
+            .map_err(to_gql_error)
+            .map(|_| true)
+    }
+
+    async fn test_subtitle_provider_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: TestSubtitleProviderConnectionInput,
+    ) -> GqlResult<SubtitleProviderValidationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .test_subtitle_provider_connection(
+                &actor,
+                input.id.as_deref(),
+                input.provider_type,
+                input.config_json,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(SubtitleProviderValidationPayload {
+            status: result.status,
+            message: result.message,
+            retry_after_seconds: result.retry_after_seconds,
+        })
     }
 
     async fn test_indexer_connection(

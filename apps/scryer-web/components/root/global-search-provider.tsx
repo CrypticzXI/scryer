@@ -22,13 +22,11 @@ export function GlobalSearchProvider({
     uiLanguage,
   });
 
-  const { setQueueFacet, setTvdbCandidates, setSearchResults, setSelectedTvdbId } = searchState;
+  const { setQueueFacet, setTvdbCandidates } = searchState;
   useEffect(() => {
     setQueueFacet(activeFacet);
     setTvdbCandidates([]);
-    setSearchResults([]);
-    setSelectedTvdbId(null);
-  }, [activeFacet, setQueueFacet, setTvdbCandidates, setSearchResults, setSelectedTvdbId]);
+  }, [activeFacet, setQueueFacet, setTvdbCandidates]);
 
   return (
     <SearchContext.Provider value={searchState}>

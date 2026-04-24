@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use scryer_application::{
     AppResult, DownloadClientConfigRepository, DownloadClientConfigUpdate, IndexerConfigRepository,
-    IndexerConfigUpdate,
+    IndexerConfigUpdate, SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate,
 };
-use scryer_domain::{DownloadClientConfig, IndexerConfig};
+use scryer_domain::{DownloadClientConfig, IndexerConfig, SubtitleProviderConfig};
 use std::sync::{Arc, RwLock};
 
 use crate::SqliteServices;
 use crate::encryption::EncryptionKey;
-use crate::queries::{download_client, indexer};
+use crate::queries::{download_client, indexer, subtitle_provider};
 
 #[derive(Clone)]
 pub struct SqliteConfigStore {
@@ -96,5 +96,43 @@ impl DownloadClientConfigRepository for SqliteConfigStore {
 
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()> {
         self.db.reorder_download_client_configs(ordered_ids).await
+    }
+}
+
+#[async_trait]
+impl SubtitleProviderConfigRepository for SqliteConfigStore {
+    async fn list(&self, provider_type: Option<String>) -> AppResult<Vec<SubtitleProviderConfig>> {
+        let encryption_key = self.encryption_key();
+        subtitle_provider::list_subtitle_provider_configs_query(
+            &self.pool,
+            provider_type,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<SubtitleProviderConfig>> {
+        let encryption_key = self.encryption_key();
+        subtitle_provider::get_subtitle_provider_config_query(
+            &self.pool,
+            id,
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    async fn create(&self, config: SubtitleProviderConfig) -> AppResult<SubtitleProviderConfig> {
+        self.db.create_subtitle_provider_config(config).await
+    }
+
+    async fn update(
+        &self,
+        update: SubtitleProviderConfigUpdate,
+    ) -> AppResult<SubtitleProviderConfig> {
+        self.db.update_subtitle_provider_config(update).await
+    }
+
+    async fn delete(&self, id: &str) -> AppResult<()> {
+        self.db.delete_subtitle_provider_config(id).await
     }
 }

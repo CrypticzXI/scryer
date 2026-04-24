@@ -42,6 +42,7 @@
 - **When moving conditional persistence logic out of SQL and into Rust, preserve the original atomicity guarantees.** If the old query did read/modify/write in one statement, replace it with a transaction or a single repository command, and keep low-level upserts defensive against accidental bypasses.
 - **When the user narrows a task to backend planning or backend stabilization, do not broaden the work into frontend validation or install repair unless they ask for it.** Keep the active scope tight before major refactors.
 - **Never create unsigned commits or tags.** Before any commit or release rewrite, verify the real SSH signer path works first; if a pushed unsigned commit must be fixed, rewrite from the earliest bad commit and re-sign every descendant plus any affected release tags.
+- **Before releasing from a temp clone, verify the source branch matches the intended remote base.** If local `main` is ahead of `origin/main`, stop and ask whether those unpublished commits should ship instead of silently releasing from local-only history.
 
 ## Indexer Search Contracts
 - **Do not bake alias language or script policy into core search query construction.** Core should pass canonical title plus tagged alias context through to indexer plugins, and plugins should decide whether to prefer romanized Japanese, Korean aliases, or other provider-specific naming conventions.

@@ -59,6 +59,9 @@ const en: LocaleDictionary = {
   "label.missing": "Missing",
   "label.default": "default",
   "label.language": "Language",
+  "label.movies": "Movies",
+  "label.series": "Series",
+  "label.anime": "Anime",
   "label.unknownType": "unknown type",
   "label.yearUnknown": "year unknown",
   "label.noArt": "no art",
@@ -674,6 +677,9 @@ const en: LocaleDictionary = {
   "activity.historyFilter.success": "Success",
   "activity.historyFilter.failed": "Failed",
   "activity.scryerSubmitted": "Scryer submitted",
+  "activity.selectAllImportItems": "Select all import items",
+  "activity.selectImportItem": "Select import item",
+  "activity.selectedImportCount": "{{count}} selected",
   "activity.importEmpty": "No import items.",
   "activity.activityEmpty": "No active downloads.",
   "activity.historyEmpty": "No history items.",
@@ -724,6 +730,9 @@ const en: LocaleDictionary = {
   "queue.ignore": "Ignore",
   "queue.ignoreSuccess": "Download ignored.",
   "queue.ignoreFailed": "Failed to ignore download.",
+  "queue.bulkIgnoreSuccess": "Ignored {{count}} downloads.",
+  "queue.bulkIgnorePartial": "Ignored {{count}} downloads; {{failed}} failed.",
+  "queue.bulkIgnoreFailed": "Failed to ignore selected downloads.",
   "queue.pause": "Pause",
   "queue.pausing": "Pausing…",
   "queue.pauseSuccess": "Download paused.",
@@ -739,6 +748,12 @@ const en: LocaleDictionary = {
   "queue.deleteConfirmTitle": "Remove Download",
   "queue.deleteConfirmDescription":
     "Are you sure you want to remove this download from the queue? This cannot be undone.",
+  "queue.bulkDeleteQueued": "Removal queued for {{count}} downloads.",
+  "queue.bulkDeletePartial": "Removal queued for {{count}} downloads; {{failed}} failed.",
+  "queue.bulkDeleteFailed": "Failed to delete selected downloads.",
+  "queue.bulkDeleteConfirmTitle": "Remove Selected Downloads",
+  "queue.bulkDeleteConfirmDescription":
+    "Are you sure you want to remove {{count}} selected downloads from the queue? This cannot be undone.",
   "queue.manualUnavailableForResult":
     "Manual queue unavailable for this result.",
 
@@ -1070,6 +1085,29 @@ const en: LocaleDictionary = {
 
   "settings.subtitles": "Subtitles",
   "settings.subtitlesSaved": "Subtitle settings saved.",
+  "settings.subtitleProviders": "Subtitle providers",
+  "settings.existingSubtitleProviders": "Configured subtitle providers",
+  "settings.subtitleProviderType": "Provider",
+  "settings.subtitleProviderStatus": "Status",
+  "settings.subtitleProviderFacets": "Content types",
+  "settings.subtitleProviderFacetsHelp":
+    "Scryer only searches this provider for the selected content types. Plugin recommendations seed these defaults, but do not restrict your choices.",
+  "settings.subtitleProviderEmpty": "No subtitle providers configured yet.",
+  "settings.subtitleProviderCreate": "Add subtitle provider",
+  "settings.subtitleProviderEdit": "Edit subtitle provider",
+  "settings.subtitleProviderNamePlaceholder": "OpenSubtitles",
+  "settings.subtitleProviderCreated": "Subtitle provider created.",
+  "settings.subtitleProviderUpdated": "Subtitle provider updated.",
+  "settings.subtitleProviderDeleted": "{{name}} deleted.",
+  "settings.subtitleProviderNoActivity": "No activity yet",
+  "settings.subtitleProviderDisabledUntil": "Disabled until {{time}}",
+  "settings.subtitleProviderLastError": "Last error {{time}}",
+  "settings.subtitleProviderUnknownType":
+    "This provider type is installed but its field schema is not available yet.",
+  "settings.subtitleProviderSecretStored": "Stored value kept unless replaced",
+  "settings.subtitleProviderBindingManaged": "Provided by host",
+  "settings.subtitleProviderBindingAvailable": "Available",
+  "settings.subtitleProviderBindingMissing": "Missing",
   "settings.sub.enabled": "Enable subtitle management",
   "settings.sub.credentials": "OpenSubtitles Credentials",
   "settings.sub.username": "Username",
@@ -1186,6 +1224,7 @@ const en: LocaleDictionary = {
   "form.indexerNamePlaceholder": "My Newznab Indexer",
   "form.providerTypePlaceholder": "Provider Type",
   "form.providerTypePlaceholderValue": "nzbgeek",
+  "form.subtitleProviderValidation": "Name and provider type are required.",
   "form.baseUrlPlaceholder": "Base URL",
   "form.baseUrlPlaceholderValue": "https://api.nzbgeek.info/api",
   "form.apiKeyPlaceholder": "API Key",
@@ -1372,7 +1411,8 @@ const en: LocaleDictionary = {
   "subtitle.download": "Download",
   "subtitle.downloading": "Downloading...",
   "subtitle.noResults": "No subtitles found",
-  "subtitle.score": "Score: {{score}}",
+  "subtitle.score": "Score",
+  "subtitle.scoreWithValue": "Score: {{score}}",
   "subtitle.hashMatch": "Hash match",
   "subtitle.hearingImpaired": "HI",
   "subtitle.forced": "Forced",
@@ -1382,6 +1422,10 @@ const en: LocaleDictionary = {
   "subtitle.embedded": "Embedded",
   "subtitle.external": "External",
   "subtitle.manualSearch": "Manual Search",
+  "subtitle.providersRequiredTitle": "Subtitle provider required",
+  "subtitle.providersRequiredBody":
+    "Add and enable at least one subtitle provider before searching for subtitles.",
+  "subtitle.providersRequiredAction": "Open subtitle providers",
   "subtitle.apiKeyRequiredTitle": "Subtitle service unavailable",
   "subtitle.apiKeyRequiredBody":
     "Subtitle service is unavailable for this file right now.",
@@ -1482,9 +1526,11 @@ const en: LocaleDictionary = {
   "status.editingUser": "Editing user {{name}}",
   "status.editingIndexer": "Editing indexer {{name}}",
   "status.editingDownloadClient": "Editing download client {{name}}",
+  "status.editingSubtitleProvider": "Editing subtitle provider {{name}}",
   "status.deletingUser": "Delete user {{name}}?",
   "status.deletingIndexer": "Delete indexer {{name}}?",
   "status.deletingDownloadClient": "Delete download client {{name}}?",
+  "status.deletingSubtitleProvider": "Delete subtitle provider {{name}}?",
   "status.showingActivityStream": "Show activity stream",
   "status.hidingActivityStream": "Hide activity stream",
   "status.userRequired": "Username and password are required.",
@@ -1497,6 +1543,8 @@ const en: LocaleDictionary = {
   "status.indexerUpdated": "Indexer updated.",
   "status.searchMonitoredQueued":
     "Queued {{count}} monitored item(s) for background search.",
+  "status.mismatchRecoveryQueued":
+    "Queued {{count}} mismatch recovery item(s).",
   "status.searchMonitoredEmpty":
     "No monitored items are currently eligible for search.",
   "status.titleScanSuccess":
@@ -1507,6 +1555,12 @@ const en: LocaleDictionary = {
   "status.testingIndexerConnection": "Testing connection…",
   "status.indexerConnectionTestPassed": "Indexer connection test passed.",
   "status.indexerConnectionTestFailed": "Indexer connection test failed.",
+  "status.testingSubtitleProviderConnection":
+    "Testing subtitle provider connection…",
+  "status.subtitleProviderConnectionTestPassed":
+    "Subtitle provider connection test passed.",
+  "status.subtitleProviderConnectionTestFailed":
+    "Subtitle provider connection test failed.",
   "status.ruleCreated": "Rule saved.",
   "status.ruleUpdated": "Rule updated.",
   "status.ruleDeleted": "Deleted rule {{name}}.",

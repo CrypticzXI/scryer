@@ -525,12 +525,39 @@ impl AppUseCase {
                 } else {
                     None
                 };
-                let submission_scope =
-                    super::acquisition::download_submission_scope_for_release_title(
+                let parse_context = build_release_parse_context(
+                    &title,
+                    episode.as_ref(),
+                    None,
+                    Some(title.facet.as_str()),
+                );
+                let parsed = parse_release_metadata_for_target(&pr.release_title, &parse_context);
+                let catalog_episodes = self
+                    .services
+                    .catalog
+                    .shows
+                    .list_episodes_for_title(&title.id)
+                    .await
+                    .unwrap_or_default();
+                let catalog_collections = self
+                    .services
+                    .catalog
+                    .shows
+                    .list_collections_for_title(&title.id)
+                    .await
+                    .unwrap_or_default();
+                let submission_scope = crate::acquisition_coverage::resolve_release_coverage(
+                    &parsed,
+                    &catalog_episodes,
+                    &catalog_collections,
+                    episode.as_ref(),
+                )
+                .submission_scope_or(
+                    &super::acquisition::direct_download_submission_scope_for_wanted_item(
                         wanted,
                         episode.as_ref(),
-                        &pr.release_title,
-                    );
+                    ),
+                );
                 let grabbed_json = serde_json::json!({
                     "title": pr.release_title,
                     "score": pr.release_score,
@@ -552,6 +579,7 @@ impl AppUseCase {
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
+                            download_client_id: grab.client_id,
                             download_client_type: grab.client_type,
                             download_client_item_id: grab.job_id,
                             source_hint: None,

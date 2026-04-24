@@ -42,6 +42,8 @@ export type ConfigFieldDef = {
   fieldType: string;
   required: boolean;
   defaultValue: string | null;
+  valueSource: "user" | "host_binding";
+  hostBinding: string | null;
   options: ConfigFieldOption[];
   helpText: string | null;
 };
@@ -51,6 +53,8 @@ export type ProviderTypeInfo = {
   name: string;
   defaultBaseUrl: string | null;
   configFields: ConfigFieldDef[];
+  availableHostBindings: string[];
+  recommendedFacets: Array<"movie" | "series" | "anime">;
 };
 
 export type IndexerCategoryRoutingSettings = {

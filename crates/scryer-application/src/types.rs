@@ -5,6 +5,7 @@ use scryer_domain::ExternalId;
 use scryer_domain::Title;
 use serde::{Deserialize, Serialize};
 
+use crate::SubmissionScope;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
 use crate::release_parser::ParsedReleaseMetadata;
@@ -37,6 +38,15 @@ pub struct TitleMetadataUpdate {
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).
     pub extra_tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopedExternalId {
+    pub scope_id: String,
+    pub source: String,
+    pub external_id: String,
+    pub provenance: String,
+    pub source_scope: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +154,7 @@ pub struct ExternalImportMonitorSnapshot {
 pub struct DownloadQueueCommandRecord {
     pub id: String,
     pub action: DownloadQueueCommandAction,
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub is_history: bool,
@@ -299,6 +310,12 @@ pub struct TitleMediaFile {
     pub edition: Option<String>,
     pub original_file_path: Option<String>,
     pub release_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EpisodeScopedMediaFile {
+    pub media_file: TitleMediaFile,
+    pub episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -694,6 +711,7 @@ mod pending_release_status_tests {
 #[derive(Clone, Debug)]
 pub struct DownloadGrabResult {
     pub job_id: String,
+    pub client_id: Option<String>,
     pub client_type: String,
 }
 
@@ -902,6 +920,7 @@ pub struct IndexerSearchResult {
     pub info_url: Option<String>,
     pub provenance: Option<ReleaseCandidateProvenance>,
     pub candidate_token: Option<String>,
+    pub queue_scope: Option<SubmissionScope>,
     pub auto_eligible: Option<bool>,
     pub auto_decision_code: Option<String>,
     pub auto_decision_summary: Option<String>,

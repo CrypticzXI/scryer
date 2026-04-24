@@ -216,6 +216,7 @@ pub(crate) async fn seed_builtin_query(
     name: &str,
     description: &str,
     version: &str,
+    plugin_type: &str,
     provider_type: &str,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -224,13 +225,14 @@ pub(crate) async fn seed_builtin_query(
         "INSERT OR IGNORE INTO plugin_installations
             (id, plugin_id, name, description, version, plugin_type, provider_type,
              is_enabled, is_builtin, installed_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'usenet_indexer', ?, 1, 1, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)",
     )
     .bind(&id)
     .bind(plugin_id)
     .bind(name)
     .bind(description)
     .bind(version)
+    .bind(plugin_type)
     .bind(provider_type)
     .bind(&now)
     .bind(&now)
@@ -240,9 +242,10 @@ pub(crate) async fn seed_builtin_query(
 
     sqlx::query(
         "UPDATE plugin_installations
-         SET plugin_type = 'usenet_indexer'
+         SET plugin_type = ?
          WHERE plugin_id = ? AND is_builtin = 1",
     )
+    .bind(plugin_type)
     .bind(plugin_id)
     .execute(pool)
     .await

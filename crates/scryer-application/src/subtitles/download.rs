@@ -1,8 +1,17 @@
 use std::path::{Path, PathBuf};
 
+use super::extraction::{
+    SubtitleExtractionContext, is_supported_subtitle_format, normalize_downloaded_subtitle,
+};
 use super::language::normalize_subtitle_language_code;
 use super::provider::{SubtitleFile, SubtitleProvider};
 use crate::{AppError, AppResult};
+
+#[derive(Debug, Clone, Default)]
+pub struct SubtitleDownloadSelection {
+    pub episode: Option<i32>,
+    pub absolute_episode: Option<i32>,
+}
 
 /// Normalize a language code and ensure it's safe for use in filenames.
 fn normalize_language(lang: &str) -> AppResult<String> {
@@ -23,8 +32,7 @@ fn normalize_language(lang: &str) -> AppResult<String> {
 
 /// Validate that a subtitle format is safe for use in filenames.
 fn validate_format(fmt: &str) -> AppResult<()> {
-    let allowed = ["srt", "ass", "ssa", "sub", "vtt", "idx"];
-    if !allowed.contains(&fmt) {
+    if !is_supported_subtitle_format(fmt) {
         return Err(AppError::Validation(format!(
             "unsupported subtitle format: {fmt:?}"
         )));
@@ -72,8 +80,39 @@ pub async fn download_and_save(
     forced: bool,
     hearing_impaired: bool,
 ) -> AppResult<(PathBuf, SubtitleFile)> {
+    download_and_save_with_selection(
+        provider,
+        provider_file_id,
+        video_path,
+        language,
+        forced,
+        hearing_impaired,
+        SubtitleDownloadSelection::default(),
+    )
+    .await
+}
+
+/// Download a subtitle from a provider, normalize raw/compressed artifacts,
+/// and save the final subtitle next to the video file.
+pub async fn download_and_save_with_selection(
+    provider: &dyn SubtitleProvider,
+    provider_file_id: &str,
+    video_path: &Path,
+    language: &str,
+    forced: bool,
+    hearing_impaired: bool,
+    selection: SubtitleDownloadSelection,
+) -> AppResult<(PathBuf, SubtitleFile)> {
     let language = normalize_language(language)?;
-    let file = provider.download(provider_file_id).await?;
+    let file = normalize_downloaded_subtitle(
+        provider.download(provider_file_id).await?,
+        SubtitleExtractionContext {
+            language: Some(language.clone()),
+            episode: selection.episode,
+            absolute_episode: selection.absolute_episode,
+        },
+    )
+    .await?;
     validate_format(&file.format)?;
     let dest = build_subtitle_path(
         video_path,
@@ -115,6 +154,65 @@ pub async fn download_and_save(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subtitles::{SubtitleMatch, SubtitleQuery};
+    use std::io::Cursor;
+
+    struct StaticProvider {
+        content: Vec<u8>,
+        format: String,
+        filename: Option<String>,
+        content_type: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl SubtitleProvider for StaticProvider {
+        async fn search(&self, _query: &SubtitleQuery) -> AppResult<Vec<SubtitleMatch>> {
+            unreachable!("search is not used in these tests")
+        }
+
+        async fn download(&self, _provider_file_id: &str) -> AppResult<SubtitleFile> {
+            Ok(SubtitleFile {
+                content: self.content.clone(),
+                format: self.format.clone(),
+                filename: self.filename.clone(),
+                content_type: self.content_type.clone(),
+            })
+        }
+
+        fn name(&self) -> &str {
+            "static"
+        }
+    }
+
+    #[tokio::test]
+    async fn download_and_save_extracts_compressed_subtitle_before_writing() {
+        let subtitle_content =
+            b"[Script Info]\nTitle: Test\n\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n";
+        let mut xz_content = Vec::new();
+        lzma_rs::xz_compress(&mut Cursor::new(subtitle_content), &mut xz_content).unwrap();
+
+        let provider = StaticProvider {
+            content: xz_content,
+            format: "ass".to_string(),
+            filename: Some("release.ass.xz".to_string()),
+            content_type: Some("application/x-xz".to_string()),
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let video_path = temp.path().join("Movie.mkv");
+        std::fs::write(&video_path, b"fake video").unwrap();
+
+        let (dest, file) =
+            download_and_save(&provider, "provider-file", &video_path, "eng", false, false)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            dest.file_name().and_then(|name| name.to_str()),
+            Some("Movie.eng.ass")
+        );
+        assert_eq!(file.format, "ass");
+        assert_eq!(std::fs::read(dest).unwrap(), subtitle_content);
+    }
 
     #[test]
     fn subtitle_path_basic() {

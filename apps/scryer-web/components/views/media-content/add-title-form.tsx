@@ -6,10 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { SearchResultBuckets } from "@/components/common/release-search-results";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
-import type { Release, TitleRecord } from "@/lib/types";
+import type { TitleRecord } from "@/lib/types";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePoster } from "@/components/title-poster";
 import {
@@ -37,13 +36,7 @@ type AddTitleFormProps = {
   setMinAvailabilityForQueue: (value: string) => void;
   onAddSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
   tvdbCandidates: TvdbSearchItem[];
-  selectedTvdbId: string | null;
-  selectTvdbCandidate: (candidate: TvdbSearchItem) => void;
   addTvdbCandidateToCatalog: (candidate: TvdbSearchItem) => Promise<void> | void;
-  searchNzbForSelectedTvdb: () => Promise<void>;
-  selectedTvdb: TvdbSearchItem | null;
-  searchResults: Release[];
-  queueFromSearch: (release: Release) => Promise<void> | void;
   titleFilter: string;
   onTitleFilterChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onRefreshTitles: () => void;
@@ -67,13 +60,7 @@ export function AddTitleForm({
   setMinAvailabilityForQueue,
   onAddSubmit,
   tvdbCandidates,
-  selectedTvdbId,
-  selectTvdbCandidate,
   addTvdbCandidateToCatalog,
-  searchNzbForSelectedTvdb,
-  selectedTvdb,
-  searchResults,
-  queueFromSearch,
   titleFilter,
   onTitleFilterChange,
   onRefreshTitles,
@@ -99,30 +86,12 @@ export function AddTitleForm({
     [setQueueFacet],
   );
 
-  const handleSelectTvdbCandidate = React.useCallback(
-    (candidate: TvdbSearchItem) => {
-      selectTvdbCandidate(candidate);
-    },
-    [selectTvdbCandidate],
-  );
-
   const handleAddTvdbToCatalog = React.useCallback(
     (candidate: TvdbSearchItem) => {
       void addTvdbCandidateToCatalog(candidate);
     },
     [addTvdbCandidateToCatalog],
   );
-
-  const handleQueueFromSearch = React.useCallback(
-    (release: Release) => {
-      return Promise.resolve(queueFromSearch(release));
-    },
-    [queueFromSearch],
-  );
-
-  const handleSearchNzbForSelectedTvdb = React.useCallback(() => {
-    void searchNzbForSelectedTvdb();
-  }, [searchNzbForSelectedTvdb]);
 
   return (
     <>
@@ -243,14 +212,6 @@ export function AddTitleForm({
                     <div className="flex flex-col gap-2 sm:items-end">
                       <Button
                         size="sm"
-                        className="w-full sm:w-auto"
-                        variant={String(result.tvdbId) === selectedTvdbId ? "secondary" : "ghost"}
-                        onClick={() => handleSelectTvdbCandidate(result)}
-                      >
-                        {t("tvdb.select")}
-                      </Button>
-                      <Button
-                        size="sm"
                         variant="secondary"
                         className="w-full sm:w-auto"
                         onClick={() => handleAddTvdbToCatalog(result)}
@@ -261,37 +222,7 @@ export function AddTitleForm({
                   </div>
                 </div>
               ))}
-              <div className="pt-2">
-                <Button
-                  type="button"
-                  className="w-full sm:w-auto"
-                  onClick={handleSearchNzbForSelectedTvdb}
-                  disabled={!selectedTvdbId}
-                >
-                  {t("tvdb.searchButton")}
-                </Button>
-              </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            {selectedTvdb ? t("nzb.searchResultsFor", { name: selectedTvdb.name }) : t("nzb.searchResults")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {searchResults.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {selectedTvdb ? t("nzb.noResultsYet") : t("tvdb.selectPrompt")}
-            </p>
-          ) : (
-            <SearchResultBuckets
-              results={searchResults}
-              onQueue={handleQueueFromSearch}
-            />
           )}
         </CardContent>
       </Card>

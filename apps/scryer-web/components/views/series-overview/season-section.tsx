@@ -29,6 +29,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
+import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -40,12 +41,13 @@ import {
 } from "@/lib/utils/action-button-styles";
 import type {
   CollectionEpisode,
-  EpisodeMediaFile,
   TitleCollection,
+  EpisodeMediaFile,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
 import type { EpisodePanelTab } from "./episode-panel-reducer";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
   buildSpecialsMovieEpisodeMatches,
   isSpecialsCollection,
@@ -97,6 +99,7 @@ export function SeasonSection({
   expandedEpisodeRows,
   episodeActiveTab,
   mediaFilesByEpisode,
+  downloadQueueItemByEpisodeId,
   releaseBlocklistEntries,
   subtitleDownloads,
   onRefreshSubtitles,
@@ -129,6 +132,7 @@ export function SeasonSection({
   expandedEpisodeRows: Set<string>;
   episodeActiveTab: Record<string, EpisodePanelTab>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
+  downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
   subtitleDownloads?: SubtitleDownloadRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
@@ -291,6 +295,25 @@ export function SeasonSection({
       return null;
     },
     [t],
+  );
+
+  const renderEpisodeQualityCell = React.useCallback(
+    (episode: CollectionEpisode, episodeFiles: EpisodeMediaFile[]) => {
+      const qualityBadge = renderEpisodeQualityBadge(episode, episodeFiles);
+      const queueItem = downloadQueueItemByEpisodeId?.[episode.id];
+
+      if (!qualityBadge && !queueItem) {
+        return null;
+      }
+
+      return (
+        <div className="flex flex-col items-center gap-1">
+          {qualityBadge}
+          {queueItem ? <EpisodeQueueIndicator item={queueItem} /> : null}
+        </div>
+      );
+    },
+    [downloadQueueItemByEpisodeId, renderEpisodeQualityBadge],
   );
 
   const renderEpisodePanel = React.useCallback(
@@ -615,10 +638,10 @@ export function SeasonSection({
                                   <p className="mt-1 text-sm font-medium text-card-foreground">
                                     {episode.title || episode.episodeLabel || "—"}
                                   </p>
-                                </button>
-                                <div className="flex shrink-0 items-center gap-1">
-                                  {renderEpisodeQualityBadge(episode, episodeFiles)}
-                                </div>
+                              </button>
+                              <div className="flex shrink-0 items-center gap-1">
+                                  {renderEpisodeQualityCell(episode, episodeFiles)}
+                              </div>
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {renderEpisodeTypeBadges(episode)}
@@ -684,14 +707,14 @@ export function SeasonSection({
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <Table className="min-w-[760px]">
+                        <Table className="min-w-[760px]">
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-10 text-center" />
                         <TableHead className="w-16 text-center">{t("episode.numberLabel")}</TableHead>
                         <TableHead>{t("label.title")}</TableHead>
                         <TableHead className="w-40">{t("episode.airDate")}</TableHead>
-                        <TableHead className="w-28 text-center">{t("episode.quality")}</TableHead>
+                        <TableHead className="w-40 text-center">{t("episode.quality")}</TableHead>
                         <TableHead className="w-28 text-right">{t("label.actions")}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -774,8 +797,8 @@ export function SeasonSection({
                                 </span>
                               </TableCell>
                               <TableCell className="text-center">
-                                <div className="inline-flex items-center gap-1">
-                                  {renderEpisodeQualityBadge(episode, episodeFiles)}
+                                <div className="inline-flex items-center justify-center gap-1">
+                                  {renderEpisodeQualityCell(episode, episodeFiles)}
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">

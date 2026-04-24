@@ -81,6 +81,169 @@ fn unique_episode_match(
     })
 }
 
+fn anibridge_scoped_external_ids_from_mappings(
+    anime_mappings: &[AnimeMapping],
+    season_number_to_collection: &HashMap<i32, String>,
+    episodes_by_number: &HashMap<(i32, i32), Episode>,
+) -> (Vec<ScopedExternalId>, Vec<ScopedExternalId>) {
+    let known_episodes_by_season = known_episode_numbers_by_season(episodes_by_number);
+    let mut collection_ids = Vec::new();
+    let mut episode_ids = Vec::new();
+    let mut seen_collections = HashSet::new();
+    let mut seen_episodes = HashSet::new();
+
+    for mapping in anime_mappings {
+        let external_ids = anime_mapping_external_ids(mapping);
+        if external_ids.is_empty() {
+            continue;
+        }
+        let source_scope = non_empty_scope(mapping.mapping_type.as_str());
+
+        if mapping.episode_mappings.is_empty() {
+            if let Some(season) = mapping.thetvdb_season
+                && let Some(collection_id) = season_number_to_collection.get(&season)
+            {
+                push_scoped_external_ids(
+                    &mut collection_ids,
+                    &mut seen_collections,
+                    collection_id,
+                    &external_ids,
+                    source_scope.as_deref(),
+                );
+            }
+            continue;
+        }
+
+        let mut covered_by_season = HashMap::<i32, std::collections::BTreeSet<i32>>::new();
+        for episode_mapping in &mapping.episode_mappings {
+            for episode_number in episode_mapping.episode_start..=episode_mapping.episode_end {
+                let Some(episode) =
+                    episodes_by_number.get(&(episode_mapping.tvdb_season, episode_number))
+                else {
+                    continue;
+                };
+                push_scoped_external_ids(
+                    &mut episode_ids,
+                    &mut seen_episodes,
+                    &episode.id,
+                    &external_ids,
+                    source_scope.as_deref(),
+                );
+                covered_by_season
+                    .entry(episode_mapping.tvdb_season)
+                    .or_default()
+                    .insert(episode_number);
+            }
+        }
+
+        for (season, covered) in covered_by_season {
+            let Some(known) = known_episodes_by_season.get(&season) else {
+                continue;
+            };
+            let Some(collection_id) = season_number_to_collection.get(&season) else {
+                continue;
+            };
+            if !known.is_empty() && known.iter().all(|episode| covered.contains(episode)) {
+                push_scoped_external_ids(
+                    &mut collection_ids,
+                    &mut seen_collections,
+                    collection_id,
+                    &external_ids,
+                    source_scope.as_deref(),
+                );
+            }
+        }
+    }
+
+    (collection_ids, episode_ids)
+}
+
+fn known_episode_numbers_by_season(
+    episodes_by_number: &HashMap<(i32, i32), Episode>,
+) -> HashMap<i32, std::collections::BTreeSet<i32>> {
+    let mut known = HashMap::<i32, std::collections::BTreeSet<i32>>::new();
+    for (season, episode_number) in episodes_by_number.keys().copied() {
+        known.entry(season).or_default().insert(episode_number);
+    }
+    known
+}
+
+fn anime_mapping_external_ids(mapping: &AnimeMapping) -> Vec<(&'static str, String)> {
+    let mut ids = Vec::new();
+    push_optional_mapping_id(&mut ids, "mal", mapping.mal_id);
+    push_optional_mapping_id(&mut ids, "mal_dub", mapping.mal_dub_id);
+    push_optional_mapping_id(&mut ids, "anilist", mapping.anilist_id);
+    push_optional_mapping_id(&mut ids, "anidb", mapping.anidb_id);
+    push_optional_mapping_id(&mut ids, "kitsu", mapping.kitsu_id);
+    push_optional_mapping_id(&mut ids, "simkl", mapping.simkl_id);
+    push_optional_mapping_id(&mut ids, "tvdb", mapping.thetvdb_id);
+    push_optional_mapping_id(&mut ids, "tmdb", mapping.themoviedb_id);
+    push_optional_mapping_id(&mut ids, "imdb", mapping.imdb_id);
+    push_optional_mapping_id(&mut ids, "trakt", mapping.trakt_id);
+    push_optional_mapping_id(&mut ids, "alt_tvdb", mapping.alt_tvdb_id);
+    ids
+}
+
+fn push_optional_mapping_id(
+    ids: &mut Vec<(&'static str, String)>,
+    source: &'static str,
+    value: Option<i64>,
+) {
+    if let Some(value) = value
+        && value > 0
+    {
+        ids.push((source, value.to_string()));
+    }
+}
+
+fn push_scoped_external_ids(
+    out: &mut Vec<ScopedExternalId>,
+    seen: &mut HashSet<(String, String, String, String)>,
+    scope_id: &str,
+    external_ids: &[(&'static str, String)],
+    source_scope: Option<&str>,
+) {
+    let scope_id = scope_id.trim();
+    if scope_id.is_empty() {
+        return;
+    }
+    let source_scope = source_scope.unwrap_or_default().trim();
+    for (source, external_id) in external_ids {
+        let external_id = external_id.trim();
+        if external_id.is_empty() {
+            continue;
+        }
+        let key = (
+            scope_id.to_string(),
+            (*source).to_string(),
+            external_id.to_string(),
+            source_scope.to_string(),
+        );
+        if seen.insert(key) {
+            out.push(ScopedExternalId {
+                scope_id: scope_id.to_string(),
+                source: (*source).to_string(),
+                external_id: external_id.to_string(),
+                provenance: "anibridge".to_string(),
+                source_scope: if source_scope.is_empty() {
+                    None
+                } else {
+                    Some(source_scope.to_string())
+                },
+            });
+        }
+    }
+}
+
+fn non_empty_scope(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HydrationCompletionOptions {
     sync_wanted_after_completion: bool,
@@ -877,40 +1040,7 @@ impl AppUseCase {
         }
 
         // Build extra external IDs from the primary anime mapping only.
-        // Prefer non-special (R/regular) mappings over specials (S) to avoid
-        // OVA metadata clobbering the main series (e.g. Bleach anilist 834 vs 269).
         let mut metadata_update = result.metadata_update;
-        if let Some(mapping) = result
-            .anime_mappings
-            .iter()
-            .find(|m| m.mapping_type != "S")
-            .or(result.anime_mappings.first())
-        {
-            if let Some(mal_id) = mapping.mal_id {
-                metadata_update.extra_external_ids.push(ExternalId {
-                    source: "mal".to_string(),
-                    value: mal_id.to_string(),
-                });
-            }
-            if let Some(anilist_id) = mapping.anilist_id {
-                metadata_update.extra_external_ids.push(ExternalId {
-                    source: "anilist".to_string(),
-                    value: anilist_id.to_string(),
-                });
-            }
-            if let Some(anidb_id) = mapping.anidb_id {
-                metadata_update.extra_external_ids.push(ExternalId {
-                    source: "anidb".to_string(),
-                    value: anidb_id.to_string(),
-                });
-            }
-            if let Some(kitsu_id) = mapping.kitsu_id {
-                metadata_update.extra_external_ids.push(ExternalId {
-                    source: "kitsu".to_string(),
-                    value: kitsu_id.to_string(),
-                });
-            }
-        }
 
         // Store anime-specific metadata as tags on the title
         if let Some(primary) = result
@@ -1693,6 +1823,40 @@ impl AppUseCase {
                 }
             }
         }
+
+        if title.facet == MediaFacet::Anime {
+            let episode_lookup_by_number: HashMap<(i32, i32), Episode> = existing_episode_lookup
+                .values()
+                .filter_map(|episode| {
+                    let season = episode.season_number.as_deref()?.parse::<i32>().ok()?;
+                    let episode_number = episode.episode_number.as_deref()?.parse::<i32>().ok()?;
+                    Some(((season, episode_number), episode.clone()))
+                })
+                .collect();
+            let (collection_external_ids, episode_external_ids) =
+                anibridge_scoped_external_ids_from_mappings(
+                    anime_mappings,
+                    &season_number_to_collection,
+                    &episode_lookup_by_number,
+                );
+            if let Err(err) = self
+                .services
+                .catalog
+                .shows
+                .replace_anibridge_scoped_external_ids_for_title(
+                    &title.id,
+                    collection_external_ids,
+                    episode_external_ids,
+                )
+                .await
+            {
+                warn!(
+                    title_id = %title.id,
+                    error = %err,
+                    "failed to persist scoped anibridge external IDs"
+                );
+            }
+        }
     }
 
     async fn queue_manual_release_for_title(
@@ -1806,6 +1970,7 @@ impl AppUseCase {
                     .record_submission(DownloadSubmission {
                         title_id: title.id.clone(),
                         facet: facet_str.trim_matches('"').to_string(),
+                        download_client_id: grab.client_id.clone(),
                         download_client_type: grab.client_type.clone(),
                         download_client_item_id: grab.job_id.clone(),
                         source_hint: source_hint_for_attempt.clone(),
@@ -1917,12 +2082,13 @@ impl AppUseCase {
         candidate_token: &str,
         scope: SubmissionScope,
     ) -> AppResult<(String, QueuedReleaseSelection)> {
-        let queued_release = self
-            .verify_release_candidate_token(actor, title_id, &scope, candidate_token)
+        let (queued_release, signed_scope) = self
+            .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
         let job_id = self
-            .queue_existing_title_download(actor, title_id, queued_release.clone(), scope)
+            .queue_existing_title_download(actor, title_id, queued_release.clone(), signed_scope)
             .await?;
+        let _ = scope;
         Ok((job_id, queued_release))
     }
 
@@ -1972,6 +2138,11 @@ impl AppUseCase {
                     .await?,
                 )
             }
+            SubmissionScope::EpisodeSet { .. } => {
+                return Err(AppError::Validation(
+                    "best-release search is not supported for multi-episode scopes".into(),
+                ));
+            }
             SubmissionScope::Collection { collection_id } => {
                 let collection = self
                     .services
@@ -1992,6 +2163,39 @@ impl AppUseCase {
             .into_iter()
             .find(|candidate| candidate.auto_eligible == Some(true))
             .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
+        let queue_scope = if matches!(&scope, SubmissionScope::Collection { .. }) {
+            scope
+        } else if let Some(parsed) = best.parsed_release_metadata.as_ref() {
+            let catalog_episodes = self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let catalog_collections = self
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let requested_episode = match &scope {
+                SubmissionScope::Episode { episode_id } => catalog_episodes
+                    .iter()
+                    .find(|episode| episode.id == *episode_id),
+                _ => None,
+            };
+            crate::acquisition_coverage::resolve_release_coverage(
+                parsed,
+                &catalog_episodes,
+                &catalog_collections,
+                requested_episode,
+            )
+            .submission_scope_or(&scope)
+        } else {
+            scope
+        };
 
         self.queue_existing_title_download(
             actor,
@@ -2001,7 +2205,7 @@ impl AppUseCase {
                 source_kind: best.source_kind,
                 source_title: Some(best.title.clone()),
             },
-            scope,
+            queue_scope,
         )
         .await
     }

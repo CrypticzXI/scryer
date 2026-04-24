@@ -99,6 +99,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   titleId: string;
   titleName: string;
+  clientId?: string;
   clientType: string;
   downloadClientItemId: string;
   onImportComplete?: () => void;
@@ -109,6 +110,7 @@ export function ManualImportDialog({
   onOpenChange,
   titleId,
   titleName,
+  clientId,
   clientType,
   downloadClientItemId,
   onImportComplete,
@@ -136,6 +138,7 @@ export function ManualImportDialog({
     setLoading(true);
     setError(null);
     client.query(previewManualImportQuery, {
+      clientId,
       downloadClientItemId,
       titleId,
     }).toPromise()
@@ -155,7 +158,7 @@ export function ManualImportDialog({
         setError(err instanceof Error ? err.message : "Failed to load preview");
       })
       .finally(() => setLoading(false));
-  }, [open, downloadClientItemId, titleId, client]);
+  }, [open, clientId, downloadClientItemId, titleId, client]);
 
   const groupedEpisodes = React.useMemo(() => groupEpisodesBySeason(episodes), [episodes]);
 
@@ -176,6 +179,7 @@ export function ManualImportDialog({
       const { error: mutationError } = await client.mutation(queueManualImportMutation, {
         input: {
           titleId,
+          clientId,
           clientType,
           downloadClientItemId,
           files: fileMappings,
@@ -192,6 +196,7 @@ export function ManualImportDialog({
     }
   }, [
     client,
+    clientId,
     clientType,
     downloadClientItemId,
     mappings,

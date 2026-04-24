@@ -490,6 +490,33 @@ impl PrioritizedDownloadClientRouter {
         )))
     }
 
+    async fn resolve_client_for_id(
+        &self,
+        client_id: &str,
+    ) -> AppResult<Option<Arc<dyn DownloadClient>>> {
+        let normalized = client_id.trim();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let configs = self.list_enabled_clients_by_priority().await?;
+        for config in configs {
+            if config.id != normalized {
+                continue;
+            }
+
+            return Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+            )
+            .map(Some);
+        }
+
+        Ok(None)
+    }
+
     async fn resolve_client_for_type(
         &self,
         client_type: &str,
@@ -662,6 +689,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     .await;
                     return Ok(DownloadGrabResult {
                         job_id: result.job_id,
+                        client_id: Some(config.id.clone()),
                         client_type: config.client_type.clone(),
                     });
                 }
@@ -1055,6 +1083,15 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         self.fallback_client.pause_queue_item(id).await
     }
 
+    async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.pause_queue_item(id).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
+    }
+
     async fn resume_queue_item(&self, id: &str) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.resume_queue_item(id).await;
@@ -1062,11 +1099,34 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         self.fallback_client.resume_queue_item(id).await
     }
 
+    async fn resume_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.resume_queue_item(id).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
+    }
+
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_queue_action(id, is_history).await? {
             return client.delete_queue_item(id, is_history).await;
         }
         self.fallback_client.delete_queue_item(id, is_history).await
+    }
+
+    async fn delete_queue_item_for_client_id(
+        &self,
+        client_id: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.delete_queue_item(id, is_history).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
     }
 
     async fn delete_queue_item_for_client(
@@ -1104,7 +1164,11 @@ fn download_queue_history_key(item: &DownloadQueueItem) -> String {
         return item.id.clone();
     }
 
-    format!("{}:{}", item.client_type, item.download_client_item_id)
+    if item.client_id.trim().is_empty() {
+        return format!("{}:{}", item.client_type, item.download_client_item_id);
+    }
+
+    format!("{}:{}", item.client_id, item.download_client_item_id)
 }
 
 fn compare_completed_downloads_desc(
@@ -1211,6 +1275,7 @@ mod tests {
             self.submissions.lock().unwrap().push(request.clone());
             Ok(DownloadGrabResult {
                 job_id: "job-1".to_string(),
+                client_id: None,
                 client_type: "mock".to_string(),
             })
         }
@@ -1356,6 +1421,7 @@ mod tests {
         DownloadQueueItem {
             id: format!("queue-{id}"),
             title_id: None,
+            episode_id: None,
             title_name: "Test Download".to_string(),
             facet: None,
             client_id: String::new(),

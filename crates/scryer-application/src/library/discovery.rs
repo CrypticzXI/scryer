@@ -65,7 +65,11 @@ pub(crate) fn extract_library_queries(
     let mut folder_query = None;
 
     for query in parsed_queries {
-        push_unique_query(&mut queries, &mut seen_normalized, query);
+        if let Some(reduced) = part_reduced_query(query.as_str()) {
+            push_unique_query(&mut queries, &mut seen_normalized, reduced);
+        } else {
+            push_unique_query(&mut queries, &mut seen_normalized, query);
+        }
     }
 
     if let Some(parent) = Path::new(path).parent() {
@@ -86,7 +90,13 @@ pub(crate) fn extract_library_queries(
         push_unique_query(&mut queries, &mut seen_normalized, folder_query);
     }
 
-    (queries, parsed.year.or(folder_year))
+    (
+        queries,
+        parsed
+            .year
+            .and_then(|year| u32::try_from(year).ok())
+            .or(folder_year),
+    )
 }
 
 pub(crate) fn normalize_folder_name(name: &str) -> String {
@@ -139,6 +149,21 @@ fn push_unique_query(
     }
 
     queries.push(trimmed.to_string());
+}
+
+fn part_reduced_query(query: &str) -> Option<String> {
+    let tokens = query.split_whitespace().collect::<Vec<_>>();
+    if !tokens
+        .iter()
+        .any(|token| token.eq_ignore_ascii_case("part"))
+    {
+        return None;
+    }
+    let reduced = tokens
+        .into_iter()
+        .filter(|token| !token.eq_ignore_ascii_case("part"))
+        .collect::<Vec<_>>();
+    (reduced.len() >= 2).then(|| reduced.join(" "))
 }
 
 pub(crate) fn elapsed_ms_u64(started_at: Instant) -> u64 {

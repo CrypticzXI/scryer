@@ -133,13 +133,18 @@ pub struct SeriesMetadata {
 #[derive(Debug, Clone)]
 pub struct AnimeMapping {
     pub mal_id: Option<i64>,
+    pub mal_dub_id: Option<i64>,
     pub anilist_id: Option<i64>,
     pub anidb_id: Option<i64>,
     pub kitsu_id: Option<i64>,
+    pub simkl_id: Option<i64>,
     pub thetvdb_id: Option<i64>,
     pub themoviedb_id: Option<i64>,
+    pub imdb_id: Option<i64>,
+    pub trakt_id: Option<i64>,
     pub alt_tvdb_id: Option<i64>,
     pub thetvdb_season: Option<i32>,
+    pub thetvdb_part: Option<i32>,
     pub score: Option<f64>,
     pub anime_media_type: String,
     pub global_media_type: String,
@@ -248,22 +253,6 @@ pub trait MetadataGateway: Send + Sync {
         series_tvdb_ids: &[i64],
         language: &str,
     ) -> AppResult<BulkMetadataResult>;
-
-    /// Resolve all anibridge source entries covering a specific TVDB episode.
-    /// Returns entries like (anidb, 15449, R), (anilist, 116674, ), (mal, 41467, ).
-    async fn anibridge_mappings_for_episode(
-        &self,
-        tvdb_id: i64,
-        season: i32,
-        episode: i32,
-    ) -> AppResult<Vec<AnibridgeSourceMapping>>;
-}
-
-#[derive(Debug, Clone)]
-pub struct AnibridgeSourceMapping {
-    pub source_type: String,
-    pub source_id: i64,
-    pub source_scope: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -477,14 +466,5 @@ impl MetadataGateway for NullMetadataGateway {
         Err(AppError::Repository(
             "metadata gateway is not configured".into(),
         ))
-    }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        _tvdb_id: i64,
-        _season: i32,
-        _episode: i32,
-    ) -> AppResult<Vec<AnibridgeSourceMapping>> {
-        Ok(vec![])
     }
 }

@@ -1484,8 +1484,8 @@ pub(crate) fn select_best_match(
 mod tests {
     use super::*;
     use crate::{
-        AnibridgeSourceMapping, BulkMetadataResult, LibraryFileBatchReceiver, MovieMetadata,
-        MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata,
+        BulkMetadataResult, LibraryFileBatchReceiver, MovieMetadata, MultiMetadataSearchResult,
+        RichMetadataSearchItem, SeriesMetadata,
     };
     use async_trait::async_trait;
     use std::path::Path;
@@ -1622,15 +1622,6 @@ mod tests {
         ) -> AppResult<BulkMetadataResult> {
             panic!("unused in test")
         }
-
-        async fn anibridge_mappings_for_episode(
-            &self,
-            _tvdb_id: i64,
-            _season: i32,
-            _episode: i32,
-        ) -> AppResult<Vec<AnibridgeSourceMapping>> {
-            panic!("unused in test")
-        }
     }
 
     type DelayedScanResponses = Arc<Mutex<HashMap<String, (u64, Vec<LibraryFile>)>>>;
@@ -1718,15 +1709,6 @@ mod tests {
             _series_tvdb_ids: &[i64],
             _language: &str,
         ) -> AppResult<BulkMetadataResult> {
-            panic!("unused in test")
-        }
-
-        async fn anibridge_mappings_for_episode(
-            &self,
-            _tvdb_id: i64,
-            _season: i32,
-            _episode: i32,
-        ) -> AppResult<Vec<AnibridgeSourceMapping>> {
             panic!("unused in test")
         }
     }
@@ -2014,6 +1996,49 @@ mod tests {
             .expect("movie nfo");
         assert_eq!(metadata.title.as_deref(), Some("Test Movie Title"));
         assert_eq!(metadata.tvdb_id.as_deref(), Some("123456"));
+    }
+
+    #[tokio::test]
+    async fn read_valid_movie_nfo_metadata_accepts_movie_root_with_xml_declaration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("movie.nfo");
+        std::fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<movie>
+  <title>Air Bud</title>
+  <originaltitle>Air Bud</originaltitle>
+  <sorttitle>Air Bud</sorttitle>
+  <year>1997</year>
+  <imdbid>tt0118570</imdbid>
+  <tvdbid>5794</tvdbid>
+  <tmdbid>20737</tmdbid>
+  <id>tt0118570</id>
+  <fileinfo>
+    <streamdetails>
+      <video>
+        <codec>hevc</codec>
+        <width>1920</width>
+        <height>1080</height>
+      </video>
+      <audio>
+        <codec>aac</codec>
+        <language>eng</language>
+      </audio>
+    </streamdetails>
+  </fileinfo>
+</movie>%"#,
+        )
+        .expect("write nfo");
+
+        let metadata = read_valid_movie_nfo_metadata(Some(path.to_string_lossy().as_ref()))
+            .await
+            .expect("movie nfo");
+        assert_eq!(metadata.title.as_deref(), Some("Air Bud"));
+        assert_eq!(metadata.year, Some(1997));
+        assert_eq!(metadata.imdb_id.as_deref(), Some("tt0118570"));
+        assert_eq!(metadata.tvdb_id.as_deref(), Some("5794"));
+        assert_eq!(metadata.tmdb_id.as_deref(), Some("20737"));
     }
 
     #[tokio::test]

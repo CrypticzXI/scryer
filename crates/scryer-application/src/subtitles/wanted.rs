@@ -1,4 +1,5 @@
 use scryer_domain::SubtitleDownload;
+use std::collections::BTreeMap;
 
 use super::language::same_subtitle_language;
 
@@ -15,6 +16,8 @@ pub struct WantedSubtitle {
     pub video_path: String,
     /// Title name (for metadata-based search).
     pub title_name: String,
+    /// Content facet (movie, series, anime).
+    pub facet: Option<String>,
     /// Release year.
     pub year: Option<i32>,
     /// IMDb ID.
@@ -23,6 +26,10 @@ pub struct WantedSubtitle {
     pub season: Option<i32>,
     /// Episode number (series only).
     pub episode: Option<i32>,
+    /// Absolute episode number when available.
+    pub absolute_episode: Option<i32>,
+    /// Provider-specific external identifiers grouped by normalized source key.
+    pub external_ids: BTreeMap<String, Vec<String>>,
 }
 
 /// Language preference for subtitle downloading.

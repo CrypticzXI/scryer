@@ -87,7 +87,7 @@ export function ExternalSubtitleSection({
                   ) : null}
                   {download.score != null ? (
                     <span className="text-[11px] text-muted-foreground">
-                      {t("subtitle.score", { score: download.score })}
+                      {t("subtitle.scoreWithValue", { score: download.score })}
                     </span>
                   ) : null}
                 </div>

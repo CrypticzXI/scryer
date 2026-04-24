@@ -23,9 +23,6 @@ fn from_subtitle_settings(
 ) -> SubtitleSettingsPayload {
     SubtitleSettingsPayload {
         enabled: settings.enabled,
-        has_open_subtitles_api_key: settings.open_subtitles_api_key.is_some(),
-        open_subtitles_username: settings.open_subtitles_username.unwrap_or_default(),
-        has_open_subtitles_password: settings.open_subtitles_password.is_some(),
         languages: settings
             .languages
             .into_iter()
@@ -224,9 +221,6 @@ impl SettingsMutations {
                 &actor,
                 AppUpdateSubtitleSettings {
                     enabled: input.enabled,
-                    open_subtitles_api_key: input.open_subtitles_api_key,
-                    open_subtitles_username: input.open_subtitles_username,
-                    open_subtitles_password: input.open_subtitles_password,
                     languages: input
                         .languages
                         .into_iter()

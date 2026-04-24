@@ -199,10 +199,12 @@ pub struct AppIntegrationServices {
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+    pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
         RuntimeFeature<Arc<dyn DownloadClientPluginProvider>>,
+    pub(crate) subtitle_plugin_provider: RuntimeFeature<Arc<dyn SubtitlePluginProvider>>,
 }
 
 #[derive(Clone)]
@@ -387,9 +389,11 @@ impl AppServices {
                 indexer_client,
                 download_client,
                 download_client_configs,
+                subtitle_provider_configs: RuntimeFeature::Disabled,
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
+                subtitle_plugin_provider: RuntimeFeature::Disabled,
             },
             workflow: AppWorkflowServices {
                 imports: Arc::new(NullImportRepository),
@@ -837,6 +841,16 @@ impl AppServicesBuilder {
         integrations.download_client_plugin_provider,
         Arc<dyn DownloadClientPluginProvider>
     );
+    app_services_builder_runtime_feature_setter!(
+        with_subtitle_provider_configs,
+        integrations.subtitle_provider_configs,
+        Arc<dyn SubtitleProviderConfigRepository>
+    );
+    app_services_builder_runtime_feature_setter!(
+        with_subtitle_plugin_provider,
+        integrations.subtitle_plugin_provider,
+        Arc<dyn SubtitlePluginProvider>
+    );
     pub fn with_notification_provider(
         mut self,
         value: Arc<dyn NotificationPluginProvider>,
@@ -1151,6 +1165,7 @@ impl AppUseCase {
     pub async fn find_download_submission_by_client_item_id(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
@@ -1158,7 +1173,7 @@ impl AppUseCase {
         self.services
             .workflow
             .download_submissions
-            .find_by_client_item_id(client_type, download_client_item_id)
+            .find_by_client_item_id(client_id, client_type, download_client_item_id)
             .await
     }
 

@@ -170,10 +170,18 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
         name: &str,
         description: &str,
         version: &str,
+        plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
         self.db
-            .seed_builtin_plugin(plugin_id, name, description, version, provider_type)
+            .seed_builtin_plugin(
+                plugin_id,
+                name,
+                description,
+                version,
+                plugin_type,
+                provider_type,
+            )
             .await
     }
 

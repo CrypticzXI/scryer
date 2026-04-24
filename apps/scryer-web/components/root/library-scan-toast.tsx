@@ -50,6 +50,57 @@ function formatEtaCountdown(totalSeconds: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
+type EtaSample = {
+  atMs: number;
+  completed: number;
+};
+
+const ETA_HISTORY_WINDOW_MS = 4 * 60 * 1000;
+const ETA_MIN_HISTORY_MS = 45 * 1000;
+const ETA_MIN_COMPLETED_DELTA = 2;
+const ETA_SMOOTHING_ALPHA = 0.18;
+
+function estimateEtaSecondsFromHistory({
+  samples,
+  nowMs,
+  completed,
+  remaining,
+  fallbackElapsedMs,
+}: {
+  samples: EtaSample[];
+  nowMs: number;
+  completed: number;
+  remaining: number;
+  fallbackElapsedMs: number;
+}): number | null {
+  if (completed <= 0 || remaining <= 0) {
+    return null;
+  }
+
+  const cutoffMs = nowMs - ETA_HISTORY_WINDOW_MS;
+  const baseline =
+    samples.find(
+      (sample) => sample.atMs >= cutoffMs && sample.completed < completed,
+    ) ?? samples.find((sample) => sample.completed < completed);
+
+  if (baseline) {
+    const elapsedSeconds = Math.max(1, (nowMs - baseline.atMs) / 1000);
+    const completedDelta = completed - baseline.completed;
+    if (
+      elapsedSeconds * 1000 >= ETA_MIN_HISTORY_MS &&
+      completedDelta >= ETA_MIN_COMPLETED_DELTA
+    ) {
+      return remaining / (completedDelta / elapsedSeconds);
+    }
+  }
+
+  if (fallbackElapsedMs < ETA_MIN_HISTORY_MS) {
+    return null;
+  }
+
+  return remaining / (completed / Math.max(1, fallbackElapsedMs / 1000));
+}
+
 function phaseLabel(
   status: LibraryScanProgress["status"],
   phase: LibraryScanPhaseProgress,
@@ -121,7 +172,10 @@ export function LibraryScanToast({
   const client = useClient();
   const [cancelPending, setCancelPending] = React.useState(false);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const [smoothedEtaSeconds, setSmoothedEtaSeconds] = React.useState<number | null>(null);
   const mediaAnalysisStartedAtRef = React.useRef<number | null>(null);
+  const etaSamplesRef = React.useRef<EtaSample[]>([]);
+  const etaSmoothingAtRef = React.useRef<number | null>(null);
   const terminal = isTerminal(session.status);
   const titleMatchPercent = percentForPhase(
     session.titleMatchProgress,
@@ -149,12 +203,62 @@ export function LibraryScanToast({
   React.useEffect(() => {
     if (!mediaAnalysisActive) {
       mediaAnalysisStartedAtRef.current = null;
+      etaSamplesRef.current = [];
+      etaSmoothingAtRef.current = null;
+      setSmoothedEtaSeconds(null);
       return;
     }
     if (mediaAnalysisStartedAtRef.current == null) {
       mediaAnalysisStartedAtRef.current = Date.parse(session.updatedAt) || Date.now();
     }
-  }, [mediaAnalysisActive, session.updatedAt]);
+  }, [mediaAnalysisActive, session.sessionId, session.updatedAt]);
+
+  React.useEffect(() => {
+    if (!mediaAnalysisActive) {
+      return;
+    }
+
+    const sampleAt = Math.max(
+      mediaAnalysisStartedAtRef.current ?? nowMs,
+      Date.parse(session.updatedAt) || nowMs,
+    );
+    const samples = etaSamplesRef.current;
+    const last = samples.at(-1);
+
+    if (!last) {
+      samples.push({
+        atMs: mediaAnalysisStartedAtRef.current ?? sampleAt,
+        completed: 0,
+      });
+    } else if (mediaAnalysisDone < last.completed) {
+      etaSamplesRef.current = [{
+        atMs: mediaAnalysisStartedAtRef.current ?? sampleAt,
+        completed: 0,
+      }];
+    }
+
+    const currentSamples = etaSamplesRef.current;
+    const currentLast = currentSamples.at(-1);
+    if (currentLast?.completed !== mediaAnalysisDone) {
+      currentSamples.push({
+        atMs: Math.max(sampleAt, (currentLast?.atMs ?? 0) + 1),
+        completed: mediaAnalysisDone,
+      });
+    }
+
+    const firstRecentIndex = currentSamples.findIndex(
+      (sample) => sample.atMs >= nowMs - ETA_HISTORY_WINDOW_MS,
+    );
+    etaSamplesRef.current = firstRecentIndex <= 0
+      ? currentSamples
+      : currentSamples.slice(firstRecentIndex - 1);
+  }, [
+    mediaAnalysisActive,
+    mediaAnalysisDone,
+    nowMs,
+    session.sessionId,
+    session.updatedAt,
+  ]);
 
   React.useEffect(() => {
     if (!mediaAnalysisActive) {
@@ -177,11 +281,49 @@ export function LibraryScanToast({
     session.mediaAnalysisTotalKnown &&
     mediaAnalysisDone > 0 &&
     mediaAnalysisElapsedMs >= 30_000;
-  const mediaAnalysisEtaSeconds = shouldShowEta
-    ? (mediaAnalysisElapsedMs / 1000 / mediaAnalysisDone) * mediaAnalysisRemaining
-    : null;
-  const etaCountdown = mediaAnalysisEtaSeconds != null && Number.isFinite(mediaAnalysisEtaSeconds)
-    ? formatEtaCountdown(mediaAnalysisEtaSeconds)
+
+  React.useEffect(() => {
+    if (!shouldShowEta) {
+      etaSmoothingAtRef.current = null;
+      setSmoothedEtaSeconds(null);
+      return;
+    }
+
+    const estimate = estimateEtaSecondsFromHistory({
+      samples: etaSamplesRef.current,
+      nowMs,
+      completed: mediaAnalysisDone,
+      remaining: mediaAnalysisRemaining,
+      fallbackElapsedMs: mediaAnalysisElapsedMs,
+    });
+
+    if (estimate == null || !Number.isFinite(estimate)) {
+      etaSmoothingAtRef.current = null;
+      setSmoothedEtaSeconds(null);
+      return;
+    }
+
+    setSmoothedEtaSeconds((current) => {
+      const previousAt = etaSmoothingAtRef.current;
+      etaSmoothingAtRef.current = nowMs;
+      if (current == null || previousAt == null) {
+        return estimate;
+      }
+
+      const elapsedSeconds = Math.max(0, (nowMs - previousAt) / 1000);
+      const expectedCountdown = Math.max(1, current - elapsedSeconds);
+      return expectedCountdown + (estimate - expectedCountdown) * ETA_SMOOTHING_ALPHA;
+    });
+  }, [
+    mediaAnalysisDone,
+    mediaAnalysisElapsedMs,
+    mediaAnalysisRemaining,
+    nowMs,
+    shouldShowEta,
+  ]);
+
+  const etaCountdown = smoothedEtaSeconds != null && Number.isFinite(smoothedEtaSeconds)
+    ? formatEtaCountdown(smoothedEtaSeconds)
     : null;
 
   const handleCancel = React.useCallback(async () => {

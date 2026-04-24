@@ -288,7 +288,10 @@ fn dolby_vision_bonus_when_allowed() {
         r#"{"id":"t","name":"T","criteria":{"dolby_vision_allowed":true,"allow_unknown_quality":true,"allow_upgrades":true}}"#,
     ).unwrap();
     let w = balanced_weights();
-    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    let mut release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    release.has_hdr_fallback = false;
+    release.is_hdr10plus = false;
+    release.is_hlg = false;
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(
         d.scoring_log
@@ -303,7 +306,10 @@ fn dolby_vision_blocks_when_not_allowed() {
         r#"{"id":"t","name":"T","criteria":{"dolby_vision_allowed":false,"allow_unknown_quality":true,"allow_upgrades":true}}"#,
     ).unwrap();
     let w = balanced_weights();
-    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    let mut release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    release.has_hdr_fallback = false;
+    release.is_hdr10plus = false;
+    release.is_hlg = false;
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(!d.allowed);
     assert!(
@@ -1083,7 +1089,10 @@ fn dv_without_hdr_fallback_blocks_when_override_enabled() {
             ..crate::scoring_weights::ScoringOverrides::default()
         },
     );
-    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    let mut release = parse_release_metadata("Movie.2024.2160p.WEB-DL.DV.H.265");
+    release.has_hdr_fallback = false;
+    release.is_hdr10plus = false;
+    release.is_hlg = false;
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(!d.allowed);
     assert!(

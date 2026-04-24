@@ -721,6 +721,7 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
     DownloadQueueItem {
         id: job.id.to_string(),
         title_id,
+        episode_id: None,
         title_name: job.name.clone(),
         facet,
         client_id: String::new(),
@@ -1001,6 +1002,7 @@ impl DownloadClient for WeaverDownloadClient {
 
                     Ok(DownloadGrabResult {
                         job_id: job_id.to_string(),
+                        client_id: None,
                         client_type: "weaver".to_string(),
                     })
                 }
@@ -1059,6 +1061,7 @@ impl DownloadClient for WeaverDownloadClient {
                         .await?;
                     Ok(DownloadGrabResult {
                         job_id: compat_data.submit_nzb.id.to_string(),
+                        client_id: None,
                         client_type: "weaver".to_string(),
                     })
                 }

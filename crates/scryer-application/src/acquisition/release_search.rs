@@ -5,9 +5,10 @@ use super::acquisition::{
 use super::*;
 use crate::acquisition_policy::evaluate_upgrade;
 use crate::acquisition_search_queries::{
-    anidb_id_from_external_ids, build_search_queries, tvdb_id_from_external_ids,
+    anidb_id_from_external_ids, build_search_queries, imdb_id_from_title, tvdb_id_from_external_ids,
 };
 use crate::delay_profile::DelayProfile;
+use crate::quality::release_parser::ParseDisposition;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
@@ -15,6 +16,7 @@ use std::collections::HashSet;
 pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) year: Option<i32>,
+    pub(crate) parse_context: crate::ReleaseParseContext,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +44,8 @@ pub(crate) struct ResolvedReleaseSearchSubject {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReleaseAutoDecisionCode {
     Eligible,
+    ParseAmbiguous,
+    ParseUnparseable,
     TitleMismatch,
     QualityBlocked,
     NegativeScore,
@@ -58,6 +62,8 @@ impl ReleaseAutoDecisionCode {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "eligible" => Some(Self::Eligible),
+            "parse_ambiguous" => Some(Self::ParseAmbiguous),
+            "parse_unparseable" => Some(Self::ParseUnparseable),
             "title_mismatch" => Some(Self::TitleMismatch),
             "quality_blocked" => Some(Self::QualityBlocked),
             "negative_score" => Some(Self::NegativeScore),
@@ -75,6 +81,8 @@ impl ReleaseAutoDecisionCode {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Eligible => "eligible",
+            Self::ParseAmbiguous => "parse_ambiguous",
+            Self::ParseUnparseable => "parse_unparseable",
             Self::TitleMismatch => "title_mismatch",
             Self::QualityBlocked => "quality_blocked",
             Self::NegativeScore => "negative_score",
@@ -91,6 +99,8 @@ impl ReleaseAutoDecisionCode {
     pub(crate) fn summary(self) -> &'static str {
         match self {
             Self::Eligible => "auto search would grab this release",
+            Self::ParseAmbiguous => "release parse is ambiguous and blocks auto-grab",
+            Self::ParseUnparseable => "release could not be parsed and blocks auto-grab",
             Self::TitleMismatch => "release title does not match the target title",
             Self::QualityBlocked => "quality profile blocked this release",
             Self::NegativeScore => "release score is negative after scoring penalties",
@@ -159,9 +169,22 @@ pub(crate) fn canonical_title_lookup_keys(title: &Title) -> Vec<String> {
 }
 
 pub(crate) fn canonical_title_evidence(title: &Title) -> CanonicalTitleEvidence {
+    canonical_title_evidence_for_episode(title, None)
+}
+
+fn canonical_title_evidence_for_episode(
+    title: &Title,
+    episode: Option<&Episode>,
+) -> CanonicalTitleEvidence {
     CanonicalTitleEvidence {
         lookup_keys: canonical_title_lookup_keys(title),
         year: title.year,
+        parse_context: crate::build_release_parse_context(
+            title,
+            episode,
+            None,
+            Some(title.facet.as_str()),
+        ),
     }
 }
 
@@ -254,7 +277,34 @@ pub(crate) fn parsed_release_matches_title_evidence(
         }
     }
 
-    false
+    contextual_release_matches_title_evidence(parsed, evidence)
+}
+
+fn contextual_release_matches_title_evidence(
+    parsed: &ParsedReleaseMetadata,
+    evidence: &CanonicalTitleEvidence,
+) -> bool {
+    let contextual =
+        crate::analyze_release_for_target_v2(&parsed.raw_title, &evidence.parse_context);
+    if contextual.is_unparseable() || contextual.is_ambiguous {
+        return false;
+    }
+    let Some(best_candidate) = contextual.best_candidate() else {
+        return false;
+    };
+
+    let mut titles = best_candidate.projected.normalized_title_variants.clone();
+    if !titles
+        .iter()
+        .any(|title| title == &best_candidate.projected.normalized_title)
+    {
+        titles.push(best_candidate.projected.normalized_title.clone());
+    }
+
+    titles.into_iter().any(|title| {
+        let normalized = crate::title_matching::canonical_lookup_key(&title);
+        !normalized.is_empty() && evidence.lookup_keys.iter().any(|key| key == &normalized)
+    })
 }
 
 pub(crate) fn candidate_matches_title_subject(
@@ -273,11 +323,44 @@ pub(crate) fn candidate_matches_title_subject(
     let parsed = if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
         parsed
     } else {
-        parsed_owned = crate::parse_release_metadata(&candidate.title);
+        parsed_owned =
+            crate::parse_release_metadata_for_target(&candidate.title, &evidence.parse_context);
         &parsed_owned
     };
 
     parsed_release_matches_title_evidence(parsed, evidence)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateParseState {
+    Parsed,
+    Ambiguous,
+    Unparseable,
+}
+
+fn candidate_parse_state(candidate: &IndexerSearchResult) -> CandidateParseState {
+    let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
+        return CandidateParseState::Unparseable;
+    };
+
+    if matches!(parsed.disposition, ParseDisposition::Unparseable)
+        || parsed
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "v2:unparseable" || hint == "parse_status:unparseable")
+    {
+        return CandidateParseState::Unparseable;
+    }
+    if parsed.is_ambiguous
+        || matches!(parsed.disposition, ParseDisposition::Ambiguous)
+        || parsed
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "v2:ambiguous" || hint == "parse_status:ambiguous")
+    {
+        return CandidateParseState::Ambiguous;
+    }
+    CandidateParseState::Parsed
 }
 
 pub(crate) fn annotate_auto_decision(
@@ -306,6 +389,12 @@ pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
 ) -> ReleaseAutoDecisionCode {
+    match candidate_parse_state(candidate) {
+        CandidateParseState::Ambiguous => return ReleaseAutoDecisionCode::ParseAmbiguous,
+        CandidateParseState::Unparseable => return ReleaseAutoDecisionCode::ParseUnparseable,
+        CandidateParseState::Parsed => {}
+    }
+
     let is_allowed = candidate
         .quality_profile_decision
         .as_ref()
@@ -392,6 +481,24 @@ pub(crate) fn evaluate_auto_candidate(
     ReleaseAutoDecisionCode::Eligible
 }
 
+fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Option<String> {
+    ids.iter()
+        .find(|id| {
+            id.source.eq_ignore_ascii_case(source)
+                && id
+                    .source_scope
+                    .as_deref()
+                    .is_some_and(|scope| scope.eq_ignore_ascii_case("R"))
+                && !id.external_id.trim().is_empty()
+        })
+        .or_else(|| {
+            ids.iter().find(|id| {
+                id.source.eq_ignore_ascii_case(source) && !id.external_id.trim().is_empty()
+            })
+        })
+        .map(|id| id.external_id.trim().to_string())
+}
+
 impl AppUseCase {
     fn release_search_category_for_facet(&self, facet: &MediaFacet) -> String {
         self.facet_registry
@@ -402,6 +509,33 @@ impl AppUseCase {
                 MediaFacet::Series => "series".to_string(),
                 MediaFacet::Anime => "anime".to_string(),
             })
+    }
+
+    pub(crate) async fn local_scoped_anidb_id_for_episode(
+        &self,
+        episode: Option<&Episode>,
+    ) -> Option<String> {
+        let episode = episode?;
+        let episode_ids = self
+            .services
+            .catalog
+            .shows
+            .list_episode_external_ids(&episode.id)
+            .await
+            .unwrap_or_default();
+        if let Some(anidb_id) = preferred_scoped_external_id(&episode_ids, "anidb") {
+            return Some(anidb_id);
+        }
+
+        let collection_id = episode.collection_id.as_deref()?;
+        let collection_ids = self
+            .services
+            .catalog
+            .shows
+            .list_collection_external_ids(collection_id)
+            .await
+            .unwrap_or_default();
+        preferred_scoped_external_id(&collection_ids, "anidb")
     }
 
     pub(crate) async fn evaluate_search_results_for_subject(
@@ -468,10 +602,7 @@ impl AppUseCase {
         &self,
         title: &Title,
     ) -> AppResult<ResolvedReleaseSearchSubject> {
-        let imdb_id = title
-            .imdb_id
-            .as_deref()
-            .and_then(crate::normalize::normalize_imdb_id);
+        let imdb_id = imdb_id_from_title(title);
         let tvdb_id = tvdb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
@@ -571,40 +702,17 @@ impl AppUseCase {
             .ok()
             .flatten();
 
-        let imdb_id = title
-            .imdb_id
-            .as_deref()
-            .and_then(crate::normalize::normalize_imdb_id);
+        let imdb_id = imdb_id_from_title(title);
         let tvdb_id = tvdb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
         let title_anidb_id = anidb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
-        let anidb_id = if let Some(tvdb) = tvdb_id.as_deref() {
-            if let Ok(tvdb_num) = tvdb.parse::<i64>() {
-                match self
-                    .services
-                    .library
-                    .metadata_gateway
-                    .anibridge_mappings_for_episode(tvdb_num, season_num as i32, episode_num as i32)
-                    .await
-                {
-                    Ok(mappings) => mappings
-                        .iter()
-                        .find(|mapping| {
-                            mapping.source_type == "anidb" && mapping.source_scope == "R"
-                        })
-                        .map(|mapping| mapping.source_id.to_string())
-                        .or(title_anidb_id),
-                    Err(_) => title_anidb_id,
-                }
-            } else {
-                title_anidb_id
-            }
-        } else {
-            title_anidb_id
-        };
+        let anidb_id = self
+            .local_scoped_anidb_id_for_episode(episode_record.as_ref())
+            .await
+            .or(title_anidb_id);
 
         let absolute_episode = episode_record
             .as_ref()
@@ -613,16 +721,27 @@ impl AppUseCase {
 
         let category = self.release_search_category_for_facet(&title.facet);
 
+        let mut queries = vec![format!(
+            "{} S{:0>2}E{:0>2}",
+            title.name.trim(),
+            season_num,
+            episode_num
+        )];
+        queries.push(format!("{} S{:0>2}", title.name.trim(), season_num));
+        if title.facet == MediaFacet::Anime {
+            if let Some(absolute) = absolute_episode {
+                queries.insert(0, format!("{} {:0>3}", title.name.trim(), absolute));
+            }
+            queries.push(title.name.trim().to_string());
+        }
+        let mut seen = HashSet::new();
+        queries.retain(|query| !query.trim().is_empty() && seen.insert(query.to_ascii_lowercase()));
+
         Ok(ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence(title),
-            queries: vec![format!(
-                "{} S{:0>2}E{:0>2}",
-                title.name.trim(),
-                season_num,
-                episode_num
-            )],
+            title_evidence: canonical_title_evidence_for_episode(title, episode_record.as_ref()),
+            queries,
             imdb_id,
             tvdb_id,
             anidb_id,
@@ -659,10 +778,7 @@ impl AppUseCase {
         season_num: u32,
         runtime_minutes: Option<i32>,
     ) -> AppResult<ResolvedReleaseSearchSubject> {
-        let imdb_id = title
-            .imdb_id
-            .as_deref()
-            .and_then(crate::normalize::normalize_imdb_id);
+        let imdb_id = imdb_id_from_title(title);
         let tvdb_id = tvdb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
@@ -793,7 +909,7 @@ impl AppUseCase {
         ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence(title),
+            title_evidence: canonical_title_evidence_for_episode(title, episode),
             queries: query_result.queries,
             imdb_id: query_result.imdb_id,
             tvdb_id: query_result.tvdb_id,
@@ -891,6 +1007,7 @@ mod tests {
             info_url: None,
             provenance,
             candidate_token: None,
+            queue_scope: None,
             auto_eligible: None,
             auto_decision_code: None,
             auto_decision_summary: None,
@@ -925,5 +1042,44 @@ mod tests {
             &candidate,
             &canonical_title_evidence(&title)
         ));
+    }
+
+    #[test]
+    fn candidate_matches_title_subject_uses_contextual_alias_parse_when_needed() {
+        let mut title = make_title();
+        title.name = "Frieren Beyond Journey's End".to_string();
+        title.year = Some(2023);
+        title.aliases = vec!["Sousou no Frieren".to_string()];
+        title.tagged_aliases = vec![TaggedAlias {
+            name: "Frieren Beyond Journeys End".to_string(),
+            language: "eng".to_string(),
+        }];
+
+        let candidate = make_candidate(
+            "[SubsPlease] Sousou.no.Frieren.Frieren.Beyond.Journeys.End.-.01.[1080p].[HEVC]",
+            None,
+        );
+
+        assert!(candidate_matches_title_subject(
+            &candidate,
+            &canonical_title_evidence(&title)
+        ));
+    }
+
+    #[test]
+    fn candidate_parse_state_marks_ambiguous_parse() {
+        let mut candidate = make_candidate("Bastard.S01E01.1080p.WEB-DL", None);
+        let parsed = candidate
+            .parsed_release_metadata
+            .as_mut()
+            .expect("candidate has parsed metadata");
+        parsed.is_ambiguous = true;
+        parsed.disposition = ParseDisposition::Ambiguous;
+        parsed.parse_hints.push("v2:ambiguous".to_string());
+
+        assert_eq!(
+            candidate_parse_state(&candidate),
+            CandidateParseState::Ambiguous
+        );
     }
 }

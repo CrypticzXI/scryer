@@ -8,6 +8,7 @@ import type {
   DownloadImportPage,
   DownloadQueueItem,
 } from "@/lib/types";
+import { downloadQueueItemIdentityKey } from "@/lib/utils/download-queue";
 
 const IMPORT_PAGE_SIZE = 50;
 
@@ -33,11 +34,11 @@ function mergeImportItems(
   nextItems: DownloadQueueItem[],
 ): DownloadQueueItem[] {
   const seen = new Set(
-    previousItems.map((item) => `${item.clientType}:${item.downloadClientItemId}`),
+    previousItems.map(downloadQueueItemIdentityKey),
   );
   const merged = [...previousItems];
   for (const item of nextItems) {
-    const key = `${item.clientType}:${item.downloadClientItemId}`;
+    const key = downloadQueueItemIdentityKey(item);
     if (seen.has(key)) {
       continue;
     }

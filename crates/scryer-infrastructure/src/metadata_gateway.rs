@@ -7,10 +7,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use ring::digest;
 use scryer_application::{
-    AnibridgeSourceMapping, AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult,
-    BulkMetadataResult, EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
-    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
-    SeriesMetadata,
+    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkMetadataResult,
+    EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
+    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -197,17 +196,23 @@ const GET_SERIES_QUERY: &str = r#"
         }
         anime_mappings {
           mal_id
+          mal_dub_id
           anilist_id
           anidb_id
           kitsu_id
+          simkl_id
           thetvdb_id
           themoviedb_id
+          imdb_id
+          trakt_id
           alt_tvdb_id
           thetvdb_season
+          thetvdb_part
           score
           anime_media_type
           global_media_type
           status
+          mapping_type
           episode_mappings {
             tvdb_season
             episode_start
@@ -1065,7 +1070,8 @@ const SERIES_FIELD_SELECTION: &str = "\
     seasons { tvdb_id number label episode_type } \
     episodes { tvdb_id episode_number season_number name aired runtime_minutes \
                is_filler is_recap overview absolute_number } \
-    anime_mappings { mal_id anilist_id anidb_id kitsu_id thetvdb_id themoviedb_id alt_tvdb_id thetvdb_season score \
+    anime_mappings { mal_id mal_dub_id anilist_id anidb_id kitsu_id simkl_id thetvdb_id themoviedb_id imdb_id trakt_id \
+                     alt_tvdb_id thetvdb_season thetvdb_part score \
                      anime_media_type global_media_type status mapping_type \
                      episode_mappings { tvdb_season episode_start episode_end } } \
     anime_movies { movie_tvdb_id movie_tmdb_id movie_imdb_id movie_mal_id movie_anidb_id name slug year \
@@ -1232,13 +1238,18 @@ fn merge_bulk_metadata_partial(
                         .into_iter()
                         .map(|m| AnimeMapping {
                             mal_id: m.mal_id,
+                            mal_dub_id: m.mal_dub_id,
                             anilist_id: m.anilist_id,
                             anidb_id: m.anidb_id,
                             kitsu_id: m.kitsu_id,
+                            simkl_id: m.simkl_id,
                             thetvdb_id: m.thetvdb_id,
                             themoviedb_id: m.themoviedb_id,
+                            imdb_id: m.imdb_id,
+                            trakt_id: m.trakt_id,
                             alt_tvdb_id: m.alt_tvdb_id,
                             thetvdb_season: m.thetvdb_season,
+                            thetvdb_part: m.thetvdb_part,
                             score: m.score,
                             anime_media_type: m.anime_media_type.unwrap_or_default(),
                             global_media_type: m.global_media_type.unwrap_or_default(),
@@ -1748,13 +1759,18 @@ struct SeriesEpisodeItem {
 #[derive(Deserialize)]
 struct AnimeMappingItem {
     mal_id: Option<i64>,
+    mal_dub_id: Option<i64>,
     anilist_id: Option<i64>,
     anidb_id: Option<i64>,
     kitsu_id: Option<i64>,
+    simkl_id: Option<i64>,
     thetvdb_id: Option<i64>,
     themoviedb_id: Option<i64>,
+    imdb_id: Option<i64>,
+    trakt_id: Option<i64>,
     alt_tvdb_id: Option<i64>,
     thetvdb_season: Option<i32>,
+    thetvdb_part: Option<i32>,
     score: Option<f64>,
     anime_media_type: Option<String>,
     global_media_type: Option<String>,
@@ -2085,13 +2101,18 @@ impl MetadataGateway for MetadataGatewayClient {
                 .into_iter()
                 .map(|m| AnimeMapping {
                     mal_id: m.mal_id,
+                    mal_dub_id: m.mal_dub_id,
                     anilist_id: m.anilist_id,
                     anidb_id: m.anidb_id,
                     kitsu_id: m.kitsu_id,
+                    simkl_id: m.simkl_id,
                     thetvdb_id: m.thetvdb_id,
                     themoviedb_id: m.themoviedb_id,
+                    imdb_id: m.imdb_id,
+                    trakt_id: m.trakt_id,
                     alt_tvdb_id: m.alt_tvdb_id,
                     thetvdb_season: m.thetvdb_season,
+                    thetvdb_part: m.thetvdb_part,
                     score: m.score,
                     anime_media_type: m.anime_media_type.unwrap_or_default(),
                     global_media_type: m.global_media_type.unwrap_or_default(),
@@ -2198,53 +2219,5 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata complete"
         );
         Ok(BulkMetadataResult { movies, series })
-    }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        tvdb_id: i64,
-        season: i32,
-        episode: i32,
-    ) -> AppResult<Vec<AnibridgeSourceMapping>> {
-        let query = r#"query($tvdbId: Int!, $season: Int!, $episode: Int!) {
-            anibridgeMappingsForEpisode(tvdbId: $tvdbId, season: $season, episode: $episode) {
-                source_type source_id source_scope
-            }
-        }"#;
-
-        let variables = json!({
-            "tvdbId": tvdb_id,
-            "season": season,
-            "episode": episode,
-        });
-
-        #[derive(Deserialize)]
-        struct Response {
-            #[serde(rename = "anibridgeMappingsForEpisode")]
-            mappings: Vec<AnibridgeMappingItem>,
-        }
-
-        #[derive(Deserialize)]
-        struct AnibridgeMappingItem {
-            source_type: String,
-            source_id: i64,
-            source_scope: String,
-        }
-
-        let payload = json!({
-            "query": query,
-            "variables": variables,
-        });
-        let data: Response = self.execute_graphql(payload).await?;
-
-        Ok(data
-            .mappings
-            .into_iter()
-            .map(|m| AnibridgeSourceMapping {
-                source_type: m.source_type,
-                source_id: m.source_id,
-                source_scope: m.source_scope,
-            })
-            .collect())
     }
 }

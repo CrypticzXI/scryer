@@ -120,18 +120,20 @@ export function MobileSearchOverlay({
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
     rootFoldersByFacet,
+    setGlobalSearch,
+    resetGlobalSearch,
   } = searchState;
 
   const handleAddDialogSubmit = React.useCallback(
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
       const titleId = await addMetadataSearchResultToCatalog(result, facet, options);
       if (titleId) {
+        resetGlobalSearch();
         onOpenOverview?.(viewFromFacet(facet), { id: titleId, slug: result.slug ?? null });
-        onClose();
       }
       return titleId;
     },
-    [addMetadataSearchResultToCatalog, onClose, onOpenOverview],
+    [addMetadataSearchResultToCatalog, onOpenOverview, resetGlobalSearch],
   );
 
   const renderCatalogItem = React.useCallback(
@@ -148,8 +150,8 @@ export function MobileSearchOverlay({
           key={title.id}
           type="button"
           onClick={() => {
-            onClose();
-            onOpenOverview?.(targetView, title);
+            resetGlobalSearch();
+            onOpenOverview?.(targetView, { id: title.id, slug: title.slug ?? null });
           }}
           className="block w-full rounded-lg border border-border bg-card/60 p-3 text-left active:bg-accent/80"
           aria-label={title.name}
@@ -179,7 +181,7 @@ export function MobileSearchOverlay({
         </button>
       );
     },
-    [onClose, onOpenOverview, t],
+    [onOpenOverview, resetGlobalSearch, t],
   );
 
   const renderMetadataItem = React.useCallback(
@@ -279,7 +281,7 @@ export function MobileSearchOverlay({
           <Input
             ref={inputRef}
             value={searchState.globalSearch}
-            onChange={(e) => searchState.setGlobalSearch(e.target.value)}
+            onChange={(e) => setGlobalSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -296,7 +298,7 @@ export function MobileSearchOverlay({
               type="button"
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
               onClick={() => {
-                searchState.setGlobalSearch("");
+                setGlobalSearch("");
                 inputRef.current?.focus();
               }}
               aria-label={t("label.clear")}

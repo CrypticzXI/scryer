@@ -224,6 +224,37 @@ pub fn matches_download_activity_filter(
     }
 }
 
+pub fn matches_download_queue_filter(
+    item: &DownloadQueueItem,
+    include_history_only: bool,
+    include_import_activity: bool,
+    activity_filter: DownloadActivityFilter,
+) -> bool {
+    let classified = classify_download_queue_item(item);
+
+    if include_history_only {
+        return matches!(
+            classified.bucket,
+            DownloadQueueBucket::HistorySuccess | DownloadQueueBucket::HistoryFailed
+        );
+    }
+
+    match classified.bucket {
+        DownloadQueueBucket::Activity => match activity_filter {
+            DownloadActivityFilter::All => true,
+            _ => classified.activity_filter == Some(activity_filter),
+        },
+        DownloadQueueBucket::Import => {
+            include_import_activity
+                && matches!(
+                    classified.import_filter,
+                    Some(DownloadImportFilter::Importing | DownloadImportFilter::Pending)
+                )
+        }
+        DownloadQueueBucket::HistorySuccess | DownloadQueueBucket::HistoryFailed => false,
+    }
+}
+
 fn matches_download_import_filter(item: &DownloadQueueItem, filter: DownloadImportFilter) -> bool {
     let classified = classify_download_queue_item(item);
     if classified.bucket != DownloadQueueBucket::Import {
@@ -501,20 +532,40 @@ fn queue_item_import_state_eligible(item: &DownloadQueueItem) -> bool {
     )
 }
 
+fn normalized_download_client_id(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn download_queue_identity_key(
+    client_id: Option<&str>,
+    client_type: &str,
+    download_client_item_id: &str,
+) -> (String, String, String) {
+    (
+        normalized_download_client_id(client_id),
+        client_type.to_string(),
+        download_client_item_id.to_string(),
+    )
+}
+
 pub async fn enrich_download_queue_items_from_submissions(
     app: &AppUseCase,
     items: &mut [DownloadQueueItem],
 ) {
     let client_items = items
         .iter()
-        .filter(|item| !item.is_scryer_origin)
         .map(|item| {
             (
+                Some(item.client_id.clone()).filter(|value| !value.trim().is_empty()),
                 item.client_type.clone(),
                 item.download_client_item_id.clone(),
             )
         })
-        .filter(|(client_type, item_id)| !client_type.is_empty() && !item_id.is_empty())
+        .filter(|(_, client_type, item_id)| !client_type.is_empty() && !item_id.is_empty())
         .collect::<Vec<_>>();
 
     if client_items.is_empty() {
@@ -543,9 +594,10 @@ pub async fn enrich_download_queue_items_from_submissions(
         .filter(|submission| !submission.title_id.trim().is_empty())
         .map(|submission| {
             (
-                (
-                    submission.download_client_type.clone(),
-                    submission.download_client_item_id.clone(),
+                download_queue_identity_key(
+                    submission.download_client_id.as_deref(),
+                    &submission.download_client_type,
+                    &submission.download_client_item_id,
                 ),
                 submission,
             )
@@ -553,16 +605,31 @@ pub async fn enrich_download_queue_items_from_submissions(
         .collect::<HashMap<_, _>>();
 
     for item in items {
-        if item.is_scryer_origin {
-            continue;
-        }
-        if let Some(submission) = submission_map.get(&(
-            item.client_type.clone(),
-            item.download_client_item_id.clone(),
-        )) {
+        let exact_key = download_queue_identity_key(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        );
+        let legacy_submission = || {
+            item.client_id.trim().is_empty().then(|| {
+                submission_map.get(&download_queue_identity_key(
+                    None,
+                    &item.client_type,
+                    &item.download_client_item_id,
+                ))
+            })?
+        };
+        if let Some(submission) = submission_map.get(&exact_key).or_else(legacy_submission) {
             item.is_scryer_origin = true;
-            item.title_id = Some(submission.title_id.clone());
-            item.facet = Some(submission.facet.clone());
+            if item.title_id.is_none() {
+                item.title_id = Some(submission.title_id.clone());
+            }
+            if item.episode_id.is_none() {
+                item.episode_id = submission.scope.episode_id().map(ToString::to_string);
+            }
+            if item.facet.is_none() {
+                item.facet = Some(submission.facet.clone());
+            }
         }
     }
 }
@@ -583,6 +650,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
         .iter()
         .map(|item| {
             (
+                Some(item.client_id.clone()).filter(|value| !value.trim().is_empty()),
                 item.client_type.clone(),
                 item.download_client_item_id.clone(),
                 is_history_download_state(&item.state),
@@ -637,6 +705,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     }
     for command in delete_commands {
         let key = (
+            command.client_id.clone().unwrap_or_default(),
             command.client_type.clone(),
             command.download_client_item_id.clone(),
             command.is_history,
@@ -650,6 +719,13 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
             item.download_client_item_id.clone(),
         );
         let delete_key = (
+            item.client_id.clone(),
+            item.client_type.clone(),
+            item.download_client_item_id.clone(),
+            is_history_download_state(&item.state),
+        );
+        let legacy_delete_key = (
+            String::new(),
             item.client_type.clone(),
             item.download_client_item_id.clone(),
             is_history_download_state(&item.state),
@@ -661,7 +737,10 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
                 apply_import_record_to_queue_item(item, record);
             }
         }
-        if let Some(command) = delete_records.get(&delete_key) {
+        if let Some(command) = delete_records
+            .get(&delete_key)
+            .or_else(|| delete_records.get(&legacy_delete_key))
+        {
             apply_delete_command_to_queue_item(item, command);
         }
     }
@@ -701,7 +780,11 @@ pub(crate) fn resolve_indexer_base_url(
 }
 
 fn download_queue_projection_key(item: &DownloadQueueItem) -> String {
-    format!("{}::{}", item.client_type, item.download_client_item_id)
+    if item.client_id.trim().is_empty() {
+        return format!("{}::{}", item.client_type, item.download_client_item_id);
+    }
+
+    format!("{}::{}", item.client_id, item.download_client_item_id)
 }
 
 fn apply_tracked_download_queue_metadata(
@@ -713,6 +796,14 @@ fn apply_tracked_download_queue_metadata(
     item.tracked_status_messages
         .clone_from(&tracked.status_messages);
     item.tracked_match_type = Some(tracked.match_type);
+    if let Some(source_title) = tracked
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        item.title_name = source_title.to_string();
+    }
     if item.title_id.is_none() && tracked.title_id.is_some() {
         item.title_id.clone_from(&tracked.title_id);
     }
@@ -758,6 +849,8 @@ pub async fn publish_download_queue_snapshot_events(
                 key.clone(),
                 DomainEventPayload::DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData {
                     download_client_item_id: previous_item.download_client_item_id.clone(),
+                    client_id: Some(previous_item.client_id.clone())
+                        .filter(|value| !value.trim().is_empty()),
                     client_type: Some(previous_item.client_type.clone()),
                 }),
             ));
@@ -1051,14 +1144,23 @@ impl AppUseCase {
         {
             let tracked_ids = items
                 .iter()
-                .map(|item| tracked_download_id(&item.client_type, &item.download_client_item_id))
+                .map(|item| {
+                    tracked_download_id(
+                        Some(item.client_id.as_str()),
+                        &item.client_type,
+                        &item.download_client_item_id,
+                    )
+                })
                 .collect::<Vec<_>>();
 
             match handle.snapshot(tracked_ids).await {
                 Ok(snapshot) => {
                     for item in &mut items {
-                        let tracked_id =
-                            tracked_download_id(&item.client_type, &item.download_client_item_id);
+                        let tracked_id = tracked_download_id(
+                            Some(item.client_id.as_str()),
+                            &item.client_type,
+                            &item.download_client_item_id,
+                        );
                         if let Some(metadata) = snapshot.get(&tracked_id) {
                             apply_tracked_download_queue_metadata(item, metadata);
                         }
@@ -1184,6 +1286,7 @@ impl AppUseCase {
         &self,
         include_all_activity: bool,
         include_history_only: bool,
+        include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
@@ -1209,7 +1312,9 @@ impl AppUseCase {
             .await?
             .into_iter()
             .filter(|item| include_all_activity || item.is_scryer_origin)
-            .filter(|item| matches_download_activity_filter(item, activity_filter))
+            .filter(|item| {
+                matches_download_queue_filter(item, false, include_import_activity, activity_filter)
+            })
             .collect::<Vec<_>>();
         sort_download_queue_items(&mut items);
         Ok(items)
@@ -1220,6 +1325,7 @@ impl AppUseCase {
         title_id: &str,
         include_all_activity: bool,
         include_history_only: bool,
+        include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
@@ -1255,7 +1361,9 @@ impl AppUseCase {
             .await?
             .into_iter()
             .filter(|item| include_all_activity || item.is_scryer_origin)
-            .filter(|item| matches_download_activity_filter(item, activity_filter))
+            .filter(|item| {
+                matches_download_queue_filter(item, false, include_import_activity, activity_filter)
+            })
             .collect::<Vec<_>>();
         sort_download_queue_items(&mut items);
         Ok(items)
@@ -1266,12 +1374,14 @@ impl AppUseCase {
         actor: &User,
         include_all_activity: bool,
         include_history_only: bool,
+        include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
         require(actor, &Entitlement::ManageConfig)?;
         self.collect_download_queue_items(
             include_all_activity,
             include_history_only,
+            include_import_activity,
             activity_filter,
             true,
         )
@@ -1284,13 +1394,15 @@ impl AppUseCase {
         title_id: &str,
         include_all_activity: bool,
         include_history_only: bool,
+        include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ViewCatalog)?;
         self.collect_download_queue_items_for_title(
             title_id,
             include_all_activity,
             include_history_only,
+            include_import_activity,
             activity_filter,
             true,
         )
@@ -1442,13 +1554,14 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ViewCatalog)?;
         self.collect_download_snapshot_items(true, true, true).await
     }
 
     pub async fn find_download_queue_item(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadQueueItem>> {
@@ -1464,12 +1577,19 @@ impl AppUseCase {
         let normalized_client_type = client_type
             .map(|value| value.trim().to_lowercase())
             .filter(|value| !value.is_empty());
+        let normalized_client_id = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
         let items = self
             .collect_download_snapshot_items(true, true, true)
             .await?;
         Ok(items.into_iter().find(|item| {
             item.download_client_item_id == target_download_client_item_id
+                && normalized_client_id
+                    .as_ref()
+                    .is_none_or(|client_id| item.client_id == *client_id)
                 && normalized_client_type
                     .as_ref()
                     .is_none_or(|client_type| item.client_type.eq_ignore_ascii_case(client_type))
@@ -1480,7 +1600,7 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<DownloadQueueItem>>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ViewCatalog)?;
         let (tx, rx) = broadcast::channel(32);
         let app = self.clone();
         let actor = actor.clone();
@@ -1614,6 +1734,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: Option<String>,
+        client_id: Option<String>,
         client_type: String,
         download_client_item_id: String,
         files: Option<Vec<crate::ManualImportFileMapping>>,
@@ -1658,6 +1779,7 @@ impl AppUseCase {
             requested_by_user_id: Some(actor.id.clone()),
             title_id: title_id.clone(),
             download_client_item_id: source_ref.clone(),
+            client_id,
             client_type: normalized_client_type.clone(),
             files,
             requested_at: Utc::now().to_rfc3339(),
@@ -1719,6 +1841,7 @@ impl AppUseCase {
     pub async fn ignore_tracked_download(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
@@ -1731,6 +1854,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
         handle
             .ignore(crate::tracked_downloads::tracked_download_id(
+                client_id,
                 client_type,
                 download_client_item_id,
             ))
@@ -1741,6 +1865,7 @@ impl AppUseCase {
     pub async fn mark_tracked_download_failed(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
@@ -1753,6 +1878,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
         handle
             .mark_failed(crate::tracked_downloads::tracked_download_id(
+                client_id,
                 client_type,
                 download_client_item_id,
             ))
@@ -1763,6 +1889,7 @@ impl AppUseCase {
     pub async fn retry_tracked_download_import(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
@@ -1775,6 +1902,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
         handle
             .retry_import(crate::tracked_downloads::tracked_download_id(
+                client_id,
                 client_type,
                 download_client_item_id,
             ))
@@ -1785,6 +1913,7 @@ impl AppUseCase {
     pub async fn assign_tracked_download_title(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         title_id: &str,
@@ -1804,6 +1933,7 @@ impl AppUseCase {
             .record_submission(DownloadSubmission {
                 title_id: title.id.clone(),
                 facet: title.facet.as_str().to_string(),
+                download_client_id: client_id.map(str::to_string),
                 download_client_type: client_type.to_string(),
                 download_client_item_id: download_client_item_id.to_string(),
                 source_hint: None,
@@ -1821,7 +1951,11 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
         handle
             .assign_title(
-                crate::tracked_downloads::tracked_download_id(client_type, download_client_item_id),
+                crate::tracked_downloads::tracked_download_id(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                ),
                 title.id,
             )
             .await?;
@@ -1831,14 +1965,23 @@ impl AppUseCase {
     pub async fn pause_download_queue_item(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
-        self.services
-            .integrations
-            .download_client
-            .pause_queue_item(download_client_item_id)
-            .await?;
+        if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
+            self.services
+                .integrations
+                .download_client
+                .pause_queue_item_for_client(client_id, download_client_item_id)
+                .await?;
+        } else {
+            self.services
+                .integrations
+                .download_client
+                .pause_queue_item(download_client_item_id)
+                .await?;
+        }
         self.emit_download_queue_item_command_issued_event(
             Some(actor.id.clone()),
             download_client_item_id.to_string(),
@@ -1851,14 +1994,23 @@ impl AppUseCase {
     pub async fn resume_download_queue_item(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
         require(actor, &Entitlement::TriggerActions)?;
-        self.services
-            .integrations
-            .download_client
-            .resume_queue_item(download_client_item_id)
-            .await?;
+        if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
+            self.services
+                .integrations
+                .download_client
+                .resume_queue_item_for_client(client_id, download_client_item_id)
+                .await?;
+        } else {
+            self.services
+                .integrations
+                .download_client
+                .resume_queue_item(download_client_item_id)
+                .await?;
+        }
         self.emit_download_queue_item_command_issued_event(
             Some(actor.id.clone()),
             download_client_item_id.to_string(),
@@ -1871,6 +2023,7 @@ impl AppUseCase {
     pub async fn delete_download_queue_item(
         &self,
         actor: &User,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
@@ -1882,6 +2035,7 @@ impl AppUseCase {
             .workflow
             .download_queue_commands
             .queue_delete_command(
+                client_id,
                 &client_type,
                 download_client_item_id,
                 is_history,
@@ -2126,7 +2280,11 @@ pub async fn start_download_queue_poller(
 
                         // Phase 1: Refresh — track each item and run checks.
                         for item in items.iter() {
-                            let id = tracked_download_id(&item.client_type, &item.download_client_item_id);
+                            let id = tracked_download_id(
+                                Some(item.client_id.as_str()),
+                                &item.client_type,
+                                &item.download_client_item_id,
+                            );
                             seen_ids.insert(id.clone());
 
                             let is_new = tracker.find(&id).is_none();
@@ -2211,7 +2369,11 @@ pub async fn start_download_queue_poller(
 
                         // Enrich items with tracked state before broadcasting.
                         for item in &mut items {
-                            let id = tracked_download_id(&item.client_type, &item.download_client_item_id);
+                            let id = tracked_download_id(
+                                Some(item.client_id.as_str()),
+                                &item.client_type,
+                                &item.download_client_item_id,
+                            );
                             if let Some(td) = tracker.find(&id) {
                                 let metadata = tracked_download_queue_snapshot(td);
                                 apply_tracked_download_queue_metadata(item, &metadata);
@@ -2376,16 +2538,41 @@ async fn try_remove_from_client(
     td: &crate::tracked_downloads::TrackedDownload,
     state: scryer_domain::TrackedDownloadState,
 ) {
-    // Look up the client config to check removal settings.
-    let config = match app
-        .services
-        .integrations
-        .download_client_configs
-        .list(Some(td.client_type.clone()))
-        .await
-    {
-        Ok(configs) => configs.into_iter().next(),
-        Err(_) => None,
+    // Look up the exact configured client when the tracked download carries one.
+    // Native queue IDs are scoped to a client instance, not just a client type.
+    let config = if td.client_id.trim().is_empty() {
+        match app
+            .services
+            .integrations
+            .download_client_configs
+            .list(Some(td.client_type.clone()))
+            .await
+        {
+            Ok(configs) => configs.into_iter().next(),
+            Err(_) => None,
+        }
+    } else {
+        match app
+            .services
+            .integrations
+            .download_client_configs
+            .get_by_id(&td.client_id)
+            .await
+        {
+            Ok(Some(config)) if config.client_type.eq_ignore_ascii_case(&td.client_type) => {
+                Some(config)
+            }
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    client_id = %td.client_id,
+                    client_type = %td.client_type,
+                    "failed to load download client config for auto-remove decision"
+                );
+                None
+            }
+        }
     };
 
     let should_remove = if let Some(config) = config {
@@ -2433,13 +2620,21 @@ async fn try_remove_from_client(
         "removing download from client"
     );
 
-    if let Err(error) = app
-        .services
-        .integrations
-        .download_client
-        .delete_queue_item_for_client(&td.client_type, item_id, is_history)
-        .await
-    {
+    let delete_result = if td.client_id.trim().is_empty() {
+        app.services
+            .integrations
+            .download_client
+            .delete_queue_item_for_client(&td.client_type, item_id, is_history)
+            .await
+    } else {
+        app.services
+            .integrations
+            .download_client
+            .delete_queue_item_for_client_id(&td.client_id, item_id, is_history)
+            .await
+    };
+
+    if let Err(error) = delete_result {
         tracing::warn!(
             error = %error,
             id = %td.id,
@@ -2482,12 +2677,19 @@ fn download_queue_item_key(item: &DownloadQueueItem) -> String {
         return item.id.clone();
     }
 
+    if !item.client_id.trim().is_empty() {
+        return format!("{}:{}", item.client_id, item.download_client_item_id);
+    }
+
     format!("{}:{}", item.client_type, item.download_client_item_id)
 }
 
 fn merge_download_queue_item(existing: &mut DownloadQueueItem, incoming: DownloadQueueItem) {
     if existing.title_id.is_none() {
         existing.title_id = incoming.title_id.clone();
+    }
+    if existing.episode_id.is_none() {
+        existing.episode_id = incoming.episode_id.clone();
     }
     if existing.title_name.trim().is_empty() || existing.title_name == "Unnamed download" {
         existing.title_name = incoming.title_name.clone();
@@ -2583,6 +2785,7 @@ mod tests {
         DownloadQueueItem {
             id: id.to_string(),
             title_id: None,
+            episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
             client_id: "client-1".to_string(),
@@ -2634,6 +2837,20 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_download_queue_items_keeps_same_native_id_from_different_clients() {
+        let mut first = item("job-1", DownloadQueueState::Queued);
+        first.client_id = "client-1".to_string();
+        let mut second = item("job-1", DownloadQueueState::Queued);
+        second.client_id = "client-2".to_string();
+
+        let deduped = dedupe_download_queue_items(vec![first, second]);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].client_id, "client-1");
+        assert_eq!(deduped[1].client_id, "client-2");
+    }
+
+    #[test]
     fn apply_tracked_download_queue_metadata_backfills_missing_facet() {
         let mut queue_item = item("job-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {
@@ -2672,6 +2889,39 @@ mod tests {
         assert_eq!(
             queue_item.tracked_match_type,
             Some(TitleMatchType::TitleParse)
+        );
+    }
+
+    #[test]
+    fn apply_tracked_download_queue_metadata_prefers_source_release_title() {
+        let mut queue_item = item("job-1", DownloadQueueState::Downloading);
+        queue_item.title_name = "Titanic".to_string();
+        let tracked = crate::tracked_downloads::TrackedDownload {
+            id: "nzbget:job-1".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "nzbget".to_string(),
+            client_item: queue_item.clone(),
+            state: TrackedDownloadState::Downloading,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("movie".to_string()),
+            source_title: Some("Titanic.1997.2160p.UHD.BluRay.x265-GRP".to_string()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+        };
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        apply_tracked_download_queue_metadata(&mut queue_item, &metadata);
+
+        assert_eq!(
+            queue_item.title_name,
+            "Titanic.1997.2160p.UHD.BluRay.x265-GRP"
         );
     }
 }

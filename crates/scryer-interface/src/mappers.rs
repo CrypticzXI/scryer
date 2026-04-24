@@ -7,15 +7,16 @@ use scryer_application::{
     PendingRelease, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
     QualityProfileSelection, QualityProfileSettings, RegistryPlugin, RenameApplyItemResult,
     RenameApplyResult, RenamePlan, RenamePlanItem, ResolvePendingImportResult, RssSyncReport,
-    ScoringEntry, ScoringSource, ServiceSettings, SystemHealth, TitleHistoryPage,
+    ScoringEntry, ScoringSource, ServiceSettings, SubmissionScope, SystemHealth, TitleHistoryPage,
     TitleReleaseBlocklistEntry, WorkflowOperationInfo,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
-    IndexerConfig, MediaFacet, PluginInstallation, PolicyOutput, RuleSet, Title,
-    TitleHistoryRecord, User,
+    IndexerConfig, MediaFacet, PluginInstallation, PolicyOutput, RuleSet, SubtitleProviderConfig,
+    Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
+use serde_json::Value;
 use std::fs;
 
 use crate::types::*;
@@ -270,9 +271,45 @@ pub(crate) fn from_search_result(result: IndexerSearchResult) -> IndexerSearchRe
         freeleech,
         download_volume_factor,
         candidate_token: result.candidate_token,
+        queue_scope: result.queue_scope.map(from_submission_scope),
         auto_eligible: result.auto_eligible,
         auto_decision_code: result.auto_decision_code,
         auto_decision_summary: result.auto_decision_summary,
+    }
+}
+
+fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
+    match scope {
+        SubmissionScope::Episode { episode_id } => QueueDownloadScopePayload {
+            kind: "episode".to_string(),
+            episode_id: Some(episode_id),
+            episode_ids: Vec::new(),
+            collection_id: None,
+        },
+        SubmissionScope::EpisodeSet { episode_ids } => QueueDownloadScopePayload {
+            kind: "episode_set".to_string(),
+            episode_id: None,
+            episode_ids,
+            collection_id: None,
+        },
+        SubmissionScope::Collection { collection_id } => QueueDownloadScopePayload {
+            kind: "collection".to_string(),
+            episode_id: None,
+            episode_ids: Vec::new(),
+            collection_id: Some(collection_id),
+        },
+        SubmissionScope::Title => QueueDownloadScopePayload {
+            kind: "title".to_string(),
+            episode_id: None,
+            episode_ids: Vec::new(),
+            collection_id: None,
+        },
+        SubmissionScope::Orphan => QueueDownloadScopePayload {
+            kind: "orphan".to_string(),
+            episode_id: None,
+            episode_ids: Vec::new(),
+            collection_id: None,
+        },
     }
 }
 
@@ -322,7 +359,7 @@ pub(crate) fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleas
         release_group: result.release_group,
         languages_audio: result.languages_audio,
         languages_subtitles: result.languages_subtitles,
-        year: result.year.map(|value| value as i32),
+        year: result.year,
         quality: result.quality,
         source: result.source,
         video_codec: result.video_codec,
@@ -389,11 +426,18 @@ pub(crate) fn from_provider_type(
     name: String,
     config_fields: Vec<scryer_domain::ConfigFieldDef>,
     default_base_url: Option<String>,
+    available_host_bindings: Vec<String>,
+    recommended_facets: Vec<String>,
 ) -> ProviderTypePayload {
     ProviderTypePayload {
         provider_type,
         name,
         default_base_url,
+        available_host_bindings,
+        recommended_facets: recommended_facets
+            .into_iter()
+            .filter_map(|facet| MediaFacetValue::parse(&facet))
+            .collect(),
         config_fields: config_fields
             .into_iter()
             .map(|f| PluginConfigFieldPayload {
@@ -402,6 +446,12 @@ pub(crate) fn from_provider_type(
                 field_type: f.field_type.as_str().to_string(),
                 required: f.required,
                 default_value: f.default_value,
+                value_source: match f.value_source {
+                    scryer_domain::ConfigFieldValueSource::User => "user",
+                    scryer_domain::ConfigFieldValueSource::HostBinding => "host_binding",
+                }
+                .to_string(),
+                host_binding: f.host_binding.map(|binding| binding.as_str().to_string()),
                 options: f
                     .options
                     .into_iter()
@@ -435,6 +485,79 @@ pub(crate) fn from_download_client_config(
     }
 }
 
+pub(crate) fn from_subtitle_provider_config(
+    config: SubtitleProviderConfig,
+    config_fields: &[scryer_domain::ConfigFieldDef],
+) -> SubtitleProviderConfigPayload {
+    let secret_keys = config_fields
+        .iter()
+        .filter(|field| matches!(field.field_type, scryer_domain::ConfigFieldType::Password))
+        .map(|field| field.key.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    let has_config = serde_json::from_str::<Value>(&config.config_json)
+        .ok()
+        .is_some_and(|value| match value {
+            Value::Object(map) => !map.is_empty(),
+            Value::Null => false,
+            _ => true,
+        });
+
+    let stored_secret_keys = serde_json::from_str::<Value>(&config.config_json)
+        .ok()
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    let is_secret =
+                        secret_keys.contains(key.as_str()) || looks_like_secret_config_key(key);
+                    if is_secret
+                        && !value.is_null()
+                        && value.as_str().is_none_or(|value| !value.trim().is_empty())
+                    {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    SubtitleProviderConfigPayload {
+        id: config.id,
+        name: config.name,
+        provider_type: config.provider_type,
+        has_config,
+        stored_secret_keys,
+        enabled_facets: config
+            .enabled_facets
+            .iter()
+            .filter_map(|facet| MediaFacetValue::parse(facet))
+            .collect(),
+        is_enabled: config.is_enabled,
+        last_health_status: config.last_health_status,
+        last_error: config.last_error,
+        last_error_at: config.last_error_at.map(|value| value.to_rfc3339()),
+        disabled_until: config.disabled_until.map(|value| value.to_rfc3339()),
+        created_at: config.created_at.to_rfc3339(),
+        updated_at: config.updated_at.to_rfc3339(),
+    }
+}
+
+fn looks_like_secret_config_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized.contains("password")
+        || normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized == "api_key"
+        || normalized == "apikey"
+        || normalized.contains("api_key")
+}
+
 pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPayload {
     let display_state = DownloadDisplayStateValue::from_application(
         scryer_application::derive_download_queue_display_state(&item),
@@ -442,6 +565,7 @@ pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueue
     DownloadQueueItemPayload {
         id: item.id,
         title_id: item.title_id,
+        episode_id: item.episode_id,
         title_name: item.title_name,
         facet: item.facet.as_deref().and_then(MediaFacetValue::parse),
         is_scryer_origin: item.is_scryer_origin,

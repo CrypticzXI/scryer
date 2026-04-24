@@ -1,8 +1,10 @@
 use super::*;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmissionScope {
     Episode { episode_id: String },
+    EpisodeSet { episode_ids: Vec<String> },
     Collection { collection_id: String },
     Title,
     Orphan,
@@ -13,7 +15,17 @@ impl SubmissionScope {
         title_id: &str,
         episode_id: Option<String>,
         collection_id: Option<String>,
+        episode_set_ids: Option<Vec<String>>,
     ) -> Self {
+        if let Some(mut episode_ids) = episode_set_ids {
+            episode_ids.retain(|episode_id| !episode_id.trim().is_empty());
+            episode_ids.sort();
+            episode_ids.dedup();
+            if !episode_ids.is_empty() {
+                return Self::EpisodeSet { episode_ids };
+            }
+        }
+
         if let Some(episode_id) = episode_id {
             return Self::Episode { episode_id };
         }
@@ -50,12 +62,21 @@ impl SubmissionScope {
     pub fn persisted_collection_id(&self) -> Option<&str> {
         self.collection_id()
     }
+
+    pub fn episode_ids(&self) -> Option<&[String]> {
+        match self {
+            Self::EpisodeSet { episode_ids } => Some(episode_ids.as_slice()),
+            Self::Episode { episode_id } => Some(std::slice::from_ref(episode_id)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DownloadSubmission {
     pub title_id: String,
     pub facet: String,
+    pub download_client_id: Option<String>,
     pub download_client_type: String,
     pub download_client_item_id: String,
     pub source_hint: Option<String>,
@@ -159,25 +180,49 @@ impl DownloadClientConfigUpdate {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IndexerSearchRequest {
-    pub query: String,
-    pub imdb_id: Option<String>,
-    pub tvdb_id: Option<String>,
-    pub anidb_id: Option<String>,
-    pub category: Option<String>,
+#[derive(Clone, Debug, Default)]
+pub struct SubtitleProviderConfigUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider_type: Option<String>,
+    pub config_json: Option<String>,
+    pub enabled_facets: Option<Vec<String>>,
+    pub is_enabled: Option<bool>,
+    pub last_health_status: Option<String>,
+    pub last_error: Option<Option<String>>,
+    pub last_error_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+}
+
+impl SubtitleProviderConfigUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.provider_type.is_some()
+            || self.config_json.is_some()
+            || self.enabled_facets.is_some()
+            || self.is_enabled.is_some()
+            || self.last_health_status.is_some()
+            || self.last_error.is_some()
+            || self.last_error_at.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IndexerEpisodeSearchRequest {
-    pub title: String,
-    pub season: String,
-    pub episode: String,
-    pub imdb_id: Option<String>,
-    pub tvdb_id: Option<String>,
-    pub anidb_id: Option<String>,
-    pub category: Option<String>,
-    pub absolute_episode: Option<u32>,
+pub struct SubtitleProviderValidationResult {
+    pub status: String,
+    pub message: Option<String>,
+    pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubtitleGenerationInput {
+    pub media_kind: String,
+    pub facet: Option<String>,
+    pub input_path: PathBuf,
+    pub mime_type: String,
+    pub duration_seconds: i64,
+    pub size_bytes: i64,
+    pub checksum: String,
+    pub languages: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

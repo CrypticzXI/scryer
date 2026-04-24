@@ -64,16 +64,27 @@ pub async fn start_background_download_delete_poller(
                 continue;
             }
 
-            let result = app
-                .services
-                .integrations
-                .download_client
-                .delete_queue_item_for_client(
-                    &command.client_type,
-                    &command.download_client_item_id,
-                    command.is_history,
-                )
-                .await;
+            let result = if let Some(client_id) = command.client_id.as_deref() {
+                app.services
+                    .integrations
+                    .download_client
+                    .delete_queue_item_for_client_id(
+                        client_id,
+                        &command.download_client_item_id,
+                        command.is_history,
+                    )
+                    .await
+            } else {
+                app.services
+                    .integrations
+                    .download_client
+                    .delete_queue_item_for_client(
+                        &command.client_type,
+                        &command.download_client_item_id,
+                        command.is_history,
+                    )
+                    .await
+            };
 
             match result {
                 Ok(()) => {

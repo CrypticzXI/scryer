@@ -184,6 +184,7 @@ const WANTED_ITEM_FIELDS = `
 const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     id
     titleId
+    episodeId
     titleName
     facet
     isScryerOrigin
@@ -284,15 +285,52 @@ const PROVIDER_TYPE_FIELDS = `
     providerType
     name
     defaultBaseUrl
+    availableHostBindings
+    recommendedFacets
     configFields {
       key
       label
       fieldType
       required
       defaultValue
+      valueSource
+      hostBinding
       options { value label }
       helpText
     }`;
+
+export const SUBTITLE_SETTINGS_FIELDS = `
+    enabled
+    languages {
+      code
+      hearingImpaired
+      forced
+    }
+    autoDownloadOnImport
+    minimumScoreSeries
+    minimumScoreMovie
+    searchIntervalHours
+    includeAiTranslated
+    includeMachineTranslated
+    syncEnabled
+    syncThresholdSeries
+    syncThresholdMovie
+    syncMaxOffsetSeconds`;
+
+export const SUBTITLE_PROVIDER_CONFIG_FIELDS = `
+    id
+    name
+    providerType
+    hasConfig
+    storedSecretKeys
+    enabledFacets
+    isEnabled
+    lastHealthStatus
+    lastError
+    lastErrorAt
+    disabledUntil
+    createdAt
+    updatedAt`;
 
 const NOTIFICATION_CHANNEL_FIELDS = `
     id
@@ -349,6 +387,10 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
 
 export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $blocklistLimit: Int) {
   title(id: $id) {${TITLE_OVERVIEW_FIELDS}
+  }
+  downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+  completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
   titleAcquisitionDiagnostics(titleId: $id) {
     recentDecisions {
@@ -420,127 +462,6 @@ export const subtitleBlacklistEntriesQuery = `query SubtitleBlacklistEntries($me
   }
 }`;
 
-export const searchQuery = `query SearchIndexers($query: String!, $imdbId: String, $tvdbId: String, $category: String, $limit: Int) {
-  searchReleases(input: {
-    query: $query,
-    imdbId: $imdbId,
-    tvdbId: $tvdbId,
-    category: $category,
-    limit: $limit
-  }) {
-    source
-    title
-    link
-    downloadUrl
-    sourceKind
-    sizeBytes
-    publishedAt
-    thumbsUp
-    thumbsDown
-    parsedRelease {
-      rawTitle
-      normalizedTitle
-      releaseGroup
-      quality
-      source
-      videoCodec
-      videoEncoding
-      audio
-      isDualAudio
-      isAtmos
-      isDolbyVision
-      detectedHdr
-      parseConfidence
-      isProperUpload
-      isRemux
-      isBdDisk
-      isAiEnhanced
-    }
-    qualityProfileDecision {
-      allowed
-      blockCodes
-      releaseScore
-      preferenceScore
-      scoringLog {
-        code
-        delta
-        source
-        ruleSetName
-      }
-    }
-    seeders
-    peers
-    infoHash
-    freeleech
-    downloadVolumeFactor
-    autoEligible
-    autoDecisionCode
-    autoDecisionSummary
-  }
-}`;
-
-export const searchSeriesEpisodeQuery = `query SearchIndexersEpisode($title: String!, $season: String!, $episode: String!, $imdbId: String, $tvdbId: String, $anidbId: String, $category: String, $absoluteEpisode: Int) {
-  searchReleases(input: {
-    query: $title,
-    season: $season,
-    episode: $episode,
-    imdbId: $imdbId,
-    tvdbId: $tvdbId,
-    anidbId: $anidbId,
-    category: $category,
-    absoluteEpisode: $absoluteEpisode
-  }) {
-    source
-    title
-    link
-    downloadUrl
-    sourceKind
-    sizeBytes
-    publishedAt
-    thumbsUp
-    thumbsDown
-    parsedRelease {
-      rawTitle
-      normalizedTitle
-      releaseGroup
-      quality
-      source
-      videoCodec
-      videoEncoding
-      audio
-      isDualAudio
-      isAtmos
-      isDolbyVision
-      detectedHdr
-      parseConfidence
-      isProperUpload
-      isRemux
-      isBdDisk
-      isAiEnhanced
-    }
-    qualityProfileDecision {
-      allowed
-      blockCodes
-      releaseScore
-      preferenceScore
-      scoringLog {
-        code
-        delta
-        source
-        ruleSetName
-      }
-    }
-    seeders
-    peers
-    infoHash
-    freeleech
-    downloadVolumeFactor
-    autoEligible
-    autoDecisionCode
-    autoDecisionSummary
-  }
-}`;
-
 export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: String!) {
   searchReleases(input: { titleId: $titleId }) {
     source
@@ -548,6 +469,12 @@ export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: Strin
     link
     downloadUrl
     candidateToken
+    queueScope {
+      kind
+      episodeId
+      episodeIds
+      collectionId
+    }
     sourceKind
     sizeBytes
     publishedAt
@@ -606,6 +533,12 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
     link
     downloadUrl
     candidateToken
+    queueScope {
+      kind
+      episodeId
+      episodeIds
+      collectionId
+    }
     sourceKind
     sizeBytes
     publishedAt
@@ -732,6 +665,8 @@ export type ReactiveRefreshQueryActionPlan =
       key: string;
       kind: "titleOverview";
       titleAlias: string;
+      downloadQueueItemsAlias: string;
+      completedDownloadQueueItemsAlias: string;
       titleAcquisitionDiagnosticsAlias: string;
       titleEventsAlias: string;
       titleReleaseBlocklistAlias: string;
@@ -780,6 +715,9 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
+        const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
+        const completedDownloadQueueItemsAlias =
+          `titleOverviewCompletedDownloadQueueAction${index}`;
         const titleAcquisitionDiagnosticsAlias =
           `titleOverviewDiagnosticsAction${index}`;
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
@@ -793,6 +731,12 @@ export function buildReactiveRefreshQuery(
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${completedDownloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
         );
         fields.push(
           `  ${titleAcquisitionDiagnosticsAlias}: titleAcquisitionDiagnostics(titleId: $${titleIdVariableName}) {\n    recentDecisions {\n      id\n      wantedItemId\n      titleId\n      releaseTitle\n      releaseUrl\n      releaseSizeBytes\n      decisionCode\n      candidateScore\n      currentScore\n      scoreDelta\n      explanationJson\n      createdAt\n    }\n    decisionCounts {\n      code\n      count\n    }\n    wantedStatusCounts {\n      status\n      count\n    }\n    pendingReleaseCounts {\n      status\n      count\n    }\n    mismatchRecoveryEligibleCount\n    latestDecisionAt\n    latestWantedSearchAt\n  }`,
@@ -815,6 +759,8 @@ export function buildReactiveRefreshQuery(
           key: action.key,
           kind: action.kind,
           titleAlias,
+          downloadQueueItemsAlias,
+          completedDownloadQueueItemsAlias,
           titleAcquisitionDiagnosticsAlias,
           titleEventsAlias,
           titleReleaseBlocklistAlias,
@@ -942,6 +888,53 @@ ${DOMAIN_EVENT_ENVELOPE_FIELDS}
   }
 }`;
 
+export const LIBRARY_SCAN_PROGRESS_FIELDS = `
+  sessionId
+  facet
+  mode
+  status
+  startedAt
+  updatedAt
+  foundTitles
+  titleMatchTotalKnown
+  titleMatchProgress {
+    total
+    completed
+    failed
+  }
+  hydrationTotalKnown
+  hydrationProgress {
+    total
+    completed
+    failed
+  }
+  mediaAnalysisTotalKnown
+  mediaAnalysisProgress {
+    total
+    completed
+    failed
+  }
+  summary {
+    scanned
+    matched
+    imported
+    skipped
+    unmatched
+  }
+`;
+
+export const activeLibraryScansQuery = `query ActiveLibraryScans {
+  activeLibraryScans {
+${LIBRARY_SCAN_PROGRESS_FIELDS}
+  }
+}`;
+
+export const libraryScanStateSubscriptionQuery = `subscription LibraryScanState {
+  libraryScanState {
+${LIBRARY_SCAN_PROGRESS_FIELDS}
+  }
+}`;
+
 export const jobsQuery = `query Jobs {
   jobs {
     key
@@ -976,38 +969,7 @@ export const JOB_RUN_FIELDS = `
   errorText
   progressJson
   libraryScanProgress {
-    sessionId
-    facet
-    mode
-    status
-    startedAt
-    updatedAt
-    foundTitles
-    titleMatchTotalKnown
-    titleMatchProgress {
-      total
-      completed
-      failed
-    }
-    hydrationTotalKnown
-    hydrationProgress {
-      total
-      completed
-      failed
-    }
-    mediaAnalysisTotalKnown
-    mediaAnalysisProgress {
-      total
-      completed
-      failed
-    }
-    summary {
-      scanned
-      matched
-      imported
-      skipped
-      unmatched
-    }
+${LIBRARY_SCAN_PROGRESS_FIELDS}
   }
 `;
 
@@ -1091,8 +1053,8 @@ export const downloadClientsQuery = `query DownloadClients {
   }
 }`;
 
-export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $activityFilter: DownloadActivityFilterValue) {
-  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
+  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
@@ -1119,8 +1081,8 @@ export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset:
   }
 }`;
 
-export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $activityFilter: DownloadActivityFilterValue) {
-  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
+  downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
@@ -1390,26 +1352,26 @@ export const libraryPathsQuery = `query LibraryPaths {
 }`;
 
 export const subtitleSettingsQuery = `query SubtitleSettings {
-  subtitleSettings {
-    enabled
-    hasOpenSubtitlesApiKey
-    openSubtitlesUsername
-    hasOpenSubtitlesPassword
-    languages {
-      code
-      hearingImpaired
-      forced
-    }
-    autoDownloadOnImport
-    minimumScoreSeries
-    minimumScoreMovie
-    searchIntervalHours
-    includeAiTranslated
-    includeMachineTranslated
-    syncEnabled
-    syncThresholdSeries
-    syncThresholdMovie
-    syncMaxOffsetSeconds
+  subtitleSettings {${SUBTITLE_SETTINGS_FIELDS}
+  }
+}`;
+
+export const subtitleProviderTypesQuery = `query SubtitleProviderTypes {
+  subtitleProviderTypes {${PROVIDER_TYPE_FIELDS}
+  }
+}`;
+
+export const subtitleProviderConfigsQuery = `query SubtitleProviderConfigs($providerType: String) {
+  subtitleProviderConfigs(providerType: $providerType) {${SUBTITLE_PROVIDER_CONFIG_FIELDS}
+  }
+}`;
+
+export const subtitleSettingsInitQuery = `query SubtitleSettingsInit {
+  subtitleSettings {${SUBTITLE_SETTINGS_FIELDS}
+  }
+  subtitleProviderTypes {${PROVIDER_TYPE_FIELDS}
+  }
+  subtitleProviderConfigs {${SUBTITLE_PROVIDER_CONFIG_FIELDS}
   }
 }`;
 
@@ -1494,8 +1456,8 @@ export const serviceLogLinesSubscription = `subscription ServiceLogLines {
   serviceLogLines
 }`;
 
-export const previewManualImportQuery = `query PreviewManualImport($downloadClientItemId: String!, $titleId: String!) {
-  previewManualImport(downloadClientItemId: $downloadClientItemId, titleId: $titleId) {
+export const previewManualImportQuery = `query PreviewManualImport($clientId: String, $downloadClientItemId: String!, $titleId: String!) {
+  previewManualImport(clientId: $clientId, downloadClientItemId: $downloadClientItemId, titleId: $titleId) {
     files {
       filePath
       fileName

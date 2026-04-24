@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
-    PendingTitleHydration, PrimaryCollectionSummary, ShowRepository, TitleMetadataUpdate,
-    TitleRepository, UserRepository,
+    PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
+    TitleMetadataUpdate, TitleRepository, UserRepository,
 };
 use scryer_domain::{CalendarEpisode, Collection, Entitlement, Episode, MediaFacet, Title, User};
 use std::collections::HashMap;
@@ -88,6 +88,14 @@ impl TitleRepository for SqliteCatalogStore {
         title::list_titles_due_for_hydration_query(&self.pool, limit, excluded_facets).await
     }
 
+    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<String>> {
+        title::list_anime_title_ids_missing_anibridge_scoped_external_ids_query(&self.pool, limit)
+            .await
+    }
+
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
         self.db.mark_title_metadata_hydration_due_now(id).await
     }
@@ -170,6 +178,13 @@ impl TitleRepository for SqliteCatalogStore {
 impl ShowRepository for SqliteCatalogStore {
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
         title::list_collections_for_title_query(&self.pool, title_id).await
+    }
+
+    async fn list_collection_external_ids(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        title::list_collection_external_ids_query(&self.pool, collection_id).await
     }
 
     async fn list_collections_for_titles(
@@ -273,6 +288,13 @@ impl ShowRepository for SqliteCatalogStore {
         title::list_episodes_for_title_query(&self.pool, title_id).await
     }
 
+    async fn list_episode_external_ids(
+        &self,
+        episode_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        title::list_episode_external_ids_query(&self.pool, episode_id).await
+    }
+
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
         title::get_episode_by_id_query(&self.pool, episode_id).await
     }
@@ -327,6 +349,21 @@ impl ShowRepository for SqliteCatalogStore {
         end_date: &str,
     ) -> AppResult<Vec<CalendarEpisode>> {
         title::list_episodes_in_date_range_query(&self.pool, start_date, end_date).await
+    }
+
+    async fn replace_anibridge_scoped_external_ids_for_title(
+        &self,
+        title_id: &str,
+        collection_ids: Vec<ScopedExternalId>,
+        episode_ids: Vec<ScopedExternalId>,
+    ) -> AppResult<()> {
+        self.db
+            .replace_anibridge_scoped_external_ids_for_title(
+                title_id,
+                &collection_ids,
+                &episode_ids,
+            )
+            .await
     }
 }
 

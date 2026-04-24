@@ -111,6 +111,30 @@ async fn process_image_refresh_chunk(
                         kind = %label,
                         "image loop: cached"
                     );
+                    if kind == TitleImageKind::Poster {
+                        match app.services.catalog.titles.get_by_id(&task.title_id).await {
+                            Ok(Some(title)) => {
+                                app.emit_title_updated_activity(None, &title).await;
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    kind = %label,
+                                    "image loop: cached image for missing title"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    kind = %label,
+                                    "image loop: failed to publish cached image refresh"
+                                );
+                            }
+                        }
+                    }
                     true
                 }
                 Err(error) => {

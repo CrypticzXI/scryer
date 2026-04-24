@@ -152,8 +152,8 @@ fn find_existing_movie_title_index(
         return Some(index);
     }
 
-    if let Some(parsed_tmdb_id) = candidate.parsed_release.tmdb_id.map(|id| id.to_string())
-        && let Some(&index) = existing_titles_by_tmdb_id.get(&parsed_tmdb_id)
+    if let Some(parsed_tmdb_id) = candidate.parsed_release.tmdb_id.as_deref()
+        && let Some(&index) = existing_titles_by_tmdb_id.get(parsed_tmdb_id)
     {
         return Some(index);
     }

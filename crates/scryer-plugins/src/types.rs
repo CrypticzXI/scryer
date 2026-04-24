@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 pub use scryer_domain::IndexerProviderCapabilities as IndexerCapabilities;
 pub use scryer_domain::{ConfigFieldDef, ConfigFieldOption, TaggedAlias};
@@ -62,6 +63,10 @@ pub struct PluginDescriptor {
     /// `plugin_type: "download_client"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_client_capabilities: Option<DownloadClientCapabilities>,
+    /// Subtitle-provider-specific capabilities. Only present for
+    /// `plugin_type: "subtitle_provider"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_capabilities: Option<SubtitleCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +122,204 @@ pub struct DownloadClientCapabilities {
     pub host_fs_required: bool,
     #[serde(default)]
     pub test_connection: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleProviderMode {
+    #[default]
+    Catalog,
+    Generator,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubtitleCapabilities {
+    pub mode: SubtitleProviderMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_media_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommended_facets: Vec<String>,
+    #[serde(default)]
+    pub supports_hash_lookup: bool,
+    #[serde(default)]
+    pub supports_forced: bool,
+    #[serde(default)]
+    pub supports_hearing_impaired: bool,
+    #[serde(default)]
+    pub supports_ai_translated: bool,
+    #[serde(default)]
+    pub supports_machine_translated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleValidateConfigStatus {
+    Valid,
+    InvalidConfig,
+    AuthFailed,
+    RateLimited,
+    Unreachable,
+    Unsupported,
+    MissingHostBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleMatchHintKind {
+    Hash,
+    ImdbId,
+    SeriesImdbId,
+    ExternalId,
+    AbsoluteEpisode,
+    Release,
+    Title,
+    SeasonEpisode,
+    Language,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitleMatchHint {
+    pub kind: SubtitleMatchHintKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleQueryMediaKind {
+    Movie,
+    Episode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginSearchRequest {
+    pub media_kind: SubtitleQueryMediaKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_imdb_id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_episode: Option<i32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub external_ids: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hearing_impaired: Option<bool>,
+    #[serde(default)]
+    pub include_ai_translated: bool,
+    #[serde(default)]
+    pub include_machine_translated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginCandidate {
+    pub provider_file_id: String,
+    pub language: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_info: Option<String>,
+    #[serde(default)]
+    pub hearing_impaired: bool,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(default)]
+    pub ai_translated: bool,
+    #[serde(default)]
+    pub machine_translated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploader: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub match_hints: Vec<SubtitleMatchHint>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubtitlePluginSearchResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<SubtitlePluginCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginDownloadRequest {
+    pub provider_file_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginDownloadResponse {
+    pub content_base64: String,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubtitlePluginValidateConfigRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginValidateConfigResponse {
+    pub status: SubtitleValidateConfigStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitleGeneratorInputRef {
+    pub path: PathBuf,
+    pub mime_type: String,
+    pub duration_seconds: i64,
+    pub size_bytes: i64,
+    pub checksum: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginGenerateRequest {
+    pub media_kind: SubtitleQueryMediaKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facet: Option<String>,
+    pub input: SubtitleGeneratorInputRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitlePluginGenerateResponse {
+    pub content_base64: String,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

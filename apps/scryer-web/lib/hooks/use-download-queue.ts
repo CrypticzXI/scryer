@@ -9,8 +9,8 @@ import type { DownloadQueueItem } from "@/lib/types";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import {
-  downloadQueueItemIdentityKey,
-  isActiveQueueState,
+  mergeAuthoritativeQueueItems,
+  mergeLiveQueueItems,
   sortDownloadQueueItems,
 } from "@/lib/utils/download-queue";
 import type { DownloadActivityFilter } from "@/lib/types";
@@ -19,6 +19,8 @@ type UseDownloadQueueArgs = {
   enabled: boolean;
   includeAllActivity: boolean;
   includeHistoryOnly: boolean;
+  includeImportActivity?: boolean;
+  titleId?: string | null;
   activityFilter: DownloadActivityFilter;
   onErrorStatus?: (message: string) => void;
 };
@@ -35,6 +37,8 @@ export function useDownloadQueue({
   enabled,
   includeAllActivity,
   includeHistoryOnly,
+  includeImportActivity = false,
+  titleId = null,
   activityFilter,
   onErrorStatus,
 }: UseDownloadQueueArgs): UseDownloadQueueResult {
@@ -45,6 +49,9 @@ export function useDownloadQueue({
   const [queueError, setQueueError] = useState<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scopeKey = `${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}:${includeImportActivity ? 1 : 0}:${titleId ?? "all"}:${activityFilter}`;
+  const activeScopeKeyRef = useRef(scopeKey);
+  activeScopeKeyRef.current = scopeKey;
 
   // Track whether the initial HTTP query has completed so the WS subscription
   // doesn't race with it and overwrite the authoritative query data.
@@ -64,10 +71,16 @@ export function useDownloadQueue({
   // result that the user is already looking at.
   useDeferredWsSubscription<{ data?: { downloadQueue?: DownloadQueueItem[] } }>({
     enabled: enabled && !includeHistoryOnly && initialFetchDone,
-    requestKey: `downloadQueue:${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}:${activityFilter}`,
+    requestKey: `downloadQueue:${scopeKey}`,
     request: {
       query: downloadQueueSubscription,
-      variables: { includeAllActivity, includeHistoryOnly, activityFilter },
+      variables: {
+        includeAllActivity,
+        includeHistoryOnly,
+        includeImportActivity,
+        titleId,
+        activityFilter,
+      },
     },
     onNext(result) {
       const items = result.data?.downloadQueue;
@@ -75,18 +88,10 @@ export function useDownloadQueue({
         return;
       }
 
-      // Merge: the subscription only carries live jobs from the
-      // download client. Preserve active items that are missing from the
-      // latest broadcast until the next authoritative query refresh catches up.
-      setQueueItems((prev) => {
-        const liveIds = new Set(items.map((item) => downloadQueueItemIdentityKey(item)));
-        const kept = prev.filter(
-          (item) =>
-            isActiveQueueState(item.state) &&
-            !liveIds.has(downloadQueueItemIdentityKey(item)),
-        );
-        return sortDownloadQueueItems([...items, ...kept]);
-      });
+      // The subscription payload is a full filtered snapshot. Merge same-key
+      // items to retain enrichment-only fields, but let absence in the latest
+      // snapshot remove stale rows immediately.
+      setQueueItems((prev) => mergeLiveQueueItems(items, prev));
       setQueueError(null);
       setLastRefreshedAt(new Date());
       if (pollingRef.current) {
@@ -100,25 +105,28 @@ export function useDownloadQueue({
   });
 
   // --- Query fetch (initial load + manual refresh) ---
-  // The query is authoritative — it returns enriched data with import status,
-  // submission linkage, and history items that the WS subscription doesn't carry.
-  // To avoid wiping live socket data that may be fresher for active downloads,
-  // we merge: query items win for terminal states (completed, failed,
-  // import_pending) and the socket's version wins for active states if the
-  // subscription is already running.
+  // The query is authoritative for enrichment fields and history/import overlays.
+  // Once the subscription is running, merge carefully so a stale query refresh
+  // cannot downgrade an actively progressing item with the same identity key.
   const refreshQueue = useCallback(async () => {
     if (!enabled) {
       return;
     }
+    const requestScopeKey = scopeKey;
     setQueueLoading(true);
     try {
       const { data, error } = await client
         .query(downloadQueueQuery, {
           includeAllActivity,
           includeHistoryOnly,
+          includeImportActivity,
+          titleId,
           activityFilter,
         })
         .toPromise();
+      if (activeScopeKeyRef.current !== requestScopeKey) {
+        return;
+      }
       if (error) throw error;
       const queryItems = data?.downloadQueue || [];
       // If the subscription isn't active yet (initial load), full replace.
@@ -126,37 +134,22 @@ export function useDownloadQueue({
       if (!initialFetchDoneRef.current) {
         setQueueItems(sortDownloadQueueItems(queryItems));
       } else {
-        setQueueItems((prev) => {
-          // Build a map of query items keyed by downloadClientItemId
-          const queryMap = new Map(
-            queryItems.map((i: DownloadQueueItem) => [
-              downloadQueueItemIdentityKey(i),
-              i,
-            ]),
-          );
-          // Keep existing active items that the query didn't return
-          // (subscription may have fresher live data)
-          const merged = [...queryItems];
-          for (const item of prev) {
-            if (
-              isActiveQueueState(item.state) &&
-              !queryMap.has(downloadQueueItemIdentityKey(item))
-            ) {
-              merged.push(item);
-            }
-          }
-          return sortDownloadQueueItems(merged);
-        });
+        setQueueItems((prev) => mergeAuthoritativeQueueItems(queryItems, prev));
       }
       setQueueError(null);
       setLastRefreshedAt(new Date());
     } catch (error) {
+      if (activeScopeKeyRef.current !== requestScopeKey) {
+        return;
+      }
       const message =
         error instanceof Error ? error.message : "Failed to load queue.";
       setQueueError(message);
       (onErrorStatus ?? contextGlobalStatus)?.(message);
     } finally {
-      setQueueLoading(false);
+      if (activeScopeKeyRef.current === requestScopeKey) {
+        setQueueLoading(false);
+      }
     }
   }, [
     activityFilter,
@@ -165,7 +158,10 @@ export function useDownloadQueue({
     enabled,
     includeAllActivity,
     includeHistoryOnly,
+    includeImportActivity,
+    titleId,
     onErrorStatus,
+    scopeKey,
   ]);
 
   // --- Initial fetch + polling for history-only mode ---
@@ -178,8 +174,15 @@ export function useDownloadQueue({
       return;
     }
 
+    initialFetchDoneRef.current = false;
     setInitialFetchDone(false);
-    refreshQueue().finally(() => setInitialFetchDone(true));
+    setQueueItems([]);
+    const requestScopeKey = scopeKey;
+    refreshQueue().finally(() => {
+      if (activeScopeKeyRef.current === requestScopeKey) {
+        setInitialFetchDone(true);
+      }
+    });
 
     if (includeHistoryOnly) {
       pollingRef.current = setInterval(() => void refreshQueue(), 10_000);
@@ -190,7 +193,16 @@ export function useDownloadQueue({
         }
       };
     }
-  }, [activityFilter, enabled, includeAllActivity, includeHistoryOnly, refreshQueue]);
+  }, [
+    activityFilter,
+    enabled,
+    includeAllActivity,
+    includeHistoryOnly,
+    includeImportActivity,
+    scopeKey,
+    titleId,
+    refreshQueue,
+  ]);
 
   return {
     queueItems,

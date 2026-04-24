@@ -24,17 +24,45 @@ fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<
     )
 }
 
+fn persisted_episode_set_ids(scope: &SubmissionScope) -> &[String] {
+    match scope {
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.as_slice(),
+        _ => &[],
+    }
+}
+
 const DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE: usize = 400;
 
+fn normalize_download_client_id(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
 pub(crate) fn chunk_download_submission_client_items(
-    client_items: &[(String, String)],
-) -> Vec<Vec<(String, String)>> {
+    client_items: &[(Option<String>, String, String)],
+) -> Vec<Vec<(Option<String>, String, String)>> {
     let mut seen = HashSet::with_capacity(client_items.len());
     let mut deduped = Vec::with_capacity(client_items.len());
-    for (client_type, item_id) in client_items {
-        let key = (client_type.clone(), item_id.clone());
+    for (client_id, client_type, item_id) in client_items {
+        let key = (
+            normalize_download_client_id(client_id.as_deref()),
+            client_type.clone(),
+            item_id.clone(),
+        );
         if seen.insert(key.clone()) {
-            deduped.push(key);
+            let (client_id, client_type, item_id) = key;
+            deduped.push((
+                if client_id.is_empty() {
+                    None
+                } else {
+                    Some(client_id)
+                },
+                client_type,
+                item_id,
+            ));
         }
     }
 
@@ -54,6 +82,11 @@ fn download_submission_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<Down
     let download_client_type: String = row
         .try_get("download_client_type")
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    let download_client_id = row
+        .try_get::<Option<String>, _>("download_client_id")
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
     let download_client_item_id: String = row
         .try_get("download_client_item_id")
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -73,11 +106,28 @@ fn download_submission_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<Down
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let episode_id = row.try_get("episode_id").unwrap_or(None);
     let collection_id = row.try_get("collection_id").unwrap_or(None);
+    let episode_set_ids = row
+        .try_get::<Option<String>, _>("episode_set_ids")
+        .ok()
+        .flatten()
+        .map(|raw| {
+            raw.split('\u{1f}')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
 
     Ok(DownloadSubmission {
-        scope: SubmissionScope::from_persisted(&title_id, episode_id, collection_id),
+        scope: SubmissionScope::from_persisted(
+            &title_id,
+            episode_id,
+            collection_id,
+            episode_set_ids,
+        ),
         title_id,
         facet,
+        download_client_id,
         download_client_type,
         download_client_item_id,
         source_hint,
@@ -216,6 +266,11 @@ fn download_queue_command_record_from_row(
         action: DownloadQueueCommandAction::parse(&action).ok_or_else(|| {
             AppError::Repository(format!("unknown download queue action: {action}"))
         })?,
+        client_id: row
+            .try_get::<Option<String>, _>("client_id")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty()),
         client_type: row
             .try_get("client_type")
             .map_err(|err| AppError::Repository(err.to_string()))?,
@@ -329,6 +384,7 @@ pub(crate) async fn delete_external_import_monitor_snapshot_query(
 
 pub(crate) async fn queue_delete_download_command_query(
     pool: &SqlitePool,
+    client_id: Option<&str>,
     client_type: &str,
     download_client_item_id: &str,
     is_history: bool,
@@ -336,14 +392,16 @@ pub(crate) async fn queue_delete_download_command_query(
 ) -> AppResult<AppDownloadQueueCommandRecord> {
     let id = Id::new().0;
     let now = Utc::now().to_rfc3339();
+    let normalized_client_id = normalize_download_client_id(client_id);
 
     sqlx::query(
         "INSERT OR IGNORE INTO download_queue_commands
-         (id, action, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)",
+         (id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)",
     )
     .bind(&id)
     .bind(DownloadQueueCommandAction::Delete.as_str())
+    .bind(&normalized_client_id)
     .bind(client_type)
     .bind(download_client_item_id)
     .bind(if is_history { 1 } else { 0 })
@@ -356,10 +414,11 @@ pub(crate) async fn queue_delete_download_command_query(
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let row = sqlx::query(
-        "SELECT id, action, client_type, download_client_item_id, is_history, status, error_text,
+        "SELECT id, action, client_id, client_type, download_client_item_id, is_history, status, error_text,
                 requested_by_user_id, started_at, finished_at, created_at, updated_at
          FROM download_queue_commands
          WHERE action = ?
+           AND COALESCE(client_id, '') = ?
            AND client_type = ?
            AND download_client_item_id = ?
            AND is_history = ?
@@ -368,6 +427,7 @@ pub(crate) async fn queue_delete_download_command_query(
          LIMIT 1",
     )
     .bind(DownloadQueueCommandAction::Delete.as_str())
+    .bind(&normalized_client_id)
     .bind(client_type)
     .bind(download_client_item_id)
     .bind(if is_history { 1 } else { 0 })
@@ -427,7 +487,7 @@ pub(crate) async fn list_pending_delete_download_commands_query(
     pool: &SqlitePool,
 ) -> AppResult<Vec<AppDownloadQueueCommandRecord>> {
     let rows = sqlx::query(
-        "SELECT id, action, client_type, download_client_item_id, is_history, status, error_text,
+        "SELECT id, action, client_id, client_type, download_client_item_id, is_history, status, error_text,
                 requested_by_user_id, started_at, finished_at, created_at, updated_at
          FROM download_queue_commands
          WHERE action = 'delete'
@@ -485,26 +545,38 @@ pub(crate) async fn update_delete_download_command_status_query(
 
 pub(crate) async fn list_latest_delete_download_commands_for_sources_query(
     pool: &SqlitePool,
-    sources: &[(String, String, bool)],
+    sources: &[(Option<String>, String, String, bool)],
 ) -> AppResult<Vec<AppDownloadQueueCommandRecord>> {
     if sources.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, action, client_type, download_client_item_id, is_history, status, error_text,
+        "SELECT id, action, client_id, client_type, download_client_item_id, is_history, status, error_text,
                 requested_by_user_id, started_at, finished_at, created_at, updated_at
          FROM download_queue_commands
          WHERE action = 'delete' AND ",
     );
 
     query.push("(");
-    for (idx, (client_type, download_client_item_id, is_history)) in sources.iter().enumerate() {
+    for (idx, (client_id, client_type, download_client_item_id, is_history)) in
+        sources.iter().enumerate()
+    {
         if idx > 0 {
             query.push(" OR ");
         }
+        let normalized_client_id = normalize_download_client_id(client_id.as_deref());
+        query.push("(");
+        if normalized_client_id.is_empty() {
+            query.push("COALESCE(client_id, '') = ''");
+        } else {
+            query
+                .push("(COALESCE(client_id, '') = ")
+                .push_bind(normalized_client_id)
+                .push(" OR COALESCE(client_id, '') = '')");
+        }
         query
-            .push("(client_type = ")
+            .push(" AND client_type = ")
             .push_bind(client_type)
             .push(" AND download_client_item_id = ")
             .push_bind(download_client_item_id)
@@ -524,6 +596,7 @@ pub(crate) async fn list_latest_delete_download_commands_for_sources_query(
     for row in rows {
         let record = download_queue_command_record_from_row(&row)?;
         let key = (
+            record.client_id.clone().unwrap_or_default(),
             record.client_type.clone(),
             record.download_client_item_id.clone(),
             record.is_history,
@@ -1388,39 +1461,16 @@ pub(crate) async fn record_download_submission_query(
     pool: &SqlitePool,
     submission: &DownloadSubmission,
 ) -> AppResult<()> {
-    let id = Id::new().0;
-    let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    sqlx::query(
-        "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(download_client_type, download_client_item_id) DO UPDATE
-         SET title_id = excluded.title_id,
-             facet = excluded.facet,
-             source_hint = excluded.source_hint,
-             source_kind = excluded.source_kind,
-             source_title = excluded.source_title,
-             request_signature = excluded.request_signature,
-             episode_id = excluded.episode_id,
-             collection_id = excluded.collection_id",
-    )
-    .bind(&id)
-    .bind(&submission.title_id)
-    .bind(&submission.facet)
-    .bind(&submission.download_client_type)
-    .bind(&submission.download_client_item_id)
-    .bind(submission.source_hint.as_deref())
-    .bind(submission.source_kind.map(|value| value.as_str()))
-    .bind(submission.source_title.as_deref())
-    .bind(submission.request_signature.as_deref())
-    .bind(episode_id)
-    .bind(collection_id)
-    .execute(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    record_download_submission_tx(&mut tx, submission).await?;
 
-    Ok(())
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))
 }
 
 pub(crate) async fn commit_successful_grab_query(
@@ -1485,12 +1535,13 @@ async fn record_download_submission_tx(
 ) -> AppResult<()> {
     let id = Id::new().0;
     let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
+    let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
 
     sqlx::query(
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(download_client_type, download_client_item_id) DO UPDATE
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
          SET title_id = excluded.title_id,
              facet = excluded.facet,
              source_hint = excluded.source_hint,
@@ -1503,6 +1554,7 @@ async fn record_download_submission_tx(
     .bind(&id)
     .bind(&submission.title_id)
     .bind(&submission.facet)
+    .bind(&download_client_id)
     .bind(&submission.download_client_type)
     .bind(&submission.download_client_item_id)
     .bind(submission.source_hint.as_deref())
@@ -1514,6 +1566,53 @@ async fn record_download_submission_tx(
     .execute(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    replace_download_submission_episode_links_tx(
+        tx,
+        &download_client_id,
+        &submission.download_client_type,
+        &submission.download_client_item_id,
+        persisted_episode_set_ids(&submission.scope),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn replace_download_submission_episode_links_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    download_client_id: &str,
+    download_client_type: &str,
+    download_client_item_id: &str,
+    episode_ids: &[String],
+) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM download_submission_episode_links
+         WHERE download_client_id = ?
+           AND download_client_type = ?
+           AND download_client_item_id = ?",
+    )
+    .bind(download_client_id)
+    .bind(download_client_type)
+    .bind(download_client_item_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    for episode_id in episode_ids {
+        sqlx::query(
+            "INSERT OR IGNORE INTO download_submission_episode_links
+             (download_client_id, download_client_type, download_client_item_id, episode_id)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(download_client_id)
+        .bind(download_client_type)
+        .bind(download_client_item_id)
+        .bind(episode_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
 
     Ok(())
 }
@@ -1557,16 +1656,30 @@ async fn supersede_pending_release_siblings_tx(
 
 pub(crate) async fn find_download_submission_query(
     pool: &SqlitePool,
+    download_client_id: Option<&str>,
     download_client_type: &str,
     download_client_item_id: &str,
 ) -> AppResult<Option<DownloadSubmission>> {
+    let normalized_client_id = normalize_download_client_id(download_client_id);
     let row = sqlx::query(
-        "SELECT title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id
+        "SELECT title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id,
+                (SELECT group_concat(link.episode_id, char(31))
+                   FROM download_submission_episode_links link
+                  WHERE link.download_client_id = download_submissions.download_client_id
+                    AND link.download_client_type = download_submissions.download_client_type
+                    AND link.download_client_item_id = download_submissions.download_client_item_id) AS episode_set_ids
          FROM download_submissions
-         WHERE download_client_type = ? AND download_client_item_id = ?",
+         WHERE download_client_type = ?
+           AND download_client_item_id = ?
+           AND (? = '' OR download_client_id = ? OR download_client_id = '')
+         ORDER BY CASE WHEN download_client_id = ? THEN 0 ELSE 1 END
+         LIMIT 1",
     )
     .bind(download_client_type)
     .bind(download_client_item_id)
+    .bind(&normalized_client_id)
+    .bind(&normalized_client_id)
+    .bind(&normalized_client_id)
     .fetch_optional(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -1582,7 +1695,12 @@ pub(crate) async fn list_download_submissions_for_title_query(
     title_id: &str,
 ) -> AppResult<Vec<DownloadSubmission>> {
     let rows = sqlx::query(
-        "SELECT title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id
+        "SELECT title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id,
+                (SELECT group_concat(link.episode_id, char(31))
+                   FROM download_submission_episode_links link
+                  WHERE link.download_client_id = download_submissions.download_client_id
+                    AND link.download_client_type = download_submissions.download_client_type
+                    AND link.download_client_item_id = download_submissions.download_client_item_id) AS episode_set_ids
          FROM download_submissions
          WHERE title_id = ?",
     )
@@ -1601,7 +1719,7 @@ pub(crate) async fn list_download_submissions_for_title_query(
 
 pub(crate) async fn list_download_submissions_for_client_items_query(
     pool: &SqlitePool,
-    client_items: &[(String, String)],
+    client_items: &[(Option<String>, String, String)],
 ) -> AppResult<Vec<DownloadSubmission>> {
     let client_item_chunks = chunk_download_submission_client_items(client_items);
     if client_item_chunks.is_empty() {
@@ -1611,18 +1729,29 @@ pub(crate) async fn list_download_submissions_for_client_items_query(
     let mut out = Vec::new();
     for client_items in client_item_chunks {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id
+            "SELECT title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id,
+                    (SELECT group_concat(link.episode_id, char(31))
+                       FROM download_submission_episode_links link
+                      WHERE link.download_client_id = download_submissions.download_client_id
+                        AND link.download_client_type = download_submissions.download_client_type
+                        AND link.download_client_item_id = download_submissions.download_client_item_id) AS episode_set_ids
              FROM download_submissions
              WHERE ",
         );
-        for (idx, (client_type, item_id)) in client_items.iter().enumerate() {
+        for (idx, (client_id, client_type, item_id)) in client_items.iter().enumerate() {
             if idx > 0 {
                 query.push(" OR ");
             }
+            let normalized_client_id = normalize_download_client_id(client_id.as_deref());
             query.push("(download_client_type = ");
             query.push_bind(client_type);
             query.push(" AND download_client_item_id = ");
             query.push_bind(item_id);
+            if !normalized_client_id.is_empty() {
+                query.push(" AND (download_client_id = ");
+                query.push_bind(normalized_client_id);
+                query.push(" OR download_client_id = '')");
+            }
             query.push(")");
         }
 
@@ -1647,7 +1776,12 @@ pub(crate) async fn find_download_submission_by_title_and_request_signature_quer
     request_signature: &str,
 ) -> AppResult<Option<DownloadSubmission>> {
     let row = sqlx::query(
-        "SELECT title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id
+        "SELECT title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id,
+                (SELECT group_concat(link.episode_id, char(31))
+                   FROM download_submission_episode_links link
+                  WHERE link.download_client_id = download_submissions.download_client_id
+                    AND link.download_client_type = download_submissions.download_client_type
+                    AND link.download_client_item_id = download_submissions.download_client_item_id) AS episode_set_ids
          FROM download_submissions
          WHERE title_id = ? AND request_signature = ?
            AND COALESCE(tracked_state, '') = ''
@@ -1669,13 +1803,67 @@ pub(crate) async fn find_download_submission_by_title_and_request_signature_quer
 
 pub(crate) async fn delete_download_submission_by_client_item_id_query(
     pool: &SqlitePool,
+    download_client_id: Option<&str>,
+    download_client_type: Option<&str>,
     download_client_item_id: &str,
 ) -> AppResult<()> {
-    sqlx::query("DELETE FROM download_submissions WHERE download_client_item_id = ?")
+    let normalized_client_id = normalize_download_client_id(download_client_id);
+    if !normalized_client_id.is_empty() {
+        sqlx::query(
+            "DELETE FROM download_submission_episode_links
+             WHERE download_client_id = ?
+               AND download_client_item_id = ?",
+        )
+        .bind(&normalized_client_id)
         .bind(download_client_item_id)
         .execute(pool)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
+        sqlx::query(
+            "DELETE FROM download_submissions
+             WHERE download_client_id = ?
+               AND download_client_item_id = ?",
+        )
+        .bind(&normalized_client_id)
+        .bind(download_client_item_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    } else if let Some(download_client_type) = download_client_type {
+        sqlx::query(
+            "DELETE FROM download_submission_episode_links
+             WHERE download_client_type = ?
+               AND download_client_item_id = ?",
+        )
+        .bind(download_client_type)
+        .bind(download_client_item_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+        sqlx::query(
+            "DELETE FROM download_submissions
+             WHERE download_client_type = ?
+               AND download_client_item_id = ?",
+        )
+        .bind(download_client_type)
+        .bind(download_client_item_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    } else {
+        sqlx::query(
+            "DELETE FROM download_submission_episode_links WHERE download_client_item_id = ?",
+        )
+        .bind(download_client_item_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+        sqlx::query("DELETE FROM download_submissions WHERE download_client_item_id = ?")
+            .bind(download_client_item_id)
+            .execute(pool)
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
 
     Ok(())
 }
@@ -1684,6 +1872,22 @@ pub(crate) async fn delete_download_submissions_for_title_query(
     pool: &SqlitePool,
     title_id: &str,
 ) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM download_submission_episode_links
+         WHERE EXISTS (
+             SELECT 1
+               FROM download_submissions
+              WHERE download_submissions.download_client_id = download_submission_episode_links.download_client_id
+                AND download_submissions.download_client_type = download_submission_episode_links.download_client_type
+                AND download_submissions.download_client_item_id = download_submission_episode_links.download_client_item_id
+                AND download_submissions.title_id = ?
+         )",
+    )
+    .bind(title_id)
+    .execute(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
     sqlx::query("DELETE FROM download_submissions WHERE title_id = ?")
         .bind(title_id)
         .execute(pool)
@@ -1697,21 +1901,24 @@ pub(crate) async fn delete_download_submissions_for_title_query(
 
 pub(crate) async fn update_tracked_state_query(
     pool: &SqlitePool,
+    download_client_id: Option<&str>,
     download_client_type: &str,
     download_client_item_id: &str,
     tracked_state: &str,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let id = Id::new().0;
+    let normalized_client_id = normalize_download_client_id(download_client_id);
     sqlx::query(
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id, tracked_state, tracked_state_at)
-         VALUES (?, '', '', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
-         ON CONFLICT(download_client_type, download_client_item_id) DO UPDATE
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id, tracked_state, tracked_state_at)
+         VALUES (?, '', '', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
          SET tracked_state = excluded.tracked_state,
              tracked_state_at = excluded.tracked_state_at",
     )
     .bind(&id)
+    .bind(&normalized_client_id)
     .bind(download_client_type)
     .bind(download_client_item_id)
     .bind(tracked_state)
@@ -1724,15 +1931,24 @@ pub(crate) async fn update_tracked_state_query(
 
 pub(crate) async fn get_tracked_state_query(
     pool: &SqlitePool,
+    download_client_id: Option<&str>,
     download_client_type: &str,
     download_client_item_id: &str,
 ) -> AppResult<Option<String>> {
+    let normalized_client_id = normalize_download_client_id(download_client_id);
     let row = sqlx::query(
         "SELECT tracked_state FROM download_submissions
-         WHERE download_client_type = ? AND download_client_item_id = ?",
+         WHERE download_client_type = ?
+           AND download_client_item_id = ?
+           AND (? = '' OR download_client_id = ? OR download_client_id = '')
+         ORDER BY CASE WHEN download_client_id = ? THEN 0 ELSE 1 END
+         LIMIT 1",
     )
     .bind(download_client_type)
     .bind(download_client_item_id)
+    .bind(&normalized_client_id)
+    .bind(&normalized_client_id)
+    .bind(&normalized_client_id)
     .fetch_optional(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;

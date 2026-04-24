@@ -4,8 +4,8 @@ use crate::{
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
-        created_media_update, new_global_domain_event, new_title_domain_event,
-        title_context_snapshot,
+        created_media_update, deleted_media_update, new_global_domain_event,
+        new_title_domain_event, title_context_snapshot,
     },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
@@ -109,6 +109,7 @@ pub async fn start_background_manual_import_poller(
                                 requested_by_user_id: None,
                                 title_id: None,
                                 download_client_item_id: record.source_ref.clone(),
+                                client_id: None,
                                 client_type: record.source_system.clone(),
                                 files: Vec::new(),
                                 requested_at: record.created_at.clone(),
@@ -158,6 +159,7 @@ pub async fn start_background_manual_import_poller(
             {
                 let _ = handle
                     .mark_imported(crate::tracked_downloads::tracked_download_id(
+                        payload.client_id.as_deref(),
                         &payload.client_type,
                         &payload.download_client_item_id,
                     ))
@@ -364,7 +366,11 @@ pub async fn try_import_completed_downloads(
                 .services
                 .workflow
                 .download_submissions
-                .find_by_client_item_id(&completed.client_type, &completed.download_client_item_id)
+                .find_by_client_item_id(
+                    Some(completed.client_id.as_str()),
+                    &completed.client_type,
+                    &completed.download_client_item_id,
+                )
                 .await
             {
                 Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
@@ -1017,7 +1023,7 @@ async fn import_movie_download(
     let year_str = prepared
         .parsed
         .year
-        .or(title.year.and_then(|year| u32::try_from(year).ok()))
+        .or(title.year)
         .map(|y| format!(" ({})", y))
         .unwrap_or_default();
     let title_folder = format!("{}{}", title.name, year_str);
@@ -2158,6 +2164,161 @@ enum EpisodeImportOutcome {
     },
 }
 
+#[derive(Clone, Debug)]
+struct EpisodeUpgradePlan {
+    primary_incumbent: crate::EpisodeScopedMediaFile,
+    additional_superseded: Vec<crate::EpisodeScopedMediaFile>,
+    previous_best_score: i32,
+}
+
+fn media_file_score(file: &crate::TitleMediaFile) -> i32 {
+    file.acquisition_score.unwrap_or(0)
+}
+
+fn reject_broader_episode_incumbent(
+    incumbent: &crate::EpisodeScopedMediaFile,
+) -> crate::post_download_gate::ImportedFileRejection {
+    crate::post_download_gate::ImportedFileRejection {
+        message: format!(
+            "existing episode file {} spans a broader episode set and cannot be replaced by this import",
+            incumbent.media_file.file_path
+        ),
+        recycle_reason: "policy_mismatch",
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        blocking_rule_codes: Vec::new(),
+    }
+}
+
+fn reject_non_upgrade_episode_incumbent(
+    incumbent: &crate::EpisodeScopedMediaFile,
+    new_score: i32,
+) -> crate::post_download_gate::ImportedFileRejection {
+    let old_score = media_file_score(&incumbent.media_file);
+    crate::post_download_gate::ImportedFileRejection {
+        message: format!(
+            "existing episode file {} is equal or better (score {} >= {})",
+            incumbent.media_file.file_path, old_score, new_score
+        ),
+        recycle_reason: "already_imported",
+        skip_reason: Some(ImportSkipReason::AlreadyImported),
+        blocking_rule_codes: Vec::new(),
+    }
+}
+
+fn build_episode_upgrade_plan(
+    incumbents: &[crate::EpisodeScopedMediaFile],
+    target_episode_ids: &[String],
+    new_score: i32,
+) -> Result<EpisodeUpgradePlan, crate::post_download_gate::ImportedFileRejection> {
+    let target_episode_ids = target_episode_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut sorted_incumbents = incumbents.to_vec();
+    sorted_incumbents.sort_by(|left, right| {
+        media_file_score(&right.media_file)
+            .cmp(&media_file_score(&left.media_file))
+            .then_with(|| right.media_file.created_at.cmp(&left.media_file.created_at))
+            .then_with(|| right.media_file.id.cmp(&left.media_file.id))
+    });
+
+    for incumbent in &sorted_incumbents {
+        let incumbent_episode_ids = incumbent
+            .episode_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        if !incumbent_episode_ids.is_subset(&target_episode_ids) {
+            return Err(reject_broader_episode_incumbent(incumbent));
+        }
+
+        if new_score <= media_file_score(&incumbent.media_file) {
+            return Err(reject_non_upgrade_episode_incumbent(incumbent, new_score));
+        }
+    }
+
+    let previous_best_score = sorted_incumbents
+        .iter()
+        .map(|incumbent| media_file_score(&incumbent.media_file))
+        .max()
+        .unwrap_or(0);
+    let primary_incumbent = sorted_incumbents.remove(0);
+
+    Ok(EpisodeUpgradePlan {
+        primary_incumbent,
+        additional_superseded: sorted_incumbents,
+        previous_best_score,
+    })
+}
+
+async fn cleanup_superseded_episode_incumbents(
+    app: &AppUseCase,
+    title: &scryer_domain::Title,
+    superseded: &[crate::EpisodeScopedMediaFile],
+    recycle_config: &crate::recycle_bin::RecycleBinConfig,
+) {
+    for incumbent in superseded {
+        let old_path = PathBuf::from(&incumbent.media_file.file_path);
+        if old_path.exists() {
+            let manifest = crate::recycle_bin::RecycleManifest {
+                recycled_at: chrono::Utc::now().to_rfc3339(),
+                original_path: incumbent.media_file.file_path.clone(),
+                size_bytes: incumbent.media_file.size_bytes as u64,
+                title_id: Some(title.id.clone()),
+                reason: "upgrade_replaced".to_string(),
+            };
+
+            if let Err(error) =
+                crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await
+            {
+                tracing::warn!(
+                    error = %error,
+                    path = %old_path.display(),
+                    file_id = %incumbent.media_file.id,
+                    "failed to recycle superseded episode incumbent; deleting stale database record anyway"
+                );
+            }
+        }
+
+        if let Err(error) = app
+            .append_domain_event(new_title_domain_event(
+                None,
+                title,
+                DomainEventPayload::MediaFileDeleted(scryer_domain::MediaFileDeletedEventData {
+                    title: title_context_snapshot(title),
+                    media_updates: vec![deleted_media_update(
+                        incumbent.media_file.file_path.clone(),
+                    )],
+                    file_id: Some(incumbent.media_file.id.clone()),
+                    reason: scryer_domain::MediaFileDeletedReason::UpgradeCleanup,
+                    episode_ids: incumbent.episode_ids.clone(),
+                }),
+            ))
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                file_id = %incumbent.media_file.id,
+                "failed to emit superseded episode cleanup event"
+            );
+        }
+
+        if let Err(error) = app
+            .services
+            .library
+            .media_files
+            .delete_media_file(&incumbent.media_file.id)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                file_id = %incumbent.media_file.id,
+                "failed to delete superseded episode media file record"
+            );
+        }
+    }
+}
+
 /// Import a single episode video file: parse, gate, import, and link.
 async fn import_single_episode_file(
     app: &AppUseCase,
@@ -2216,13 +2377,17 @@ async fn import_single_episode_file(
         .map(|episode| episode.id.clone())
         .collect();
     let is_filler = target_episodes.iter().any(|episode| episode.is_filler);
-    let existing_files = app
+    let existing_incumbents = app
         .services
         .library
         .media_files
-        .list_media_files_for_title(&title.id)
+        .list_live_media_files_for_episode_ids(&title.id, &target_episode_ids)
         .await
         .unwrap_or_default();
+    let existing_files = existing_incumbents
+        .iter()
+        .map(|incumbent| incumbent.media_file.clone())
+        .collect::<Vec<_>>();
     let existing_score = existing_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
@@ -2326,8 +2491,9 @@ async fn import_single_episode_file(
         return Ok(EpisodeImportOutcome::Skipped);
     }
 
-    // Upgrade check for episodes: find existing file for same dest path
-    if !existing_files.is_empty() {
+    // Upgrade check for episodes: decide against existing files serving the
+    // same episode targets, not by matching destination path.
+    if !existing_incumbents.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             quality_profile,
@@ -2340,87 +2506,118 @@ async fn import_single_episode_file(
             true,
         );
         let new_score = new_decision.preference_score;
-        let dest_str = dest_path.to_string_lossy();
-
-        // Find an existing file at the same dest path (or matching episode)
-        if let Some(existing_file) = existing_files
-            .iter()
-            .find(|file| file.file_path == dest_str.as_ref())
-        {
-            let old_score = existing_file.acquisition_score.unwrap_or(0);
-            if new_score > old_score {
-                let recycle_config =
-                    crate::recycle_bin::resolve_recycle_config(app, Some(media_root)).await;
-
-                match crate::upgrade::execute_upgrade(
+        let upgrade_plan = match build_episode_upgrade_plan(
+            &existing_incumbents,
+            &target_episode_ids,
+            new_score,
+        ) {
+            Ok(plan) => plan,
+            Err(rejection) => {
+                crate::post_download_gate::reject_source_file_before_import(
                     app,
-                    actor,
+                    Some(&actor.id),
                     title,
-                    existing_file,
+                    &completed.name,
                     source_video,
-                    &dest_path,
-                    &prepared,
-                    new_score,
-                    old_score,
                     &target_episode_ids,
+                    &rejection,
+                )
+                .await;
+                persist_file_import_artifact(
+                    app,
+                    import_id,
+                    completed,
+                    title.id.as_str(),
+                    source_video,
+                    "episode",
+                    "rejected",
+                    rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                    None,
+                    &target_episodes,
+                )
+                .await;
+                return Ok(EpisodeImportOutcome::Rejected {
+                    message: rejection.message,
+                    skip_reason: rejection.skip_reason,
+                });
+            }
+        };
+        let recycle_config =
+            crate::recycle_bin::resolve_recycle_config(app, Some(media_root)).await;
+
+        match crate::upgrade::execute_upgrade(
+            app,
+            actor,
+            title,
+            &upgrade_plan.primary_incumbent.media_file,
+            source_video,
+            &dest_path,
+            &prepared,
+            new_score,
+            upgrade_plan.previous_best_score,
+            &target_episode_ids,
+            &recycle_config,
+        )
+        .await
+        {
+            Ok(crate::upgrade::UpgradeResult::Upgraded(outcome)) => {
+                cleanup_superseded_episode_incumbents(
+                    app,
+                    title,
+                    &upgrade_plan.additional_superseded,
                     &recycle_config,
                 )
-                .await
-                {
-                    Ok(crate::upgrade::UpgradeResult::Upgraded(outcome)) => {
-                        persist_file_import_artifact(
-                            app,
-                            import_id,
-                            completed,
-                            title.id.as_str(),
-                            source_video,
-                            "episode",
-                            "imported",
-                            Some("upgrade"),
-                            None,
-                            &target_episodes,
-                        )
-                        .await;
-                        tracing::info!(
-                            title = %title.name,
-                            old_score = outcome.old_score,
-                            new_score = outcome.new_score,
-                            "episode file upgraded"
-                        );
-                        for episode_id in &target_episode_ids {
-                            mark_wanted_completed(app, &title.id, Some(episode_id), None).await;
-                        }
-                        return Ok(EpisodeImportOutcome::Imported {
-                            dest_path: dest_path.to_string_lossy().to_string(),
-                            episode_ids: target_episode_ids.clone(),
-                        });
-                    }
-                    Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
-                        persist_file_import_artifact(
-                            app,
-                            import_id,
-                            completed,
-                            title.id.as_str(),
-                            source_video,
-                            "episode",
-                            "already_present",
-                            rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
-                            None,
-                            &target_episodes,
-                        )
-                        .await;
-                        return Ok(EpisodeImportOutcome::Rejected {
-                            message: rejection.message,
-                            skip_reason: rejection.skip_reason,
-                        });
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            error = %err,
-                            "episode upgrade failed, falling through to normal import"
-                        );
-                    }
+                .await;
+                persist_file_import_artifact(
+                    app,
+                    import_id,
+                    completed,
+                    title.id.as_str(),
+                    source_video,
+                    "episode",
+                    "imported",
+                    Some("upgrade"),
+                    None,
+                    &target_episodes,
+                )
+                .await;
+                tracing::info!(
+                    title = %title.name,
+                    old_score = outcome.old_score,
+                    new_score = outcome.new_score,
+                    superseded_files = upgrade_plan.additional_superseded.len() + 1,
+                    "episode file upgraded"
+                );
+                for episode_id in &target_episode_ids {
+                    mark_wanted_completed(app, &title.id, Some(episode_id), None).await;
                 }
+                return Ok(EpisodeImportOutcome::Imported {
+                    dest_path: dest_path.to_string_lossy().to_string(),
+                    episode_ids: target_episode_ids.clone(),
+                });
+            }
+            Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
+                persist_file_import_artifact(
+                    app,
+                    import_id,
+                    completed,
+                    title.id.as_str(),
+                    source_video,
+                    "episode",
+                    "rejected",
+                    rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                    None,
+                    &target_episodes,
+                )
+                .await;
+                return Ok(EpisodeImportOutcome::Rejected {
+                    message: rejection.message,
+                    skip_reason: rejection.skip_reason,
+                });
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "episode upgrade failed");
+                return Err(err);
             }
         }
     }
@@ -2661,7 +2858,7 @@ pub(crate) fn build_rename_tokens(
     ext: &str,
 ) -> BTreeMap<String, String> {
     let mut tokens = BTreeMap::new();
-    let fallback_title_year = title.year.and_then(|year| u32::try_from(year).ok());
+    let fallback_title_year = title.year;
     let resolved_year = parsed.year.or(fallback_title_year);
     tokens.insert("title".to_string(), title.name.clone());
     tokens.insert(
@@ -3260,7 +3457,7 @@ fn fill_missing_release_metadata(
         target.imdb_id = fallback.imdb_id.clone();
     }
     if target.tmdb_id.is_none() {
-        target.tmdb_id = fallback.tmdb_id;
+        target.tmdb_id = fallback.tmdb_id.clone();
     }
     if target.year.is_none() {
         target.year = fallback.year;
@@ -3404,6 +3601,7 @@ pub struct ManualImportPreview {
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
 pub async fn preview_manual_import(
     app: &AppUseCase,
+    client_id: Option<&str>,
     download_client_item_id: &str,
     title_id: &str,
 ) -> AppResult<ManualImportPreview> {
@@ -3416,7 +3614,13 @@ pub async fn preview_manual_import(
         .await?;
     let completed = completed_downloads
         .iter()
-        .find(|cd| cd.download_client_item_id == download_client_item_id)
+        .find(|cd| {
+            cd.download_client_item_id == download_client_item_id
+                && client_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none_or(|client_id| cd.client_id == client_id)
+        })
         .ok_or_else(|| {
             AppError::NotFound(format!(
                 "completed download not found: {}",
@@ -3565,6 +3769,8 @@ pub struct ManualImportRequestPayload {
     pub requested_by_user_id: Option<String>,
     pub title_id: Option<String>,
     pub download_client_item_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
     pub client_type: String,
     #[serde(default)]
     pub files: Vec<ManualImportFileMapping>,
@@ -3865,6 +4071,22 @@ pub async fn execute_manual_import(
     Ok(results)
 }
 
+fn completed_download_matches_manual_import(
+    download: &CompletedDownload,
+    payload: &ManualImportRequestPayload,
+) -> bool {
+    if !download
+        .client_type
+        .eq_ignore_ascii_case(&payload.client_type)
+        || download.download_client_item_id != payload.download_client_item_id
+    {
+        return false;
+    }
+
+    let client_id = payload.client_id.as_deref().unwrap_or("").trim();
+    client_id.is_empty() || download.client_id == client_id
+}
+
 pub async fn execute_queued_manual_import(
     app: &AppUseCase,
     import_id: &str,
@@ -3895,12 +4117,7 @@ pub async fn execute_queued_manual_import(
             .list_completed_downloads()
             .await?
             .into_iter()
-            .find(|download| {
-                download
-                    .client_type
-                    .eq_ignore_ascii_case(&payload.client_type)
-                    && download.download_client_item_id == payload.download_client_item_id
-            })
+            .find(|download| completed_download_matches_manual_import(download, payload))
             .ok_or_else(|| {
                 AppError::NotFound(format!(
                     "completed download {}",
@@ -3953,12 +4170,7 @@ pub async fn execute_queued_manual_import(
         .list_completed_downloads()
         .await?
         .into_iter()
-        .find(|download| {
-            download
-                .client_type
-                .eq_ignore_ascii_case(&payload.client_type)
-                && download.download_client_item_id == payload.download_client_item_id
-        });
+        .find(|download| completed_download_matches_manual_import(download, payload));
     let results = execute_manual_import(
         app,
         &actor,

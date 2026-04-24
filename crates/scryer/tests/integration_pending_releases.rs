@@ -349,6 +349,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
             download_submission: DownloadSubmission {
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
+                download_client_id: None,
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-1".to_string(),
                 source_hint: None,
@@ -379,7 +380,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     );
 
     let submission = workflow_store
-        .find_by_client_item_id("nzbget", "job-1")
+        .find_by_client_item_id(None, "nzbget", "job-1")
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -452,6 +453,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
             download_submission: DownloadSubmission {
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
+                download_client_id: None,
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-2".to_string(),
                 source_hint: None,
@@ -497,6 +499,7 @@ async fn download_submission_roundtrips_episode_scope() {
         .record_submission(DownloadSubmission {
             title_id: "title-episode-scope".to_string(),
             facet: "series".to_string(),
+            download_client_id: None,
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "job-episode-scope".to_string(),
             source_hint: Some("https://example.invalid/releases/episode-scope.nzb".to_string()),
@@ -519,7 +522,7 @@ async fn download_submission_roundtrips_episode_scope() {
     .expect("load raw submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id("nzbget", "job-episode-scope")
+        .find_by_client_item_id(None, "nzbget", "job-episode-scope")
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -576,7 +579,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     .expect("insert legacy submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id("nzbget", "job-legacy-scope")
+        .find_by_client_item_id(None, "nzbget", "job-legacy-scope")
         .await
         .expect("find legacy submission")
         .expect("legacy submission exists");

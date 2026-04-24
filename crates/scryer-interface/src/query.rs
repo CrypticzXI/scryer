@@ -2,8 +2,8 @@ use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    IndexerEpisodeSearchRequest, IndexerSearchRequest, ReleaseDecisionsQuery, TitleHistoryFilter,
-    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
+    ReleaseDecisionsQuery, TitleHistoryFilter, WantedItemsQuery,
+    is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{PolicyInput, TitleHistoryEventType};
 
@@ -16,9 +16,9 @@ use crate::mappers::{
     from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
     from_media_settings, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_system_health, from_title, from_title_acquisition_diagnostics,
-    from_title_history_page, from_title_history_record, from_title_media_file,
-    from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_service_settings, from_subtitle_provider_config, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
+    from_title_media_file, from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -69,9 +69,6 @@ fn from_subtitle_settings(
 ) -> SubtitleSettingsPayload {
     SubtitleSettingsPayload {
         enabled: settings.enabled,
-        has_open_subtitles_api_key: settings.open_subtitles_api_key.is_some(),
-        open_subtitles_username: settings.open_subtitles_username.unwrap_or_default(),
-        has_open_subtitles_password: settings.open_subtitles_password.is_some(),
         languages: settings
             .languages
             .into_iter()
@@ -489,70 +486,25 @@ impl QueryRoot {
         let actor = actor_from_ctx(ctx)?;
 
         let SearchReleasesInput {
-            query,
             title_id,
             season,
             episode,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-            absolute_episode,
             limit,
         } = input;
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
-        let results = match (query, title_id, season, episode) {
-            (Some(query), None, Some(season), Some(episode)) => app
-                .search_indexers_episode(
-                    &actor,
-                    IndexerEpisodeSearchRequest {
-                        title: query,
-                        season,
-                        episode,
-                        imdb_id,
-                        tvdb_id,
-                        anidb_id,
-                        category,
-                        absolute_episode: absolute_episode.map(|value| value as u32),
-                    },
-                )
-                .await
-                .map_err(to_gql_error)?,
-            (Some(query), None, None, None) => app
-                .search_indexers(
-                    &actor,
-                    IndexerSearchRequest {
-                        query,
-                        imdb_id,
-                        tvdb_id,
-                        anidb_id,
-                        category,
-                    },
-                )
-                .await
-                .map_err(to_gql_error)?,
-            (None, Some(title_id), Some(season), Some(episode)) => app
+        let results = match (season, episode) {
+            (Some(season), Some(episode)) => app
                 .search_indexers_for_episode(&actor, title_id, season, episode)
                 .await
                 .map_err(to_gql_error)?,
-            (None, Some(title_id), None, None) => app
+            (None, None) => app
                 .search_indexers_for_title(&actor, title_id)
                 .await
                 .map_err(to_gql_error)?,
-            (Some(_), Some(_), _, _) => {
-                return Err(Error::new(
-                    "searchReleases accepts either query or titleId, not both",
-                ));
-            }
-            (_, _, Some(_), None) | (_, _, None, Some(_)) => {
+            (Some(_), None) | (None, Some(_)) => {
                 return Err(Error::new(
                     "episode searches require both season and episode",
-                ));
-            }
-            _ => {
-                return Err(Error::new(
-                    "searchReleases requires either query or titleId",
                 ));
             }
         };
@@ -822,21 +774,40 @@ impl QueryRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        include_import_activity: Option<bool>,
+        title_id: Option<String>,
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let items = app
-            .list_download_queue(
-                &actor,
-                include_all_activity.unwrap_or(false),
-                include_history_only.unwrap_or(false),
-                activity_filter
-                    .unwrap_or(DownloadActivityFilterValue::All)
-                    .into_application(),
-            )
-            .await
-            .map_err(to_gql_error)?;
+        let items = match title_id {
+            Some(title_id) => {
+                app.list_download_queue_for_title(
+                    &actor,
+                    &title_id,
+                    include_all_activity.unwrap_or(false),
+                    include_history_only.unwrap_or(false),
+                    include_import_activity.unwrap_or(false),
+                    activity_filter
+                        .unwrap_or(DownloadActivityFilterValue::All)
+                        .into_application(),
+                )
+                .await
+            }
+            None => {
+                app.list_download_queue(
+                    &actor,
+                    include_all_activity.unwrap_or(false),
+                    include_history_only.unwrap_or(false),
+                    include_import_activity.unwrap_or(false),
+                    activity_filter
+                        .unwrap_or(DownloadActivityFilterValue::All)
+                        .into_application(),
+                )
+                .await
+            }
+        }
+        .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_download_queue_item).collect())
     }
 
@@ -1138,6 +1109,31 @@ impl QueryRoot {
         Ok(config)
     }
 
+    async fn subtitle_provider_configs(
+        &self,
+        ctx: &Context<'_>,
+        provider_type: Option<String>,
+    ) -> GqlResult<Vec<SubtitleProviderConfigPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let configs = app
+            .list_subtitle_provider_configs(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(configs
+            .into_iter()
+            .filter(|config| {
+                provider_type.as_ref().is_none_or(|provider_type| {
+                    config.provider_type.eq_ignore_ascii_case(provider_type)
+                })
+            })
+            .map(|config| {
+                let config_fields = app.subtitle_provider_config_fields(&config.provider_type);
+                from_subtitle_provider_config(config, &config_fields)
+            })
+            .collect())
+    }
+
     async fn users(&self, ctx: &Context<'_>) -> GqlResult<Vec<UserPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1278,6 +1274,7 @@ impl QueryRoot {
     async fn preview_manual_import(
         &self,
         ctx: &Context<'_>,
+        client_id: Option<String>,
         download_client_item_id: String,
         title_id: String,
     ) -> GqlResult<ManualImportPreviewPayload> {
@@ -1287,10 +1284,14 @@ impl QueryRoot {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
 
-        let preview =
-            scryer_application::preview_manual_import(&app, &download_client_item_id, &title_id)
-                .await
-                .map_err(to_gql_error)?;
+        let preview = scryer_application::preview_manual_import(
+            &app,
+            client_id.as_deref(),
+            &download_client_item_id,
+            &title_id,
+        )
+        .await
+        .map_err(to_gql_error)?;
 
         Ok(ManualImportPreviewPayload {
             files: preview
@@ -1544,7 +1545,7 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url)
+                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
             })
             .collect())
     }
@@ -1562,7 +1563,44 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url)
+                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
+            })
+            .collect())
+    }
+
+    async fn subtitle_provider_types(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<ProviderTypePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
+            return Err(Error::new("insufficient entitlements"));
+        }
+        let available_host_bindings = app
+            .subtitle_host_bindings()
+            .await
+            .map_err(to_gql_error)?
+            .into_keys()
+            .map(|binding| binding.as_str().to_string())
+            .collect::<Vec<_>>();
+        let provider_types = app.available_subtitle_provider_types();
+        Ok(provider_types
+            .into_iter()
+            .map(|provider_type| {
+                let name = app
+                    .subtitle_provider_name(&provider_type)
+                    .unwrap_or_else(|| provider_type.clone());
+                let fields = app.subtitle_provider_config_fields(&provider_type);
+                let recommended_facets = app.subtitle_provider_recommended_facets(&provider_type);
+                from_provider_type(
+                    provider_type,
+                    name,
+                    fields,
+                    None,
+                    available_host_bindings.clone(),
+                    recommended_facets,
+                )
             })
             .collect())
     }
@@ -1790,7 +1828,7 @@ impl QueryRoot {
                     .notification_provider_name(&pt)
                     .unwrap_or_else(|| pt.clone());
                 let fields = app.notification_provider_config_fields(&pt);
-                from_provider_type(pt, name, fields, None)
+                from_provider_type(pt, name, fields, None, Vec::new(), Vec::new())
             })
             .collect())
     }
@@ -2064,6 +2102,7 @@ impl TitlePayload {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        include_import_activity: Option<bool>,
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -2074,6 +2113,7 @@ impl TitlePayload {
                 &self.id,
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
+                include_import_activity.unwrap_or(false),
                 activity_filter
                     .unwrap_or(DownloadActivityFilterValue::All)
                     .into_application(),

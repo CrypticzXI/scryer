@@ -147,15 +147,9 @@ export function MediaContentView({
     setSeasonFoldersForQueue: (value: boolean) => void;
     minAvailabilityForQueue: string;
     setMinAvailabilityForQueue: (value: string) => void;
-    selectedTvdb: TvdbSearchItem | null;
     tvdbCandidates: TvdbSearchItem[];
-    selectedTvdbId: string | null;
-    selectTvdbCandidate: (candidate: TvdbSearchItem) => void;
-    searchNzbForSelectedTvdb: () => Promise<void>;
-    searchResults: Release[];
     onAddSubmit: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
     addTvdbCandidateToCatalog: (candidate: TvdbSearchItem) => Promise<void> | void;
-    queueFromSearch: (release: Release) => Promise<void> | void;
     titleFilter: string;
     setTitleFilter: (value: string) => void;
     refreshTitles: () => Promise<void> | void;
@@ -258,15 +252,9 @@ export function MediaContentView({
     setSeasonFoldersForQueue,
     minAvailabilityForQueue,
     setMinAvailabilityForQueue,
-    selectedTvdb,
     tvdbCandidates,
-    selectedTvdbId,
-    selectTvdbCandidate,
     addTvdbCandidateToCatalog,
-    searchNzbForSelectedTvdb,
-    searchResults,
     onAddSubmit,
-    queueFromSearch,
     titleFilter,
     setTitleFilter,
     refreshTitles,
@@ -669,13 +657,7 @@ export function MediaContentView({
             setMinAvailabilityForQueue={setMinAvailabilityForQueue}
             onAddSubmit={onAddSubmit}
             tvdbCandidates={tvdbCandidates}
-            selectedTvdbId={selectedTvdbId}
-            selectTvdbCandidate={selectTvdbCandidate}
             addTvdbCandidateToCatalog={addTvdbCandidateToCatalog}
-            searchNzbForSelectedTvdb={searchNzbForSelectedTvdb}
-            selectedTvdb={selectedTvdb}
-            searchResults={searchResults}
-            queueFromSearch={queueFromSearch}
             titleFilter={titleFilter}
             onTitleFilterChange={handleTitleFilterChange}
             onRefreshTitles={handleRefreshTitles}

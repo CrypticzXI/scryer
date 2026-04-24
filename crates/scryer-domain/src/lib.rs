@@ -366,6 +366,33 @@ pub struct NewDownloadClientConfig {
     pub is_enabled: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubtitleProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub config_json: String,
+    #[serde(default)]
+    pub enabled_facets: Vec<String>,
+    pub is_enabled: bool,
+    pub last_health_status: Option<String>,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
+    pub disabled_until: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewSubtitleProviderConfig {
+    pub name: String,
+    pub provider_type: String,
+    pub config_json: String,
+    #[serde(default)]
+    pub enabled_facets: Vec<String>,
+    pub is_enabled: bool,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadQueueState {
@@ -515,6 +542,7 @@ impl ImportArtifactResult {
 pub struct DownloadQueueItem {
     pub id: String,
     pub title_id: Option<String>,
+    pub episode_id: Option<String>,
     pub title_name: String,
     pub facet: Option<String>,
     pub client_id: String,
@@ -1653,6 +1681,7 @@ pub struct DownloadQueueItemUpsertedEventData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadQueueItemRemovedEventData {
     pub download_client_item_id: String,
+    pub client_id: Option<String>,
     pub client_type: Option<String>,
 }
 
@@ -2108,6 +2137,35 @@ impl ConfigFieldType {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigFieldValueSource {
+    #[default]
+    User,
+    HostBinding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PluginHostBindingId {
+    #[serde(rename = "smg.opensubtitles_api_key")]
+    SmgOpenSubtitlesApiKey,
+}
+
+impl PluginHostBindingId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SmgOpenSubtitlesApiKey => "smg.opensubtitles_api_key",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "smg.opensubtitles_api_key" => Some(Self::SmgOpenSubtitlesApiKey),
+            _ => None,
+        }
+    }
+}
+
 /// Describes a single configuration field a plugin expects.
 /// Used by the plugin system to advertise what config keys are needed,
 /// and by the frontend to render dynamic form fields.
@@ -2124,6 +2182,10 @@ pub struct ConfigFieldDef {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_value: Option<String>,
+    #[serde(default)]
+    pub value_source: ConfigFieldValueSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_binding: Option<PluginHostBindingId>,
     /// For "select" fields: the available options.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<ConfigFieldOption>,

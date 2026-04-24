@@ -7,21 +7,25 @@ export function ActivityProgressBar({
   colorClass,
   compact = false,
   indeterminate = false,
+  hideLabel = false,
 }: {
   percent: number;
   remainingLabel: string | null;
   colorClass: string;
   compact?: boolean;
   indeterminate?: boolean;
+  hideLabel?: boolean;
 }) {
   return (
     <div>
-      <div className="mb-1 flex items-center justify-between text-xs">
-        <p className="font-semibold tabular-nums text-foreground">
-          {indeterminate ? "\u2014" : `${percent}%`}
-        </p>
-        <p className="text-muted-foreground">{remainingLabel ?? "\u2014"}</p>
-      </div>
+      {hideLabel ? null : (
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <p className="font-semibold tabular-nums text-foreground">
+            {indeterminate ? "\u2014" : `${percent}%`}
+          </p>
+          <p className="text-muted-foreground">{remainingLabel ?? "\u2014"}</p>
+        </div>
+      )}
       <Progress
         value={percent}
         indeterminate={indeterminate}

@@ -264,6 +264,10 @@ impl AppUseCase {
     fn submission_scope_claims(scope: &SubmissionScope) -> (&'static str, Option<String>) {
         match scope {
             SubmissionScope::Episode { episode_id } => ("episode", Some(episode_id.clone())),
+            SubmissionScope::EpisodeSet { episode_ids } => (
+                "episode_set",
+                Some(serde_json::to_string(episode_ids).unwrap_or_else(|_| String::new())),
+            ),
             SubmissionScope::Collection { collection_id } => {
                 ("collection", Some(collection_id.clone()))
             }
@@ -284,6 +288,28 @@ impl AppUseCase {
                     )
                 })?,
             }),
+            "episode_set" => {
+                let raw = scope_id.ok_or_else(|| {
+                    AppError::Unauthorized(
+                        "release candidate token missing episode-set scope id".into(),
+                    )
+                })?;
+                let mut episode_ids =
+                    serde_json::from_str::<Vec<String>>(&raw).unwrap_or_else(|_| {
+                        raw.split(',')
+                            .map(|value| value.trim().to_string())
+                            .collect()
+                    });
+                episode_ids.retain(|episode_id| !episode_id.is_empty());
+                episode_ids.sort();
+                episode_ids.dedup();
+                if episode_ids.is_empty() {
+                    return Err(AppError::Unauthorized(
+                        "release candidate token has empty episode-set scope".into(),
+                    ));
+                }
+                Ok(SubmissionScope::EpisodeSet { episode_ids })
+            }
             "collection" => Ok(SubmissionScope::Collection {
                 collection_id: scope_id.ok_or_else(|| {
                     AppError::Unauthorized(
@@ -373,6 +399,23 @@ impl AppUseCase {
         scope: &SubmissionScope,
         token: &str,
     ) -> AppResult<QueuedReleaseSelection> {
+        let (selection, claimed_scope) = self
+            .verify_release_candidate_token_for_signed_scope(actor, title_id, token)
+            .await?;
+        if &claimed_scope != scope {
+            return Err(AppError::Unauthorized(
+                "release candidate token scope does not match request".into(),
+            ));
+        }
+        Ok(selection)
+    }
+
+    pub async fn verify_release_candidate_token_for_signed_scope(
+        &self,
+        actor: &User,
+        title_id: &str,
+        token: &str,
+    ) -> AppResult<(QueuedReleaseSelection, SubmissionScope)> {
         let signing_key = self.release_candidate_signing_key_for_actor(actor).await?;
         let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
         validation.validate_exp = true;
@@ -402,17 +445,15 @@ impl AppUseCase {
 
         let claimed_scope =
             Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id)?;
-        if &claimed_scope != scope {
-            return Err(AppError::Unauthorized(
-                "release candidate token scope does not match request".into(),
-            ));
-        }
 
-        Ok(QueuedReleaseSelection {
-            source_hint: Some(claims.source_hint),
-            source_kind: claims.source_kind,
-            source_title: Some(claims.source_title),
-        })
+        Ok((
+            QueuedReleaseSelection {
+                source_hint: Some(claims.source_hint),
+                source_kind: claims.source_kind,
+                source_title: Some(claims.source_title),
+            },
+            claimed_scope,
+        ))
     }
 
     pub async fn authenticate_token(&self, token: &str) -> AppResult<User> {

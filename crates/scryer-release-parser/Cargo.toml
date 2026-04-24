@@ -1,7 +1,7 @@
 [package]
 name = "scryer-release-parser"
 version = "0.11.4"
-edition.workspace = true
+edition = "2024"
 
 [dependencies]
-chrono = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

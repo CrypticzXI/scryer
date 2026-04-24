@@ -18,7 +18,7 @@ use crate::{AppResult, AppUseCase, DownloadSubmission, SubmissionScope};
 /// A download being tracked through scryer's import workflow.
 #[derive(Clone, Debug)]
 pub struct TrackedDownload {
-    /// Composite key: "{client_type}:{download_client_item_id}".
+    /// Composite key scoped to the configured client when available.
     pub id: String,
     pub client_id: String,
     pub client_type: String,
@@ -54,6 +54,7 @@ pub struct TrackedDownload {
 pub struct TrackedDownloadQueueMetadata {
     pub title_id: Option<String>,
     pub facet: Option<String>,
+    pub source_title: Option<String>,
     pub state: TrackedDownloadState,
     pub status: TrackedDownloadStatus,
     pub status_messages: Vec<String>,
@@ -65,6 +66,7 @@ impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
         Self {
             title_id: value.title_id.clone(),
             facet: value.facet.clone(),
+            source_title: value.source_title.clone(),
             state: value.state,
             status: value.status,
             status_messages: value.status_messages.clone(),
@@ -109,6 +111,7 @@ impl TrackedDownloadService {
     /// On update: refreshes client_item but preserves scryer state if past Downloading.
     pub async fn track(&mut self, app: &AppUseCase, client_item: DownloadQueueItem) {
         let id = tracked_download_id(
+            Some(client_item.client_id.as_str()),
             &client_item.client_type,
             &client_item.download_client_item_id,
         );
@@ -237,6 +240,7 @@ impl TrackedDownloadService {
             .workflow
             .download_submissions
             .update_tracked_state(
+                Some(td.client_id.as_str()),
                 &td.client_type,
                 &td.client_item.download_client_item_id,
                 state.as_str(),
@@ -262,7 +266,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(&td.client_type, &td.client_item.download_client_item_id)
+            .find_by_client_item_id(
+                Some(td.client_id.as_str()),
+                &td.client_type,
+                &td.client_item.download_client_item_id,
+            )
             .await
             .ok()
             .flatten();
@@ -329,6 +337,8 @@ impl TrackedDownloadService {
                 .record_submission(DownloadSubmission {
                     title_id: String::new(),
                     facet: td.facet.clone().unwrap_or_default(),
+                    download_client_id: Some(td.client_id.clone())
+                        .filter(|value| !value.is_empty()),
                     download_client_type: td.client_type.clone(),
                     download_client_item_id: td.client_item.download_client_item_id.clone(),
                     source_hint: None,
@@ -350,7 +360,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .download_submissions
-            .get_tracked_state(&td.client_type, &td.client_item.download_client_item_id)
+            .get_tracked_state(
+                Some(td.client_id.as_str()),
+                &td.client_type,
+                &td.client_item.download_client_item_id,
+            )
             .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
             && state.is_terminal()
@@ -374,6 +388,7 @@ impl TrackedDownloadService {
                 .workflow
                 .download_submissions
                 .update_tracked_state(
+                    Some(td.client_id.as_str()),
                     &td.client_type,
                     &td.client_item.download_client_item_id,
                     TrackedDownloadState::Imported.as_str(),
@@ -632,8 +647,16 @@ impl TrackedDownloadHandle {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-pub fn tracked_download_id(client_type: &str, item_id: &str) -> String {
-    format!("{client_type}:{item_id}")
+pub fn tracked_download_id(client_id: Option<&str>, client_type: &str, item_id: &str) -> String {
+    let normalized_client_id = client_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+    if normalized_client_id.is_empty() {
+        return format!("{client_type}:{item_id}");
+    }
+
+    format!("{normalized_client_id}:{item_id}")
 }
 
 #[cfg(test)]
@@ -676,6 +699,7 @@ mod tests {
 
         async fn find_by_client_item_id(
             &self,
+            _: Option<&str>,
             _: &str,
             _: &str,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
@@ -684,7 +708,7 @@ mod tests {
 
         async fn list_for_client_items(
             &self,
-            _: &[(String, String)],
+            _: &[(Option<String>, String, String)],
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
             Ok(self.submission.clone().into_iter().collect())
         }
@@ -705,12 +729,18 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_by_client_item_id(&self, _: &str) -> AppResult<()> {
+        async fn delete_by_client_item_id(
+            &self,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<()> {
             Ok(())
         }
 
         async fn update_tracked_state(
             &self,
+            _: Option<&str>,
             _: &str,
             _: &str,
             tracked_state: &str,
@@ -722,7 +752,12 @@ mod tests {
             Ok(())
         }
 
-        async fn get_tracked_state(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+        async fn get_tracked_state(
+            &self,
+            _: Option<&str>,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<String>> {
             Ok(self.tracked_state.clone())
         }
     }
@@ -1079,6 +1114,13 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+            &self,
+            _: usize,
+        ) -> AppResult<Vec<String>> {
+            Ok(vec![])
+        }
+
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1255,6 +1297,13 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+            &self,
+            _: usize,
+        ) -> AppResult<Vec<String>> {
+            Ok(vec![])
+        }
+
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1379,6 +1428,7 @@ mod tests {
         DownloadQueueItem {
             id: Id::new().0,
             title_id: None,
+            episode_id: None,
             title_name: "Restart Recovery Show".to_string(),
             facet: Some("series".to_string()),
             client_id: "client-1".to_string(),
@@ -1472,6 +1522,7 @@ mod tests {
             submission: Some(crate::DownloadSubmission {
                 title_id: "title-1".to_string(),
                 facet: "series".to_string(),
+                download_client_id: None,
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "dl-1".to_string(),
                 source_hint: None,
@@ -1504,7 +1555,7 @@ mod tests {
 
         tracker.track(&app, build_client_item()).await;
 
-        let tracked = tracker.find("nzbget:dl-1").expect("tracked download");
+        let tracked = tracker.find("client-1:dl-1").expect("tracked download");
         assert_eq!(tracked.state, TrackedDownloadState::Imported);
         assert_eq!(
             download_submissions
@@ -1529,6 +1580,7 @@ mod tests {
 
             async fn find_by_client_item_id(
                 &self,
+                _: Option<&str>,
                 _: &str,
                 _: &str,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
@@ -1537,7 +1589,7 @@ mod tests {
 
             async fn list_for_client_items(
                 &self,
-                _: &[(String, String)],
+                _: &[(Option<String>, String, String)],
             ) -> AppResult<Vec<crate::DownloadSubmission>> {
                 Ok(vec![])
             }
@@ -1558,15 +1610,31 @@ mod tests {
                 Ok(())
             }
 
-            async fn delete_by_client_item_id(&self, _: &str) -> AppResult<()> {
+            async fn delete_by_client_item_id(
+                &self,
+                _: Option<&str>,
+                _: Option<&str>,
+                _: &str,
+            ) -> AppResult<()> {
                 Ok(())
             }
 
-            async fn update_tracked_state(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+            async fn update_tracked_state(
+                &self,
+                _: Option<&str>,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> AppResult<()> {
                 Err(AppError::Repository("boom".into()))
             }
 
-            async fn get_tracked_state(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+            async fn get_tracked_state(
+                &self,
+                _: Option<&str>,
+                _: &str,
+                _: &str,
+            ) -> AppResult<Option<String>> {
                 Ok(None)
             }
         }
@@ -1602,17 +1670,17 @@ mod tests {
         tracker.track(&app, build_client_item()).await;
 
         assert!(
-            tracker.find("nzbget:dl-1").is_some(),
+            tracker.find("client-1:dl-1").is_some(),
             "tracked download should exist before persistence attempt"
         );
 
         let persisted = tracker
-            .persist_terminal_state(&app, "nzbget:dl-1", TrackedDownloadState::Failed)
+            .persist_terminal_state(&app, "client-1:dl-1", TrackedDownloadState::Failed)
             .await;
 
         assert!(!persisted, "persistence should report failure");
         assert!(
-            tracker.find("nzbget:dl-1").is_some(),
+            tracker.find("client-1:dl-1").is_some(),
             "tracked download should remain cached when persistence fails"
         );
     }
@@ -1666,12 +1734,12 @@ mod tests {
 
         tracker.track(&app, item).await;
 
-        let tracked = tracker.find("weaver:job-1").expect("tracked download");
+        let tracked = tracker.find("client-1:job-1").expect("tracked download");
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
 
         let tracked = tracker
-            .find_mut("weaver:job-1")
+            .find_mut("client-1:job-1")
             .expect("tracked download mut");
         crate::completed_download_handler::check(&app, tracked).await;
 
@@ -1703,7 +1771,7 @@ mod tests {
 
         tracker.track(&app, item).await;
 
-        let tracked = tracker.find("weaver:job-imdb").expect("tracked download");
+        let tracked = tracker.find("client-1:job-imdb").expect("tracked download");
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::IdOnly);
     }
@@ -1746,14 +1814,14 @@ mod tests {
 
         tracker.track(&app, item).await;
         let tracked = tracker
-            .find_mut("weaver:job-manual-movie")
+            .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         crate::completed_download_handler::check(&app, tracked).await;
         assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
         assert!(tracked.title_id.is_none());
 
         let tracked = tracker
-            .find_mut("weaver:job-manual-movie")
+            .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         assign_title_to_tracked_download(&app, tracked, &title).await;
 
@@ -1789,7 +1857,7 @@ mod tests {
 
         tracker.track(&app, initial).await;
         let tracked = tracker
-            .find("weaver:job-manual-movie-reresolve")
+            .find("client-1:job-manual-movie-reresolve")
             .expect("tracked download");
         assert!(tracked.title_id.is_none());
         assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
@@ -1806,7 +1874,7 @@ mod tests {
         tracker.track(&app, unchanged).await;
 
         let tracked = tracker
-            .find("weaver:job-manual-movie-reresolve")
+            .find("client-1:job-manual-movie-reresolve")
             .expect("tracked download");
         assert!(tracked.title_id.is_none());
         assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
@@ -1839,7 +1907,7 @@ mod tests {
         tracker.track(&app, updated).await;
 
         let tracked = tracker
-            .find("weaver:job-manual-movie-reresolve")
+            .find("client-1:job-manual-movie-reresolve")
             .expect("tracked download");
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
@@ -1900,7 +1968,7 @@ mod tests {
 
         tracker.track(&app, item).await;
         let tracked = tracker
-            .find_mut("weaver:job-manual-movie-downloading")
+            .find_mut("client-1:job-manual-movie-downloading")
             .expect("tracked download mut");
         tracked.state = TrackedDownloadState::ImportBlocked;
         tracked.match_type = TitleMatchType::Unmatched;
@@ -1938,7 +2006,7 @@ mod tests {
         initial.is_scryer_origin = false;
 
         tracker.track(&app, initial).await;
-        let tracked = tracker.find("weaver:job-2").expect("tracked download");
+        let tracked = tracker.find("client-1:job-2").expect("tracked download");
         assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
         assert!(tracked.title_id.is_none());
 
@@ -1953,7 +2021,7 @@ mod tests {
 
         tracker.track(&app, updated).await;
 
-        let tracked = tracker.find("weaver:job-2").expect("tracked download");
+        let tracked = tracker.find("client-1:job-2").expect("tracked download");
         assert_eq!(tracked.match_type, TitleMatchType::ClientParameter);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert!(tracked.client_item.is_scryer_origin);
@@ -1982,7 +2050,7 @@ mod tests {
         tracker.track(&app, initial).await;
 
         let tracked = tracker
-            .find("weaver:job-facet-reresolve")
+            .find("client-1:job-facet-reresolve")
             .expect("tracked download");
         assert_eq!(tracked.match_type, TitleMatchType::Unmatched);
         assert!(tracked.title_id.is_none());
@@ -1998,7 +2066,7 @@ mod tests {
         tracker.track(&app, updated).await;
 
         let tracked = tracker
-            .find("weaver:job-facet-reresolve")
+            .find("client-1:job-facet-reresolve")
             .expect("tracked download");
         assert_eq!(tracked.match_type, TitleMatchType::TitleParse);
         assert_eq!(tracked.title_id.as_deref(), Some(anime_title.id.as_str()));
@@ -2014,9 +2082,9 @@ mod tests {
             ("failed", TrackedDownloadState::FailedPending),
         ] {
             tracker.cache.insert(
-                format!("nzbget:{suffix}"),
+                format!("client-1:{suffix}"),
                 TrackedDownload {
-                    id: format!("nzbget:{suffix}"),
+                    id: format!("client-1:{suffix}"),
                     client_id: "client-1".to_string(),
                     client_type: "nzbget".to_string(),
                     client_item: build_client_item(),
@@ -2041,17 +2109,17 @@ mod tests {
 
         assert!(
             tracker
-                .find("nzbget:pending")
+                .find("client-1:pending")
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(
             tracker
-                .find("nzbget:importing")
+                .find("client-1:importing")
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(
             tracker
-                .find("nzbget:failed")
+                .find("client-1:failed")
                 .is_some_and(|td| td.is_trackable)
         );
     }

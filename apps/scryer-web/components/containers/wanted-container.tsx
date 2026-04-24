@@ -258,11 +258,15 @@ export const WantedContainer = memo(function WantedContainer({
       if (error) {
         setGlobalStatus(error.message);
       } else {
-        setGlobalStatus(`queued ${data?.triggerTitleMismatchRecoverySearch ?? 0} mismatch recovery items`);
+        setGlobalStatus(
+          t("status.mismatchRecoveryQueued", {
+            count: data?.triggerTitleMismatchRecoverySearch ?? 0,
+          }),
+        );
         void refreshItems();
       }
     },
-    [executeMismatchRecovery, refreshItems, setGlobalStatus],
+    [executeMismatchRecovery, refreshItems, setGlobalStatus, t],
   );
 
   // --- Cutoff search actions ---

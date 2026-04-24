@@ -1240,7 +1240,8 @@ const zh_CN: LocaleDictionary = {
   "subtitle.download": "下载",
   "subtitle.downloading": "正在下载...",
   "subtitle.noResults": "没有找到字幕",
-  "subtitle.score": "得分：{{score}}",
+  "subtitle.score": "得分",
+  "subtitle.scoreWithValue": "得分：{{score}}",
   "subtitle.hashMatch": "哈希匹配",
   "subtitle.hearingImpaired": "听障",
   "subtitle.forced": "强制",
@@ -1353,6 +1354,7 @@ const zh_CN: LocaleDictionary = {
   "status.indexerCreated": "索引器已保存。",
   "status.indexerUpdated": "索引器已更新。",
   "status.searchMonitoredQueued": "已将 {{count}} 个监控项加入后台搜索队列。",
+  "status.mismatchRecoveryQueued": "已将 {{count}} 个不匹配恢复项目加入队列。",
   "status.searchMonitoredEmpty": "当前没有符合搜索条件的监控项。",
   "status.titleScanSuccess":
     "扫描完成。已导入 {{imported}} 个，跳过 {{skipped}} 个，未匹配 {{unmatched}} 个。",

@@ -30,6 +30,7 @@ pub(crate) struct PreparedImportCandidate {
     pub rescore_changes: Vec<String>,
 }
 
+#[derive(Debug)]
 pub struct ImportedFileRejection {
     pub message: String,
     pub recycle_reason: &'static str,

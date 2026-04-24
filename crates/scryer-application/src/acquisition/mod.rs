@@ -1,6 +1,7 @@
 pub(crate) use crate::*;
 
 pub(crate) mod acquisition;
+pub(crate) mod coverage;
 pub(crate) mod decision_helpers;
 pub(crate) mod delay_profile;
 pub(crate) mod pending;

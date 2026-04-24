@@ -1,19 +1,25 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use extism::Manifest;
 use scryer_application::{
     DownloadClient, DownloadClientPluginProvider, IndexerClient, IndexerPluginProvider,
-    NotificationClient, NotificationPluginProvider,
+    NotificationClient, NotificationPluginProvider, SubtitlePluginProvider, SubtitleProviderClient,
 };
-use scryer_domain::{DownloadClientConfig, IndexerConfig, NotificationChannelConfig};
+use scryer_domain::{
+    ConfigFieldValueSource, DownloadClientConfig, IndexerConfig, NotificationChannelConfig,
+    PluginHostBindingId, SubtitleProviderConfig,
+};
 use tracing::{info, warn};
 
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
-use crate::types::PluginDescriptor;
+use crate::subtitle_adapter::WasmSubtitleClient;
+use crate::types::{PluginDescriptor, SubtitleProviderMode};
 
 const SUPPORTED_SDK_MAJOR: &str = "0";
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
@@ -24,8 +30,21 @@ const SUPPORTED_PLUGIN_TYPES: &[&str] = &[
     "torrent_indexer",
     "notification",
     "download_client",
+    "subtitle_provider",
 ];
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
+
+type SubtitleClientCacheKey = (String, String, String, String);
+type SubtitleClientCache =
+    std::sync::Mutex<HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>>;
+
+static WASMTIME_PLUGIN_BUILD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PluginLoadSource {
+    Builtin,
+    External,
+}
 
 struct LoadedPlugin {
     wasm_bytes: Vec<u8>,
@@ -49,7 +68,7 @@ impl WasmIndexerPluginProvider {
     pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
         match load_from_bytes(wasm_bytes) {
             Ok((descriptor, bytes)) => {
-                if !validate_indexer_descriptor(&descriptor) {
+                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::External) {
                     return self;
                 }
 
@@ -120,11 +139,15 @@ impl WasmIndexerPluginProvider {
     /// `provider_aliases`). If an external plugin already claims the same
     /// provider_type, the external one wins and the built-in is skipped
     /// for that key.
-    pub fn with_builtin(mut self, wasm_bytes: &[u8]) -> Self {
-        match load_from_bytes(wasm_bytes) {
+    pub fn with_builtin(self, wasm_bytes: &[u8]) -> Self {
+        self.with_loaded_builtin(load_from_bytes(wasm_bytes))
+    }
+
+    fn with_loaded_builtin(mut self, loaded: Result<(PluginDescriptor, Vec<u8>), String>) -> Self {
+        match loaded {
             Ok((descriptor, bytes)) => {
                 let descriptor = apply_builtin_indexer_overrides(descriptor);
-                if !validate_indexer_descriptor(&descriptor) {
+                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
                     return self;
                 }
 
@@ -483,7 +506,11 @@ impl WasmDownloadClientPluginProvider {
     pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
         match load_from_bytes(wasm_bytes) {
             Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(&descriptor, Some("download_client")) {
+                if !validate_descriptor_for_type(
+                    &descriptor,
+                    Some("download_client"),
+                    PluginLoadSource::External,
+                ) {
                     return self;
                 }
 
@@ -732,6 +759,7 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
 fn validate_descriptor_for_type(
     descriptor: &PluginDescriptor,
     expected_type: Option<&str>,
+    load_source: PluginLoadSource,
 ) -> bool {
     let sdk_major = descriptor.sdk_version.split('.').next().unwrap_or("");
     if sdk_major != SUPPORTED_SDK_MAJOR {
@@ -760,6 +788,98 @@ fn validate_descriptor_for_type(
         return false;
     }
 
+    let mut capability_blocks = 0;
+    if descriptor.notification_capabilities.is_some() {
+        capability_blocks += 1;
+    }
+    if descriptor.download_client_capabilities.is_some() {
+        capability_blocks += 1;
+    }
+    if descriptor.subtitle_capabilities.is_some() {
+        capability_blocks += 1;
+    }
+
+    match descriptor.plugin_type.as_str() {
+        plugin_type if is_indexer_plugin_type(plugin_type) => {
+            if capability_blocks != 0 {
+                warn!(
+                    plugin = descriptor.name.as_str(),
+                    plugin_type = descriptor.plugin_type.as_str(),
+                    "skipping plugin: indexer plugins must not declare non-indexer capability blocks"
+                );
+                return false;
+            }
+        }
+        "notification" => {
+            if capability_blocks != 1 || descriptor.notification_capabilities.is_none() {
+                warn!(
+                    plugin = descriptor.name.as_str(),
+                    plugin_type = descriptor.plugin_type.as_str(),
+                    "skipping plugin: notification plugins must declare exactly one notification capability block"
+                );
+                return false;
+            }
+        }
+        "download_client" => {
+            if capability_blocks != 1 || descriptor.download_client_capabilities.is_none() {
+                warn!(
+                    plugin = descriptor.name.as_str(),
+                    plugin_type = descriptor.plugin_type.as_str(),
+                    "skipping plugin: download client plugins must declare exactly one download-client capability block"
+                );
+                return false;
+            }
+        }
+        "subtitle_provider" => {
+            if capability_blocks != 1 || descriptor.subtitle_capabilities.is_none() {
+                warn!(
+                    plugin = descriptor.name.as_str(),
+                    plugin_type = descriptor.plugin_type.as_str(),
+                    "skipping plugin: subtitle plugins must declare exactly one subtitle capability block"
+                );
+                return false;
+            }
+        }
+        _ => {}
+    }
+
+    for field in &descriptor.config_fields {
+        match field.value_source {
+            ConfigFieldValueSource::User => {
+                if field.host_binding.is_some() {
+                    warn!(
+                        plugin = descriptor.name.as_str(),
+                        provider_type = descriptor.provider_type.as_str(),
+                        field_key = field.key.as_str(),
+                        "skipping plugin: user-sourced config field must not declare host_binding"
+                    );
+                    return false;
+                }
+            }
+            ConfigFieldValueSource::HostBinding => {
+                let Some(binding) = field.host_binding else {
+                    warn!(
+                        plugin = descriptor.name.as_str(),
+                        provider_type = descriptor.provider_type.as_str(),
+                        field_key = field.key.as_str(),
+                        "skipping plugin: host-binding field must declare host_binding"
+                    );
+                    return false;
+                };
+
+                if !binding_allowed_for_plugin(binding, descriptor, load_source) {
+                    warn!(
+                        plugin = descriptor.name.as_str(),
+                        provider_type = descriptor.provider_type.as_str(),
+                        binding = binding.as_str(),
+                        "skipping plugin: host_binding is not permitted for this plugin"
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+
     true
 }
 
@@ -767,9 +887,28 @@ fn is_indexer_plugin_type(plugin_type: &str) -> bool {
     INDEXER_PLUGIN_TYPES.contains(&plugin_type)
 }
 
-fn validate_indexer_descriptor(descriptor: &PluginDescriptor) -> bool {
-    validate_descriptor_for_type(descriptor, None)
+fn validate_indexer_descriptor(
+    descriptor: &PluginDescriptor,
+    load_source: PluginLoadSource,
+) -> bool {
+    validate_descriptor_for_type(descriptor, None, load_source)
         && is_indexer_plugin_type(&descriptor.plugin_type)
+}
+
+fn binding_allowed_for_plugin(
+    binding: PluginHostBindingId,
+    descriptor: &PluginDescriptor,
+    load_source: PluginLoadSource,
+) -> bool {
+    match binding {
+        PluginHostBindingId::SmgOpenSubtitlesApiKey => {
+            load_source == PluginLoadSource::Builtin
+                && descriptor.plugin_type == "subtitle_provider"
+                && descriptor
+                    .provider_type
+                    .eq_ignore_ascii_case("opensubtitles")
+        }
+    }
 }
 
 pub fn build_indexer_plugin_provider(
@@ -782,12 +921,15 @@ pub fn build_indexer_plugin_provider(
         provider = provider.with_external_bytes(bytes);
     }
 
-    provider = provider
-        .with_builtin(crate::builtins::NZBGEEK_WASM)
-        .with_builtin(crate::builtins::DOGNZB_WASM)
-        .with_builtin(crate::builtins::NEWZNAB_WASM)
-        .with_builtin(crate::builtins::ANIMETOSHO_WASM)
-        .with_builtin(crate::builtins::TORZNAB_WASM);
+    for loaded in load_builtin_bytes_parallel(&[
+        crate::builtins::NZBGEEK_WASM,
+        crate::builtins::DOGNZB_WASM,
+        crate::builtins::NEWZNAB_WASM,
+        crate::builtins::ANIMETOSHO_WASM,
+        crate::builtins::TORZNAB_WASM,
+    ]) {
+        provider = provider.with_loaded_builtin(loaded);
+    }
 
     for provider_type in disabled_builtins {
         provider = provider.without_provider_type(provider_type);
@@ -804,6 +946,340 @@ pub fn build_download_client_plugin_provider(
 
     for bytes in external_wasm_bytes {
         provider = provider.with_external_bytes(bytes);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+// ── Subtitle provider plugin provider ────────────────────────────────
+
+pub struct WasmSubtitlePluginProvider {
+    plugins: HashMap<String, LoadedPlugin>,
+}
+
+impl WasmSubtitlePluginProvider {
+    pub fn empty() -> Self {
+        Self {
+            plugins: HashMap::new(),
+        }
+    }
+
+    pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
+        match load_from_bytes(wasm_bytes) {
+            Ok((descriptor, bytes)) => {
+                if !validate_descriptor_for_type(
+                    &descriptor,
+                    Some("subtitle_provider"),
+                    PluginLoadSource::External,
+                ) {
+                    return self;
+                }
+
+                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                info!(
+                    plugin = descriptor.name.as_str(),
+                    version = descriptor.version.as_str(),
+                    provider_type = provider_type.as_str(),
+                    "registered external subtitle provider plugin"
+                );
+                self.plugins.insert(
+                    provider_type,
+                    LoadedPlugin {
+                        wasm_bytes: bytes,
+                        descriptor,
+                    },
+                );
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load external subtitle provider plugin");
+            }
+        }
+        self
+    }
+
+    pub fn with_builtin(self, wasm_bytes: &[u8]) -> Self {
+        self.with_loaded_builtin(load_from_bytes(wasm_bytes))
+    }
+
+    fn with_loaded_builtin(mut self, loaded: Result<(PluginDescriptor, Vec<u8>), String>) -> Self {
+        match loaded {
+            Ok((descriptor, bytes)) => {
+                if !validate_descriptor_for_type(
+                    &descriptor,
+                    Some("subtitle_provider"),
+                    PluginLoadSource::Builtin,
+                ) {
+                    return self;
+                }
+
+                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                if self.plugins.contains_key(&provider_type) {
+                    return self;
+                }
+
+                info!(
+                    plugin = descriptor.name.as_str(),
+                    version = descriptor.version.as_str(),
+                    provider_type = provider_type.as_str(),
+                    "registered built-in subtitle provider plugin"
+                );
+                self.plugins.insert(
+                    provider_type,
+                    LoadedPlugin {
+                        wasm_bytes: bytes,
+                        descriptor,
+                    },
+                );
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load built-in subtitle provider plugin");
+            }
+        }
+        self
+    }
+
+    pub fn without_provider_type(mut self, provider_type: &str) -> Self {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins.remove(&key);
+        self
+    }
+}
+
+impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
+    fn client_for_config(
+        &self,
+        config: &SubtitleProviderConfig,
+        host_bindings: &HashMap<PluginHostBindingId, String>,
+    ) -> Option<Arc<dyn SubtitleProviderClient>> {
+        let provider = config.provider_type.trim().to_ascii_lowercase();
+        let loaded = self.plugins.get(&provider)?;
+        match WasmSubtitleClient::new(
+            loaded.wasm_bytes.clone(),
+            loaded.descriptor.clone(),
+            config.clone(),
+            host_bindings.clone(),
+        ) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(error) => {
+                warn!(
+                    subtitle_provider = config.name.as_str(),
+                    provider_type = provider.as_str(),
+                    error = %error,
+                    "failed to instantiate WASM subtitle provider plugin"
+                );
+                None
+            }
+        }
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.plugins
+            .iter()
+            .filter(|(key, loaded)| {
+                **key == loaded.descriptor.provider_type.trim().to_ascii_lowercase()
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .and_then(|loaded| loaded.descriptor.subtitle_capabilities.as_ref())
+            .is_some_and(|capabilities| capabilities.mode == SubtitleProviderMode::Catalog)
+    }
+
+    fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .and_then(|loaded| loaded.descriptor.subtitle_capabilities.as_ref())
+            .map(|capabilities| capabilities.recommended_facets.clone())
+            .unwrap_or_default()
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.config_fields.clone())
+            .unwrap_or_default()
+    }
+
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.name.clone())
+    }
+
+    fn reload_plugins(
+        &self,
+        _external_wasm_bytes: &[&[u8]],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        Err("use DynamicSubtitlePluginProvider for reload".to_string())
+    }
+}
+
+pub struct DynamicSubtitlePluginProvider {
+    inner: std::sync::RwLock<WasmSubtitlePluginProvider>,
+    client_cache: SubtitleClientCache,
+}
+
+impl DynamicSubtitlePluginProvider {
+    pub fn new(provider: WasmSubtitlePluginProvider) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(provider),
+            client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn reload(&self, new_provider: WasmSubtitlePluginProvider) {
+        let mut guard = self
+            .inner
+            .write()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        *guard = new_provider;
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.clear();
+        }
+        info!("subtitle plugin provider reloaded");
+    }
+}
+
+impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
+    fn client_for_config(
+        &self,
+        config: &SubtitleProviderConfig,
+        host_bindings: &HashMap<PluginHostBindingId, String>,
+    ) -> Option<Arc<dyn SubtitleProviderClient>> {
+        let cache_key = (
+            config.id.clone(),
+            config.updated_at.to_rfc3339(),
+            cache_fingerprint(&config.config_json),
+            host_binding_cache_key(host_bindings),
+        );
+
+        if let Ok(cache) = self.client_cache.lock()
+            && let Some(client) = cache.get(&cache_key)
+        {
+            return Some(Arc::clone(client));
+        }
+
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        let client = guard.client_for_config(config, host_bindings)?;
+
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.insert(cache_key, Arc::clone(&client));
+        }
+
+        Some(client)
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.available_provider_types()
+    }
+
+    fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.supports_catalog_search_for_provider(provider_type)
+    }
+
+    fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.recommended_facets_for_provider(provider_type)
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.config_fields_for_provider(provider_type)
+    }
+
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.plugin_name_for_provider(provider_type)
+    }
+
+    fn reload_plugins(
+        &self,
+        external_wasm_bytes: &[&[u8]],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(build_subtitle_plugin_provider(
+            external_wasm_bytes,
+            disabled_builtins,
+        ));
+        Ok(())
+    }
+}
+
+fn host_binding_cache_key(host_bindings: &HashMap<PluginHostBindingId, String>) -> String {
+    let mut entries = host_bindings
+        .iter()
+        .map(|(binding, value)| (binding.as_str(), value))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    cache_fingerprint(
+        &entries
+            .into_iter()
+            .map(|(binding, value)| format!("{binding}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn cache_fingerprint(value: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+pub fn build_subtitle_plugin_provider(
+    external_wasm_bytes: &[&[u8]],
+    disabled_builtins: &[String],
+) -> WasmSubtitlePluginProvider {
+    let mut provider = WasmSubtitlePluginProvider::empty();
+
+    for bytes in external_wasm_bytes {
+        provider = provider.with_external_bytes(bytes);
+    }
+
+    for loaded in load_builtin_bytes_parallel(&[
+        crate::builtins::OPENSUBTITLES_WASM,
+        crate::builtins::JIMAKU_WASM,
+    ]) {
+        provider = provider.with_loaded_builtin(loaded);
     }
 
     for provider_type in disabled_builtins {
@@ -839,7 +1315,7 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
 
         match load_single_plugin(&wasm_path) {
             Ok((descriptor, wasm_bytes)) => {
-                if !validate_indexer_descriptor(&descriptor) {
+                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::External) {
                     continue;
                 }
 
@@ -1035,6 +1511,14 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
+    // Wasmtime's filesystem cache is not race-free when multiple identical
+    // modules compile concurrently in the same process. Serialize the build
+    // step so parallel provider/client loading does not emit cache rename
+    // warnings for a benign same-artifact race.
+    let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     extism::PluginBuilder::new(manifest)
         .with_wasi(true)
         .with_http_response_headers(true)
@@ -1060,6 +1544,25 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     Ok((descriptor, bytes))
 }
 
+fn load_builtin_bytes_parallel(
+    wasm_bytes: &[&'static [u8]],
+) -> Vec<Result<(PluginDescriptor, Vec<u8>), String>> {
+    let handles = wasm_bytes
+        .iter()
+        .copied()
+        .map(|bytes| std::thread::spawn(move || load_from_bytes(bytes)))
+        .collect::<Vec<_>>();
+
+    handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|_| Err("built-in plugin loader panicked".to_string()))
+        })
+        .collect()
+}
+
 // ── Notification plugin provider ───────────────────────────────────────
 
 pub struct WasmNotificationPluginProvider {
@@ -1076,7 +1579,11 @@ impl WasmNotificationPluginProvider {
     pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
         match load_from_bytes(wasm_bytes) {
             Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(&descriptor, Some("notification")) {
+                if !validate_descriptor_for_type(
+                    &descriptor,
+                    Some("notification"),
+                    PluginLoadSource::External,
+                ) {
                     return self;
                 }
 
@@ -1337,20 +1844,93 @@ mod tests {
             accepted_inputs: vec![],
             isolation_modes: vec![],
             download_client_capabilities: None,
+            subtitle_capabilities: None,
         }
     }
 
     #[test]
     fn indexer_family_types_are_accepted() {
-        assert!(validate_indexer_descriptor(&descriptor("indexer")));
-        assert!(validate_indexer_descriptor(&descriptor("usenet_indexer")));
-        assert!(validate_indexer_descriptor(&descriptor("torrent_indexer")));
+        assert!(validate_indexer_descriptor(
+            &descriptor("indexer"),
+            PluginLoadSource::External
+        ));
+        assert!(validate_indexer_descriptor(
+            &descriptor("usenet_indexer"),
+            PluginLoadSource::External
+        ));
+        assert!(validate_indexer_descriptor(
+            &descriptor("torrent_indexer"),
+            PluginLoadSource::External
+        ));
     }
 
     #[test]
     fn non_indexer_types_are_rejected_for_indexer_provider() {
-        assert!(!validate_indexer_descriptor(&descriptor("notification")));
-        assert!(!validate_indexer_descriptor(&descriptor("download_client")));
+        assert!(!validate_indexer_descriptor(
+            &descriptor("notification"),
+            PluginLoadSource::External
+        ));
+        assert!(!validate_indexer_descriptor(
+            &descriptor("download_client"),
+            PluginLoadSource::External
+        ));
+    }
+
+    #[test]
+    fn provider_type_collision_is_allowed_across_plugin_families() {
+        let mut indexer = descriptor("indexer");
+        indexer.provider_type = "animetosho".to_string();
+
+        let mut subtitle = descriptor("subtitle_provider");
+        subtitle.provider_type = "animetosho".to_string();
+        subtitle.subtitle_capabilities = Some(crate::types::SubtitleCapabilities::default());
+
+        assert!(validate_indexer_descriptor(
+            &indexer,
+            PluginLoadSource::External
+        ));
+        assert!(validate_descriptor_for_type(
+            &subtitle,
+            Some("subtitle_provider"),
+            PluginLoadSource::External
+        ));
+    }
+
+    #[test]
+    fn subtitle_provider_rejects_extra_capability_blocks() {
+        let mut descriptor = descriptor("subtitle_provider");
+        descriptor.subtitle_capabilities = Some(crate::types::SubtitleCapabilities::default());
+        descriptor.notification_capabilities =
+            Some(crate::types::NotificationCapabilities::default());
+        assert!(!validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::Builtin
+        ));
+    }
+
+    #[test]
+    fn non_subtitle_plugins_cannot_request_subtitle_host_bindings() {
+        let mut descriptor = descriptor("notification");
+        descriptor.notification_capabilities =
+            Some(crate::types::NotificationCapabilities::default());
+        descriptor.config_fields = vec![scryer_domain::ConfigFieldDef {
+            key: "api_key".to_string(),
+            label: "API Key".to_string(),
+            field_type: scryer_domain::ConfigFieldType::Password,
+            required: true,
+            default_value: None,
+            value_source: scryer_domain::ConfigFieldValueSource::HostBinding,
+            host_binding: Some(scryer_domain::PluginHostBindingId::SmgOpenSubtitlesApiKey),
+            options: vec![],
+            help_text: None,
+        }];
+
+        assert!(!validate_descriptor_for_type(
+            &descriptor,
+            Some("notification"),
+            PluginLoadSource::External
+        ));
     }
 
     #[test]
@@ -1374,5 +1954,13 @@ mod tests {
     fn parse_config_json_entries_requires_object_root() {
         let error = parse_config_json_entries(r#"["not","an","object"]"#).unwrap_err();
         assert_eq!(error, "config_json must be a JSON object");
+    }
+
+    #[test]
+    fn subtitle_client_cache_fingerprint_changes_with_config_json() {
+        assert_ne!(
+            cache_fingerprint(r#"{"username":"alice"}"#),
+            cache_fingerprint(r#"{"username":"bob"}"#)
+        );
     }
 }

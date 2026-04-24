@@ -25,6 +25,14 @@ pub enum MediaFacetValue {
 }
 
 impl MediaFacetValue {
+    pub fn as_scope_id(self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Series => "series",
+            Self::Anime => "anime",
+        }
+    }
+
     pub fn into_domain(self) -> MediaFacet {
         match self {
             Self::Movie => MediaFacet::Movie,
@@ -1528,9 +1536,18 @@ pub struct IndexerSearchResultPayload {
     pub freeleech: Option<bool>,
     pub download_volume_factor: Option<f64>,
     pub candidate_token: Option<String>,
+    pub queue_scope: Option<QueueDownloadScopePayload>,
     pub auto_eligible: Option<bool>,
     pub auto_decision_code: Option<String>,
     pub auto_decision_summary: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct QueueDownloadScopePayload {
+    pub kind: String,
+    pub episode_id: Option<String>,
+    pub episode_ids: Vec<String>,
+    pub collection_id: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1631,10 +1648,28 @@ pub struct DownloadClientConfigPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct SubtitleProviderConfigPayload {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub has_config: bool,
+    pub stored_secret_keys: Vec<String>,
+    pub enabled_facets: Vec<MediaFacetValue>,
+    pub is_enabled: bool,
+    pub last_health_status: Option<String>,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
+    pub disabled_until: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct DownloadQueueItemPayload {
     pub id: String,
     pub title_id: Option<String>,
+    pub episode_id: Option<String>,
     pub title_name: String,
     pub facet: Option<MediaFacetValue>,
     pub is_scryer_origin: bool,
@@ -1725,18 +1760,21 @@ pub struct RetryImportInput {
 
 #[derive(InputObject)]
 pub struct IgnoreTrackedDownloadInput {
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct MarkTrackedDownloadFailedInput {
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct RetryTrackedDownloadImportInput {
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
 }
@@ -1744,6 +1782,7 @@ pub struct RetryTrackedDownloadImportInput {
 #[derive(OneofObject, Clone)]
 pub enum QueueDownloadScopeInput {
     Episode(String),
+    EpisodeSet(Vec<String>),
     Collection(String),
     Title(bool),
 }
@@ -1752,6 +1791,12 @@ impl QueueDownloadScopeInput {
     pub fn into_application(self) -> AppSubmissionScope {
         match self {
             Self::Episode(episode_id) => AppSubmissionScope::Episode { episode_id },
+            Self::EpisodeSet(mut episode_ids) => {
+                episode_ids.retain(|episode_id| !episode_id.trim().is_empty());
+                episode_ids.sort();
+                episode_ids.dedup();
+                AppSubmissionScope::EpisodeSet { episode_ids }
+            }
             Self::Collection(collection_id) => AppSubmissionScope::Collection { collection_id },
             Self::Title(_) => AppSubmissionScope::Title,
         }
@@ -1760,6 +1805,7 @@ impl QueueDownloadScopeInput {
 
 #[derive(InputObject)]
 pub struct AssignTrackedDownloadTitleInput {
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub title_id: String,
@@ -1947,9 +1993,6 @@ pub struct SubtitleLanguagePreferencePayload {
 #[derive(SimpleObject, Clone)]
 pub struct SubtitleSettingsPayload {
     pub enabled: bool,
-    pub has_open_subtitles_api_key: bool,
-    pub open_subtitles_username: String,
-    pub has_open_subtitles_password: bool,
     pub languages: Vec<SubtitleLanguagePreferencePayload>,
     pub auto_download_on_import: bool,
     pub minimum_score_series: i32,
@@ -2172,15 +2215,9 @@ pub struct AddTitleInput {
 
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
-    pub query: Option<String>,
-    pub title_id: Option<String>,
+    pub title_id: String,
     pub season: Option<String>,
     pub episode: Option<String>,
-    pub imdb_id: Option<String>,
-    pub tvdb_id: Option<String>,
-    pub anidb_id: Option<String>,
-    pub category: Option<String>,
-    pub absolute_episode: Option<i32>,
     pub limit: Option<i32>,
 }
 
@@ -2233,6 +2270,7 @@ pub enum DownloadQueueActionKindValue {
 pub struct DownloadQueueActionPayload {
     pub kind: DownloadQueueActionKindValue,
     pub download_client_item_id: String,
+    pub client_id: Option<String>,
     pub client_type: Option<String>,
     pub import_id: Option<String>,
     pub command_id: Option<String>,
@@ -2243,6 +2281,7 @@ pub struct DownloadQueueActionPayload {
 #[derive(InputObject)]
 pub struct QueueManualImportInput {
     pub title_id: Option<String>,
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub files: Option<Vec<ManualImportFileMappingInput>>,
@@ -2338,9 +2377,6 @@ pub struct UpdateGeneralSettingsInput {
 #[derive(InputObject, Clone)]
 pub struct UpdateSubtitleSettingsInput {
     pub enabled: bool,
-    pub open_subtitles_api_key: Option<String>,
-    pub open_subtitles_username: String,
-    pub open_subtitles_password: Option<String>,
     pub languages: Vec<SubtitleLanguagePreferenceInput>,
     pub auto_download_on_import: bool,
     pub minimum_score_series: i32,
@@ -2554,6 +2590,37 @@ pub struct TestDownloadClientConnectionInput {
 }
 
 #[derive(InputObject)]
+pub struct CreateSubtitleProviderConfigInput {
+    pub name: String,
+    pub provider_type: String,
+    pub config_json: String,
+    pub enabled_facets: Option<Vec<MediaFacetValue>>,
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateSubtitleProviderConfigInput {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider_type: Option<String>,
+    pub config_json: Option<String>,
+    pub enabled_facets: Option<Vec<MediaFacetValue>>,
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct DeleteSubtitleProviderConfigInput {
+    pub id: String,
+}
+
+#[derive(InputObject)]
+pub struct TestSubtitleProviderConnectionInput {
+    pub id: Option<String>,
+    pub provider_type: String,
+    pub config_json: String,
+}
+
+#[derive(InputObject)]
 pub struct TestIndexerConnectionInput {
     pub provider_type: String,
     pub base_url: String,
@@ -2718,16 +2785,19 @@ pub struct DeleteSubtitlePreviewInput {
 
 #[derive(InputObject)]
 pub struct PauseDownloadInput {
+    pub client_id: Option<String>,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct ResumeDownloadInput {
+    pub client_id: Option<String>,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct DeleteDownloadInput {
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub is_history: bool,
@@ -3128,6 +3198,8 @@ pub struct PluginConfigFieldPayload {
     pub field_type: String,
     pub required: bool,
     pub default_value: Option<String>,
+    pub value_source: String,
+    pub host_binding: Option<String>,
     pub options: Vec<PluginConfigFieldOptionPayload>,
     pub help_text: Option<String>,
 }
@@ -3138,6 +3210,15 @@ pub struct ProviderTypePayload {
     pub name: String,
     pub config_fields: Vec<PluginConfigFieldPayload>,
     pub default_base_url: Option<String>,
+    pub available_host_bindings: Vec<String>,
+    pub recommended_facets: Vec<MediaFacetValue>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SubtitleProviderValidationPayload {
+    pub status: String,
+    pub message: Option<String>,
+    pub retry_after_seconds: Option<i64>,
 }
 
 // ── Notification types ─────────────────────────────────────────────────

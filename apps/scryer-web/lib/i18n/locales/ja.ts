@@ -1334,7 +1334,8 @@ const ja: LocaleDictionary = {
   "subtitle.download": "ダウンロード",
   "subtitle.downloading": "ダウンロード中...",
   "subtitle.noResults": "字幕が見つかりませんでした",
-  "subtitle.score": "スコア: {{score}}",
+  "subtitle.score": "スコア",
+  "subtitle.scoreWithValue": "スコア: {{score}}",
   "subtitle.hashMatch": "ハッシュマッチ",
   "subtitle.hearingImpaired": "聴覚障害者向け",
   "subtitle.forced": "強制",
@@ -1458,6 +1459,8 @@ const ja: LocaleDictionary = {
   "status.indexerUpdated": "インデクサーを更新しました。",
   "status.searchMonitoredQueued":
     "{{count}}件のモニタリングアイテムをバックグラウンド検索キューに追加しました。",
+  "status.mismatchRecoveryQueued":
+    "不一致回復アイテムを {{count}} 件キューに追加しました。",
   "status.searchMonitoredEmpty":
     "現在検索可能なモニタリングアイテムはありません。",
   "status.titleScanSuccess":

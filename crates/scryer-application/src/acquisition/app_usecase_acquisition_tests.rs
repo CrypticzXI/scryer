@@ -159,6 +159,7 @@ fn test_search_result_with_decision(
         info_url: None,
         provenance: None,
         candidate_token: None,
+        queue_scope: None,
         auto_eligible: Some(decision_code == "eligible"),
         auto_decision_code: Some(decision_code.to_string()),
         auto_decision_summary: None,
@@ -459,6 +460,7 @@ fn interstitial_movie_blocking_is_collection_scoped() {
     let title_submission = DownloadSubmission {
         title_id: wanted.title_id.clone(),
         facet: "anime".to_string(),
+        download_client_id: None,
         download_client_type: "sabnzbd".to_string(),
         download_client_item_id: "job-1".to_string(),
         source_hint: None,
@@ -496,6 +498,31 @@ fn interstitial_movie_blocking_is_collection_scoped() {
         &wanted,
         wanted.collection_id.as_deref(),
     ));
+}
+
+#[test]
+fn episode_set_submission_blocks_each_covered_episode() {
+    let mut wanted = base_episode_wanted_item();
+    wanted.episode_id = Some("episode-2".to_string());
+    let submission = DownloadSubmission {
+        title_id: wanted.title_id.clone(),
+        facet: "anime".to_string(),
+        download_client_id: None,
+        download_client_type: "sabnzbd".to_string(),
+        download_client_item_id: "job-1".to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some("Range pack".to_string()),
+        request_signature: None,
+        scope: SubmissionScope::EpisodeSet {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+        },
+    };
+
+    assert!(submission_blocks_wanted_item(&submission, &wanted, None));
+
+    wanted.episode_id = Some("episode-3".to_string());
+    assert!(!submission_blocks_wanted_item(&submission, &wanted, None));
 }
 
 #[test]

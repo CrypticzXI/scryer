@@ -15,6 +15,7 @@ pub mod quality;
 pub mod rule_set;
 pub mod settings;
 pub mod subtitle;
+pub mod subtitle_provider;
 pub mod title;
 pub mod user;
 pub mod wanted;

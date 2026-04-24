@@ -2,7 +2,7 @@ use async_graphql::{
     Context, Subscription,
     futures_util::stream::{self, BoxStream, unfold},
 };
-use scryer_domain::{DomainEvent, DownloadQueueItem, DownloadQueueState, Entitlement};
+use scryer_domain::{DomainEvent, DownloadQueueItem, Entitlement};
 use std::collections::{HashSet, VecDeque};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -79,35 +79,42 @@ fn download_queue_state_stream_from_snapshots(
     receiver: tokio::sync::broadcast::Receiver<Vec<DownloadQueueItem>>,
     include_all_activity: bool,
     include_history_only: bool,
+    include_import_activity: bool,
+    title_id: Option<String>,
     activity_filter: DownloadActivityFilterValue,
 ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
     let stream = unfold(
         (receiver, VecDeque::<Vec<DownloadQueueItemPayload>>::new()),
-        move |(mut receiver, mut pending)| async move {
-            loop {
-                if let Some(snapshot) = pending.pop_front() {
-                    return Some((snapshot, (receiver, pending)));
-                }
+        move |(mut receiver, mut pending)| {
+            let title_id = title_id.clone();
+            async move {
+                loop {
+                    if let Some(snapshot) = pending.pop_front() {
+                        return Some((snapshot, (receiver, pending)));
+                    }
 
-                match receiver.recv().await {
-                    Ok(snapshot) => {
-                        let payload = filter_download_queue_items(
-                            snapshot,
-                            include_all_activity,
-                            include_history_only,
-                            activity_filter,
-                        )
-                        .into_iter()
-                        .map(from_download_queue_item)
-                        .collect::<Vec<_>>();
-                        pending.push_back(payload);
+                    match receiver.recv().await {
+                        Ok(snapshot) => {
+                            let payload = filter_download_queue_items(
+                                snapshot,
+                                include_all_activity,
+                                include_history_only,
+                                include_import_activity,
+                                title_id.as_deref(),
+                                activity_filter,
+                            )
+                            .into_iter()
+                            .map(from_download_queue_item)
+                            .collect::<Vec<_>>();
+                            pending.push_back(payload);
+                        }
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::debug!(
+                                "download_queue_state: receiver lagged, skipped {n} snapshots"
+                            );
+                        }
+                        Err(RecvError::Closed) => return None,
                     }
-                    Err(RecvError::Lagged(n)) => {
-                        tracing::debug!(
-                            "download_queue_state: receiver lagged, skipped {n} snapshots"
-                        );
-                    }
-                    Err(RecvError::Closed) => return None,
                 }
             }
         },
@@ -294,6 +301,8 @@ impl SubscriptionRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        include_import_activity: Option<bool>,
+        title_id: Option<String>,
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
         let app = match app_from_ctx(ctx) {
@@ -311,7 +320,12 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
+        let required_entitlement = if title_id.is_some() {
+            Entitlement::ViewCatalog
+        } else {
+            Entitlement::ManageConfig
+        };
+        if !actor.has_entitlement(&required_entitlement) {
             tracing::warn!("download_queue sub: insufficient entitlements");
             return empty_box_stream();
         }
@@ -333,6 +347,8 @@ impl SubscriptionRoot {
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
+            include_import_activity.unwrap_or(false),
+            title_id,
             activity_filter.unwrap_or(DownloadActivityFilterValue::All),
         )
     }
@@ -342,6 +358,8 @@ impl SubscriptionRoot {
         ctx: &Context<'_>,
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
+        include_import_activity: Option<bool>,
+        title_id: Option<String>,
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
         let app = match app_from_ctx(ctx) {
@@ -359,7 +377,12 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
+        let required_entitlement = if title_id.is_some() {
+            Entitlement::ViewCatalog
+        } else {
+            Entitlement::ManageConfig
+        };
+        if !actor.has_entitlement(&required_entitlement) {
             tracing::warn!("download_queue_state sub: insufficient entitlements");
             return empty_box_stream();
         }
@@ -376,6 +399,8 @@ impl SubscriptionRoot {
             receiver,
             include_all_activity.unwrap_or(false),
             include_history_only.unwrap_or(false),
+            include_import_activity.unwrap_or(false),
+            title_id,
             activity_filter.unwrap_or(DownloadActivityFilterValue::All),
         )
     }
@@ -686,29 +711,30 @@ fn filter_download_queue_items(
     items: Vec<scryer_domain::DownloadQueueItem>,
     include_all_activity: bool,
     include_history_only: bool,
+    include_import_activity: bool,
+    title_id: Option<&str>,
     activity_filter: DownloadActivityFilterValue,
 ) -> Vec<scryer_domain::DownloadQueueItem> {
     dedupe_download_queue_items(items)
         .into_iter()
         .filter(|item| {
-            if include_history_only {
-                return matches!(
-                    item.state,
-                    DownloadQueueState::Completed
-                        | DownloadQueueState::Failed
-                        | DownloadQueueState::ImportPending
-                );
+            if let Some(title_id) = title_id
+                && item.title_id.as_deref() != Some(title_id)
+            {
+                return false;
             }
 
-            let matches_activity = scryer_application::matches_download_activity_filter(
+            let matches_queue_filter = scryer_application::matches_download_queue_filter(
                 item,
+                include_history_only,
+                include_import_activity,
                 activity_filter.into_application(),
             );
             if include_all_activity {
-                return matches_activity;
+                return matches_queue_filter;
             }
 
-            item.is_scryer_origin && matches_activity
+            item.is_scryer_origin && matches_queue_filter
         })
         .collect()
 }
@@ -720,11 +746,7 @@ fn dedupe_download_queue_items(
     let mut deduped = Vec::with_capacity(items.len());
 
     for item in items {
-        let key = if item.client_type.is_empty() && item.download_client_item_id.is_empty() {
-            item.id.clone()
-        } else {
-            format!("{}:{}", item.client_type, item.download_client_item_id)
-        };
+        let key = download_queue_item_identity_key(&item);
 
         if seen.insert(key) {
             deduped.push(item);
@@ -732,6 +754,19 @@ fn dedupe_download_queue_items(
     }
 
     deduped
+}
+
+fn download_queue_item_identity_key(item: &scryer_domain::DownloadQueueItem) -> String {
+    if item.client_type.is_empty() && item.download_client_item_id.is_empty() {
+        return item.id.clone();
+    }
+
+    let client_id = item.client_id.trim();
+    if client_id.is_empty() {
+        format!("{}:{}", item.client_type, item.download_client_item_id)
+    } else {
+        format!("{}:{}", client_id, item.download_client_item_id)
+    }
 }
 
 #[cfg(test)]
@@ -745,6 +780,7 @@ mod tests {
         DownloadQueueItem {
             id: id.to_string(),
             title_id: None,
+            episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
             client_id: "client-1".to_string(),
@@ -789,6 +825,20 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_download_queue_items_keeps_same_native_id_from_different_clients() {
+        let mut first = item("job-1", DownloadQueueState::Completed, true);
+        first.client_id = "client-1".to_string();
+        let mut second = item("job-1", DownloadQueueState::Completed, true);
+        second.client_id = "client-2".to_string();
+
+        let deduped = dedupe_download_queue_items(vec![first, second]);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].client_id, "client-1");
+        assert_eq!(deduped[1].client_id, "client-2");
+    }
+
+    #[test]
     fn filter_download_queue_items_hides_completed_entries_from_scryer_only_live_view() {
         let items = vec![
             item("job-1", DownloadQueueState::Completed, true),
@@ -798,8 +848,14 @@ mod tests {
             item("job-4", DownloadQueueState::Queued, false),
         ];
 
-        let filtered =
-            filter_download_queue_items(items, false, false, DownloadActivityFilterValue::All);
+        let filtered = filter_download_queue_items(
+            items,
+            false,
+            false,
+            false,
+            None,
+            DownloadActivityFilterValue::All,
+        );
 
         assert_eq!(filtered.len(), 1);
         assert!(filtered.iter().all(|item| item.is_scryer_origin));
@@ -822,10 +878,53 @@ mod tests {
             item("job-4", DownloadQueueState::Extracting, false),
         ];
 
-        let filtered =
-            filter_download_queue_items(items, false, false, DownloadActivityFilterValue::All);
+        let filtered = filter_download_queue_items(
+            items,
+            false,
+            false,
+            false,
+            None,
+            DownloadActivityFilterValue::All,
+        );
 
         assert_eq!(filtered.len(), 3);
         assert!(filtered.iter().all(|item| item.is_scryer_origin));
+    }
+
+    #[test]
+    fn filter_download_queue_items_respects_title_filter() {
+        let mut matching = item("job-1", DownloadQueueState::Queued, true);
+        matching.title_id = Some("title-1".to_string());
+        let mut other = item("job-2", DownloadQueueState::Queued, true);
+        other.title_id = Some("title-2".to_string());
+
+        let filtered = filter_download_queue_items(
+            vec![matching, other],
+            true,
+            false,
+            false,
+            Some("title-1"),
+            DownloadActivityFilterValue::All,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title_id.as_deref(), Some("title-1"));
+    }
+
+    #[test]
+    fn filter_download_queue_items_can_include_import_activity() {
+        let item = item("job-1", DownloadQueueState::ImportPending, true);
+
+        let filtered = filter_download_queue_items(
+            vec![item],
+            false,
+            false,
+            true,
+            None,
+            DownloadActivityFilterValue::All,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].state, DownloadQueueState::ImportPending);
     }
 }

@@ -1,7 +1,7 @@
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, InsertMediaFileInput, MediaFileAnalysis, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    AppError, AppResult, EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
 };
 use scryer_domain::Id;
 use sqlx::sqlite::SqliteRow;
@@ -179,6 +179,69 @@ pub(crate) async fn list_media_files_for_title_query(
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
         out.push(row_to_title_media_file(row)?);
+    }
+    Ok(out)
+}
+
+pub(crate) async fn list_live_media_files_for_episode_ids_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    episode_ids: &[String],
+) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+    if episode_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = episode_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT mf.id, mf.title_id, NULL AS episode_id, mf.file_path,
+                mf.size_bytes, mf.source_signature_scheme, mf.source_signature_value,
+                mf.quality_id, mf.scan_status, mf.created_at,
+                mf.video_codec, mf.video_width, mf.video_height,
+                mf.video_bitrate_kbps, mf.video_bit_depth,
+                mf.video_hdr_format, mf.video_frame_rate, mf.video_profile,
+                mf.audio_codec, mf.audio_profile, mf.audio_channels, mf.audio_bitrate_kbps,
+                mf.duration_seconds, mf.num_chapters, mf.container_format,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_languages'), '[]') AS audio_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.audio_streams'), '[]') AS audio_streams_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_languages'), '[]') AS subtitle_languages_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_codecs'), '[]') AS subtitle_codecs_json,
+                COALESCE(json_extract(mf.analysis_json, '$.subtitle_streams'), '[]') AS subtitle_streams_json,
+                mf.has_multiaudio,
+                mf.scene_name, mf.release_group, mf.source_type, mf.resolution,
+                mf.video_codec_parsed, mf.audio_codec_parsed, mf.audio_channels_parsed,
+                mf.acquisition_score, mf.scoring_log,
+                mf.indexer_source, mf.grabbed_release_title, mf.grabbed_at,
+                mf.edition, mf.original_file_path, mf.release_hash,
+                COALESCE(json_group_array(DISTINCT fem_all.episode_id), '[]') AS episode_ids_json
+         FROM media_files mf
+         INNER JOIN file_episode_map fem_target ON fem_target.file_id = mf.id
+         LEFT JOIN file_episode_map fem_all ON fem_all.file_id = mf.id
+         WHERE mf.title_id = ?
+           AND {}
+           AND fem_target.episode_id IN ({placeholders})
+         GROUP BY mf.id
+         ORDER BY mf.created_at DESC",
+        live_media_file_predicate("mf")
+    );
+
+    let mut query = sqlx::query(&sql).bind(title_id);
+    for episode_id in episode_ids {
+        query = query.bind(episode_id);
+    }
+
+    let rows: Vec<SqliteRow> = query
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(row_to_episode_scoped_media_file(row)?);
     }
     Ok(out)
 }
@@ -494,6 +557,31 @@ fn row_to_title_media_file(row: &SqliteRow) -> AppResult<TitleMediaFile> {
         edition,
         original_file_path,
         release_hash,
+    })
+}
+
+fn row_to_episode_scoped_media_file(row: &SqliteRow) -> AppResult<EpisodeScopedMediaFile> {
+    let media_file = row_to_title_media_file(row)?;
+    let mut episode_ids: Vec<String> = match row.try_get::<Option<String>, _>("episode_ids_json") {
+        Ok(Some(json)) => match serde_json::from_str::<Vec<String>>(&json) {
+            Ok(episode_ids) => episode_ids,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    file_id = %media_file.id,
+                    "failed to parse media_files.episode_ids_json; treating row as unlinked"
+                );
+                Vec::new()
+            }
+        },
+        Ok(None) | Err(_) => Vec::new(),
+    };
+    episode_ids.sort();
+    episode_ids.dedup();
+
+    Ok(EpisodeScopedMediaFile {
+        media_file,
+        episode_ids,
     })
 }
 
@@ -962,6 +1050,181 @@ mod tests {
         assert_eq!(quality_summaries.len(), 1);
         assert_eq!(quality_summaries[0].title_id, title.id);
         assert_eq!(quality_summaries[0].quality_tier, "720P");
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn episode_scoped_media_file_query_dedupes_file_ids_and_returns_full_episode_set() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_episode_scoped_media_files_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let catalog = catalog_store(&services);
+        let library_state = library_state_store(&services);
+
+        let title = make_test_series_title("title-episode-scope");
+        catalog
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        let collection = Collection {
+            id: "collection-episode-scope".to_string(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("3".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        catalog
+            .create_collection(collection.clone())
+            .await
+            .expect("collection should insert");
+
+        let episode_one = Episode {
+            id: "episode-episode-scope-1".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode 1".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        let episode_two = Episode {
+            id: "episode-episode-scope-2".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("2".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E02".to_string()),
+            title: Some("Episode 2".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        let episode_three = Episode {
+            id: "episode-episode-scope-3".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("3".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E03".to_string()),
+            title: Some("Episode 3".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        for episode in [&episode_one, &episode_two, &episode_three] {
+            catalog
+                .create_episode(episode.clone())
+                .await
+                .expect("episode should insert");
+        }
+
+        let pack_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E01-E02.mkv".to_string(),
+                size_bytes: 2_000,
+                ..Default::default()
+            })
+            .await
+            .expect("pack file should insert");
+        library_state
+            .link_file_to_episode(&pack_file_id, &episode_one.id)
+            .await
+            .expect("pack should link episode one");
+        library_state
+            .link_file_to_episode(&pack_file_id, &episode_two.id)
+            .await
+            .expect("pack should link episode two");
+
+        let single_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E03.mkv".to_string(),
+                size_bytes: 1_000,
+                ..Default::default()
+            })
+            .await
+            .expect("single file should insert");
+        library_state
+            .link_file_to_episode(&single_file_id, &episode_three.id)
+            .await
+            .expect("single should link episode three");
+
+        let recycled_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path:
+                    "/library/Show/.scryer-recycle/20260404_000000_deadbeef/Show - S01E01.mkv"
+                        .to_string(),
+                size_bytes: 999,
+                ..Default::default()
+            })
+            .await
+            .expect("recycled file should insert");
+        library_state
+            .link_file_to_episode(&recycled_file_id, &episode_one.id)
+            .await
+            .expect("recycled should link episode one");
+
+        let scoped = library_state
+            .list_live_media_files_for_episode_ids(
+                &title.id,
+                &[episode_one.id.clone(), episode_two.id.clone()],
+            )
+            .await
+            .expect("episode scoped query should succeed");
+
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].media_file.id, pack_file_id);
+        assert_eq!(
+            scoped[0].episode_ids,
+            vec![episode_one.id.clone(), episode_two.id.clone()]
+        );
 
         let _ = std::fs::remove_file(db);
     }

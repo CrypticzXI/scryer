@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clapperboard } from "lucide-react";
 import { useClient } from "urql";
-import type { Release, TitleAcquisitionDiagnostics } from "@/lib/types";
+import type { Release } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { searchForEpisodeQuery } from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
@@ -40,6 +41,36 @@ import { SeasonSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
+import { downloadQueueItemIdentityKey } from "@/lib/utils/download-queue";
+
+const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
+  downloading: 0,
+  post_processing: 1,
+  queued: 2,
+  paused: 3,
+  import_pending: 4,
+  importing: 5,
+};
+
+function compareEpisodeQueueItems(
+  left: DownloadQueueItem,
+  right: DownloadQueueItem,
+): number {
+  const leftRank = EPISODE_QUEUE_PRECEDENCE[left.displayState] ?? Number.MAX_SAFE_INTEGER;
+  const rightRank = EPISODE_QUEUE_PRECEDENCE[right.displayState] ?? Number.MAX_SAFE_INTEGER;
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+
+  const leftUpdatedAt = Date.parse(left.lastUpdatedAt ?? "");
+  const rightUpdatedAt = Date.parse(right.lastUpdatedAt ?? "");
+  if (Number.isFinite(leftUpdatedAt) && Number.isFinite(rightUpdatedAt) && leftUpdatedAt !== rightUpdatedAt) {
+    return rightUpdatedAt - leftUpdatedAt;
+  }
+
+  return right.progressPercent - left.progressPercent;
+}
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
@@ -56,6 +87,7 @@ type Props = {
   events: TitleHistoryEvent[];
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
+  downloadQueueItems?: DownloadQueueItem[];
   subtitleDownloads?: SubtitleDownloadRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
@@ -68,7 +100,6 @@ type Props = {
   onRefreshAndScan?: () => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => Promise<void> | void;
   onAutoSearchInterstitialMovie?: (collection: TitleCollection) => Promise<void> | void;
-  acquisitionDiagnostics?: TitleAcquisitionDiagnostics | null;
   qualityProfiles?: { id: string; name: string }[];
   defaultRootFolder?: string;
   rootFolders?: { path: string; isDefault: boolean }[];
@@ -80,7 +111,6 @@ type Props = {
   seasonSearchLoadingByCollection?: Record<string, boolean>;
   onRunSeasonSearch?: (collection: TitleCollection) => Promise<void> | void;
   onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
-  onTriggerMismatchRecovery?: () => Promise<void> | void;
   monitoredUpdating?: boolean;
   searchMonitoredLoading?: boolean;
   hasDownloadClients: boolean;
@@ -100,6 +130,7 @@ export function SeriesOverviewView({
   events: _events,
   episodesByCollection,
   mediaFilesByEpisode,
+  downloadQueueItems = [],
   subtitleDownloads,
   onRefreshSubtitles,
   releaseBlocklistEntries,
@@ -112,7 +143,6 @@ export function SeriesOverviewView({
   onRefreshAndScan,
   onAutoSearchEpisode,
   onAutoSearchInterstitialMovie,
-  acquisitionDiagnostics,
   qualityProfiles,
   defaultRootFolder,
   rootFolders,
@@ -124,7 +154,6 @@ export function SeriesOverviewView({
   seasonSearchLoadingByCollection,
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
-  onTriggerMismatchRecovery,
   monitoredUpdating = false,
   searchMonitoredLoading = false,
   hasDownloadClients,
@@ -157,6 +186,33 @@ export function SeriesOverviewView({
   const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
+  const {
+    primaryQueueItemByEpisodeId,
+    titleLevelQueueItems,
+  } = React.useMemo(() => {
+    const queueItemsByEpisodeId: Record<string, DownloadQueueItem[]> = {};
+    const fallbackTitleQueueItems: DownloadQueueItem[] = [];
+
+    for (const item of downloadQueueItems) {
+      if (item.episodeId) {
+        (queueItemsByEpisodeId[item.episodeId] ??= []).push(item);
+      } else {
+        fallbackTitleQueueItems.push(item);
+      }
+    }
+
+    const primaryByEpisodeId = Object.fromEntries(
+      Object.entries(queueItemsByEpisodeId).map(([episodeId, items]) => [
+        episodeId,
+        [...items].sort(compareEpisodeQueueItems)[0],
+      ]),
+    ) as Record<string, DownloadQueueItem | undefined>;
+
+    return {
+      primaryQueueItemByEpisodeId: primaryByEpisodeId,
+      titleLevelQueueItems: fallbackTitleQueueItems.sort(compareEpisodeQueueItems),
+    };
+  }, [downloadQueueItems]);
 
   React.useEffect(() => {
     setSearchBlockedByEpisode({});
@@ -330,7 +386,7 @@ export function SeriesOverviewView({
       return client.mutation(queueExistingMutation, {
         input: {
           titleId: title.id,
-          scope: { episode: episode.id },
+          scope: releaseQueueScopeInput(release, { episode: episode.id }),
           candidateToken: release.candidateToken,
         },
       }).toPromise()
@@ -627,69 +683,6 @@ export function SeriesOverviewView({
         }
       />
 
-      {acquisitionDiagnostics ? (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-base">Acquisition diagnostics</CardTitle>
-              {acquisitionDiagnostics.mismatchRecoveryEligibleCount > 0 && onTriggerMismatchRecovery ? (
-                <Button size="sm" variant="secondary" onClick={() => void onTriggerMismatchRecovery()}>
-                  Recover mismatches
-                </Button>
-              ) : null}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4 text-sm">
-            <div className="flex flex-wrap gap-4 text-muted-foreground">
-              <span>Latest decision: {formatDate(acquisitionDiagnostics.latestDecisionAt)}</span>
-              <span>Latest wanted search: {formatDate(acquisitionDiagnostics.latestWantedSearchAt)}</span>
-              <span>Mismatch recovery eligible: {acquisitionDiagnostics.mismatchRecoveryEligibleCount}</span>
-            </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Recent decision counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.decisionCounts.map((item) => (
-                    <div key={item.code} className="flex items-center justify-between gap-3">
-                      <span>{item.code}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Wanted status counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.wantedStatusCounts.map((item) => (
-                    <div key={item.status} className="flex items-center justify-between gap-3">
-                      <span>{item.status}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Pending release counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.pendingReleaseCounts.map((item) => (
-                    <div key={item.status} className="flex items-center justify-between gap-3">
-                      <span>{item.status}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
       <div>
         <Card className="relative overflow-hidden">
           <CardHeader>
@@ -712,6 +705,26 @@ export function SeriesOverviewView({
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            {titleLevelQueueItems.length > 0 ? (
+              <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-3">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("activity.activity")}
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {titleLevelQueueItems.map((item) => (
+                    <div
+                      key={downloadQueueItemIdentityKey(item)}
+                      className="rounded-md border border-border/70 bg-background/70 px-3 py-2"
+                    >
+                      <div className="mb-1 text-[11px] text-muted-foreground">
+                        {item.clientName}
+                      </div>
+                      <EpisodeQueueIndicator item={item} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {sortedCollections.length > 0 ? (
               sortedCollections.map((collection) => {
                 const key = `s-${collection.id}`;
@@ -735,6 +748,7 @@ export function SeriesOverviewView({
                     expandedEpisodeRows={episodePanel.expandedEpisodeRows}
                     episodeActiveTab={episodePanel.episodeActiveTab}
                     mediaFilesByEpisode={mediaFilesByEpisode}
+                    downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={onRefreshSubtitles}
                     releaseBlocklistEntries={releaseBlocklistEntries}

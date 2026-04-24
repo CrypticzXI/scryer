@@ -4,7 +4,6 @@ import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
   seriesOverviewSettingsInitQuery,
-  titleDownloadQueueItemsQuery,
 } from "@/lib/graphql/queries";
 import {
   deleteMediaFileMutation,
@@ -15,19 +14,20 @@ import {
   queueExistingMutation,
   setEpisodeMonitoredMutation,
   setTitleMonitoredMutation,
-  triggerTitleMismatchRecoverySearchMutation,
   triggerTitleWantedSearchMutation,
   triggerSeasonWantedSearchMutation,
   updateTitleMutation,
 } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
-import type { Release, TitleAcquisitionDiagnostics } from "@/lib/types";
+import type { Release } from "@/lib/types";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
+import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
+import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
 import { fetchTitleOverviewSnapshot } from "@/lib/title-overview-loader";
 import { SeriesOverviewView } from "@/components/views/series-overview-view";
@@ -253,8 +253,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [mediaFilesByEpisode, setMediaFilesByEpisode] = React.useState<
     Record<string, EpisodeMediaFile[]>
   >({});
-  const [acquisitionDiagnostics, setAcquisitionDiagnostics] =
-    React.useState<TitleAcquisitionDiagnostics | null>(null);
+  const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<
     SubtitleDownloadRecord[]
   >([]);
@@ -280,31 +279,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
-  const activeTitleIdRef = React.useRef(titleId);
-
-  React.useEffect(() => {
-    activeTitleIdRef.current = titleId;
-  }, [titleId]);
-
-  const fetchCompletedDownloads = React.useCallback(async () => {
-    const { data, error } = await client
-      .query(
-        titleDownloadQueueItemsQuery,
-        { id: titleId },
-        { requestPolicy: "network-only" },
-      )
-      .toPromise();
-
-    if (error) {
-      throw error;
-    }
-
-    const items = (data?.title?.downloadQueueItems ?? []) as DownloadQueueItem[];
-    return items.filter(
-      (item: DownloadQueueItem) =>
-        item.state === "completed" || item.state === "import_pending",
-    );
-  }, [client, titleId]);
+  const downloadQueueItems = useTitleDownloadQueue({
+    enabled: Boolean(titleId),
+    titleId,
+    initialItems: downloadQueueSeed,
+  });
 
   const titleDeletePreviewVariables = React.useMemo(
     () =>
@@ -343,7 +322,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     (
       snapshot: TitleOverviewSnapshot<
         SeriesOverviewSnapshotTitle,
-        TitleAcquisitionDiagnostics,
+        unknown,
         TitleHistoryEvent,
         TitleReleaseBlocklistEntry,
         SubtitleDownloadRecord
@@ -368,30 +347,17 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
+      setDownloadQueueSeed(snapshot.downloadQueueItems);
       setSubtitleDownloads(snapshot.subtitleDownloads);
-      setAcquisitionDiagnostics(snapshot.acquisitionDiagnostics);
       setHasDownloadClients(snapshot.hasDownloadClients);
 
       if (!nextTitle) {
         setCompletedDownloads([]);
         return;
       }
-
-      const expectedTitleId = nextTitle.id;
-      void fetchCompletedDownloads()
-        .then((items) => {
-          if (activeTitleIdRef.current === expectedTitleId) {
-            setCompletedDownloads(items);
-          }
-        })
-        .catch((error: unknown) => {
-          console.error(
-            "[series-overview] completed downloads refresh failed:",
-            error,
-          );
-        });
+      setCompletedDownloads(snapshot.completedDownloadQueueItems);
     },
-    [fetchCompletedDownloads, onTitleResolved],
+    [onTitleResolved],
   );
 
   React.useEffect(() => {
@@ -403,7 +369,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
       SeriesOverviewSnapshotTitle,
-      TitleAcquisitionDiagnostics,
+      unknown,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
       SubtitleDownloadRecord
@@ -421,8 +387,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setReleaseBlocklistEntries([]);
       setEpisodesByCollection({});
       setMediaFilesByEpisode({});
+      setDownloadQueueSeed([]);
       setSubtitleDownloads([]);
-      setAcquisitionDiagnostics(null);
       setCompletedDownloads([]);
       setManualImportItem(null);
       setHydratingFromActivity(false);
@@ -854,7 +820,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           .mutation(queueExistingMutation, {
             input: {
               titleId: title.id,
-              scope: { collection: collection.id },
+              scope: releaseQueueScopeInput(release, { collection: collection.id }),
               candidateToken: release.candidateToken,
             },
           })
@@ -868,20 +834,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     },
     [client, title, refreshTitleDetail, setGlobalStatus, t],
   );
-
-  const triggerMismatchRecovery = React.useCallback(async () => {
-    if (!title) return;
-    const { data, error } = await client.mutation(
-      triggerTitleMismatchRecoverySearchMutation,
-      { input: { titleId: title.id } },
-    ).toPromise();
-    if (error) {
-      setGlobalStatus(error.message);
-      return;
-    }
-    setGlobalStatus(`queued ${data?.triggerTitleMismatchRecoverySearch ?? 0} mismatch recovery items`);
-    await refreshTitleDetail();
-  }, [client, refreshTitleDetail, setGlobalStatus, title]);
 
   const handleOpenManualImport = React.useCallback(
     (item: DownloadQueueItem) => {
@@ -943,7 +895,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onSearchMonitored={handleSearchMonitored}
         onAutoSearchEpisode={handleAutoSearchEpisode}
         onAutoSearchInterstitialMovie={handleAutoSearchInterstitialMovie}
-        acquisitionDiagnostics={acquisitionDiagnostics}
+        downloadQueueItems={downloadQueueItems}
         hasDownloadClients={hasDownloadClients}
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         qualityProfiles={qualityProfiles}
@@ -957,7 +909,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         seasonSearchLoadingByCollection={seasonSearchLoadingByCollection}
         onRunSeasonSearch={handleRunSeasonSearch}
         onQueueFromSeasonSearch={handleQueueFromSeasonSearch}
-        onTriggerMismatchRecovery={triggerMismatchRecovery}
         monitoredUpdating={monitoredUpdating}
         searchMonitoredLoading={searchMonitoredLoading}
         onRefreshAndScan={handleRefreshAndScan}
@@ -1033,6 +984,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           onOpenChange={(open) => { if (!open) setManualImportItem(null); }}
           titleId={title.id}
           titleName={title.name}
+          clientId={manualImportItem.clientId}
           clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
           onImportComplete={() => void handleManualImportComplete()}

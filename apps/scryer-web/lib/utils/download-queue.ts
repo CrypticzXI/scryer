@@ -19,17 +19,21 @@ export type DownloadQueueDisplayStateInput = Pick<
 >;
 
 export function downloadQueueItemIdentityKey(
-  item: Pick<DownloadQueueItem, "id" | "clientType" | "downloadClientItemId">,
+  item: Pick<DownloadQueueItem, "id" | "clientId" | "clientType" | "downloadClientItemId">,
 ): string {
   if (!item.clientType.trim() && !item.downloadClientItemId.trim()) {
     return item.id;
+  }
+
+  if (item.clientId.trim()) {
+    return `${item.clientId}::${item.downloadClientItemId}`;
   }
 
   return `${item.clientType}::${item.downloadClientItemId}`;
 }
 
 function parseQueueSortTimestamp(value: string | null | undefined): number {
-  const parsed = Number.parseInt(value ?? "", 10);
+  const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
@@ -81,6 +85,22 @@ export function isHistoryQueueState(state: string | null | undefined): boolean {
   );
 }
 
+export function isTransientQueueDisplayState(
+  displayState: string | null | undefined,
+): boolean {
+  switch (normalizeQueueState(displayState)) {
+    case "queued":
+    case "downloading":
+    case "paused":
+    case "post_processing":
+    case "importing":
+    case "import_pending":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function compareDownloadQueueItems(
   left: DownloadQueueItem,
   right: DownloadQueueItem,
@@ -122,6 +142,167 @@ export function sortDownloadQueueItems(
   items: DownloadQueueItem[],
 ): DownloadQueueItem[] {
   return [...items].sort(compareDownloadQueueItems);
+}
+
+function queueItemRecencyValue(
+  item: Pick<DownloadQueueItem, "lastUpdatedAt" | "queuedAt">,
+): number {
+  return parseQueueSortTimestamp(item.lastUpdatedAt) ||
+    parseQueueSortTimestamp(item.queuedAt);
+}
+
+function transientQueueStateRank(displayState: string | null | undefined): number {
+  switch (normalizeQueueState(displayState)) {
+    case "completed":
+    case "failed":
+    case "remove_failed":
+    case "import_failed":
+    case "import_blocked":
+      return 6;
+    case "import_pending":
+      return 5;
+    case "importing":
+      return 4;
+    case "post_processing":
+      return 3;
+    case "downloading":
+      return 2;
+    case "queued":
+      return 1;
+    case "paused":
+      return 0;
+    default:
+      return -1;
+  }
+}
+
+function fillMissingQueueItemFields(
+  primary: DownloadQueueItem,
+  secondary: DownloadQueueItem,
+): DownloadQueueItem {
+  return {
+    ...primary,
+    titleId: primary.titleId ?? secondary.titleId,
+    episodeId: primary.episodeId ?? secondary.episodeId,
+    titleName: primary.titleName.trim().length > 0
+      ? primary.titleName
+      : secondary.titleName,
+    facet: primary.facet ?? secondary.facet,
+    isScryerOrigin: primary.isScryerOrigin || secondary.isScryerOrigin,
+    clientId: primary.clientId.trim().length > 0 ? primary.clientId : secondary.clientId,
+    clientName: primary.clientName.trim().length > 0
+      ? primary.clientName
+      : secondary.clientName,
+    clientType: primary.clientType.trim().length > 0
+      ? primary.clientType
+      : secondary.clientType,
+    sizeBytes: primary.sizeBytes ?? secondary.sizeBytes,
+    remainingSeconds: primary.remainingSeconds ?? secondary.remainingSeconds,
+    queuedAt: primary.queuedAt ?? secondary.queuedAt,
+    lastUpdatedAt: primary.lastUpdatedAt ?? secondary.lastUpdatedAt,
+    attentionRequired: primary.attentionRequired || secondary.attentionRequired,
+    attentionReason: primary.attentionReason ?? secondary.attentionReason,
+    importStatus: primary.importStatus ?? secondary.importStatus,
+    importErrorCode: primary.importErrorCode ?? secondary.importErrorCode,
+    importErrorMessage: primary.importErrorMessage ?? secondary.importErrorMessage,
+    importedAt: primary.importedAt ?? secondary.importedAt,
+    deleteStatus: primary.deleteStatus ?? secondary.deleteStatus,
+    deleteErrorMessage: primary.deleteErrorMessage ?? secondary.deleteErrorMessage,
+    trackedState: primary.trackedState ?? secondary.trackedState,
+    trackedStatus: primary.trackedStatus ?? secondary.trackedStatus,
+    trackedStatusMessages:
+      primary.trackedStatusMessages.length > 0
+        ? primary.trackedStatusMessages
+        : secondary.trackedStatusMessages,
+    trackedMatchType: primary.trackedMatchType ?? secondary.trackedMatchType,
+  };
+}
+
+function shouldPreferPreviousTransientItem(
+  authoritative: DownloadQueueItem,
+  previous: DownloadQueueItem,
+): boolean {
+  if (!isTransientQueueDisplayState(previous.displayState)) {
+    return false;
+  }
+
+  const authoritativeRank = transientQueueStateRank(authoritative.displayState);
+  const previousRank = transientQueueStateRank(previous.displayState);
+
+  if (authoritativeRank > previousRank) {
+    return false;
+  }
+
+  if (previousRank > authoritativeRank) {
+    return true;
+  }
+
+  const authoritativeRecency = queueItemRecencyValue(authoritative);
+  const previousRecency = queueItemRecencyValue(previous);
+  if (previousRecency > authoritativeRecency) {
+    return true;
+  }
+  if (authoritativeRecency > previousRecency) {
+    return false;
+  }
+
+  if (previous.progressPercent > authoritative.progressPercent) {
+    return true;
+  }
+  if (authoritative.progressPercent > previous.progressPercent) {
+    return false;
+  }
+
+  return transientQueueStateRank(previous.displayState) >
+    transientQueueStateRank(authoritative.displayState);
+}
+
+export function mergeLiveQueueItems(
+  liveItems: DownloadQueueItem[],
+  previousItems: DownloadQueueItem[],
+): DownloadQueueItem[] {
+  const previousById = new Map(
+    previousItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+  );
+  const merged = liveItems.map((item) => {
+    const previous = previousById.get(downloadQueueItemIdentityKey(item));
+    return previous ? fillMissingQueueItemFields(item, previous) : item;
+  });
+
+  return sortDownloadQueueItems(merged);
+}
+
+export function mergeAuthoritativeQueueItems(
+  authoritativeItems: DownloadQueueItem[],
+  previousItems: DownloadQueueItem[],
+): DownloadQueueItem[] {
+  const previousById = new Map(
+    previousItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+  );
+  const authoritativeById = new Map(
+    authoritativeItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+  );
+  const merged = authoritativeItems.map((item) => {
+    const previous = previousById.get(downloadQueueItemIdentityKey(item));
+    if (!previous) {
+      return item;
+    }
+    if (shouldPreferPreviousTransientItem(item, previous)) {
+      return fillMissingQueueItemFields(previous, item);
+    }
+    return item;
+  });
+
+  for (const item of previousItems) {
+    if (
+      isTransientQueueDisplayState(item.displayState) &&
+      !authoritativeById.has(downloadQueueItemIdentityKey(item))
+    ) {
+      merged.push(item);
+    }
+  }
+
+  return sortDownloadQueueItems(merged);
 }
 
 export function buildQueueStatusDetail(

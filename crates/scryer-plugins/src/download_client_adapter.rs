@@ -85,6 +85,7 @@ fn map_queue_item(
     DownloadQueueItem {
         id: format!("{client_type}:{}", item.client_item_id),
         title_id: None,
+        episode_id: None,
         title_name: item.title,
         facet: None,
         client_id: client_id.to_string(),
@@ -278,6 +279,7 @@ impl DownloadClient for WasmDownloadClient {
 
         Ok(DownloadGrabResult {
             job_id: response.client_item_id,
+            client_id: None,
             client_type: self.descriptor.provider_type.clone(),
         })
     }

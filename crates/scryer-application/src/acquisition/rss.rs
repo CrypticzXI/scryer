@@ -1,8 +1,8 @@
 use super::*;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
-    canonical_title_evidence, canonical_title_lookup_keys, evaluate_auto_candidate,
-    parsed_release_matches_title_evidence, serialize_decision_explanation,
+    canonical_title_evidence, evaluate_auto_candidate, parsed_release_matches_title_evidence,
+    serialize_decision_explanation,
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 const RSS_SYNC_MAX_GUIDS: usize = 2000;
+const RSS_TITLE_CONTEXT_CANDIDATE_LIMIT: usize = 8;
 
 /// Normalize a title string for fuzzy matching: lowercase, strip non-alphanumeric,
 /// collapse whitespace.
@@ -19,31 +20,30 @@ pub(crate) fn normalize_for_matching(title: &str) -> String {
     crate::title_matching::canonical_lookup_key(title)
 }
 
-fn build_title_lookup(titles: &[Title]) -> HashMap<String, Vec<TitleMatchInfo>> {
-    let mut lookup: HashMap<String, Vec<TitleMatchInfo>> = HashMap::new();
-
-    for title in titles {
-        if !title.monitored {
-            continue;
-        }
-
-        let info = TitleMatchInfo {
-            title_id: title.id.clone(),
-            year: title.year,
-        };
-
-        for key in canonical_title_lookup_keys(title) {
-            lookup.entry(key).or_default().push(info.clone());
-        }
-    }
-
-    lookup
-}
-
 #[derive(Clone)]
 struct TitleMatchInfo {
     title_id: String,
     year: Option<i32>,
+}
+
+#[derive(Clone)]
+struct TitleContextCandidate {
+    info: TitleMatchInfo,
+    evidence: crate::acquisition_release_search::CanonicalTitleEvidence,
+}
+
+fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
+    titles
+        .iter()
+        .filter(|title| title.monitored)
+        .map(|title| TitleContextCandidate {
+            info: TitleMatchInfo {
+                title_id: title.id.clone(),
+                year: title.year,
+            },
+            evidence: canonical_title_evidence(title),
+        })
+        .collect()
 }
 
 /// Extract the series/movie title portion from a release name by taking
@@ -56,6 +56,7 @@ fn extract_title_from_release(parsed: &ParsedReleaseMetadata) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
     let mut titles = if parsed.normalized_title_variants.is_empty() {
         vec![parsed.normalized_title.clone()]
@@ -79,48 +80,136 @@ fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
         })
 }
 
-/// Try to match a parsed release against the title lookup.
-/// Returns the best matching title info, if any.
-fn match_release_to_title<'a>(
-    parsed: &ParsedReleaseMetadata,
-    lookup: &'a HashMap<String, Vec<TitleMatchInfo>>,
-) -> Option<&'a TitleMatchInfo> {
-    for release_title in extract_titles_from_release(parsed) {
-        // Exact match first
-        if let Some(matches) = lookup.get(&release_title) {
-            // If the release has a year, prefer matching title with same year
-            if let Some(year) = parsed.year
-                && let Some(m) = matches.iter().find(|m| m.year == Some(year as i32))
-            {
-                return Some(m);
-            }
-            return matches.first();
+fn release_tokens_for_matching(release_title: &str) -> Vec<String> {
+    normalize_for_matching(release_title)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+fn release_contains_year(release_tokens: &[String], year: i32) -> bool {
+    let year = year.to_string();
+    release_tokens.iter().any(|token| token == &year)
+}
+
+fn token_window_contains(release_tokens: &[String], title_tokens: &[&str]) -> bool {
+    !title_tokens.is_empty()
+        && release_tokens.windows(title_tokens.len()).any(|window| {
+            window
+                .iter()
+                .map(String::as_str)
+                .eq(title_tokens.iter().copied())
+        })
+}
+
+fn title_key_match_score(
+    release_tokens: &[String],
+    title_key: &str,
+    title_year: Option<i32>,
+) -> Option<i32> {
+    let title_tokens = title_key.split_whitespace().collect::<Vec<_>>();
+    if !token_window_contains(release_tokens, &title_tokens) {
+        return None;
+    }
+
+    if title_tokens.len() == 1 {
+        let token_len = title_tokens[0].chars().count();
+        let year_matches =
+            title_year.is_some_and(|year| release_contains_year(release_tokens, year));
+        if token_len < 3 && !year_matches {
+            return None;
+        }
+    }
+
+    let mut score = i32::try_from(title_tokens.len()).unwrap_or(i32::MAX / 10) * 10;
+    if title_year.is_some_and(|year| release_contains_year(release_tokens, year)) {
+        score += 6;
+    }
+    Some(score)
+}
+
+fn context_candidate_match_score(
+    release_tokens: &[String],
+    candidate: &TitleContextCandidate,
+) -> Option<i32> {
+    let mut best_score: Option<i32> = None;
+
+    for key in &candidate.evidence.lookup_keys {
+        if let Some(score) = title_key_match_score(release_tokens, key, candidate.info.year) {
+            best_score = Some(best_score.map_or(score, |best| best.max(score)));
         }
 
-        // Try with year stripped (release "Title 2024" → lookup "title")
-        if let Some(year) = parsed.year {
-            let year_str = format!(" {year}");
-            if let Some(without_year) = release_title.strip_suffix(&year_str)
-                && let Some(matches) = lookup.get(without_year)
+        if let Some(year) = candidate.info.year {
+            let year_suffix = format!(" {year}");
+            if let Some(stripped_key) = key.strip_suffix(&year_suffix)
+                && let Some(score) =
+                    title_key_match_score(release_tokens, stripped_key, candidate.info.year)
             {
-                return matches.first();
-            }
-        }
-
-        // Try adding year from lookup (lookup has "title 2024", release has "title")
-        for (key, matches) in lookup {
-            for m in matches {
-                if let Some(year) = m.year {
-                    let with_year = format!("{release_title} {year}");
-                    if *key == with_year {
-                        return Some(m);
-                    }
-                }
+                best_score = Some(best_score.map_or(score, |best| best.max(score)));
             }
         }
     }
 
-    None
+    best_score
+}
+
+/// Match an RSS release against monitored titles using real title contexts.
+/// The cheap lexical pass only builds a small candidate bank; the final match
+/// is always a context-aware v2 parse for a concrete catalog title.
+fn match_release_to_title_context<'a>(
+    release_title: &str,
+    context_bank: &'a [TitleContextCandidate],
+) -> Option<&'a TitleMatchInfo> {
+    let release_tokens = release_tokens_for_matching(release_title);
+    if release_tokens.is_empty() {
+        return None;
+    }
+
+    let mut candidates = context_bank
+        .iter()
+        .filter_map(|candidate| {
+            context_candidate_match_score(&release_tokens, candidate)
+                .map(|score| (candidate, score))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(
+        |(left_candidate, left_score), (right_candidate, right_score)| {
+            right_score.cmp(left_score).then_with(|| {
+                left_candidate
+                    .info
+                    .title_id
+                    .cmp(&right_candidate.info.title_id)
+            })
+        },
+    );
+    candidates.truncate(RSS_TITLE_CONTEXT_CANDIDATE_LIMIT);
+
+    let mut best: Option<(&TitleMatchInfo, i32)> = None;
+    for (candidate, lexical_score) in candidates {
+        let parsed =
+            parse_release_metadata_for_target(release_title, &candidate.evidence.parse_context);
+        if let (Some(parsed_year), Some(title_year)) = (parsed.year, candidate.info.year)
+            && parsed_year != title_year
+        {
+            continue;
+        }
+        if !parsed_release_matches_title_evidence(&parsed, &candidate.evidence) {
+            continue;
+        }
+
+        let year_bonus = i32::from(parsed.year.is_some() && parsed.year == candidate.info.year) * 8;
+        let parser_bonus = (parsed.parse_confidence * 10.0).round() as i32;
+        let score = lexical_score + year_bonus + parser_bonus;
+
+        match best {
+            Some((best_info, best_score))
+                if score < best_score
+                    || (score == best_score && candidate.info.title_id >= best_info.title_id) => {}
+            _ => best = Some((&candidate.info, score)),
+        }
+    }
+
+    best.map(|(info, _)| info)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -160,9 +249,9 @@ impl AppUseCase {
             .titles
             .list_for_matching(None, None)
             .await?;
-        let lookup = build_title_lookup(&titles);
+        let title_context_bank = build_title_context_bank(&titles);
 
-        if lookup.is_empty() {
+        if title_context_bank.is_empty() {
             info!("RSS sync: no monitored titles, skipping");
             metrics::counter!("scryer_rss_sync_total").increment(1);
             metrics::histogram!("scryer_rss_sync_duration_seconds")
@@ -291,9 +380,9 @@ impl AppUseCase {
         let total_new = new_results.len();
 
         for result in new_results {
-            let parsed = parse_release_metadata(&result.title);
-
-            if let Some(title_info) = match_release_to_title(&parsed, &lookup) {
+            if let Some(title_info) =
+                match_release_to_title_context(&result.title, &title_context_bank)
+            {
                 matched_count += 1;
                 matched_by_title
                     .entry(title_info.title_id.clone())
@@ -420,6 +509,7 @@ impl AppUseCase {
             .iter()
             .find(|id| id.source == "tvdb")
             .map(|id| id.value.clone());
+        let parse_context = build_release_parse_context(title, None, None, Some(category.as_str()));
 
         // Score all releases against quality profile
         let scored = match self
@@ -431,6 +521,10 @@ impl AppUseCase {
                 Some(category.clone()),
                 &title.tags,
                 title.runtime_minutes,
+                &parse_context,
+                None,
+                None,
+                None,
             )
             .await
         {
@@ -482,40 +576,77 @@ impl AppUseCase {
             .iter()
             .find(|id| id.source == "tvdb")
             .map(|id| id.value.clone());
+        let title_parse_context =
+            build_release_parse_context(title, None, None, Some(category.as_str()));
 
-        // Group releases by (season, episode) from parsed metadata
-        let mut by_episode: HashMap<(Option<u32>, Vec<u32>), Vec<&IndexerSearchResult>> =
-            HashMap::new();
+        let catalog_episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let episodes_by_id = catalog_episodes
+            .iter()
+            .map(|episode| (episode.id.clone(), episode.clone()))
+            .collect::<HashMap<_, _>>();
 
+        // Route exact episodes, absolute ranges, and season packs to every
+        // covered catalog episode. Monitored status is intentionally ignored
+        // here; wanted-item lookup below is the only pre-download gate.
+        let mut by_episode: HashMap<String, Vec<IndexerSearchResult>> = HashMap::new();
         for release in releases {
-            let parsed = parse_release_metadata(&release.title);
-            if let Some(ref ep) = parsed.episode {
-                let key = (ep.season, ep.episode_numbers.clone());
-                by_episode.entry(key).or_default().push(release);
+            let parsed = parse_release_metadata_for_target(&release.title, &title_parse_context);
+            let coverage = crate::acquisition_coverage::resolve_release_coverage(
+                &parsed,
+                &catalog_episodes,
+                &catalog_collections,
+                None,
+            );
+            match coverage {
+                crate::acquisition_coverage::ReleaseCoverage::SingleEpisode(episode_id) => {
+                    by_episode
+                        .entry(episode_id)
+                        .or_default()
+                        .push(release.clone());
+                }
+                crate::acquisition_coverage::ReleaseCoverage::EpisodeSet(episode_ids) => {
+                    for episode_id in episode_ids {
+                        by_episode
+                            .entry(episode_id)
+                            .or_default()
+                            .push(release.clone());
+                    }
+                }
+                crate::acquisition_coverage::ReleaseCoverage::Collection(collection_id) => {
+                    for episode in catalog_episodes
+                        .iter()
+                        .filter(|episode| episode.collection_id.as_deref() == Some(&collection_id))
+                    {
+                        by_episode
+                            .entry(episode.id.clone())
+                            .or_default()
+                            .push(release.clone());
+                    }
+                }
+                crate::acquisition_coverage::ReleaseCoverage::Title
+                | crate::acquisition_coverage::ReleaseCoverage::Unknown => {}
             }
         }
 
-        for ((season, episode_numbers), episode_releases) in &by_episode {
-            // Find the wanted item for this specific episode
-            let episode_id =
-                if let (Some(season_num), Some(ep_num)) = (season, episode_numbers.first()) {
-                    // Look up the episode by season/episode number
-                    self.find_episode_id_for_title(&title.id, *season_num, *ep_num)
-                        .await
-                } else {
-                    None
-                };
-
-            let episode_id = match episode_id {
-                Some(id) => id,
-                None => continue, // No matching episode in our DB
-            };
-
+        for (episode_id, episode_releases) in &by_episode {
             let wanted = match self
                 .services
                 .workflow
                 .wanted_items
-                .get_wanted_item_for_title(&title.id, Some(&episode_id))
+                .get_wanted_item_for_title(&title.id, Some(episode_id))
                 .await
             {
                 Ok(Some(w)) => w,
@@ -526,9 +657,20 @@ impl AppUseCase {
                 continue;
             }
 
+            let episode_record = episodes_by_id.get(episode_id).cloned();
+            let episode_parse_context = build_release_parse_context(
+                title,
+                episode_record.as_ref(),
+                None,
+                Some(category.as_str()),
+            );
+            let absolute_episode = episode_record
+                .as_ref()
+                .and_then(|episode| episode.absolute_number.as_deref())
+                .and_then(|value| value.trim().parse::<u32>().ok());
+
             // Score these releases
-            let owned_releases: Vec<IndexerSearchResult> =
-                episode_releases.iter().map(|r| (*r).clone()).collect();
+            let owned_releases: Vec<IndexerSearchResult> = episode_releases.to_vec();
             let scored = match self
                 .score_rss_releases(
                     &owned_releases,
@@ -538,6 +680,16 @@ impl AppUseCase {
                     Some(category.clone()),
                     &title.tags,
                     title.runtime_minutes,
+                    &episode_parse_context,
+                    episode_record
+                        .as_ref()
+                        .and_then(|episode| episode.season_number.as_deref())
+                        .and_then(|value| value.parse::<u32>().ok()),
+                    episode_record
+                        .as_ref()
+                        .and_then(|episode| episode.episode_number.as_deref())
+                        .and_then(|value| value.parse::<u32>().ok()),
+                    absolute_episode,
                 )
                 .await
             {
@@ -560,42 +712,6 @@ impl AppUseCase {
         }
     }
 
-    /// Find episode ID by title_id + season + episode number.
-    async fn find_episode_id_for_title(
-        &self,
-        title_id: &str,
-        season: u32,
-        episode: u32,
-    ) -> Option<String> {
-        // List collections (seasons) for this title, find the right one
-        let collections = self
-            .services
-            .catalog
-            .shows
-            .list_collections_for_title(title_id)
-            .await
-            .ok()?;
-
-        let season_str = season.to_string();
-        let collection = collections
-            .iter()
-            .find(|c| c.collection_index == season_str)?;
-
-        let episodes = self
-            .services
-            .catalog
-            .shows
-            .list_episodes_for_collection(&collection.id)
-            .await
-            .ok()?;
-
-        let episode_str = episode.to_string();
-        episodes
-            .iter()
-            .find(|ep| ep.episode_number.as_deref() == Some(&episode_str))
-            .map(|ep| ep.id.clone())
-    }
-
     /// Score a batch of RSS releases against the quality profile.
     async fn score_rss_releases(
         &self,
@@ -606,6 +722,10 @@ impl AppUseCase {
         category: Option<String>,
         title_tags: &[String],
         runtime_minutes: Option<i32>,
+        parse_context: &ReleaseParseContext,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let quality_profile = self
             .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
@@ -628,15 +748,16 @@ impl AppUseCase {
             .score_release_results(
                 releases.to_vec(),
                 &quality_profile,
-                Some(title_id),
+                title_id,
                 scope_id.as_deref(),
                 indexer_routing.as_ref(),
                 category.as_deref(),
                 title_tags,
                 runtime_minutes,
-                None,
-                None,
-                None,
+                parse_context,
+                season,
+                episode,
+                absolute_episode,
             )
             .await)
     }
@@ -713,7 +834,7 @@ impl AppUseCase {
             if dl_snapshot.is_active(&candidate.title) {
                 continue;
             }
-            if dl_snapshot.failed_item(&candidate.title).is_some() {
+            if dl_snapshot.failed_item(None, &candidate.title).is_some() {
                 continue;
             }
 
@@ -921,12 +1042,35 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let submission_scope =
+                let submission_scope = if let Some(parsed) = best.parsed_release_metadata.as_ref() {
+                    let catalog_episodes = self
+                        .services
+                        .catalog
+                        .shows
+                        .list_episodes_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    let catalog_collections = self
+                        .services
+                        .catalog
+                        .shows
+                        .list_collections_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    crate::acquisition_coverage::resolve_release_coverage(
+                        parsed,
+                        &catalog_episodes,
+                        &catalog_collections,
+                        episode.as_ref(),
+                    )
+                    .submission_scope_or(&subject.submission_scope)
+                } else {
                     super::acquisition::download_submission_scope_for_release_title(
                         wanted,
                         episode.as_ref(),
                         &best.title,
-                    );
+                    )
+                };
                 let _ = self
                     .services
                     .workflow
@@ -934,6 +1078,7 @@ impl AppUseCase {
                     .record_submission(DownloadSubmission {
                         title_id: title.id.clone(),
                         facet: facet_str.trim_matches('"').to_string(),
+                        download_client_id: grab.client_id,
                         download_client_type: grab.client_type,
                         download_client_item_id: grab.job_id,
                         source_hint: None,
@@ -1123,55 +1268,73 @@ mod tests {
         assert_eq!(normalize_for_matching("café"), "café");
     }
 
-    // ── build_title_lookup ──────────────────────────────────────────
+    // ── build_title_context_bank ────────────────────────────────────
 
     #[test]
-    fn lookup_indexes_by_primary_name() {
+    fn context_bank_indexes_by_primary_name() {
         let titles = vec![make_title("t1", "Inception", Some(2010))];
-        let lookup = build_title_lookup(&titles);
-        assert!(lookup.contains_key("inception"));
-        assert_eq!(lookup["inception"].len(), 1);
-        assert_eq!(lookup["inception"][0].title_id, "t1");
+        let bank = build_title_context_bank(&titles);
+        assert_eq!(bank.len(), 1);
+        assert_eq!(bank[0].info.title_id, "t1");
+        assert!(
+            bank[0]
+                .evidence
+                .lookup_keys
+                .iter()
+                .any(|key| key == "inception")
+        );
     }
 
     #[test]
-    fn lookup_skips_unmonitored() {
+    fn context_bank_skips_unmonitored() {
         let titles = vec![make_unmonitored("t1", "Inception")];
-        let lookup = build_title_lookup(&titles);
-        assert!(lookup.is_empty());
+        let bank = build_title_context_bank(&titles);
+        assert!(bank.is_empty());
     }
 
     #[test]
-    fn lookup_indexes_aliases() {
+    fn context_bank_indexes_aliases() {
         let titles = vec![make_title_with_aliases(
             "t1",
             "Spirited Away",
             Some(2001),
             vec!["Sen to Chihiro no Kamikakushi"],
         )];
-        let lookup = build_title_lookup(&titles);
-        assert!(lookup.contains_key("spirited away"));
-        assert!(lookup.contains_key("sen to chihiro no kamikakushi"));
+        let bank = build_title_context_bank(&titles);
+        assert_eq!(bank.len(), 1);
+        assert!(
+            bank[0]
+                .evidence
+                .lookup_keys
+                .iter()
+                .any(|key| key == "spirited away")
+        );
+        assert!(
+            bank[0]
+                .evidence
+                .lookup_keys
+                .iter()
+                .any(|key| key == "sen to chihiro no kamikakushi")
+        );
     }
 
     #[test]
-    fn lookup_multiple_titles_same_normalized_name() {
+    fn context_bank_keeps_multiple_titles_same_normalized_name() {
         let titles = vec![
             make_title("t1", "Dune", Some(1984)),
             make_title("t2", "Dune", Some(2021)),
         ];
-        let lookup = build_title_lookup(&titles);
-        assert_eq!(lookup["dune"].len(), 2);
+        let bank = build_title_context_bank(&titles);
+        assert_eq!(bank.len(), 2);
     }
 
-    // ── match_release_to_title ──────────────────────────────────────
+    // ── match_release_to_title_context ──────────────────────────────
 
     #[test]
     fn match_exact_title() {
         let titles = vec![make_title("t1", "Inception", Some(2010))];
-        let lookup = build_title_lookup(&titles);
-        let parsed = crate::parse_release_metadata("Inception.2010.1080p.BluRay.x264");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Inception.2010.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "exact match should succeed");
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1182,9 +1345,8 @@ mod tests {
             make_title("t1", "Dune", Some(1984)),
             make_title("t2", "Dune", Some(2021)),
         ];
-        let lookup = build_title_lookup(&titles);
-        let parsed = crate::parse_release_metadata("Dune.2021.1080p.BluRay.x264");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Dune.2021.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "result was None");
         assert_eq!(result.unwrap().title_id, "t2");
     }
@@ -1195,9 +1357,8 @@ mod tests {
         let t = make_title("t1", "Inception", Some(2010));
         // Name doesn't include the year
         let titles = vec![t];
-        let lookup = build_title_lookup(&titles);
-        let parsed = crate::parse_release_metadata("Inception.2010.1080p.BluRay");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Inception.2010.1080p.BluRay", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1206,14 +1367,8 @@ mod tests {
     fn match_release_title_without_year_finds_title_with_year() {
         // Lookup has "title 2024", release only has "title"
         let titles = vec![make_title("t1", "Dune 2024", Some(2024))];
-        let lookup = build_title_lookup(&titles);
-        let parsed = ParsedReleaseMetadata {
-            raw_title: "Dune".to_string(),
-            normalized_title: "Dune".to_string(),
-            year: None,
-            ..Default::default()
-        };
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Dune", &bank);
         // Should match via the reverse year-addition path
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
@@ -1222,22 +1377,16 @@ mod tests {
     #[test]
     fn match_no_match_returns_none() {
         let titles = vec![make_title("t1", "Inception", Some(2010))];
-        let lookup = build_title_lookup(&titles);
-        let parsed = crate::parse_release_metadata("Totally.Unknown.Movie.2024.1080p");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Totally.Unknown.Movie.2024.1080p", &bank);
         assert!(result.is_none());
     }
 
     #[test]
     fn match_empty_release_title_returns_none() {
         let titles = vec![make_title("t1", "Inception", Some(2010))];
-        let lookup = build_title_lookup(&titles);
-        let parsed = ParsedReleaseMetadata {
-            raw_title: String::new(),
-            normalized_title: String::new(),
-            ..Default::default()
-        };
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("", &bank);
         assert!(result.is_none());
     }
 
@@ -1249,13 +1398,8 @@ mod tests {
             Some(2001),
             vec!["Sen to Chihiro no Kamikakushi"],
         )];
-        let lookup = build_title_lookup(&titles);
-        let parsed = ParsedReleaseMetadata {
-            raw_title: "Sen.to.Chihiro.no.Kamikakushi".to_string(),
-            normalized_title: "Sen to Chihiro no Kamikakushi".to_string(),
-            ..Default::default()
-        };
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context("Sen.to.Chihiro.no.Kamikakushi", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1268,10 +1412,11 @@ mod tests {
             Some(2020),
             vec!["Mon Cousin"],
         )];
-        let lookup = build_title_lookup(&titles);
-        let parsed =
-            crate::parse_release_metadata("Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.x264-GRP");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context(
+            "Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.x264-GRP",
+            &bank,
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1284,10 +1429,11 @@ mod tests {
             Some(2020),
             vec!["Mon Cousin"],
         )];
-        let lookup = build_title_lookup(&titles);
-        let parsed =
-            crate::parse_release_metadata("Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP");
-        let result = match_release_to_title(&parsed, &lookup);
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context(
+            "Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP",
+            &bank,
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }

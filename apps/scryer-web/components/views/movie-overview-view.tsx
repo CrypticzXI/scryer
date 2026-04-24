@@ -15,7 +15,7 @@ import { TitleHistoryModal } from "@/components/common/title-history-modal";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type { Translate } from "@/components/root/types";
-import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
+import type { Release, WantedItem } from "@/lib/types";
 import { useClient } from "urql";
 import type {
   MediaRenamePlan,
@@ -27,6 +27,7 @@ import type {
 } from "@/components/containers/movie-overview-container";
 import { MediaInfoBadges } from "@/components/common/media-info-badges";
 import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-panel";
+import { MovieOverviewDownloadList } from "@/components/common/download-queue-overview";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
@@ -44,6 +45,7 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
+import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
@@ -435,7 +437,6 @@ type Props = {
   onSetTitleMonitored: (monitored: boolean) => Promise<void>;
   monitoredUpdating: boolean;
   wantedItem: WantedItem | null;
-  acquisitionDiagnostics: TitleAcquisitionDiagnostics | null;
   wantedActionLoading: "pause" | "resume" | "reset" | null;
   onPauseWanted: () => Promise<void>;
   onResumeWanted: () => Promise<void>;
@@ -444,6 +445,7 @@ type Props = {
   onRequestDeleteTitle?: () => void;
   blocklistEntries: TitleReleaseBlocklistEntry[];
   mediaFiles: TitleMediaFile[];
+  downloadQueueItems: DownloadQueueItem[];
   subtitleDownloads: SubtitleDownloadRecord[];
   onDeleteFile?: (fileId: string) => void;
   onRefreshSubtitles?: () => void;
@@ -480,7 +482,6 @@ export function MovieOverviewView({
   onSetTitleMonitored,
   monitoredUpdating,
   wantedItem,
-  acquisitionDiagnostics,
   wantedActionLoading,
   onPauseWanted,
   onResumeWanted,
@@ -489,6 +490,7 @@ export function MovieOverviewView({
   onRequestDeleteTitle,
   blocklistEntries = [],
   mediaFiles = [],
+  downloadQueueItems = [],
   subtitleDownloads = [],
   onDeleteFile,
   onRefreshSubtitles,
@@ -842,84 +844,13 @@ export function MovieOverviewView({
         interactiveSearchPanel={interactiveSearchPanel}
       />
 
-      {acquisitionDiagnostics ? (
+      {downloadQueueItems.length > 0 ? (
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-base">Acquisition diagnostics</CardTitle>
-              {acquisitionDiagnostics.mismatchRecoveryEligibleCount > 0 ? (
-                <Button size="sm" variant="secondary" onClick={() => void onTriggerMismatchRecovery()}>
-                  <RotateCcw className="mr-1 h-4 w-4" />
-                  Recover mismatches
-                </Button>
-              ) : null}
-            </div>
+            <CardTitle className="text-base">{t("activity.activity")}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4 text-sm">
-            <div className="flex flex-wrap gap-4 text-muted-foreground">
-              <span>Latest decision: {formatDateTime(acquisitionDiagnostics.latestDecisionAt)}</span>
-              <span>Latest wanted search: {formatDateTime(acquisitionDiagnostics.latestWantedSearchAt)}</span>
-              <span>Mismatch recovery eligible: {acquisitionDiagnostics.mismatchRecoveryEligibleCount}</span>
-            </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Recent decision counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.decisionCounts.map((item) => (
-                    <div key={item.code} className="flex items-center justify-between gap-3">
-                      <span>{item.code}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Wanted status counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.wantedStatusCounts.map((item) => (
-                    <div key={item.status} className="flex items-center justify-between gap-3">
-                      <span>{item.status}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Pending release counts
-                </div>
-                <div className="space-y-1">
-                  {acquisitionDiagnostics.pendingReleaseCounts.map((item) => (
-                    <div key={item.status} className="flex items-center justify-between gap-3">
-                      <span>{item.status}</span>
-                      <span className="text-muted-foreground">{item.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div>
-              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Recent decisions
-              </div>
-              <div className="space-y-2">
-                {acquisitionDiagnostics.recentDecisions.slice(0, 8).map((decision) => (
-                  <div key={decision.id} className="rounded border border-border px-3 py-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">{decision.decisionCode}</span>
-                      <span className="text-xs text-muted-foreground">{formatDateTime(decision.createdAt)}</span>
-                    </div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground">
-                      {decision.releaseTitle}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          <CardContent>
+            <MovieOverviewDownloadList items={downloadQueueItems} />
           </CardContent>
         </Card>
       ) : null}

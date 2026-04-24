@@ -1,6 +1,6 @@
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
-    PendingTitleHydration, PrimaryCollectionSummary, TitleMetadataUpdate,
+    PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId, TitleMetadataUpdate,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, ExternalId, InterstitialMovieMetadata,
@@ -293,6 +293,56 @@ fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)>
         }
     }
     out
+}
+
+fn normalized_scoped_external_id(
+    scoped_id: &ScopedExternalId,
+) -> Option<(String, String, String, String)> {
+    let scope_id = scoped_id.scope_id.trim();
+    let source = scoped_id.source.trim().to_ascii_lowercase();
+    let external_id = scoped_id.external_id.trim();
+    if scope_id.is_empty() || source.is_empty() || external_id.is_empty() {
+        return None;
+    }
+
+    let source_scope = scoped_id
+        .source_scope
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+
+    Some((
+        scope_id.to_string(),
+        source,
+        external_id.to_string(),
+        source_scope,
+    ))
+}
+
+fn row_to_scoped_external_id(row: &sqlx::sqlite::SqliteRow) -> AppResult<ScopedExternalId> {
+    let source_scope: String = row
+        .try_get("source_scope")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    Ok(ScopedExternalId {
+        scope_id: row
+            .try_get("scope_id")
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+        source: row
+            .try_get("source")
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+        external_id: row
+            .try_get("external_id")
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+        provenance: row
+            .try_get("provenance")
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+        source_scope: if source_scope.trim().is_empty() {
+            None
+        } else {
+            Some(source_scope)
+        },
+    })
 }
 
 async fn list_existing_title_ids_for_external_ids_tx(
@@ -1183,6 +1233,153 @@ pub(crate) async fn list_episodes_for_title_query(
         out.push(row_to_episode(&row)?);
     }
     Ok(out)
+}
+
+pub(crate) async fn list_collection_external_ids_query(
+    pool: &SqlitePool,
+    collection_id: &str,
+) -> AppResult<Vec<ScopedExternalId>> {
+    let rows = sqlx::query(
+        "SELECT collection_id AS scope_id, source, external_id, provenance, source_scope
+         FROM collection_external_ids
+         WHERE collection_id = ?
+         ORDER BY source ASC, external_id ASC, source_scope ASC",
+    )
+    .bind(collection_id)
+    .fetch_all(pool)
+    .await
+    .map_err(repository_error_from_sqlx)?;
+
+    rows.iter().map(row_to_scoped_external_id).collect()
+}
+
+pub(crate) async fn list_episode_external_ids_query(
+    pool: &SqlitePool,
+    episode_id: &str,
+) -> AppResult<Vec<ScopedExternalId>> {
+    let rows = sqlx::query(
+        "SELECT episode_id AS scope_id, source, external_id, provenance, source_scope
+         FROM episode_external_ids
+         WHERE episode_id = ?
+         ORDER BY source ASC, external_id ASC, source_scope ASC",
+    )
+    .bind(episode_id)
+    .fetch_all(pool)
+    .await
+    .map_err(repository_error_from_sqlx)?;
+
+    rows.iter().map(row_to_scoped_external_id).collect()
+}
+
+pub(crate) async fn replace_anibridge_scoped_external_ids_for_title_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    collection_ids: &[ScopedExternalId],
+    episode_ids: &[ScopedExternalId],
+) -> AppResult<()> {
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
+
+    sqlx::query(
+        "DELETE FROM collection_external_ids WHERE title_id = ? AND provenance = 'anibridge'",
+    )
+    .bind(title_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(repository_error_from_sqlx)?;
+    sqlx::query("DELETE FROM episode_external_ids WHERE title_id = ? AND provenance = 'anibridge'")
+        .bind(title_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(repository_error_from_sqlx)?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for scoped_id in collection_ids {
+        let Some((collection_id, source, external_id, source_scope)) =
+            normalized_scoped_external_id(scoped_id)
+        else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT OR IGNORE INTO collection_external_ids
+             (id, title_id, collection_id, source, external_id, provenance, source_scope, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'anibridge', ?, ?, ?)",
+        )
+        .bind(scryer_domain::Id::new().0)
+        .bind(title_id)
+        .bind(collection_id)
+        .bind(source)
+        .bind(external_id)
+        .bind(source_scope)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(repository_error_from_sqlx)?;
+    }
+
+    for scoped_id in episode_ids {
+        let Some((episode_id, source, external_id, source_scope)) =
+            normalized_scoped_external_id(scoped_id)
+        else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT OR IGNORE INTO episode_external_ids
+             (id, title_id, episode_id, source, external_id, provenance, source_scope, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'anibridge', ?, ?, ?)",
+        )
+        .bind(scryer_domain::Id::new().0)
+        .bind(title_id)
+        .bind(episode_id)
+        .bind(source)
+        .bind(external_id)
+        .bind(source_scope)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(repository_error_from_sqlx)?;
+    }
+
+    tx.commit().await.map_err(repository_error_from_sqlx)
+}
+
+pub(crate) async fn list_anime_title_ids_missing_anibridge_scoped_external_ids_query(
+    pool: &SqlitePool,
+    limit: usize,
+) -> AppResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT t.id
+         FROM titles t
+         WHERE t.facet = 'anime'
+           AND EXISTS (
+               SELECT 1 FROM title_external_ids te
+               WHERE te.title_id = t.id AND LOWER(te.source) IN ('tvdb', 'tvdb_id')
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM collection_external_ids ce
+               WHERE ce.title_id = t.id AND ce.provenance = 'anibridge'
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM episode_external_ids ee
+               WHERE ee.title_id = t.id AND ee.provenance = 'anibridge'
+           )
+         ORDER BY COALESCE(t.metadata_fetched_at, ''), t.created_at
+         LIMIT ?",
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .map_err(repository_error_from_sqlx)?;
+
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(
+            row.try_get("id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        );
+    }
+    Ok(ids)
 }
 
 pub(crate) async fn get_episode_by_id_query(

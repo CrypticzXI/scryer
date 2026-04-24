@@ -1,15 +1,16 @@
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClientConfigUpdate,
     DownloadQueueCommandRecord, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
-    IndexerConfigUpdate, QualityProfile, ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit,
-    TitleImageReplacement, TitleMetadataUpdate, WorkflowOperationInfo,
+    IndexerConfigUpdate, QualityProfile, ReleaseDownloadAttemptOutcome, ScopedExternalId,
+    SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
     Episode, ExternalId, ImportStatus, ImportType, IndexerConfig, InterstitialMovieMetadata,
     MediaFacet, NewDomainEvent, NotificationChannelConfig, NotificationSubscription,
     PluginInstallation, PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
-    Title, User,
+    SubtitleProviderConfig, Title, User,
 };
 use sqlx::ConnectOptions;
 use std::sync::{Arc, RwLock};
@@ -286,6 +287,28 @@ impl DbRuntime {
         self.sender
             .send(DbCommand::CreateCollection {
                 collection: collection.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn replace_anibridge_scoped_external_ids_for_title(
+        &self,
+        title_id: &str,
+        collection_ids: &[ScopedExternalId],
+        episode_ids: &[ScopedExternalId],
+    ) -> AppResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::ReplaceAnibridgeScopedExternalIdsForTitle {
+                title_id: title_id.to_string(),
+                collection_ids: collection_ids.to_vec(),
+                episode_ids: episode_ids.to_vec(),
                 reply: reply_tx,
             })
             .await
@@ -1169,11 +1192,15 @@ impl DbRuntime {
 
     pub async fn delete_download_submission_by_client_item_id(
         &self,
+        download_client_id: Option<&str>,
+        download_client_type: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::DeleteDownloadSubmissionByClientItemId {
+                download_client_id: download_client_id.map(str::to_string),
+                download_client_type: download_client_type.map(str::to_string),
                 download_client_item_id: download_client_item_id.to_string(),
                 reply: reply_tx,
             })
@@ -1186,6 +1213,7 @@ impl DbRuntime {
 
     pub async fn update_tracked_state(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
         tracked_state: &str,
@@ -1193,6 +1221,7 @@ impl DbRuntime {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::UpdateTrackedState {
+                download_client_id: download_client_id.map(str::to_string),
                 download_client_type: download_client_type.to_string(),
                 download_client_item_id: download_client_item_id.to_string(),
                 tracked_state: tracked_state.to_string(),
@@ -1400,6 +1429,7 @@ impl DbRuntime {
 
     pub async fn queue_delete_download_command(
         &self,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
@@ -1408,6 +1438,7 @@ impl DbRuntime {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::QueueDeleteDownloadCommand {
+                client_id: client_id.map(str::to_string),
                 client_type: client_type.to_string(),
                 download_client_item_id: download_client_item_id.to_string(),
                 is_history,
@@ -1860,6 +1891,58 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
+    pub async fn create_subtitle_provider_config(
+        &self,
+        config: SubtitleProviderConfig,
+    ) -> AppResult<SubtitleProviderConfig> {
+        let encryption_key = self.current_encryption_key()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::CreateSubtitleProviderConfig {
+                config,
+                encryption_key,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn update_subtitle_provider_config(
+        &self,
+        update: SubtitleProviderConfigUpdate,
+    ) -> AppResult<SubtitleProviderConfig> {
+        let encryption_key = self.current_encryption_key()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::UpdateSubtitleProviderConfig {
+                update,
+                encryption_key,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
+    pub async fn delete_subtitle_provider_config(&self, id: &str) -> AppResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::DeleteSubtitleProviderConfig {
+                id: id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
     pub async fn batch_ensure_setting_definitions(
         &self,
         definitions: Vec<SettingDefinitionSeed>,
@@ -2164,6 +2247,7 @@ impl DbRuntime {
         name: &str,
         description: &str,
         version: &str,
+        plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -2173,6 +2257,7 @@ impl DbRuntime {
                 name: name.to_string(),
                 description: description.to_string(),
                 version: version.to_string(),
+                plugin_type: plugin_type.to_string(),
                 provider_type: provider_type.to_string(),
                 reply: reply_tx,
             })

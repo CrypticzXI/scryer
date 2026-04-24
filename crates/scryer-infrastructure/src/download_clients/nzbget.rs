@@ -534,6 +534,7 @@ impl NzbgetDownloadClient {
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
                     title_id: param_title_id,
+                    episode_id: None,
                     title_name,
                     facet: param_facet.clone(),
                     client_id: String::new(),
@@ -693,6 +694,7 @@ impl NzbgetDownloadClient {
                 items.push(DownloadQueueItem {
                     id: id.clone(),
                     title_id: param_title_id,
+                    episode_id: None,
                     title_name,
                     facet: param_facet.clone(),
                     client_id: String::new(),
@@ -803,6 +805,7 @@ impl NzbgetDownloadClient {
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
                     title_id: param_title_id,
+                    episode_id: None,
                     title_name,
                     facet: param_facet.clone(),
                     client_id: String::new(),
@@ -953,6 +956,7 @@ impl DownloadClient for NzbgetDownloadClient {
             // in check_grabbed_for_failures.
             Ok(DownloadGrabResult {
                 job_id: nzbget_id.to_string(),
+                client_id: None,
                 client_type: "nzbget".to_string(),
             })
         }

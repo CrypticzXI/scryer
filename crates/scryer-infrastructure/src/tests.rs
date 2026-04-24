@@ -6,10 +6,10 @@ use scryer_application::{
     InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
     NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ShowRepository, SubmissionScope, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedStatus,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository, SubmissionScope,
+    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
+    TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
+    UserRepository, WantedItem, WantedItemRepository, WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -81,10 +81,10 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
 #[test]
 fn download_submission_lookup_chunks_and_deduplicates_client_items() {
     let mut client_items = (0..805)
-        .map(|idx| ("weaver".to_string(), format!("job-{idx}")))
+        .map(|idx| (None, "weaver".to_string(), format!("job-{idx}")))
         .collect::<Vec<_>>();
-    client_items.push(("weaver".to_string(), "job-12".to_string()));
-    client_items.push(("weaver".to_string(), "job-400".to_string()));
+    client_items.push((None, "weaver".to_string(), "job-12".to_string()));
+    client_items.push((None, "weaver".to_string(), "job-400".to_string()));
 
     let chunks = crate::queries::workflow::chunk_download_submission_client_items(&client_items);
 
@@ -92,12 +92,15 @@ fn download_submission_lookup_chunks_and_deduplicates_client_items() {
     assert_eq!(chunks[0].len(), 400);
     assert_eq!(chunks[1].len(), 400);
     assert_eq!(chunks[2].len(), 5);
-    assert_eq!(chunks[0][12], ("weaver".to_string(), "job-12".to_string()));
+    assert_eq!(
+        chunks[0][12],
+        (None, "weaver".to_string(), "job-12".to_string())
+    );
     assert_eq!(
         chunks
             .iter()
             .flat_map(|chunk| chunk.iter())
-            .filter(|(client_type, item_id)| client_type == "weaver" && item_id == "job-12")
+            .filter(|(_, client_type, item_id)| client_type == "weaver" && item_id == "job-12")
             .count(),
         1
     );
@@ -119,6 +122,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
             .record_submission(DownloadSubmission {
                 title_id: format!("title-{idx}"),
                 facet: "movie".to_string(),
+                download_client_id: None,
                 download_client_type: "weaver".to_string(),
                 download_client_item_id: format!("job-{idx}"),
                 source_hint: None,
@@ -132,10 +136,10 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     }
 
     let mut lookup = (0..805)
-        .map(|idx| ("weaver".to_string(), format!("job-{idx}")))
+        .map(|idx| (None, "weaver".to_string(), format!("job-{idx}")))
         .collect::<Vec<_>>();
-    lookup.push(("weaver".to_string(), "job-12".to_string()));
-    lookup.push(("weaver".to_string(), "job-400".to_string()));
+    lookup.push((None, "weaver".to_string(), "job-12".to_string()));
+    lookup.push((None, "weaver".to_string(), "job-400".to_string()));
 
     let records = workflow
         .list_for_client_items(&lookup)
@@ -146,6 +150,51 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     assert!(records.iter().any(|record| {
         record.download_client_type == "weaver" && record.download_client_item_id == "job-804"
     }));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn record_download_submission_persists_episode_set_scope() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_episode_set_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = SqliteWorkflowStore::new(&services);
+
+    workflow
+        .record_submission(DownloadSubmission {
+            title_id: "title-1".to_string(),
+            facet: "anime".to_string(),
+            download_client_id: Some("client-a".to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "job-range".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("BASTARD 01-13".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::EpisodeSet {
+                episode_ids: vec!["ep-13".to_string(), "ep-1".to_string()],
+            },
+        })
+        .await
+        .expect("record submission should succeed");
+
+    let record = workflow
+        .find_by_client_item_id(Some("client-a"), "weaver", "job-range")
+        .await
+        .expect("lookup should succeed")
+        .expect("submission should exist");
+
+    assert_eq!(
+        record.scope,
+        SubmissionScope::EpisodeSet {
+            episode_ids: vec!["ep-1".to_string(), "ep-13".to_string()]
+        }
+    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -603,6 +652,114 @@ async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
         .await
         .expect("db should initialize");
     (services, db)
+}
+
+#[tokio::test]
+async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes() {
+    let (services, db) = temp_services("scryer_scoped_anibridge_ids").await;
+    let catalog = catalog_store(&services);
+
+    let mut title = make_test_title("title-anime", None);
+    title.facet = MediaFacet::Anime;
+    title.external_ids = vec![ExternalId {
+        source: "tvdb_id".to_string(),
+        value: "431162".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let collection = Collection {
+        id: "season-2".to_string(),
+        title_id: title.id.clone(),
+        collection_type: CollectionType::Season,
+        collection_index: "2".to_string(),
+        label: Some("Season 2".to_string()),
+        ordered_path: None,
+        narrative_order: Some("2".to_string()),
+        first_episode_number: Some("1".to_string()),
+        last_episode_number: Some("24".to_string()),
+        interstitial_movie: None,
+        specials_movies: vec![],
+        interstitial_season_episode: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    ShowRepository::create_collection(&catalog, collection.clone())
+        .await
+        .expect("collection should insert");
+
+    let episode = Episode {
+        id: "episode-s02e23".to_string(),
+        title_id: title.id.clone(),
+        collection_id: Some(collection.id.clone()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("23".to_string()),
+        season_number: Some("2".to_string()),
+        episode_label: Some("S02E23".to_string()),
+        title: Some("Episode 23".to_string()),
+        air_date: Some("2025-06-13".to_string()),
+        duration_seconds: Some(1_440),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: Some("47".to_string()),
+        overview: None,
+        tvdb_id: Some("1234567".to_string()),
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    ShowRepository::create_episode(&catalog, episode.clone())
+        .await
+        .expect("episode should insert");
+
+    ShowRepository::replace_anibridge_scoped_external_ids_for_title(
+        &catalog,
+        &title.id,
+        vec![ScopedExternalId {
+            scope_id: collection.id.clone(),
+            source: "anilist".to_string(),
+            external_id: "176301".to_string(),
+            provenance: "anibridge".to_string(),
+            source_scope: Some("R".to_string()),
+        }],
+        vec![ScopedExternalId {
+            scope_id: episode.id.clone(),
+            source: "anidb".to_string(),
+            external_id: "18562".to_string(),
+            provenance: "anibridge".to_string(),
+            source_scope: Some("R".to_string()),
+        }],
+    )
+    .await
+    .expect("replace scoped ids should succeed");
+
+    let collection_ids = ShowRepository::list_collection_external_ids(&catalog, &collection.id)
+        .await
+        .expect("collection ids should load");
+    assert_eq!(collection_ids.len(), 1);
+    assert_eq!(collection_ids[0].scope_id, collection.id);
+    assert_eq!(collection_ids[0].source, "anilist");
+    assert_eq!(collection_ids[0].external_id, "176301");
+    assert_eq!(collection_ids[0].source_scope.as_deref(), Some("R"));
+
+    let episode_ids = ShowRepository::list_episode_external_ids(&catalog, &episode.id)
+        .await
+        .expect("episode ids should load");
+    assert_eq!(episode_ids.len(), 1);
+    assert_eq!(episode_ids[0].scope_id, episode.id);
+    assert_eq!(episode_ids[0].source, "anidb");
+    assert_eq!(episode_ids[0].external_id, "18562");
+    assert_eq!(episode_ids[0].source_scope.as_deref(), Some("R"));
+
+    let missing =
+        TitleRepository::list_anime_title_ids_missing_anibridge_scoped_external_ids(&catalog, 10)
+            .await
+            .expect("missing scoped-id backfill query should run");
+    assert!(!missing.contains(&title.id));
+
+    let _ = std::fs::remove_file(db);
 }
 
 async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
@@ -3212,11 +3369,11 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let workflow_store = SqliteWorkflowStore::new(&services);
 
     workflow_store
-        .update_tracked_state("weaver", "job-123", "failed")
+        .update_tracked_state(None, "weaver", "job-123", "failed")
         .await
         .expect("tracked state upsert should succeed without a preexisting submission row");
 
-    let tracked_state = get_tracked_state_query(services.pool(), "weaver", "job-123")
+    let tracked_state = get_tracked_state_query(services.pool(), None, "weaver", "job-123")
         .await
         .expect("tracked state query should succeed");
     assert_eq!(tracked_state.as_deref(), Some("failed"));
@@ -3251,11 +3408,11 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
     let workflow_store = SqliteWorkflowStore::new(&services);
 
     let stale = workflow_store
-        .queue_delete_command("nzbget", "job-stale", false, Some("admin"))
+        .queue_delete_command(None, "nzbget", "job-stale", false, Some("admin"))
         .await
         .expect("stale delete should queue");
     let fresh = workflow_store
-        .queue_delete_command("nzbget", "job-fresh", true, Some("admin"))
+        .queue_delete_command(None, "nzbget", "job-fresh", true, Some("admin"))
         .await
         .expect("fresh delete should queue");
 

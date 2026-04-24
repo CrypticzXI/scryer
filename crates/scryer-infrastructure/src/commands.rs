@@ -11,14 +11,15 @@ use scryer_application::{
     DownloadQueueCommandRecord, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
     IndexerConfigUpdate, InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis,
     PendingRelease, PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem,
-    WorkflowOperationInfo,
+    ScopedExternalId, SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement,
+    TitleMetadataUpdate, WantedItem, WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
     Episode, ExternalId, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet,
     NewDomainEvent, NotificationChannelConfig, NotificationSubscription, PluginInstallation,
-    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload, Title, User,
+    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
+    SubtitleProviderConfig, Title, User,
 };
 use sqlx::SqlitePool;
 use std::future::Future;
@@ -258,6 +259,12 @@ pub(crate) enum DbCommand {
     ClearMetadataLanguageForAll {
         reply: Sender<AppResult<u64>>,
     },
+    ReplaceAnibridgeScopedExternalIdsForTitle {
+        title_id: String,
+        collection_ids: Vec<ScopedExternalId>,
+        episode_ids: Vec<ScopedExternalId>,
+        reply: Sender<AppResult<()>>,
+    },
     UpdateCollection {
         collection_id: String,
         update: CollectionUpdate,
@@ -330,10 +337,13 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<()>>,
     },
     DeleteDownloadSubmissionByClientItemId {
+        download_client_id: Option<String>,
+        download_client_type: Option<String>,
         download_client_item_id: String,
         reply: Sender<AppResult<()>>,
     },
     UpdateTrackedState {
+        download_client_id: Option<String>,
         download_client_type: String,
         download_client_item_id: String,
         tracked_state: String,
@@ -398,6 +408,7 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<()>>,
     },
     QueueDeleteDownloadCommand {
+        client_id: Option<String>,
         client_type: String,
         download_client_item_id: String,
         is_history: bool,
@@ -540,6 +551,20 @@ pub(crate) enum DbCommand {
         ordered_ids: Vec<String>,
         reply: Sender<AppResult<()>>,
     },
+    CreateSubtitleProviderConfig {
+        config: SubtitleProviderConfig,
+        encryption_key: Option<EncryptionKey>,
+        reply: Sender<AppResult<SubtitleProviderConfig>>,
+    },
+    UpdateSubtitleProviderConfig {
+        update: SubtitleProviderConfigUpdate,
+        encryption_key: Option<EncryptionKey>,
+        reply: Sender<AppResult<SubtitleProviderConfig>>,
+    },
+    DeleteSubtitleProviderConfig {
+        id: String,
+        reply: Sender<AppResult<()>>,
+    },
     BatchEnsureSettingDefinitions {
         definitions: Vec<SettingDefinitionSeed>,
         reply: Sender<AppResult<()>>,
@@ -644,6 +669,7 @@ pub(crate) enum DbCommand {
         name: String,
         description: String,
         version: String,
+        plugin_type: String,
         provider_type: String,
         reply: Sender<AppResult<()>>,
     },
@@ -1228,6 +1254,27 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
+                DbCommand::ReplaceAnibridgeScopedExternalIdsForTitle {
+                    title_id,
+                    collection_ids,
+                    episode_ids,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries(
+                            "replace_anibridge_scoped_external_ids_for_title",
+                            || {
+                                replace_anibridge_scoped_external_ids_for_title_query(
+                                    &pool,
+                                    &title_id,
+                                    &collection_ids,
+                                    &episode_ids,
+                                )
+                            },
+                        )
+                        .await,
+                    );
+                }
                 DbCommand::UpdateCollection {
                     collection_id,
                     update,
@@ -1421,6 +1468,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::DeleteDownloadSubmissionByClientItemId {
+                    download_client_id,
+                    download_client_type,
                     download_client_item_id,
                     reply,
                 } => {
@@ -1430,6 +1479,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             || {
                                 crate::queries::workflow::delete_download_submission_by_client_item_id_query(
                                     &pool,
+                                    download_client_id.as_deref(),
+                                    download_client_type.as_deref(),
                                     &download_client_item_id,
                                 )
                             },
@@ -1438,6 +1489,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::UpdateTrackedState {
+                    download_client_id,
                     download_client_type,
                     download_client_item_id,
                     tracked_state,
@@ -1447,6 +1499,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         run_with_sqlite_busy_retries("update_tracked_state", || {
                             crate::queries::workflow::update_tracked_state_query(
                                 &pool,
+                                download_client_id.as_deref(),
                                 &download_client_type,
                                 &download_client_item_id,
                                 &tracked_state,
@@ -1623,6 +1676,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::QueueDeleteDownloadCommand {
+                    client_id,
                     client_type,
                     download_client_item_id,
                     is_history,
@@ -1633,6 +1687,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         run_with_sqlite_busy_retries("queue_delete_download_command", || {
                             crate::queries::workflow::queue_delete_download_command_query(
                                 &pool,
+                                client_id.as_deref(),
                                 &client_type,
                                 &download_client_item_id,
                                 is_history,
@@ -2033,6 +2088,48 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
+                DbCommand::CreateSubtitleProviderConfig {
+                    config,
+                    encryption_key,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries("create_subtitle_provider_config", || {
+                            crate::queries::subtitle_provider::create_subtitle_provider_config_query(
+                                &pool,
+                                &config,
+                                encryption_key.as_ref(),
+                            )
+                        })
+                        .await,
+                    );
+                }
+                DbCommand::UpdateSubtitleProviderConfig {
+                    update,
+                    encryption_key,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries("update_subtitle_provider_config", || {
+                            crate::queries::subtitle_provider::update_subtitle_provider_config_query(
+                                &pool,
+                                &update,
+                                encryption_key.as_ref(),
+                            )
+                        })
+                        .await,
+                    );
+                }
+                DbCommand::DeleteSubtitleProviderConfig { id, reply } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries("delete_subtitle_provider_config", || {
+                            crate::queries::subtitle_provider::delete_subtitle_provider_config_query(
+                                &pool, &id,
+                            )
+                        })
+                        .await,
+                    );
+                }
                 DbCommand::BatchEnsureSettingDefinitions { definitions, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("batch_ensure_setting_definitions", || {
@@ -2306,6 +2403,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     name,
                     description,
                     version,
+                    plugin_type,
                     provider_type,
                     reply,
                 } => {
@@ -2317,6 +2415,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 &name,
                                 &description,
                                 &version,
+                                &plugin_type,
                                 &provider_type,
                             )
                         })

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppResult, BlocklistRepository, HousekeepingRepository, InsertMediaFileInput,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
+    AppResult, BlocklistRepository, EpisodeScopedMediaFile, HousekeepingRepository,
+    InsertMediaFileInput, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileAnalysis, MediaFileRepository, NewBlocklistEntry,
     PendingRelease, PendingReleaseRepository, ReleaseDecision, SubtitleDownloadRepository,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
@@ -14,7 +14,8 @@ use crate::SqliteServices;
 use crate::queries::housekeeping::list_all_media_file_paths_query;
 use crate::queries::library_scan_unmatched::get_library_scan_unmatched_item_query;
 use crate::queries::media_file::{
-    get_media_file_by_id_query, get_media_file_by_path_query, list_media_files_for_title_query,
+    get_media_file_by_id_query, get_media_file_by_path_query,
+    list_live_media_files_for_episode_ids_query, list_media_files_for_title_query,
     list_title_episode_progress_summaries_query, list_title_media_size_summaries_query,
     list_title_quality_summaries_query,
 };
@@ -138,6 +139,14 @@ impl MediaFileRepository for SqliteLibraryStateStore {
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         list_media_files_for_title_query(&self.db.pool, title_id).await
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        list_live_media_files_for_episode_ids_query(&self.db.pool, title_id, episode_ids).await
     }
 
     async fn list_title_media_size_summaries(

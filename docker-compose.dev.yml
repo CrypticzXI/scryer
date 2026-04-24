@@ -13,20 +13,6 @@ services:
       - ./tmp/nzbget/config:/config
       - ./tmp/nzbget-downloads:/nzbget-downloads
 
-  sabnzbd:
-    image: lscr.io/linuxserver/sabnzbd:latest
-    container_name: scryer-sabnzbd
-    environment:
-      PUID: 1000
-      PGID: 1000
-      TZ: Etc/UTC
-      HOST_WHITELIST: localhost,sabnzbd,scryer-sabnzbd
-    ports:
-      - "8085:8080"
-    volumes:
-      - ./tmp/sabnzbd/config:/config
-      - ./tmp/sabnzbd-downloads:/sabnzbd-downloads
-
   weaver:
     image: ghcr.io/scryer-media/weaver:latest
     container_name: scryer-weaver
@@ -50,7 +36,6 @@ services:
     working_dir: /workspace
     depends_on:
       - nzbget
-      - sabnzbd
       - weaver
     env_file:
       - crates/scryer/.env
@@ -81,7 +66,6 @@ services:
       - /Volumes/Media/TV:/data/series:ro
       - /Volumes/Media/Movies:/data/movies:ro
       - ./tmp/nzbget-downloads:/nzbget-downloads
-      - ./tmp/sabnzbd-downloads:/sabnzbd-downloads
       - ./tmp/weaver-downloads:/weaver-downloads
     ports:
       - "8080:8080"

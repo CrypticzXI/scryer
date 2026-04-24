@@ -26,7 +26,7 @@ import {
 import {
   deleteSubtitlePreviewQuery,
   subtitleBlacklistEntriesQuery,
-  subtitleSettingsQuery,
+  subtitleSettingsInitQuery,
 } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -64,9 +64,12 @@ export function SubtitleSearchModal({
   const [results, setResults] = React.useState<SubtitleSearchResult[]>([]);
   const [hasSearched, setHasSearched] = React.useState(false);
   const [searching, setSearching] = React.useState(false);
+  const [hasEnabledProviders, setHasEnabledProviders] = React.useState<boolean | null>(null);
+  const [hasEnabledOpenSubtitlesProvider, setHasEnabledOpenSubtitlesProvider] =
+    React.useState<boolean | null>(null);
+  const [hasEnabledNonOpenSubtitlesProvider, setHasEnabledNonOpenSubtitlesProvider] =
+    React.useState<boolean | null>(null);
   const [hasOpenSubtitlesApiKey, setHasOpenSubtitlesApiKey] = React.useState<boolean | null>(null);
-  const [openSubtitlesUsername, setOpenSubtitlesUsername] = React.useState("");
-  const [hasOpenSubtitlesPassword, setHasOpenSubtitlesPassword] = React.useState<boolean | null>(null);
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null);
   const [blacklistEntries, setBlacklistEntries] = React.useState<
     SubtitleBlacklistEntryRecord[]
@@ -151,13 +154,14 @@ export function SubtitleSearchModal({
     let cancelled = false;
     setResults([]);
     setHasSearched(false);
+    setHasEnabledProviders(null);
+    setHasEnabledOpenSubtitlesProvider(null);
+    setHasEnabledNonOpenSubtitlesProvider(null);
     setHasOpenSubtitlesApiKey(null);
-    setOpenSubtitlesUsername("");
-    setHasOpenSubtitlesPassword(null);
     setSubtitleToBlacklist(null);
     setTypedConfirmation("");
     void Promise.all([
-      client.query(subtitleSettingsQuery, {}, { requestPolicy: "network-only" }).toPromise(),
+      client.query(subtitleSettingsInitQuery, {}, { requestPolicy: "network-only" }).toPromise(),
       client
         .query(
           subtitleBlacklistEntriesQuery,
@@ -178,25 +182,38 @@ export function SubtitleSearchModal({
         }
         const preferredLanguage =
           settingsResult.data?.subtitleSettings?.languages?.[0]?.code ?? "eng";
+        const enabledProviders = (
+          settingsResult.data?.subtitleProviderConfigs ?? []
+        ).filter((provider: { isEnabled: boolean }) => provider.isEnabled);
+        const availableHostBindings = new Set<string>(
+          (settingsResult.data?.subtitleProviderTypes ?? []).flatMap(
+            (providerType: { availableHostBindings?: string[] | null }) =>
+              providerType.availableHostBindings ?? [],
+          ),
+        );
+        const hasOpenSubtitlesProvider = enabledProviders.some(
+          (provider: { providerType: string }) =>
+            provider.providerType.trim().toLowerCase() === "opensubtitles",
+        );
+        const hasNonOpenSubtitlesProvider = enabledProviders.some(
+          (provider: { providerType: string }) =>
+            provider.providerType.trim().toLowerCase() !== "opensubtitles",
+        );
+        setHasEnabledProviders(enabledProviders.length > 0);
+        setHasEnabledOpenSubtitlesProvider(hasOpenSubtitlesProvider);
+        setHasEnabledNonOpenSubtitlesProvider(hasNonOpenSubtitlesProvider);
         setHasOpenSubtitlesApiKey(
-          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesApiKey ?? false,
-        );
-        setOpenSubtitlesUsername(
-          settingsResult.data?.subtitleSettings?.openSubtitlesUsername ?? "",
-        );
-        setHasOpenSubtitlesPassword(
-          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesPassword ?? false,
+          availableHostBindings.has("smg.opensubtitles_api_key"),
         );
         setLanguage(preferredLanguage);
         setBlacklistEntries(
           (blacklistResult.data?.subtitleBlacklistEntries ?? []) as SubtitleBlacklistEntryRecord[],
         );
-        const hasApiKey =
-          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesApiKey === true;
-        const hasCredentials =
-          (settingsResult.data?.subtitleSettings?.openSubtitlesUsername ?? "").trim().length > 0 &&
-          settingsResult.data?.subtitleSettings?.hasOpenSubtitlesPassword === true;
-        if (hasApiKey && hasCredentials) {
+        const hasApiKey = availableHostBindings.has("smg.opensubtitles_api_key");
+        const canAutoSearch =
+          enabledProviders.length > 0 &&
+          (hasNonOpenSubtitlesProvider || !hasOpenSubtitlesProvider || hasApiKey);
+        if (canAutoSearch) {
           void runSearch(preferredLanguage, { announceNoResults: false });
         }
       })
@@ -225,6 +242,7 @@ export function SubtitleSearchModal({
           .mutation(downloadSubtitleMutation, {
             input: {
               mediaFileId,
+              provider: result.provider,
               providerFileId: result.providerFileId,
               language: result.language,
               forced: result.forced,
@@ -298,245 +316,249 @@ export function SubtitleSearchModal({
     !subtitleDeletePreview ||
     (subtitleDeletePreview.requiresTypedConfirmation &&
       typedConfirmation.trim() !== "DELETE");
-  const hasOpenSubtitlesCredentials =
-    openSubtitlesUsername.trim().length > 0 && hasOpenSubtitlesPassword === true;
   const canSearchSubtitles =
-    hasOpenSubtitlesApiKey === true && hasOpenSubtitlesCredentials;
-  const credentialsRequiredTitle = t("subtitle.credentialsRequiredTitle");
-  const credentialsRequiredBody = t("subtitle.credentialsRequiredBody");
-  const credentialsRequiredAction = t("subtitle.credentialsRequiredAction");
+    hasEnabledProviders === true &&
+    (hasEnabledNonOpenSubtitlesProvider === true ||
+      hasEnabledOpenSubtitlesProvider !== true ||
+      hasOpenSubtitlesApiKey === true);
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Search className="h-4 w-4" />
-            {t("subtitle.manualSearch")}
-          </DialogTitle>
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {filePath}
-          </p>
-        </DialogHeader>
+        <DialogContent className="flex max-h-[85vh] w-[min(96vw,80rem)] max-w-none flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Search className="h-4 w-4" />
+              {t("subtitle.manualSearch")}
+            </DialogTitle>
+            <p className="truncate font-mono text-xs text-muted-foreground">
+              {filePath}
+            </p>
+          </DialogHeader>
 
-        <div className="flex flex-col gap-3">
-          {hasOpenSubtitlesApiKey === false ? (
-            <div
-              role="alert"
-              className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
-            >
-              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <div className="space-y-1">
-                <p className="font-medium">{t("subtitle.apiKeyRequiredTitle")}</p>
-                <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
-                  {t("subtitle.apiKeyRequiredBody")}
-                </p>
-              </div>
-            </div>
-          ) : !hasOpenSubtitlesCredentials ? (
-            <div
-              role="alert"
-              className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
-            >
-              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <div className="space-y-1">
-                <p className="font-medium">
-                  {credentialsRequiredTitle}
-                </p>
-                <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
-                  {credentialsRequiredBody}
-                </p>
-                <Button
-                  asChild
-                  size="sm"
-                  variant="outline"
-                  className="border-amber-500/30 bg-background/80"
-                >
-                  <Link to="/settings/subtitles" onClick={() => onOpenChange(false)}>
-                    {credentialsRequiredAction}
-                  </Link>
-                </Button>
-              </div>
-            </div>
-          ) : null}
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1">
-              <SubtitleLanguagePicker
-                value={language ? [language] : []}
-                onChange={(codes) => setLanguage(codes[0] ?? "")}
-                singleSelect
-                compact
-                disabled={!canSearchSubtitles}
-              />
-            </div>
-          <Button
-            onClick={handleSearch}
-            disabled={
-              searching ||
-              !language.trim() ||
-              !canSearchSubtitles
-            }
-          >
-            {searching ? (
-              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-            ) : (
-              <Search className="mr-1 h-4 w-4" />
-            )}
-            {searching ? t("subtitle.searching") : t("subtitle.search")}
-          </Button>
-        </div>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <ExternalSubtitleSection
-              downloads={downloads}
-              renderActions={(download) => (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    setSubtitleToBlacklist(download);
-                    setTypedConfirmation("");
-                  }}
-                >
-                  <Ban className="mr-1 h-3.5 w-3.5" />
-                  {t("subtitle.blacklist")}
-                </Button>
-              )}
-            />
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                {t("subtitle.blacklist")}
-              </p>
-              {blacklistEntries.length === 0 ? (
-                <p className="text-xs text-muted-foreground/70">
-                  {t("subtitle.noResults")}
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {blacklistEntries.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
+          <div className="flex flex-col gap-3">
+            {hasEnabledProviders === false ? (
+              <div
+                role="alert"
+                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+              >
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div className="space-y-1">
+                  <p className="font-medium">
+                    {t("subtitle.providersRequiredTitle")}
+                  </p>
+                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                    {t("subtitle.providersRequiredBody")}
+                  </p>
+                  <Button
+                    asChild
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-500/30 bg-background/80"
+                  >
+                    <Link
+                      to="/settings/subtitles"
+                      onClick={() => onOpenChange(false)}
                     >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
-                          {entry.language}
-                        </span>
-                        <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                          {entry.provider}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">
-                          {new Date(entry.createdAt).toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-                        {entry.providerFileId}
-                      </p>
-                      {entry.reason ? (
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          {entry.reason}
-                        </p>
-                      ) : null}
-                    </div>
-                  ))}
+                      {t("subtitle.providersRequiredAction")}
+                    </Link>
+                  </Button>
                 </div>
-              )}
+              </div>
+            ) : hasEnabledOpenSubtitlesProvider === true &&
+              hasOpenSubtitlesApiKey === false ? (
+              <div
+                role="alert"
+                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+              >
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div className="space-y-1">
+                  <p className="font-medium">
+                    {t("subtitle.apiKeyRequiredTitle")}
+                  </p>
+                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                    {t("subtitle.apiKeyRequiredBody")}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <SubtitleLanguagePicker
+                  value={language ? [language] : []}
+                  onChange={(codes) => setLanguage(codes[0] ?? "")}
+                  singleSelect
+                  compact
+                  disabled={!canSearchSubtitles}
+                />
+              </div>
+              <Button
+                onClick={handleSearch}
+                disabled={searching || !language.trim() || !canSearchSubtitles}
+              >
+                {searching ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Search className="mr-1 h-4 w-4" />
+                )}
+                {searching ? t("subtitle.searching") : t("subtitle.search")}
+              </Button>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <ExternalSubtitleSection
+                downloads={downloads}
+                renderActions={(download) => (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      setSubtitleToBlacklist(download);
+                      setTypedConfirmation("");
+                    }}
+                  >
+                    <Ban className="mr-1 h-3.5 w-3.5" />
+                    {t("subtitle.blacklist")}
+                  </Button>
+                )}
+              />
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {t("subtitle.blacklist")}
+                </p>
+                {blacklistEntries.length === 0 ? (
+                  <p className="text-xs text-muted-foreground/70">
+                    {t("subtitle.noResults")}
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {blacklistEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                            {entry.language}
+                          </span>
+                          <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {entry.provider}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {new Date(entry.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                          {entry.providerFileId}
+                        </p>
+                        {entry.reason ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {entry.reason}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="flex-1 overflow-auto">
-          {results.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("subtitle.releaseInfo")}</TableHead>
-                  <TableHead className="text-center">
-                    {t("subtitle.score")}
-                  </TableHead>
-                  <TableHead className="text-center">
-                    {t("subtitle.flags")}
-                  </TableHead>
-                  <TableHead>{t("subtitle.provider")}</TableHead>
-                  <TableHead className="text-right" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {results.map((r) => (
-                  <TableRow key={r.providerFileId}>
-                    <TableCell className="max-w-[300px]">
-                      <span className="block truncate text-xs">
-                        {r.releaseInfo || "—"}
-                      </span>
-                      {r.uploader ? (
-                        <span className="text-[10px] text-muted-foreground">
-                          {r.uploader}
-                        </span>
-                      ) : null}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className="inline-flex items-center gap-1 text-xs font-medium">
-                        {r.score}
-                        {r.hashMatched ? (
-                          <Hash className="h-3 w-3 text-emerald-400" />
-                        ) : null}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex justify-center gap-1">
-                        {r.hearingImpaired ? (
-                          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
-                            {t("subtitle.hearingImpaired")}
-                          </span>
-                        ) : null}
-                        {r.forced ? (
-                          <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300">
-                            {t("subtitle.forced")}
-                          </span>
-                        ) : null}
-                        {r.aiTranslated ? (
-                          <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
-                            {t("subtitle.aiTranslated")}
-                          </span>
-                        ) : null}
-                        {r.machineTranslated ? (
-                          <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
-                            {t("subtitle.machineTranslated")}
-                          </span>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {r.provider}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={downloadingId === r.providerFileId}
-                        onClick={() => void handleDownload(r)}
-                      >
-                        {downloadingId === r.providerFileId ? (
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        ) : (
-                          <Download className="mr-1 h-3 w-3" />
-                        )}
-                        {downloadingId === r.providerFileId
-                          ? t("subtitle.downloading")
-                          : t("subtitle.download")}
-                      </Button>
-                    </TableCell>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {results.length > 0 ? (
+              <Table className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="min-w-[460px]">
+                      {t("subtitle.releaseInfo")}
+                    </TableHead>
+                    <TableHead className="w-24 text-center">
+                      {t("subtitle.score")}
+                    </TableHead>
+                    <TableHead className="w-40 text-center">
+                      {t("subtitle.flags")}
+                    </TableHead>
+                    <TableHead className="w-40">
+                      {t("subtitle.provider")}
+                    </TableHead>
+                    <TableHead className="w-44 text-right" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : hasSearched && !searching ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {t("subtitle.noResults")}
-            </p>
-          ) : null}
-        </div>
+                </TableHeader>
+                <TableBody>
+                  {results.map((r) => (
+                    <TableRow key={r.providerFileId}>
+                      <TableCell className="max-w-[560px]">
+                        <span className="block truncate text-xs">
+                          {r.releaseInfo || "—"}
+                        </span>
+                        {r.uploader ? (
+                          <span className="text-[10px] text-muted-foreground">
+                            {r.uploader}
+                          </span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="inline-flex items-center gap-1 text-xs font-medium">
+                          {r.score}
+                          {r.hashMatched ? (
+                            <Hash className="h-3 w-3 text-emerald-400" />
+                          ) : null}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex justify-center gap-1">
+                          {r.hearingImpaired ? (
+                            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                              {t("subtitle.hearingImpaired")}
+                            </span>
+                          ) : null}
+                          {r.forced ? (
+                            <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300">
+                              {t("subtitle.forced")}
+                            </span>
+                          ) : null}
+                          {r.aiTranslated ? (
+                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                              {t("subtitle.aiTranslated")}
+                            </span>
+                          ) : null}
+                          {r.machineTranslated ? (
+                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                              {t("subtitle.machineTranslated")}
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {r.provider}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={downloadingId === r.providerFileId}
+                          onClick={() => void handleDownload(r)}
+                        >
+                          {downloadingId === r.providerFileId ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : (
+                            <Download className="mr-1 h-3 w-3" />
+                          )}
+                          {downloadingId === r.providerFileId
+                            ? t("subtitle.downloading")
+                            : t("subtitle.download")}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : hasSearched && !searching ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                {t("subtitle.noResults")}
+              </p>
+            ) : null}
+          </div>
         </DialogContent>
       </Dialog>
       <ConfirmDialog

@@ -12,11 +12,11 @@ use scryer_application::{
     start_notification_dispatcher,
 };
 use scryer_domain::{
-    ConfigFieldDef, ConfigFieldOption, ConfigFieldType, DomainEventPayload, DomainEventStream,
-    DomainEventType, DomainExternalIds, ImportCompletedEventData, LibraryScanProgressedEventData,
-    MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
-    MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NewDomainEvent,
-    NotificationEventType, TitleContextSnapshot,
+    ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource, DomainEventPayload,
+    DomainEventStream, DomainEventType, DomainExternalIds, ImportCompletedEventData,
+    LibraryScanProgressedEventData, MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason,
+    MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType,
+    NewDomainEvent, NotificationEventType, TitleContextSnapshot,
 };
 use scryer_infrastructure::SqliteNotificationStore;
 use scryer_interface::build_schema;
@@ -103,6 +103,8 @@ impl FakeNotificationProvider {
                     field_type: ConfigFieldType::String,
                     required: true,
                     default_value: None,
+                    value_source: ConfigFieldValueSource::User,
+                    host_binding: None,
                     options: vec![],
                     help_text: None,
                 },
@@ -112,6 +114,8 @@ impl FakeNotificationProvider {
                     field_type: ConfigFieldType::Password,
                     required: true,
                     default_value: None,
+                    value_source: ConfigFieldValueSource::User,
+                    host_binding: None,
                     options: vec![],
                     help_text: None,
                 },
@@ -121,6 +125,8 @@ impl FakeNotificationProvider {
                     field_type: ConfigFieldType::Multiline,
                     required: true,
                     default_value: None,
+                    value_source: ConfigFieldValueSource::User,
+                    host_binding: None,
                     options: vec![ConfigFieldOption {
                         value: "/data => /mnt".to_string(),
                         label: "Example".to_string(),

@@ -36,6 +36,7 @@ pub struct WorkflowOperationRecord {
 pub struct DownloadQueueCommandRecord {
     pub id: String,
     pub action: String,
+    pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub is_history: bool,

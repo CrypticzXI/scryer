@@ -17,7 +17,7 @@ pub(crate) fn build_search_queries(
     episode: Option<&Episode>,
     facet_registry: &FacetRegistry,
 ) -> SearchQueryResult {
-    let imdb_id = title.imdb_id.clone();
+    let imdb_id = imdb_id_from_title(title);
     let tvdb_id = tvdb_id_from_external_ids(&title.external_ids);
     let anidb_id = anidb_id_from_external_ids(&title.external_ids);
 
@@ -81,6 +81,7 @@ pub(crate) fn build_search_queries(
                         "{} S{:0>2}E{:0>2}",
                         title.name, season_num, episode_num
                     ));
+                    queries.push(format!("{} S{:0>2}", title.name, season_num));
                 }
 
                 if season_num == 0 && title.facet == scryer_domain::MediaFacet::Anime {
@@ -108,6 +109,10 @@ pub(crate) fn build_search_queries(
                         .filter(|&value| value > 0 && value != episode_num)
                 {
                     queries.insert(0, format!("{} {:0>3}", title.name, absolute));
+                }
+
+                if title.facet == scryer_domain::MediaFacet::Anime && !title.name.is_empty() {
+                    queries.push(title.name.clone());
                 }
 
                 if !queries.is_empty() {
@@ -170,13 +175,28 @@ pub(crate) fn build_search_queries(
 pub(crate) fn tvdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
     external_ids
         .iter()
-        .find(|id| id.source == "tvdb")
+        .find(|id| id.source.eq_ignore_ascii_case("tvdb"))
         .map(|id| id.value.clone())
 }
 
 pub(crate) fn anidb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
     external_ids
         .iter()
-        .find(|id| id.source == "anidb")
+        .find(|id| id.source.eq_ignore_ascii_case("anidb"))
         .map(|id| id.value.clone())
+}
+
+pub(crate) fn imdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
+    external_ids
+        .iter()
+        .find(|id| id.source.eq_ignore_ascii_case("imdb"))
+        .and_then(|id| crate::normalize::normalize_imdb_id(&id.value))
+}
+
+pub(crate) fn imdb_id_from_title(title: &Title) -> Option<String> {
+    title
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+        .or_else(|| imdb_id_from_external_ids(&title.external_ids))
 }

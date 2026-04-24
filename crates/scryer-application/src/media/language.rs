@@ -61,7 +61,48 @@ where
 
 fn normalize_release_language_code(code: &str) -> Option<String> {
     let upper = code.trim().replace('_', "-").to_ascii_uppercase();
-    scryer_release_parser::normalize_language_token(&upper).map(str::to_string)
+    normalize_release_language_token(&upper).map(str::to_string)
+}
+
+fn normalize_release_language_token(token: &str) -> Option<&'static str> {
+    match token {
+        "EN" | "ENG" | "ENGLISH" | "EN-GB" => Some("eng"),
+        "JA" | "JP" | "JPN" | "JAP" | "JAPANESE" => Some("jpn"),
+        "FR" | "FRA" | "FRE" | "FRENCH" | "TRUEFRENCH" | "VF" | "VF2" | "VFF" | "VFQ" => {
+            Some("fra")
+        }
+        "DE" | "DEU" | "GER" | "GERMAN" | "SWISSGERMAN" => Some("deu"),
+        "ES" | "SPA" | "ESP" | "SPANISH" | "ESPANOL" | "ESPAÑOL" | "CASTELLANO" => Some("spa"),
+        "IT" | "ITA" | "ITALIAN" => Some("ita"),
+        "RU" | "RUS" | "RUSSIAN" => Some("rus"),
+        "PT" | "POR" | "PORTUGUESE" => Some("por"),
+        "PTBR" | "POR-BR" | "PT-BR" | "BRAZILIAN" | "DUBLADO" => Some("por"),
+        "LATINO" | "LAT" => Some("spa"),
+        "PL" | "POL" | "POLISH" | "PLLEK" | "LEKPL" | "PLDUB" | "DUBPL" => Some("pol"),
+        "FI" | "FIN" | "FINNISH" => Some("fin"),
+        "HU" | "HUN" | "HUNGARIAN" => Some("hun"),
+        "HE" | "HEB" | "HEBREW" => Some("heb"),
+        "ZH" | "ZHO" | "CHI" | "CHINESE" | "CHS" | "CHT" | "BIG5" | "GB" => Some("zho"),
+        "KO" | "KOR" | "KOREAN" | "KORSUB" | "KORSUBS" => Some("kor"),
+        "RO" | "RON" | "RUM" | "ROMANIAN" | "RODUBBED" => Some("ron"),
+        "SV" | "SWE" | "SWEDISH" => Some("swe"),
+        "NOR" | "NORWEGIAN" => Some("nor"),
+        "DA" | "DAN" | "DANISH" => Some("dan"),
+        "NL" | "NLD" | "DUTCH" => Some("nld"),
+        "CS" | "CES" | "CZECH" => Some("ces"),
+        "TR" | "TUR" | "TURKISH" => Some("tur"),
+        "BG" | "BUL" | "BULGARIAN" | "BGAUDIO" => Some("bul"),
+        "HI" | "HIN" | "HINDI" => Some("hin"),
+        "TH" | "THA" | "THAI" => Some("tha"),
+        "AR" | "ARA" => Some("ara"),
+        "IS" | "ISL" | "ICELANDIC" => Some("isl"),
+        "LV" | "LAV" | "LATVIAN" => Some("lav"),
+        "LT" | "LIT" | "LITHUANIAN" => Some("lit"),
+        "VI" | "VIE" | "VIETNAMESE" => Some("vie"),
+        "CA" | "CAT" | "CATALAN" => Some("cat"),
+        "KA" | "KAT" | "GEORGIAN" => Some("kat"),
+        _ => None,
+    }
 }
 
 fn normalize_iso_language_code_exact(code: &str) -> Option<String> {

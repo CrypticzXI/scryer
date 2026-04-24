@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
 use scryer_domain::TaggedAlias;
@@ -14,20 +15,6 @@ fn source_kind_matches_preference(result: &IndexerSearchResult, preferred: &str)
             preferred == "torrent"
         }
         None => false,
-    }
-}
-
-fn parse_search_facet(facet: Option<String>) -> Option<String> {
-    facet
-        .and_then(|value| MediaFacet::parse(&value))
-        .map(|f| f.as_str().to_string())
-}
-
-fn activity_media_label(facet: Option<&str>) -> &'static str {
-    match facet {
-        Some("series") => "series",
-        Some("anime") => "anime",
-        _ => "movie",
     }
 }
 
@@ -50,6 +37,40 @@ pub(crate) fn extract_http_status_from_message(message: &str) -> Option<u16> {
 
 pub(crate) fn is_4xx_or_5xx_status(status: u16) -> bool {
     (400..=599).contains(&status)
+}
+
+fn resolve_requested_episode(
+    episodes: &[Episode],
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+) -> Option<&Episode> {
+    if let (Some(season), Some(episode_number)) = (season, episode)
+        && let Some(found) = episodes.iter().find(|candidate| {
+            candidate
+                .season_number
+                .as_deref()
+                .and_then(|value| value.parse::<u32>().ok())
+                == Some(season)
+                && candidate
+                    .episode_number
+                    .as_deref()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    == Some(episode_number)
+        })
+    {
+        return Some(found);
+    }
+
+    absolute_episode.and_then(|wanted_absolute| {
+        episodes.iter().find(|candidate| {
+            candidate
+                .absolute_number
+                .as_deref()
+                .and_then(|value| value.parse::<u32>().ok())
+                == Some(wanted_absolute)
+        })
+    })
 }
 
 fn extract_indexer_http_status(error: &AppError) -> Option<u16> {
@@ -244,12 +265,13 @@ impl AppUseCase {
         &self,
         mut raw_results: Vec<IndexerSearchResult>,
         quality_profile: &QualityProfile,
-        title_id: Option<&str>,
+        title_id: &str,
         scope_id: Option<&str>,
         indexer_routing: Option<&IndexerRoutingPlan>,
         category: Option<&str>,
         title_tags: &[String],
         runtime_minutes: Option<i32>,
+        parse_context: &ReleaseParseContext,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
@@ -307,7 +329,7 @@ impl AppUseCase {
             },
         );
         let required_audio_languages = self
-            .resolve_required_audio_languages(title_id, scope_id)
+            .resolve_required_audio_languages(Some(title_id), scope_id)
             .await
             .unwrap_or_else(|error| {
                 warn!(
@@ -321,6 +343,22 @@ impl AppUseCase {
         resolved_profile.criteria.scoring_persona = resolved_persona.clone();
         resolved_profile.criteria.facet_persona_overrides.clear();
 
+        let catalog_episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(title_id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(title_id)
+            .await
+            .unwrap_or_default();
+        let requested_episode =
+            resolve_requested_episode(&catalog_episodes, season, episode, absolute_episode);
         let mut scored = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -334,33 +372,56 @@ impl AppUseCase {
                 continue;
             }
 
-            let parsed_release_metadata = parse_release_metadata(&result.title);
+            let parsed_release_metadata =
+                parse_release_metadata_for_target(&result.title, parse_context);
             let mut scored_release_metadata = parsed_release_metadata.clone();
             scored_release_metadata.languages_audio = crate::release_audio_language_hints(
                 &parsed_release_metadata,
                 result.indexer_languages.as_deref(),
             );
 
-            if let Some(ref ep_meta) = scored_release_metadata.episode {
-                if let Some(wanted_season) = season
-                    && let Some(parsed_season) = ep_meta.season
-                    && parsed_season != wanted_season
+            let release_coverage = crate::acquisition_coverage::resolve_release_coverage(
+                &scored_release_metadata,
+                &catalog_episodes,
+                &catalog_collections,
+                requested_episode,
+            );
+            if let Some(wanted_episode) = requested_episode
+                && !release_coverage.covers_episode(wanted_episode)
+            {
+                continue;
+            }
+            let candidate_runtime_minutes = crate::acquisition_coverage::coverage_runtime_minutes(
+                &release_coverage,
+                &scored_release_metadata,
+                &catalog_episodes,
+                runtime_minutes,
+            );
+
+            if requested_episode.is_none()
+                && let Some(ref ep_meta) = scored_release_metadata.episode
+                && let Some(wanted_season) = season
+                && let Some(parsed_season) = ep_meta.season
+                && parsed_season != wanted_season
+            {
+                continue;
+            }
+            if requested_episode.is_none()
+                && let Some(ref ep_meta) = scored_release_metadata.episode
+                && let Some(wanted_episode) = episode
+            {
+                if !ep_meta.episode_numbers.is_empty()
+                    && !ep_meta.episode_numbers.contains(&wanted_episode)
                 {
                     continue;
                 }
-                if let Some(wanted_episode) = episode {
-                    if !ep_meta.episode_numbers.is_empty()
-                        && !ep_meta.episode_numbers.contains(&wanted_episode)
-                    {
-                        continue;
-                    }
-                    if ep_meta.episode_numbers.is_empty()
-                        && let (Some(parsed_abs), Some(wanted_abs)) =
-                            (ep_meta.absolute_episode, absolute_episode)
-                        && parsed_abs != wanted_abs
-                    {
-                        continue;
-                    }
+                if ep_meta.episode_numbers.is_empty()
+                    && ep_meta.absolute_episode_numbers.is_empty()
+                    && let (Some(parsed_abs), Some(wanted_abs)) =
+                        (ep_meta.absolute_episode, absolute_episode)
+                    && parsed_abs != wanted_abs
+                {
+                    continue;
                 }
             }
 
@@ -382,9 +443,18 @@ impl AppUseCase {
                 &scored_release_metadata,
                 result.size_bytes,
                 category,
-                runtime_minutes,
+                candidate_runtime_minutes,
                 &weights,
             );
+            let pack_penalty =
+                release_coverage.single_episode_preference_penalty(requested_episode);
+            if pack_penalty != 0 {
+                decision.log_with_source(
+                    "coverage:single_episode_pack_fallback",
+                    pack_penalty,
+                    ScoringSource::Builtin,
+                );
+            }
 
             if !user_rules_engine.is_empty() {
                 let user_input = crate::app_usecase_discovery::build_user_rule_input(
@@ -394,7 +464,7 @@ impl AppUseCase {
                     &decision,
                     category,
                     title_tags,
-                    runtime_minutes,
+                    candidate_runtime_minutes,
                 );
                 let facet = category.unwrap_or("movie");
                 match user_evaluator.evaluate(&user_input, facet) {
@@ -492,6 +562,7 @@ impl AppUseCase {
             caller_label,
             mode,
             runtime_minutes,
+            parse_context,
             season,
             episode,
             absolute_episode,
@@ -522,8 +593,11 @@ impl AppUseCase {
             }
         }
 
-        // Auto mode: conserve API calls by using only the first (canonical) query variant
+        // Auto mode normally conserves API calls by using the first query, but
+        // episode acquisition needs season/title fallbacks so packs and ranges
+        // can be considered for a single requested episode.
         let effective_queries: Vec<String> = match mode {
+            SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
             SearchMode::Auto => queries.into_iter().take(1).collect(),
             SearchMode::Interactive => queries,
         };
@@ -623,49 +697,12 @@ impl AppUseCase {
                 category.as_deref(),
                 title_tags,
                 runtime_minutes,
+                parse_context,
                 season,
                 episode,
                 absolute_episode,
             )
             .await)
-    }
-
-    async fn search_indexer_queries(
-        &self,
-        request: InteractiveReleaseSearchRequest<'_>,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
-        let InteractiveReleaseSearchRequest {
-            queries,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-            facet,
-            caller_label,
-            season,
-            episode,
-            absolute_episode,
-            tagged_aliases,
-        } = request;
-        self.search_and_score_releases(ReleaseSearchRequest {
-            queries,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-            facet,
-            title_id: None,
-            title_tags: &[],
-            caller_label,
-            mode: SearchMode::Interactive,
-            runtime_minutes: None,
-            season,
-            episode,
-            absolute_episode,
-            tagged_aliases,
-            search_subject_kind: ReleaseSearchSubjectKind::Freetext,
-        })
-        .await
     }
 
     pub(crate) async fn search_and_evaluate_subject(
@@ -683,7 +720,7 @@ impl AppUseCase {
                 anidb_id: subject.anidb_id.clone(),
                 category: Some(subject.category.clone()),
                 facet: Some(subject.facet.clone()),
-                title_id: Some(subject.title_id.as_str()),
+                title_id: subject.title_id.as_str(),
                 title_tags: &subject.title_tags,
                 caller_label,
                 mode,
@@ -693,6 +730,7 @@ impl AppUseCase {
                 absolute_episode: subject.absolute_episode,
                 tagged_aliases: &title.tagged_aliases,
                 search_subject_kind: subject.subject_kind,
+                parse_context: &subject.title_evidence.parse_context,
             })
             .await?;
 
@@ -701,186 +739,14 @@ impl AppUseCase {
             .await)
     }
 
-    pub async fn search_indexers(
-        &self,
-        actor: &User,
-        request: IndexerSearchRequest,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
-        let IndexerSearchRequest {
-            query,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-        } = request;
-        let normalized_query = query.trim();
-        let normalized_imdb_id = normalize_imdb_id(imdb_id);
-        let normalized_tvdb_id = normalize_numeric_id(tvdb_id);
-        let normalized_anidb_id = normalize_numeric_id(anidb_id);
-        let normalized_category = parse_search_facet(category);
-
-        if normalized_query.is_empty()
-            && normalized_tvdb_id.is_none()
-            && normalized_imdb_id.is_none()
-        {
-            return Err(AppError::Validation("search query is required".into()));
-        }
-
-        info!(
-            actor = actor.id.as_str(),
-            query = normalized_query,
-            imdb_id = normalized_imdb_id.as_deref(),
-            tvdb_id = normalized_tvdb_id.as_deref(),
-            anidb_id = normalized_anidb_id.as_deref(),
-            category = normalized_category.as_deref(),
-            "searching indexers"
-        );
-
-        let results = self
-            .search_indexer_queries(InteractiveReleaseSearchRequest {
-                queries: vec![normalized_query.to_string()],
-                imdb_id: normalized_imdb_id.clone(),
-                tvdb_id: normalized_tvdb_id.clone(),
-                anidb_id: normalized_anidb_id.clone(),
-                category: normalized_category.clone(),
-                facet: normalized_category.clone(),
-                caller_label: &actor.id,
-                season: None,
-                episode: None,
-                absolute_episode: None,
-                tagged_aliases: &[],
-            })
-            .await;
-
-        let mut display_source = normalized_query.to_string();
-        if display_source.is_empty() {
-            if let Some(tvdb_id) = normalized_tvdb_id.as_deref() {
-                display_source = format!("tvdb:{tvdb_id}");
-            } else if let Some(imdb_id) = normalized_imdb_id.as_deref() {
-                display_source = format!("imdb:{imdb_id}");
-            }
-        }
-        let activity_media_label = activity_media_label(normalized_category.as_deref());
-
-        let results = results?;
-
-        info!(
-            actor = actor.id.as_str(),
-            count = results.len(),
-            "indexer search returned results"
-        );
-        self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
-            activity_media_label.to_string(),
-            Some(display_source),
-            results.len() as i64,
-        )
-        .await;
-
-        Ok(results)
-    }
-
-    pub async fn search_indexers_episode(
-        &self,
-        actor: &User,
-        request: IndexerEpisodeSearchRequest,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
-        let IndexerEpisodeSearchRequest {
-            title,
-            season,
-            episode,
-            imdb_id,
-            tvdb_id,
-            anidb_id,
-            category,
-            absolute_episode,
-        } = request;
-        let normalized_title = title.trim();
-        let season = season.trim();
-        let episode = episode.trim();
-
-        if normalized_title.is_empty() || season.is_empty() || episode.is_empty() {
-            return Err(AppError::Validation(
-                "title, season, and episode are required".into(),
-            ));
-        }
-
-        let normalized_imdb_id = normalize_imdb_id(imdb_id);
-        let normalized_anidb_id = normalize_numeric_id(anidb_id);
-        let normalized_tvdb_id = normalize_numeric_id(tvdb_id);
-        let normalized_category = parse_search_facet(category);
-
-        let season_digits: String = season
-            .chars()
-            .filter(|value| value.is_ascii_digit())
-            .collect();
-        let episode_digits: String = episode
-            .chars()
-            .filter(|value| value.is_ascii_digit())
-            .collect();
-
-        if season_digits.is_empty() || episode_digits.is_empty() {
-            return Err(AppError::Validation(
-                "season and episode must include numeric values".into(),
-            ));
-        }
-
-        let season_num = season_digits
-            .parse::<usize>()
-            .map_err(|_| AppError::Validation("invalid season value".into()))?;
-        let episode_num = episode_digits
-            .parse::<usize>()
-            .map_err(|_| AppError::Validation("invalid episode value".into()))?;
-
-        let queries = vec![format!(
-            "{} S{:0>2}E{:0>2}",
-            normalized_title, season_num, episode_num
-        )];
-
-        let results = self
-            .search_indexer_queries(InteractiveReleaseSearchRequest {
-                queries,
-                imdb_id: normalized_imdb_id.clone(),
-                tvdb_id: normalized_tvdb_id.clone(),
-                anidb_id: normalized_anidb_id.clone(),
-                category: normalized_category.clone(),
-                facet: normalized_category.clone(),
-                caller_label: &actor.id,
-                season: Some(season_num as u32),
-                episode: Some(episode_num as u32),
-                absolute_episode,
-                tagged_aliases: &[],
-            })
-            .await?;
-
-        let activity_media_label = activity_media_label(normalized_category.as_deref());
-
-        self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
-            activity_media_label.to_string(),
-            Some(format!(
-                "{} S{:0>2}E{:0>2}",
-                normalized_title, season_num, episode_num
-            )),
-            results.len() as i64,
-        )
-        .await;
-
-        Ok(results)
-    }
-
     /// Interactive search for a title (movie or standalone). Resolves all
     /// external IDs and search category from the title record so the frontend
     /// only needs to pass the title ID.
     async fn attach_candidate_tokens(
         &self,
         actor: &User,
-        title_id: &str,
-        scope: &SubmissionScope,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
         results: &mut [IndexerSearchResult],
     ) {
         let signing_key = match self.release_candidate_signing_key_for_actor(actor).await {
@@ -888,8 +754,8 @@ impl AppUseCase {
             Err(err) => {
                 warn!(
                     actor = actor.id.as_str(),
-                    title_id,
-                    scope = ?scope,
+                    title_id = title.id.as_str(),
+                    scope = ?subject.submission_scope,
                     error = %err,
                     "failed to resolve candidate-token signing key for title-aware search"
                 );
@@ -900,7 +766,42 @@ impl AppUseCase {
             }
         };
 
+        let catalog_episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let requested_episode = resolve_requested_episode(
+            &catalog_episodes,
+            subject.season,
+            subject.episode,
+            subject.absolute_episode,
+        );
+
         for result in results.iter_mut() {
+            let scope = result
+                .parsed_release_metadata
+                .as_ref()
+                .map(|parsed| {
+                    crate::acquisition_coverage::resolve_release_coverage(
+                        parsed,
+                        &catalog_episodes,
+                        &catalog_collections,
+                        requested_episode,
+                    )
+                    .submission_scope_or(&subject.submission_scope)
+                })
+                .unwrap_or_else(|| subject.submission_scope.clone());
+            result.queue_scope = Some(scope.clone());
             let selection = QueuedReleaseSelection {
                 source_hint: result.download_url.clone().or(result.link.clone()),
                 source_kind: result.source_kind,
@@ -909,8 +810,8 @@ impl AppUseCase {
             result.candidate_token = if selection.source_hint.is_some() {
                 match self.issue_release_candidate_token_with_signing_key(
                     actor,
-                    title_id,
-                    scope,
+                    &title.id,
+                    &scope,
                     &selection,
                     &signing_key,
                 ) {
@@ -918,7 +819,7 @@ impl AppUseCase {
                     Err(err) => {
                         warn!(
                             actor = actor.id.as_str(),
-                            title_id,
+                            title_id = title.id.as_str(),
                             scope = ?scope,
                             release_title = result.title.as_str(),
                             error = %err,
@@ -962,7 +863,7 @@ impl AppUseCase {
         let mut results = self
             .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
-        self.attach_candidate_tokens(actor, &title.id, &subject.submission_scope, &mut results)
+        self.attach_candidate_tokens(actor, &title, &subject, &mut results)
             .await;
 
         self.emit_discovery_search_completed_event(
@@ -1010,7 +911,7 @@ impl AppUseCase {
         let mut results = self
             .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
-        self.attach_candidate_tokens(actor, &title.id, &subject.submission_scope, &mut results)
+        self.attach_candidate_tokens(actor, &title, &subject, &mut results)
             .await;
 
         self.emit_discovery_search_completed_event(
@@ -1051,15 +952,6 @@ pub(crate) fn is_release_blocklisted(
     false
 }
 
-fn normalize_imdb_id(raw: Option<String>) -> Option<String> {
-    raw.as_deref().and_then(crate::normalize::normalize_imdb_id)
-}
-
-fn normalize_numeric_id(raw: Option<String>) -> Option<String> {
-    raw.as_deref()
-        .and_then(crate::normalize::normalize_numeric_id)
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct QualityProfileLookup<'a> {
     pub(crate) title_tags: &'a [String],
@@ -1075,7 +967,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) anidb_id: Option<String>,
     pub(crate) category: Option<String>,
     pub(crate) facet: Option<String>,
-    pub(crate) title_id: Option<&'a str>,
+    pub(crate) title_id: &'a str,
     pub(crate) title_tags: &'a [String],
     pub(crate) caller_label: &'a str,
     pub(crate) mode: SearchMode,
@@ -1085,20 +977,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) absolute_episode: Option<u32>,
     pub(crate) tagged_aliases: &'a [TaggedAlias],
     pub(crate) search_subject_kind: ReleaseSearchSubjectKind,
-}
-
-struct InteractiveReleaseSearchRequest<'a> {
-    queries: Vec<String>,
-    imdb_id: Option<String>,
-    tvdb_id: Option<String>,
-    anidb_id: Option<String>,
-    category: Option<String>,
-    facet: Option<String>,
-    caller_label: &'a str,
-    season: Option<u32>,
-    episode: Option<u32>,
-    absolute_episode: Option<u32>,
-    tagged_aliases: &'a [TaggedAlias],
+    pub(crate) parse_context: &'a ReleaseParseContext,
 }
 
 impl AppUseCase {

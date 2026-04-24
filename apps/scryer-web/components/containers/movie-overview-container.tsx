@@ -23,12 +23,15 @@ import {
 } from "@/lib/graphql/mutations";
 import { DEFAULT_MOVIE_LIBRARY_PATH } from "@/lib/constants/settings";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
+import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
+import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
+import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import { fetchTitleOverviewSnapshot } from "@/lib/title-overview-loader";
 import { MovieOverviewView } from "@/components/views/movie-overview-view";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -222,10 +225,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_MOVIE_LIBRARY_PATH);
   const [mediaFiles, setMediaFiles] = React.useState<TitleMediaFile[]>([]);
+  const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<SubtitleDownloadRecord[]>([]);
   const [wantedItem, setWantedItem] = React.useState<WantedItem | null>(null);
-  const [acquisitionDiagnostics, setAcquisitionDiagnostics] =
-    React.useState<TitleAcquisitionDiagnostics | null>(null);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
   const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
     React.useState(false);
@@ -239,6 +241,11 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     React.useState("");
   const [mediaFileToDelete, setMediaFileToDelete] =
     React.useState<TitleMediaFile | null>(null);
+  const downloadQueueItems = useTitleDownloadQueue({
+    enabled: Boolean(titleId),
+    titleId,
+    initialItems: downloadQueueSeed,
+  });
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
@@ -297,9 +304,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setEvents(snapshot.titleEvents);
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
+      setDownloadQueueSeed(snapshot.downloadQueueItems);
       setSubtitleDownloads(snapshot.subtitleDownloads);
       setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
-      setAcquisitionDiagnostics(snapshot.acquisitionDiagnostics);
       setHasDownloadClients(snapshot.hasDownloadClients);
       setRenamePlan(null);
     },
@@ -335,11 +342,11 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setSearchResults([]);
       setInteractiveSearchAttempted(false);
       setMediaFiles([]);
+      setDownloadQueueSeed([]);
       setSubtitleDownloads([]);
       setRenamePlan(null);
       setRenamePreviewing(false);
       setRenameApplying(false);
-      setAcquisitionDiagnostics(null);
       setHasDownloadClients(true);
       setShowSearchPrerequisiteNotice(false);
       setTitleLookupAttempted(false);
@@ -562,7 +569,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         const { error } = await client.mutation(queueExistingMutation, {
           input: {
             titleId: title.id,
-            scope: { title: true },
+            scope: releaseQueueScopeInput(release, { title: true }),
             candidateToken: release.candidateToken,
           },
         }).toPromise();
@@ -610,9 +617,13 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setGlobalStatus(error.message);
       return;
     }
-    setGlobalStatus(`queued ${data?.triggerTitleMismatchRecoverySearch ?? 0} mismatch recovery items`);
+    setGlobalStatus(
+      t("status.mismatchRecoveryQueued", {
+        count: data?.triggerTitleMismatchRecoverySearch ?? 0,
+      }),
+    );
     await refreshTitleDetail();
-  }, [client, refreshTitleDetail, setGlobalStatus, title]);
+  }, [client, refreshTitleDetail, setGlobalStatus, t, title]);
 
   const previewRename = React.useCallback(async () => {
     if (!title) return;
@@ -861,7 +872,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         onSetTitleMonitored={handleSetTitleMonitored}
         monitoredUpdating={monitoredUpdating}
         wantedItem={wantedItem}
-        acquisitionDiagnostics={acquisitionDiagnostics}
+        downloadQueueItems={downloadQueueItems}
         wantedActionLoading={wantedActionLoading}
         onPauseWanted={handlePauseWanted}
         onResumeWanted={handleResumeWanted}

@@ -3,7 +3,7 @@ members = [
     "xtask",
     "crates/scryer-domain",
     "crates/scryer-application",
-    "crates/scryer-release-parser",
+    "crates/scryer-release-parser-v2",
     "crates/scryer-infrastructure",
     "crates/scryer-interface",
     "crates/scryer-rules",

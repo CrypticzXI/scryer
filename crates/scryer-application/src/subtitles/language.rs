@@ -80,22 +80,72 @@ pub fn same_subtitle_language(a: &str, b: &str) -> bool {
 
 pub fn to_opensubtitles_language(code: &str) -> Option<String> {
     let normalized = normalize_subtitle_language_code(code)?;
-    Some(match normalized.as_str() {
-        "ea" => "es-MX".to_string(),
-        "pob" => "pt-BR".to_string(),
-        "por" => "pt-PT".to_string(),
-        "zho" => "zh-CN".to_string(),
-        "zht" => "zh-TW".to_string(),
-        other => other.to_string(),
-    })
+    let provider_code = match normalized.as_str() {
+        "sqi" => "sq",
+        "ara" => "ar",
+        "hye" => "hy",
+        "eus" => "eu",
+        "ben" => "bn",
+        "bos" => "bs",
+        "bul" => "bg",
+        "mya" => "my",
+        "cat" => "ca",
+        "zho" => "zh-cn",
+        "zht" => "zh-tw",
+        "ces" => "cs",
+        "dan" => "da",
+        "deu" => "de",
+        "nld" => "nl",
+        "ea" => "es",
+        "ell" => "el",
+        "eng" => "en",
+        "spa" => "es",
+        "est" => "et",
+        "fas" => "fa",
+        "fin" => "fi",
+        "fra" => "fr",
+        "kat" => "ka",
+        "heb" => "he",
+        "hin" => "hi",
+        "hrv" => "hr",
+        "hun" => "hu",
+        "isl" => "is",
+        "ind" => "id",
+        "ita" => "it",
+        "jpn" => "ja",
+        "kor" => "ko",
+        "lav" => "lv",
+        "lit" => "lt",
+        "mkd" => "mk",
+        "msa" => "ms",
+        "nor" => "no",
+        "pob" => "pt-br",
+        "por" => "pt-pt",
+        "pol" => "pl",
+        "ron" => "ro",
+        "rus" => "ru",
+        "srp" => "sr",
+        "sin" => "si",
+        "slk" => "sk",
+        "slv" => "sl",
+        "swe" => "sv",
+        "tha" => "th",
+        "tur" => "tr",
+        "ukr" => "uk",
+        "urd" => "ur",
+        "vie" => "vi",
+        other => other,
+    };
+    Some(provider_code.to_string())
 }
 
 pub fn from_opensubtitles_language(code: &str) -> Option<String> {
-    match code.trim().replace('_', "-").as_str() {
-        "pt-PT" => Some("por".to_string()),
-        "zh-CN" => Some("zho".to_string()),
-        "zh-TW" => Some("zht".to_string()),
-        "es-MX" => Some("ea".to_string()),
+    match code.trim().replace('_', "-").to_ascii_lowercase().as_str() {
+        "pt-pt" => Some("por".to_string()),
+        "pt-br" => Some("pob".to_string()),
+        "zh-cn" => Some("zho".to_string()),
+        "zh-tw" => Some("zht".to_string()),
+        "es-mx" => Some("ea".to_string()),
         other => normalize_subtitle_language_code(other),
     }
 }
@@ -138,11 +188,13 @@ mod tests {
 
     #[test]
     fn maps_to_and_from_opensubtitles_codes() {
-        assert_eq!(to_opensubtitles_language("por").as_deref(), Some("pt-PT"));
-        assert_eq!(to_opensubtitles_language("pob").as_deref(), Some("pt-BR"));
-        assert_eq!(to_opensubtitles_language("zho").as_deref(), Some("zh-CN"));
-        assert_eq!(to_opensubtitles_language("zht").as_deref(), Some("zh-TW"));
-        assert_eq!(to_opensubtitles_language("ea").as_deref(), Some("es-MX"));
+        assert_eq!(to_opensubtitles_language("eng").as_deref(), Some("en"));
+        assert_eq!(to_opensubtitles_language("por").as_deref(), Some("pt-pt"));
+        assert_eq!(to_opensubtitles_language("pob").as_deref(), Some("pt-br"));
+        assert_eq!(to_opensubtitles_language("zho").as_deref(), Some("zh-cn"));
+        assert_eq!(to_opensubtitles_language("zht").as_deref(), Some("zh-tw"));
+        assert_eq!(to_opensubtitles_language("ea").as_deref(), Some("es"));
+        assert_eq!(from_opensubtitles_language("en").as_deref(), Some("eng"));
         assert_eq!(from_opensubtitles_language("pt-PT").as_deref(), Some("por"));
         assert_eq!(from_opensubtitles_language("pt-BR").as_deref(), Some("pob"));
         assert_eq!(from_opensubtitles_language("zh-CN").as_deref(), Some("zho"));

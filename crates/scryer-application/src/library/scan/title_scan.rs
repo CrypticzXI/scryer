@@ -48,6 +48,8 @@ async fn discover_movie_title_files(
     app: &AppUseCase,
     title: &Title,
 ) -> AppResult<Vec<LibraryFile>> {
+    let (media_root, _) = crate::import_workflow::resolve_import_paths(app, title).await?;
+    let media_root_path = PathBuf::from(&media_root);
     let collections = app
         .services
         .catalog
@@ -57,13 +59,43 @@ async fn discover_movie_title_files(
         .unwrap_or_default();
     let mut discovered_files = Vec::new();
     let mut seen_paths = HashSet::new();
+    let mut candidate_paths = Vec::<PathBuf>::new();
+    let mut seen_candidate_paths = HashSet::new();
 
     for collection in collections {
         let Some(ordered_path) = collection.ordered_path else {
             continue;
         };
+        let ordered_path_buf = PathBuf::from(&ordered_path);
+        if let Some(parent) = ordered_path_buf.parent()
+            && parent != media_root_path.as_path()
+            && seen_candidate_paths.insert(parent.to_string_lossy().to_string())
+        {
+            candidate_paths.push(parent.to_path_buf());
+        }
         if !seen_paths.insert(ordered_path.clone()) {
             continue;
+        }
+
+        match tokio::fs::metadata(&ordered_path_buf).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(metadata) if metadata.is_dir() => {
+                if seen_candidate_paths.insert(ordered_path.clone()) {
+                    candidate_paths.push(ordered_path_buf);
+                }
+                continue;
+            }
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = %title.id,
+                    file_path = %ordered_path,
+                    "failed to inspect tracked movie path during title scan discovery"
+                );
+                continue;
+            }
         }
 
         discovered_files.push(LibraryFile {
@@ -84,36 +116,191 @@ async fn discover_movie_title_files(
         return Ok(discovered_files);
     }
 
-    let (media_root, _) = crate::import_workflow::resolve_import_paths(app, title).await?;
-    let candidate_path = title
+    let default_candidate_path = title
         .folder_path
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
+    if default_candidate_path != media_root_path
+        && seen_candidate_paths.insert(default_candidate_path.to_string_lossy().to_string())
+    {
+        candidate_paths.push(default_candidate_path);
+    }
 
-    match tokio::fs::metadata(&candidate_path).await {
-        Ok(metadata) if metadata.is_dir() => Ok(app
+    for candidate_path in candidate_paths {
+        match tokio::fs::metadata(&candidate_path).await {
+            Ok(metadata) if metadata.is_dir() => {
+                let files = app
+                    .services
+                    .library
+                    .library_scanner
+                    .scan_library(candidate_path.to_string_lossy().as_ref())
+                    .await?;
+                for file in files {
+                    if seen_paths.insert(file.path.clone()) {
+                        discovered_files.push(file);
+                    }
+                }
+                if !discovered_files.is_empty() {
+                    return Ok(discovered_files);
+                }
+            }
+            Ok(metadata) if metadata.is_file() => {
+                return Ok(vec![LibraryFile {
+                    path: candidate_path.to_string_lossy().to_string(),
+                    display_name: candidate_path
+                        .file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    nfo_path: matching_movie_nfo_path(&candidate_path),
+                    size_bytes: None,
+                    source_signature_scheme: None,
+                    source_signature_value: None,
+                }]);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => warn!(
+                error = %error,
+                title_id = %title.id,
+                path = %candidate_path.display(),
+                "failed to inspect movie scan candidate path"
+            ),
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+async fn tracked_movie_path_confirmed_missing(path: &Path) -> bool {
+    match tokio::fs::metadata(path).await {
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(parent) = path.parent() else {
+                return false;
+            };
+            tokio::fs::metadata(parent)
+                .await
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false)
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                path = %path.display(),
+                "failed to inspect tracked movie path during stale cleanup"
+            );
+            false
+        }
+    }
+}
+
+async fn cleanup_missing_movie_title_records(
+    app: &AppUseCase,
+    title: &Title,
+    cleanup: LibraryScanMovieCleanupContext,
+) -> bool {
+    let mut title_updated = false;
+
+    let media_files = match app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+    {
+        Ok(media_files) => media_files,
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                "failed to list movie media files during stale cleanup"
+            );
+            Vec::new()
+        }
+    };
+
+    for media_file in media_files {
+        let file_path = Path::new(&media_file.file_path);
+        if !tracked_movie_path_confirmed_missing(file_path).await {
+            continue;
+        }
+        if let Err(error) = app
             .services
             .library
-            .library_scanner
-            .scan_library(candidate_path.to_string_lossy().as_ref())
-            .await?),
-        Ok(metadata) if metadata.is_file() => Ok(vec![LibraryFile {
-            path: candidate_path.to_string_lossy().to_string(),
-            display_name: candidate_path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            nfo_path: matching_movie_nfo_path(&candidate_path),
-            size_bytes: None,
-            source_signature_scheme: None,
-            source_signature_value: None,
-        }]),
-        Ok(_) | Err(_) => Ok(Vec::new()),
+            .media_files
+            .delete_media_file(&media_file.id)
+            .await
+        {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                media_file_id = %media_file.id,
+                file_path = %media_file.file_path,
+                "failed to delete stale movie media file after title scan"
+            );
+        } else {
+            title_updated = true;
+        }
     }
+
+    let collections = match app
+        .services
+        .catalog
+        .shows
+        .list_collections_for_title(&title.id)
+        .await
+    {
+        Ok(collections) => collections,
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                "failed to list movie collections during stale cleanup"
+            );
+            Vec::new()
+        }
+    };
+    let cleanup_ids = cleanup
+        .stale_collection_ids
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+    for collection in collections {
+        let missing_by_path = if let Some(path) = collection.ordered_path.as_deref() {
+            tracked_movie_path_confirmed_missing(Path::new(path)).await
+        } else {
+            false
+        };
+        if !missing_by_path && !cleanup_ids.contains(&collection.id) {
+            continue;
+        }
+        if cleanup_ids.contains(&collection.id) && !missing_by_path {
+            continue;
+        }
+
+        if let Err(error) = app
+            .services
+            .catalog
+            .shows
+            .delete_collection(&collection.id)
+            .await
+        {
+            warn!(
+                error = %error,
+                collection_id = %collection.id,
+                title_id = %title.id,
+                "failed to delete stale movie collection after title scan"
+            );
+        } else {
+            title_updated = true;
+        }
+    }
+
+    title_updated
 }
 
 async fn hydrate_library_scan_workset(
@@ -499,23 +686,10 @@ impl AppUseCase {
             }
         }
 
-        if !library_scan_cancel_requested(cancel_token.as_ref()) {
-            for collection_id in cleanup.stale_collection_ids {
-                if let Err(error) = self
-                    .services
-                    .catalog
-                    .shows
-                    .delete_collection(&collection_id)
-                    .await
-                {
-                    warn!(
-                        error = %error,
-                        collection_id = %collection_id,
-                        title_id = %title.id,
-                        "failed to delete stale collection after movie title walk"
-                    );
-                }
-            }
+        if !library_scan_cancel_requested(cancel_token.as_ref())
+            && cleanup_missing_movie_title_records(self, &title, cleanup).await
+        {
+            self.emit_title_updated_activity(None, &title).await;
         }
 
         info!(
@@ -643,6 +817,8 @@ impl AppUseCase {
             "title scan stage: db state loaded"
         );
         let episode_lookup = build_title_episode_lookup(&collections, &title_episodes);
+        let parse_context =
+            crate::build_release_parse_context_for_title(&title, &title_episodes, None);
         debug!(
             title_id = %title.id,
             title_name = %title.name,
@@ -689,16 +865,18 @@ impl AppUseCase {
                 summary.scanned += 1;
 
                 let source_path = Path::new(&file.path);
-                let parsed = parse_release_metadata(
+                let parsed = crate::parse_release_metadata_for_target(
                     source_path
                         .file_stem()
                         .and_then(|stem| stem.to_str())
                         .unwrap_or(file.display_name.as_str()),
+                    &parse_context,
                 );
 
                 let ep_meta = match parsed.episode.as_ref() {
                     Some(ep) if !ep.episode_numbers.is_empty() => ep,
                     Some(ep) if ep.air_date.is_some() => ep,
+                    Some(ep) if !ep.special_absolute_episode_numbers.is_empty() => ep,
                     Some(ep)
                         if ep.absolute_episode.is_some()
                             && title.facet == scryer_domain::MediaFacet::Anime =>

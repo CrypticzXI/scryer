@@ -690,7 +690,11 @@ fn apply_job_next_run_event(
 }
 
 fn download_queue_item_key(item: &DownloadQueueItem) -> String {
-    format!("{}::{}", item.client_type, item.download_client_item_id)
+    if item.client_id.trim().is_empty() {
+        return format!("{}::{}", item.client_type, item.download_client_item_id);
+    }
+
+    format!("{}::{}", item.client_id, item.download_client_item_id)
 }
 
 fn apply_download_queue_event(
@@ -706,9 +710,12 @@ fn apply_download_queue_event(
         }
         DomainEventPayload::DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData {
             download_client_item_id,
+            client_id,
             client_type,
         }) => {
-            if let Some(client_type) = client_type.as_ref() {
+            if let Some(client_id) = client_id.as_ref().filter(|value| !value.trim().is_empty()) {
+                items.remove(&format!("{client_id}::{download_client_item_id}"));
+            } else if let Some(client_type) = client_type.as_ref() {
                 items.remove(&format!("{client_type}::{download_client_item_id}"));
             } else {
                 items.retain(|_, item| item.download_client_item_id != *download_client_item_id);
@@ -841,6 +848,7 @@ mod tests {
         DownloadQueueItem {
             id: id.to_string(),
             title_id: None,
+            episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
             client_id: "client-1".to_string(),

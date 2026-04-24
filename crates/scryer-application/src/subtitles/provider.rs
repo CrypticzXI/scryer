@@ -1,14 +1,15 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::language::{
     from_opensubtitles_language, normalize_subtitle_language_code, same_subtitle_language,
     to_opensubtitles_language,
 };
 use super::scoring::{SubtitleScoreKind, compute_verified_score};
-use crate::{AppError, AppResult, parse_release_metadata};
+use crate::{AppError, AppResult, ParsedReleaseMetadata, parse_release_metadata};
 
 /// Query parameters for searching subtitles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum SubtitleMediaKind {
 pub struct SubtitleQuery {
     /// Whether this search is for a movie or an episode.
     pub media_kind: SubtitleMediaKind,
+    /// Content facet (movie, series, anime) owned by Scryer for provider routing.
+    pub facet: Option<String>,
     /// OpenSubtitles-style file hash (first+last 64KB, little-endian u64 sum).
     pub file_hash: Option<String>,
     /// IMDb ID for the movie itself.
@@ -39,6 +42,10 @@ pub struct SubtitleQuery {
     pub season: Option<i32>,
     /// Episode number (series only).
     pub episode: Option<i32>,
+    /// Absolute episode number when available.
+    pub absolute_episode: Option<i32>,
+    /// Provider-specific external identifiers grouped by normalized source key.
+    pub external_ids: BTreeMap<String, Vec<String>>,
     /// Internal subtitle language codes to search for.
     pub languages: Vec<String>,
     /// Release group from the filename.
@@ -89,11 +96,18 @@ pub struct SubtitleMatch {
 }
 
 /// Downloaded subtitle file content.
+#[derive(Debug)]
 pub struct SubtitleFile {
-    /// Raw subtitle content bytes.
+    /// Downloaded artifact or normalized subtitle content bytes.
     pub content: Vec<u8>,
-    /// File extension (e.g., "srt", "ass").
+    /// Legacy/provider file extension hint. After host-side normalization this
+    /// is the final subtitle extension (e.g., "srt", "ass").
     pub format: String,
+    /// Provider artifact filename when known. This may describe a compressed
+    /// artifact such as `release.ass.xz` before normalization.
+    pub filename: Option<String>,
+    /// Provider artifact content type when known.
+    pub content_type: Option<String>,
 }
 
 /// Trait for subtitle providers. Each provider (OpenSubtitles, Podnapisi, etc.)
@@ -157,6 +171,7 @@ pub struct OpenSubtitlesProvider {
     api_key: String,
     token: tokio::sync::Mutex<Option<TokenState>>,
     credentials: tokio::sync::Mutex<Option<LoginCredentials>>,
+    rate_limited_until: tokio::sync::Mutex<Option<DateTime<Utc>>>,
     api_base: tokio::sync::RwLock<String>,
     http: reqwest::Client,
 }
@@ -272,6 +287,7 @@ impl OpenSubtitlesProvider {
             api_key,
             token: tokio::sync::Mutex::new(None),
             credentials: tokio::sync::Mutex::new(None),
+            rate_limited_until: tokio::sync::Mutex::new(None),
             api_base: tokio::sync::RwLock::new(api_base.into()),
             http: reqwest::Client::builder()
                 .user_agent("scryer-media/1.0")
@@ -366,6 +382,8 @@ impl OpenSubtitlesProvider {
         let mut retried = false;
 
         loop {
+            self.wait_for_rate_limit_window().await;
+
             let base = self.api_base().await;
             let url = format!(
                 "{}/{}",
@@ -400,8 +418,41 @@ impl OpenSubtitlesProvider {
                 }
             }
 
+            if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+                self.record_rate_limit_from_headers(resp.headers()).await;
+            }
+
             return Ok(resp);
         }
+    }
+
+    async fn wait_for_rate_limit_window(&self) {
+        let wait_duration = {
+            let guard = self.rate_limited_until.lock().await;
+            guard.and_then(|until| {
+                if until > Utc::now() {
+                    (until - Utc::now()).to_std().ok()
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(duration) = wait_duration {
+            tokio::time::sleep(duration).await;
+        }
+
+        let mut guard = self.rate_limited_until.lock().await;
+        if guard.as_ref().is_some_and(|until| *until <= Utc::now()) {
+            *guard = None;
+        }
+    }
+
+    async fn record_rate_limit_from_headers(&self, headers: &reqwest::header::HeaderMap) {
+        let until = retry_after_deadline_from_headers(headers)
+            .unwrap_or_else(|| Utc::now() + Duration::seconds(10));
+        let mut guard = self.rate_limited_until.lock().await;
+        *guard = Some(until);
     }
 
     async fn search_feature_id(
@@ -638,7 +689,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
 
             if let Some(parsed_release) = &parsed_release {
                 if let Some(year) = parsed_release.year
-                    && query.year == Some(year as i32)
+                    && query.year == Some(year)
                 {
                     matches.insert("year".to_string());
                 }
@@ -770,6 +821,8 @@ impl SubtitleProvider for OpenSubtitlesProvider {
         Ok(SubtitleFile {
             content,
             format: "srt".to_string(),
+            filename: None,
+            content_type: Some("application/x-subrip".to_string()),
         })
     }
 }
@@ -849,7 +902,7 @@ fn normalize_title_for_match(title: &str) -> String {
     collapse_title_initialisms(normalized.split_whitespace().collect::<Vec<_>>()).join(" ")
 }
 
-fn collapse_title_initialisms<'a>(tokens: Vec<&'a str>) -> Vec<String> {
+fn collapse_title_initialisms(tokens: Vec<&str>) -> Vec<String> {
     let mut collapsed = Vec::with_capacity(tokens.len());
     let mut idx = 0;
 
@@ -934,10 +987,7 @@ fn title_matches_query(candidate: Option<&str>, query: &SubtitleQuery) -> bool {
         .any(|title| normalize_title_for_match(&title) == candidate)
 }
 
-fn release_metadata_title_matches(
-    parsed: &scryer_release_parser::ParsedReleaseMetadata,
-    query: &SubtitleQuery,
-) -> bool {
+fn release_metadata_title_matches(parsed: &ParsedReleaseMetadata, query: &SubtitleQuery) -> bool {
     let mut release_titles = if parsed.normalized_title_variants.is_empty() {
         vec![parsed.normalized_title.clone()]
     } else {
@@ -995,7 +1045,7 @@ fn source_matches(left: Option<&str>, right: Option<&str>) -> bool {
     let (Some(left), Some(right)) = (left, right) else {
         return false;
     };
-    normalize_compare_token(left) == normalize_compare_token(right)
+    normalize_source_family(left) == normalize_source_family(right)
 }
 
 fn resolution_matches(left: Option<&str>, right: Option<&str>) -> bool {
@@ -1023,21 +1073,55 @@ fn video_codec_matches(left: Option<&str>, right: Option<&str>) -> bool {
 }
 
 fn normalize_audio_codec(value: &str) -> String {
-    match normalize_compare_token(value).as_str() {
-        "DDP" | "DDPLUS" | "EAC3" => "DDP".to_string(),
-        "DD" | "AC3" => "DD".to_string(),
-        "AAC" => "AAC".to_string(),
+    let token = strip_audio_channel_suffix(&normalize_compare_token(value));
+    match token.as_str() {
+        "DDP"
+        | "DDPLUS"
+        | "DDPLUSATMOS"
+        | "EAC3"
+        | "EAC3ATMOS"
+        | "EC3"
+        | "DOLBYDIGITALPLUS"
+        | "DOLBYDIGITALPLUSATMOS" => "DDP".to_string(),
+        "DD" | "AC3" | "DOLBYDIGITAL" => "DD".to_string(),
+        "AAC" | "AACLC" | "HEAAC" => "AAC".to_string(),
         "FLAC" => "FLAC".to_string(),
-        "DTS" | "DTSHD" | "DTSHDMA" | "DTSMA" | "DTSX" => "DTS".to_string(),
-        "TRUEHD" | "TRUEHDATMOS" => "TRUEHD".to_string(),
+        "DTS" | "DTSHD" | "DTSHDMA" | "DTSMA" | "DTSX" | "DTSHDHRA" => "DTS".to_string(),
+        "TRUEHD" | "TRUEHDATMOS" | "DOLBYTRUEHD" | "DOLBYTRUEHDATMOS" => "TRUEHD".to_string(),
+        other if other.starts_with("AAC") => "AAC".to_string(),
+        other if other.starts_with("DTS") => "DTS".to_string(),
+        other if other.starts_with("FLAC") => "FLAC".to_string(),
+        other if other.starts_with("OPUS") => "OPUS".to_string(),
+        other if other.starts_with("VORBIS") => "VORBIS".to_string(),
+        other if other.starts_with("LPCM") || other.starts_with("PCM") => "PCM".to_string(),
         other => other.to_string(),
     }
 }
 
-fn audio_codec_matches(
-    left: Option<&str>,
-    parsed: &scryer_release_parser::ParsedReleaseMetadata,
-) -> bool {
+fn normalize_source_family(value: &str) -> String {
+    match normalize_compare_token(value).as_str() {
+        "WEB" | "WEBDL" | "WEBRIP" | "WEBHD" | "WEBCAP" => "WEB".to_string(),
+        "HDTV" | "SDTV" | "AHDTV" | "ULTRAHDTV" => "TV".to_string(),
+        "SATRIP" | "DVB" | "PPV" | "DIGITALTV" => "AIR".to_string(),
+        "HDDVD" | "BLURAY" | "BLURAYREMUX" | "BD" | "BDMV" | "BDRIP" | "BRRIP" | "UHDBLURAY"
+        | "ULTRAHDBLURAY" => "DISKHD".to_string(),
+        "DVD" | "DVDRIP" | "VHS" => "DISKSD".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn strip_audio_channel_suffix(token: &str) -> String {
+    const CHANNEL_SUFFIXES: &[&str] = &["10", "20", "51", "61", "71", "81"];
+
+    CHANNEL_SUFFIXES
+        .iter()
+        .find_map(|suffix| token.strip_suffix(suffix))
+        .filter(|stripped| !stripped.is_empty())
+        .unwrap_or(token)
+        .to_string()
+}
+
+fn audio_codec_matches(left: Option<&str>, parsed: &ParsedReleaseMetadata) -> bool {
     let Some(left) = left else {
         return false;
     };
@@ -1077,6 +1161,16 @@ fn normalize_subtitle_line_endings(content: Vec<u8>) -> Vec<u8> {
 
 async fn response_error(action: &str, resp: Response) -> AppError {
     let status = resp.status();
+    let retry_after_seconds = retry_after_deadline_from_headers(resp.headers()).and_then(|until| {
+        if until > Utc::now() {
+            (until - Utc::now())
+                .to_std()
+                .ok()
+                .map(|duration| duration.as_secs())
+        } else {
+            None
+        }
+    });
     let body = resp.text().await.unwrap_or_default();
 
     match status {
@@ -1088,9 +1182,12 @@ async fn response_error(action: &str, resp: Response) -> AppError {
             compact_error_body(&body)
         )),
         StatusCode::GONE => AppError::Repository(format!("OpenSubtitles {action} link expired")),
-        StatusCode::TOO_MANY_REQUESTS => {
-            AppError::Repository("OpenSubtitles rate limited — try again later".into())
-        }
+        StatusCode::TOO_MANY_REQUESTS => AppError::Repository(match retry_after_seconds {
+            Some(seconds) if seconds > 0 => {
+                format!("OpenSubtitles rate limited — retry after {seconds}s")
+            }
+            _ => "OpenSubtitles rate limited — try again later".into(),
+        }),
         status if status.is_server_error() => AppError::Repository(format!(
             "OpenSubtitles {action} failed with {status}: {}",
             compact_error_body(&body)
@@ -1100,6 +1197,23 @@ async fn response_error(action: &str, resp: Response) -> AppError {
             compact_error_body(&body)
         )),
     }
+}
+
+fn retry_after_deadline_from_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<DateTime<Utc>> {
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = raw.parse::<i64>() {
+        return Some(Utc::now() + Duration::seconds(seconds.max(0)));
+    }
+
+    DateTime::parse_from_rfc2822(raw)
+        .ok()
+        .map(|deadline| deadline.with_timezone(&Utc))
 }
 
 fn compact_error_body(body: &str) -> String {
@@ -1222,6 +1336,7 @@ mod tests {
     fn subtitle_query_fields_set_correctly() {
         let q = SubtitleQuery {
             media_kind: SubtitleMediaKind::Episode,
+            facet: Some("series".into()),
             file_hash: Some("abc123".into()),
             imdb_id: None,
             series_imdb_id: Some("tt1234567".into()),
@@ -1231,6 +1346,8 @@ mod tests {
             year: Some(2008),
             season: Some(1),
             episode: Some(3),
+            absolute_episode: None,
+            external_ids: Default::default(),
             languages: vec!["eng".into(), "spa".into()],
             release_group: Some("NTb".into()),
             source: Some("WEB-DL".into()),
@@ -1252,6 +1369,7 @@ mod tests {
     fn subtitle_query_optional_fields_default_none() {
         let q = SubtitleQuery {
             media_kind: SubtitleMediaKind::Movie,
+            facet: Some("movie".into()),
             file_hash: None,
             imdb_id: None,
             series_imdb_id: None,
@@ -1261,6 +1379,8 @@ mod tests {
             year: None,
             season: None,
             episode: None,
+            absolute_episode: None,
+            external_ids: Default::default(),
             languages: vec![],
             release_group: None,
             source: None,
@@ -1315,6 +1435,23 @@ mod tests {
         assert_eq!(matches[0].provider_file_id, "2");
     }
 
+    #[test]
+    fn source_matching_uses_bazarr_source_families() {
+        assert!(source_matches(Some("WEB"), Some("WEB-DL")));
+        assert!(source_matches(Some("BluRay"), Some("Ultra HD Blu-ray")));
+        assert!(source_matches(Some("HDTV"), Some("SDTV")));
+        assert!(!source_matches(Some("WEB"), Some("BluRay")));
+    }
+
+    #[test]
+    fn audio_matching_accepts_media_analysis_and_release_name_forms() {
+        let parsed = parse_release_metadata("Movie.Title.2024.1080p.WEB-DL.DDP5.1.H.264-GROUP");
+
+        assert!(audio_codec_matches(Some("EAC3 Atmos"), &parsed));
+        assert!(audio_codec_matches(Some("Dolby Digital Plus"), &parsed));
+        assert!(!audio_codec_matches(Some("TrueHD"), &parsed));
+    }
+
     #[tokio::test]
     async fn episode_search_uses_parent_imdb_and_normalizes_language() {
         let server = MockServer::start().await;
@@ -1323,7 +1460,7 @@ mod tests {
             .and(query_param("parent_imdb_id", "1234567"))
             .and(query_param("season_number", "2"))
             .and(query_param("episode_number", "5"))
-            .and(query_param("languages", "pt-PT"))
+            .and(query_param("languages", "pt-pt"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [{
                     "attributes": {
@@ -1353,6 +1490,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Episode,
+                facet: Some("series".into()),
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: Some("tt1234567".into()),
@@ -1362,6 +1500,8 @@ mod tests {
                 year: Some(2024),
                 season: Some(2),
                 episode: Some(5),
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["por".into()],
                 release_group: Some("GROUP".into()),
                 source: Some("WEB-DL".into()),
@@ -1378,6 +1518,78 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].language, "por");
         assert!(results[0].score >= 307);
+    }
+
+    #[tokio::test]
+    async fn movie_search_ranks_matching_video_codec_above_codec_mismatch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/subtitles"))
+            .and(query_param("imdb_id", "2024544"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {
+                        "attributes": {
+                            "language": "en",
+                            "hearing_impaired": false,
+                            "foreign_parts_only": false,
+                            "release": "Movie.Title.2024.1080p.BluRay.x265.DTS-GROUP",
+                            "download_count": 5,
+                            "files": [{ "file_id": 42 }],
+                            "moviehash_match": false
+                        }
+                    },
+                    {
+                        "attributes": {
+                            "language": "en",
+                            "hearing_impaired": false,
+                            "foreign_parts_only": false,
+                            "release": "Movie.Title.2024.1080p.BluRay.x264.DTS-GROUP",
+                            "download_count": 5,
+                            "files": [{ "file_id": 43 }],
+                            "moviehash_match": false
+                        }
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenSubtitlesProvider::with_api_base(
+            "api-key".into(),
+            format!("{}/api/v1", server.uri()),
+        );
+        let results = provider
+            .search(&SubtitleQuery {
+                media_kind: SubtitleMediaKind::Movie,
+                facet: Some("movie".into()),
+                file_hash: None,
+                imdb_id: Some("tt2024544".into()),
+                series_imdb_id: None,
+                title: "Movie Title".into(),
+                title_aliases: vec![],
+                title_candidates: vec![],
+                year: Some(2024),
+                season: None,
+                episode: None,
+                absolute_episode: None,
+                external_ids: Default::default(),
+                languages: vec!["eng".into()],
+                release_group: Some("GROUP".into()),
+                source: Some("BluRay".into()),
+                video_codec: Some("H.264".into()),
+                audio_codec: Some("DTS".into()),
+                resolution: Some("1080p".into()),
+                hearing_impaired: Some(false),
+                include_ai_translated: false,
+                include_machine_translated: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].release_info.as_deref().unwrap().contains("x264"));
+        assert!(results[0].score > results[1].score);
     }
 
     #[tokio::test]
@@ -1410,6 +1622,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Movie,
+                facet: Some("movie".into()),
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
@@ -1419,6 +1632,8 @@ mod tests {
                 year: Some(2024),
                 season: None,
                 episode: None,
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,
@@ -1454,6 +1669,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Episode,
+                facet: Some("series".into()),
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
@@ -1463,6 +1679,8 @@ mod tests {
                 year: Some(2024),
                 season: Some(1),
                 episode: Some(1),
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,
@@ -1519,6 +1737,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Episode,
+                facet: Some("series".into()),
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
@@ -1528,6 +1747,8 @@ mod tests {
                 year: Some(2021),
                 season: Some(1),
                 episode: Some(1),
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,
@@ -1561,6 +1782,7 @@ mod tests {
         let err = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Episode,
+                facet: Some("series".into()),
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
@@ -1570,6 +1792,8 @@ mod tests {
                 year: Some(2024),
                 season: Some(1),
                 episode: Some(1),
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,
@@ -1658,6 +1882,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Movie,
+                facet: Some("movie".into()),
                 file_hash: None,
                 imdb_id: Some("tt0000123".into()),
                 series_imdb_id: None,
@@ -1667,6 +1892,8 @@ mod tests {
                 year: Some(2024),
                 season: None,
                 episode: None,
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,
@@ -1688,7 +1915,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/subtitles"))
-            .and(query_param("languages", "eng"))
+            .and(query_param("languages", "en"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [{
                     "attributes": {
@@ -1716,6 +1943,7 @@ mod tests {
         let results = provider
             .search(&SubtitleQuery {
                 media_kind: SubtitleMediaKind::Movie,
+                facet: Some("movie".into()),
                 file_hash: None,
                 imdb_id: Some("tt1234567".into()),
                 series_imdb_id: None,
@@ -1725,6 +1953,8 @@ mod tests {
                 year: Some(2024),
                 season: None,
                 episode: None,
+                absolute_episode: None,
+                external_ids: Default::default(),
                 languages: vec!["eng".into()],
                 release_group: None,
                 source: None,

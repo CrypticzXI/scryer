@@ -22,8 +22,8 @@ use axum::routing::{get, post};
 use scryer_application::{
     AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    PluginInstallationRepository, SeriesFacetHandler, TitleImageKind, TitleImageRepository,
-    start_background_acquisition_poller, start_background_banner_loop,
+    PluginInstallationRepository, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
+    TitleImageRepository, start_background_acquisition_poller, start_background_banner_loop,
     start_background_download_delete_poller, start_background_fanart_loop,
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_poster_loop, start_background_subtitle_poller,
@@ -417,6 +417,8 @@ async fn bootstrap_application(
     let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
         config_store.clone();
+    let subtitle_provider_configs: Arc<dyn scryer_application::SubtitleProviderConfigRepository> =
+        config_store.clone();
     let settings_for_router: Arc<dyn scryer_application::SettingsRepository> =
         settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
@@ -472,6 +474,13 @@ async fn bootstrap_application(
             &disabled_builtin_plugins,
         ));
     let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(dynamic_provider);
+    let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
+        Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
+            scryer_plugins::build_subtitle_plugin_provider(
+                &runtime_plugin_refs,
+                &disabled_builtin_plugins,
+            ),
+        ));
 
     let indexer_client = MultiIndexerSearchClient::new(
         indexer_configs.clone(),
@@ -601,6 +610,8 @@ async fn bootstrap_application(
     .with_indexer_stats(indexer_stats)
     .with_plugin_provider(plugin_provider)
     .with_download_client_plugin_provider(download_client_plugin_provider.clone())
+    .with_subtitle_provider_configs(subtitle_provider_configs)
+    .with_subtitle_plugin_provider(subtitle_plugin_provider)
     .with_notification_provider(Arc::new(notif_provider))
     .with_workflow_operations(workflow_store)
     .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
@@ -629,6 +640,15 @@ async fn bootstrap_application(
     }
     if let Err(e) = app_use_case.rebuild_user_rules_engine().await {
         tracing::warn!(error = %e, "failed to rebuild user rules engine on startup");
+    }
+    if let Err(e) = app_use_case
+        .migrate_legacy_opensubtitles_provider_config()
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "failed to migrate legacy opensubtitles settings into subtitle provider configs on startup"
+        );
     }
     if let Err(e) = app_use_case.reconcile_indexer_configs().await {
         tracing::warn!(error = %e, "failed to reconcile indexer configs on startup");
@@ -1224,6 +1244,7 @@ async fn seed_builtin_plugin_installations(
             "NZBGeek Indexer",
             "NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)",
             "0.1.0",
+            "usenet_indexer",
             "nzbgeek",
         )
         .await
@@ -1234,6 +1255,7 @@ async fn seed_builtin_plugin_installations(
             "DogNZB Indexer",
             "DogNZB-specific Newznab indexer with rating, genre, and comment metadata",
             "0.1.0",
+            "usenet_indexer",
             "dognzb",
         )
         .await
@@ -1244,7 +1266,41 @@ async fn seed_builtin_plugin_installations(
             "Newznab Indexer",
             "Generic Newznab protocol indexer for compatible services",
             "0.1.0",
+            "usenet_indexer",
             "newznab",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    customization_store
+        .seed_builtin(
+            "opensubtitles",
+            "OpenSubtitles",
+            "OpenSubtitles subtitle provider with provider-managed auth, search, and download",
+            "0.1.0",
+            "subtitle_provider",
+            "opensubtitles",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    customization_store
+        .seed_builtin(
+            "jimaku",
+            "Jimaku",
+            "Anime-focused Jimaku subtitle provider using AniList IDs and optional name fallback",
+            "0.1.0",
+            "subtitle_provider",
+            "jimaku",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    customization_store
+        .seed_builtin(
+            "whisper",
+            "Whisper",
+            "OpenAI Whisper subtitle generator for staged audio transcription",
+            "0.1.0",
+            "subtitle_provider",
+            "whisper",
         )
         .await
         .map_err(|error| error.to_string())?;

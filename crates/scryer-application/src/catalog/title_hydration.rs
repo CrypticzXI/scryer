@@ -11,6 +11,7 @@ const TITLE_HYDRATION_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
+const ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH: usize = 500;
 
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
@@ -29,6 +30,7 @@ pub async fn start_background_title_hydration_loop(
         max_attempts = TITLE_HYDRATION_MAX_ATTEMPTS,
         "background title hydration loop started"
     );
+    queue_missing_anibridge_scoped_id_hydration(&app).await;
 
     loop {
         let blocked_facets = app
@@ -207,6 +209,48 @@ pub async fn start_background_title_hydration_loop(
                     }
                 }
             }
+        }
+    }
+}
+
+async fn queue_missing_anibridge_scoped_id_hydration(app: &AppUseCase) {
+    match app
+        .services
+        .catalog
+        .titles
+        .list_anime_title_ids_missing_anibridge_scoped_external_ids(
+            ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH,
+        )
+        .await
+    {
+        Ok(title_ids) => {
+            if title_ids.is_empty() {
+                return;
+            }
+            let mut queued = 0usize;
+            for title_id in title_ids {
+                if app
+                    .services
+                    .catalog
+                    .titles
+                    .mark_title_metadata_hydration_due_now(&title_id)
+                    .await
+                    .is_ok()
+                {
+                    queued += 1;
+                }
+            }
+            info!(
+                queued,
+                "queued anime titles for anibridge scoped external ID hydration"
+            );
+            app.runtime.catalog.title_hydration_wake.notify_one();
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                "failed to queue anibridge scoped external ID hydration backfill"
+            );
         }
     }
 }

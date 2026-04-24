@@ -4,7 +4,7 @@ use scryer_domain::{
     DomainEventPayload, EventType, JobRunCompletedEventData, JobRunStartedEventData,
     RootFolderEntry, TrackedDownloadState,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
@@ -217,6 +217,13 @@ impl TitleRepository for MockTitleRepo {
                 attempt_count: 0,
             })
             .collect())
+    }
+
+    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+        &self,
+        _limit: usize,
+    ) -> AppResult<Vec<String>> {
+        Ok(vec![])
     }
 
     async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
@@ -466,6 +473,42 @@ impl MediaFileRepository for MockMediaFileRepo {
             .iter()
             .filter(|entry| entry.title_id == title_id)
             .cloned()
+            .collect())
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        let episode_ids = episode_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|entry| {
+                entry.title_id == title_id
+                    && entry
+                        .episode_id
+                        .as_deref()
+                        .is_some_and(|episode_id| episode_ids.contains(episode_id))
+            })
+            .cloned()
+            .map(|media_file| {
+                let episode_ids = media_file
+                    .episode_id
+                    .clone()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                EpisodeScopedMediaFile {
+                    media_file,
+                    episode_ids,
+                }
+            })
             .collect())
     }
 
@@ -800,6 +843,8 @@ impl DomainEventRepository for MockDomainEventRepo {
 struct MockShowRepo {
     collections: Arc<Mutex<Vec<Collection>>>,
     episodes: Arc<Mutex<Vec<Episode>>>,
+    collection_external_ids: Arc<Mutex<Vec<ScopedExternalId>>>,
+    episode_external_ids: Arc<Mutex<Vec<ScopedExternalId>>>,
 }
 
 #[async_trait]
@@ -809,6 +854,18 @@ impl ShowRepository for MockShowRepo {
         Ok(collections
             .iter()
             .filter(|item| item.title_id == title_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_collection_external_ids(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        let ids = self.collection_external_ids.lock().await;
+        Ok(ids
+            .iter()
+            .filter(|item| item.scope_id == collection_id)
             .cloned()
             .collect())
     }
@@ -989,6 +1046,18 @@ impl ShowRepository for MockShowRepo {
             .collect())
     }
 
+    async fn list_episode_external_ids(
+        &self,
+        episode_id: &str,
+    ) -> AppResult<Vec<ScopedExternalId>> {
+        let ids = self.episode_external_ids.lock().await;
+        Ok(ids
+            .iter()
+            .filter(|item| item.scope_id == episode_id)
+            .cloned()
+            .collect())
+    }
+
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
         let episodes = self.episodes.lock().await;
         Ok(episodes.iter().find(|item| item.id == episode_id).cloned())
@@ -1145,6 +1214,17 @@ impl ShowRepository for MockShowRepo {
     ) -> AppResult<Vec<CalendarEpisode>> {
         Ok(vec![])
     }
+
+    async fn replace_anibridge_scoped_external_ids_for_title(
+        &self,
+        _title_id: &str,
+        collection_ids: Vec<ScopedExternalId>,
+        episode_ids: Vec<ScopedExternalId>,
+    ) -> AppResult<()> {
+        *self.collection_external_ids.lock().await = collection_ids;
+        *self.episode_external_ids.lock().await = episode_ids;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -1197,6 +1277,7 @@ impl IndexerClient for MockIndexerClient {
                 auto_decision_code: None,
                 auto_decision_summary: None,
                 candidate_token: None,
+                queue_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -1276,6 +1357,7 @@ impl IndexerClient for TrackingIndexerClient {
                 auto_decision_code: None,
                 auto_decision_summary: None,
                 candidate_token: None,
+                queue_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -1341,6 +1423,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 auto_decision_code: None,
                 auto_decision_summary: None,
                 candidate_token: None,
+                queue_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -1408,6 +1491,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     auto_decision_code: None,
                     auto_decision_summary: None,
                     candidate_token: None,
+                    queue_scope: None,
                 })
                 .collect(),
             api_current: None,
@@ -1491,15 +1575,6 @@ impl MetadataGateway for MockMetadataGateway {
             movies,
             series: HashMap::new(),
         })
-    }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        _tvdb_id: i64,
-        _season: i32,
-        _episode: i32,
-    ) -> AppResult<Vec<crate::library_scan::AnibridgeSourceMapping>> {
-        Ok(vec![])
     }
 }
 
@@ -1691,15 +1766,6 @@ impl MetadataGateway for EmptySearchMetadataGateway {
     ) -> AppResult<BulkMetadataResult> {
         Ok(BulkMetadataResult::default())
     }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        _tvdb_id: i64,
-        _season: i32,
-        _episode: i32,
-    ) -> AppResult<Vec<AnibridgeSourceMapping>> {
-        Ok(Vec::new())
-    }
 }
 
 #[derive(Clone)]
@@ -1830,15 +1896,6 @@ impl MetadataGateway for BlockingBatchMetadataGateway {
         _language: &str,
     ) -> AppResult<BulkMetadataResult> {
         Ok(BulkMetadataResult::default())
-    }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        _tvdb_id: i64,
-        _season: i32,
-        _episode: i32,
-    ) -> AppResult<Vec<AnibridgeSourceMapping>> {
-        Ok(Vec::new())
     }
 }
 
@@ -2550,7 +2607,8 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         let mut entries = self.store.lock().await;
         if let Some(existing) = entries.iter_mut().find(|entry| {
-            entry.download_client_type == submission.download_client_type
+            entry.download_client_id == submission.download_client_id
+                && entry.download_client_type == submission.download_client_type
                 && entry.download_client_item_id == submission.download_client_item_id
         }) {
             *existing = submission;
@@ -2562,6 +2620,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn find_by_client_item_id(
         &self,
+        download_client_id: Option<&str>,
         download_client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
@@ -2569,7 +2628,9 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(entries
             .iter()
             .find(|entry| {
-                entry.download_client_type == download_client_type
+                (download_client_id.is_none()
+                    || entry.download_client_id.as_deref() == download_client_id)
+                    && entry.download_client_type == download_client_type
                     && entry.download_client_item_id == download_client_item_id
             })
             .cloned())
@@ -2577,16 +2638,20 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[(String, String)],
+        client_items: &[(Option<String>, String, String)],
     ) -> AppResult<Vec<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
             .iter()
             .filter(|entry| {
-                client_items.iter().any(|(client_type, item_id)| {
-                    entry.download_client_type == *client_type
-                        && entry.download_client_item_id == *item_id
-                })
+                client_items
+                    .iter()
+                    .any(|(client_id, client_type, item_id)| {
+                        (client_id.is_none()
+                            || entry.download_client_id.as_deref() == client_id.as_deref())
+                            && entry.download_client_type == *client_type
+                            && entry.download_client_item_id == *item_id
+                    })
             })
             .cloned()
             .collect())
@@ -2632,19 +2697,36 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn delete_by_client_item_id(&self, download_client_item_id: &str) -> AppResult<()> {
-        self.store
-            .lock()
-            .await
-            .retain(|entry| entry.download_client_item_id != download_client_item_id);
+    async fn delete_by_client_item_id(
+        &self,
+        download_client_id: Option<&str>,
+        _download_client_type: Option<&str>,
+        download_client_item_id: &str,
+    ) -> AppResult<()> {
+        self.store.lock().await.retain(|entry| {
+            entry.download_client_item_id != download_client_item_id
+                || (download_client_id.is_some()
+                    && entry.download_client_id.as_deref() != download_client_id)
+        });
         Ok(())
     }
 
-    async fn update_tracked_state(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+    async fn update_tracked_state(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
 
-    async fn get_tracked_state(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+    async fn get_tracked_state(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<String>> {
         Ok(None)
     }
 }
@@ -2847,6 +2929,7 @@ impl DownloadClient for StubDownloadClient {
         );
         Ok(DownloadGrabResult {
             job_id: format!("job-for-{}", request.title.id),
+            client_id: None,
             client_type: "nzbget".to_string(),
         })
     }
@@ -2921,6 +3004,7 @@ struct TrackingDownloadQueueCommandRepo {
 impl TrackingDownloadQueueCommandRepo {
     async fn seed_pending(
         &self,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
@@ -2929,6 +3013,7 @@ impl TrackingDownloadQueueCommandRepo {
         self.queued.lock().await.push(DownloadQueueCommandRecord {
             id: id.clone(),
             action: scryer_domain::DownloadQueueCommandAction::Delete,
+            client_id: client_id.map(str::to_string),
             client_type: client_type.to_string(),
             download_client_item_id: download_client_item_id.to_string(),
             is_history,
@@ -2957,13 +3042,14 @@ impl TrackingDownloadQueueCommandRepo {
 impl DownloadQueueCommandRepository for TrackingDownloadQueueCommandRepo {
     async fn queue_delete_command(
         &self,
+        client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
         is_history: bool,
         requested_by_user_id: Option<&str>,
     ) -> AppResult<DownloadQueueCommandRecord> {
         let id = self
-            .seed_pending(client_type, download_client_item_id, is_history)
+            .seed_pending(client_id, client_type, download_client_item_id, is_history)
             .await;
         let mut queued = self.queued.lock().await;
         let record = queued
@@ -3032,16 +3118,17 @@ impl DownloadQueueCommandRepository for TrackingDownloadQueueCommandRepo {
 
     async fn list_latest_delete_commands_for_sources(
         &self,
-        sources: &[(String, String, bool)],
+        sources: &[(Option<String>, String, String, bool)],
     ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
         let queued = self.queued.lock().await;
         Ok(sources
             .iter()
-            .filter_map(|(client_type, item_id, is_history)| {
+            .filter_map(|(client_id, client_type, item_id, is_history)| {
                 queued
                     .iter()
                     .find(|record| {
-                        record.client_type == *client_type
+                        record.client_id.as_deref() == client_id.as_deref()
+                            && record.client_type == *client_type
                             && record.download_client_item_id == *item_id
                             && record.is_history == *is_history
                     })
@@ -3641,15 +3728,6 @@ impl MetadataGateway for FixedBatchSearchMetadataGateway {
             series: HashMap::new(),
         })
     }
-
-    async fn anibridge_mappings_for_episode(
-        &self,
-        _tvdb_id: i64,
-        _season: i32,
-        _episode: i32,
-    ) -> AppResult<Vec<crate::library_scan::AnibridgeSourceMapping>> {
-        Ok(vec![])
-    }
 }
 
 fn build_test_library_file(path: &str) -> LibraryFile {
@@ -3807,6 +3885,112 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let third_items = unmatched_items.items().await;
     assert_eq!(third_items.len(), 1);
     assert_eq!(third_items[0].item_path, second_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn movie_title_scan_removes_missing_tracked_movie_file() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_path = tempdir.path().join("Titanic (1997) - 2160p.mkv");
+    std::fs::write(&movie_path, b"movie").expect("write movie file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) =
+        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items);
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Titanic".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                year: Some(1997),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, tempdir.path().to_string_lossy().as_ref())
+        .await
+        .expect("set movie folder path");
+
+    let movie_path_string = movie_path.to_string_lossy().to_string();
+    app.services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Movie,
+            collection_index: "1".to_string(),
+            label: Some("2160p".to_string()),
+            ordered_path: Some(movie_path_string.clone()),
+            narrative_order: None,
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: title.monitored,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("seed movie collection");
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: movie_path_string,
+            size_bytes: 5,
+            quality_label: Some("2160p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("seed movie media file");
+
+    std::fs::remove_file(&movie_path).expect("remove movie file externally");
+
+    let summary = app
+        .scan_title_library(&user, &title.id)
+        .await
+        .expect("movie title scan should succeed");
+
+    assert_eq!(summary.imported, 0);
+    assert_eq!(summary.skipped, 0);
+    assert!(
+        app.services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files")
+            .is_empty()
+    );
+    assert!(
+        app.services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .expect("list collections")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -6202,25 +6386,6 @@ async fn search_titles_supports_facet_filter() {
 }
 
 #[tokio::test]
-async fn search_indexer_requires_query() {
-    let (app, user) = bootstrap();
-
-    let result = app
-        .search_indexers(
-            &user,
-            IndexerSearchRequest {
-                query: "   ".into(),
-                imdb_id: None,
-                tvdb_id: None,
-                anidb_id: None,
-                category: None,
-            },
-        )
-        .await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
 async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
@@ -6245,19 +6410,25 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
         .await
         .expect("set anime required audio");
 
-    let results = app
-        .search_indexers(
+    let title = app
+        .add_title(
             &user,
-            IndexerSearchRequest {
-                query: "Anime Show".into(),
-                imdb_id: None,
-                tvdb_id: None,
-                anidb_id: None,
-                category: Some("anime".into()),
+            NewTitle {
+                name: "Anime Show".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                ..Default::default()
             },
         )
         .await
-        .expect("search indexers");
+        .expect("create anime title");
+
+    let results = app
+        .search_indexers_for_title(&user, title.id.clone())
+        .await
+        .expect("search indexers for title");
 
     assert_eq!(results.len(), 1);
     let parsed = results[0]
@@ -6550,6 +6721,7 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         .record_submission(DownloadSubmission {
             title_id: created.id.clone(),
             facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-fallback".to_string(),
             source_hint: None,
@@ -6565,6 +6737,7 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         DownloadQueueItem {
             id: "queue-direct".to_string(),
             title_id: Some(created.id.clone()),
+            episode_id: None,
             title_name: created.name.clone(),
             facet: Some("movie".to_string()),
             client_id: "primary".to_string(),
@@ -6594,6 +6767,7 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         DownloadQueueItem {
             id: "queue-fallback".to_string(),
             title_id: None,
+            episode_id: None,
             title_name: created.name.clone(),
             facet: None,
             client_id: "primary".to_string(),
@@ -6623,6 +6797,7 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         DownloadQueueItem {
             id: "queue-unrelated".to_string(),
             title_id: None,
+            episode_id: None,
             title_name: "Other".to_string(),
             facet: None,
             client_id: "primary".to_string(),
@@ -6709,6 +6884,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
         .record_submission(DownloadSubmission {
             title_id: String::new(),
             facet: String::new(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "foreign-stub".to_string(),
             source_hint: None,
@@ -6723,6 +6899,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "foreign-stub".to_string(),
         title_id: None,
+        episode_id: None,
         title_name: "Foreign Download".to_string(),
         facet: None,
         client_id: "primary".to_string(),
@@ -6751,7 +6928,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
     }];
 
     let items = app
-        .list_download_queue(&user, true, false, DownloadActivityFilter::All)
+        .list_download_queue(&user, true, false, false, DownloadActivityFilter::All)
         .await
         .expect("list queue");
 
@@ -6788,6 +6965,7 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
     *download_client.history_items.lock().await = vec![DownloadQueueItem {
         id: "history-1".to_string(),
         title_id: None,
+        episode_id: None,
         title_name: "History Download".to_string(),
         facet: None,
         client_id: "primary".to_string(),
@@ -6816,7 +6994,7 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
     }];
 
     let items = app
-        .list_download_queue(&user, true, false, DownloadActivityFilter::All)
+        .list_download_queue(&user, true, false, false, DownloadActivityFilter::All)
         .await
         .expect("list queue should succeed");
 
@@ -6859,6 +7037,7 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
         .record_submission(DownloadSubmission {
             title_id: "title-1".to_string(),
             facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "job-1".to_string(),
             source_hint: None,
@@ -6873,6 +7052,7 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "job-1".to_string(),
         title_id: None,
+        episode_id: None,
         title_name: "Title Scoped Download".to_string(),
         facet: None,
         client_id: "primary".to_string(),
@@ -6901,7 +7081,14 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
     }];
 
     let items = app
-        .list_download_queue_for_title(&user, "title-1", false, false, DownloadActivityFilter::All)
+        .list_download_queue_for_title(
+            &user,
+            "title-1",
+            false,
+            false,
+            false,
+            DownloadActivityFilter::All,
+        )
         .await
         .expect("title-scoped queue should load");
 
@@ -6934,6 +7121,7 @@ fn queue_history_fixture_item(
     DownloadQueueItem {
         id: download_client_item_id.to_string(),
         title_id: Some("title-1".to_string()),
+        episode_id: None,
         title_name: format!("Fixture {download_client_item_id}"),
         facet: Some("movie".to_string()),
         client_id: "primary".to_string(),
@@ -7350,6 +7538,7 @@ async fn download_queue_subscription_bootstraps_from_live_queue_without_history_
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "queue-1".to_string(),
         title_id: None,
+        episode_id: None,
         title_name: "Foreign Queue Item".to_string(),
         facet: Some("movie".to_string()),
         client_id: "primary".to_string(),
@@ -7427,7 +7616,7 @@ async fn queued_delete_poller_executes_client_delete() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
     let command_id = download_queue_commands
-        .seed_pending("nzbget", "job-1", true)
+        .seed_pending(None, "nzbget", "job-1", true)
         .await;
     let (app, _) =
         bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
@@ -7472,7 +7661,7 @@ async fn queued_delete_poller_marks_failure_and_persists_error() {
         .await;
     let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
     let command_id = download_queue_commands
-        .seed_pending("nzbget", "job-2", false)
+        .seed_pending(None, "nzbget", "job-2", false)
         .await;
     let (app, _) =
         bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
@@ -7672,6 +7861,7 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
     DownloadQueueItem {
         id: download_client_item_id.to_string(),
         title_id: None,
+        episode_id: None,
         title_name: title_name.to_string(),
         facet: Some("movie".to_string()),
         client_id: "primary".to_string(),
@@ -7794,6 +7984,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
@@ -7956,6 +8147,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
@@ -8117,6 +8309,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "shared-job".to_string(),
             source_hint: None,
@@ -8302,6 +8495,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "episode-one-active".to_string(),
             source_hint: None,
@@ -8318,6 +8512,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "episode-one-active".to_string(),
         title_id: Some(title.id.clone()),
+        episode_id: Some(episode_one.id.clone()),
         title_name: title.name.clone(),
         facet: Some("anime".to_string()),
         client_id: "primary".to_string(),
@@ -8348,9 +8543,12 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
     app.run_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
-    assert_eq!(searches.len(), 1);
-    assert_eq!(searches[0].season, Some(2));
-    assert_eq!(searches[0].episode, Some(1));
+    assert!(!searches.is_empty());
+    assert!(
+        searches
+            .iter()
+            .all(|search| search.season == Some(2) && search.episode == Some(1))
+    );
 }
 
 #[tokio::test]
@@ -8493,6 +8691,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "season-one-pack".to_string(),
             source_hint: None,
@@ -8509,6 +8708,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "season-one-pack".to_string(),
         title_id: Some(title.id.clone()),
+        episode_id: None,
         title_name: title.name.clone(),
         facet: Some("anime".to_string()),
         client_id: "primary".to_string(),
@@ -8539,9 +8739,12 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
     app.run_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
-    assert_eq!(searches.len(), 1);
-    assert_eq!(searches[0].season, Some(2));
-    assert_eq!(searches[0].episode, Some(1));
+    assert!(!searches.is_empty());
+    assert!(
+        searches
+            .iter()
+            .all(|search| search.season == Some(2) && search.episode == Some(1))
+    );
 }
 
 #[tokio::test]
@@ -8604,6 +8807,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "movie-active".to_string(),
             source_hint: None,
@@ -8618,6 +8822,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
     *download_client.queue_items.lock().await = vec![DownloadQueueItem {
         id: "movie-active".to_string(),
         title_id: Some(title.id.clone()),
+        episode_id: None,
         title_name: title.name.clone(),
         facet: Some("movie".to_string()),
         client_id: "primary".to_string(),
@@ -8839,10 +9044,14 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
     .await;
 
     let searches = indexer_client.searches.lock().await.clone();
-    assert_eq!(searches.len(), 1);
-    assert!(searches[0].query.contains(&title.name));
-    assert_eq!(searches[0].season, Some(1));
-    assert_eq!(searches[0].episode, Some(1));
+    assert!(!searches.is_empty());
+    assert!(
+        searches
+            .iter()
+            .all(|search| search.query.contains(&title.name)
+                && search.season == Some(1)
+                && search.episode == Some(1))
+    );
 }
 
 #[tokio::test]
@@ -9061,6 +9270,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
             facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
@@ -9986,13 +10196,18 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
     ];
     let anime_mappings = vec![AnimeMapping {
         mal_id: Some(40456),
+        mal_dub_id: None,
         anilist_id: None,
         anidb_id: None,
         kitsu_id: None,
+        simkl_id: None,
         thetvdb_id: Some(348545),
         themoviedb_id: Some(438759),
+        imdb_id: None,
+        trakt_id: None,
         alt_tvdb_id: Some(131_963),
         thetvdb_season: Some(0),
+        thetvdb_part: None,
         score: None,
         anime_media_type: "TV".into(),
         global_media_type: "series".into(),
@@ -10292,13 +10507,18 @@ async fn anime_mapping_without_movie_link_does_not_create_interstitial_collectio
     ];
     let anime_mappings = vec![AnimeMapping {
         mal_id: Some(40421),
+        mal_dub_id: None,
         anilist_id: None,
         anidb_id: None,
         kitsu_id: None,
+        simkl_id: None,
         thetvdb_id: Some(361218),
         themoviedb_id: None,
+        imdb_id: None,
+        trakt_id: None,
         alt_tvdb_id: None,
         thetvdb_season: Some(0),
+        thetvdb_part: None,
         score: None,
         anime_media_type: "TV".into(),
         global_media_type: "series".into(),
@@ -10323,6 +10543,140 @@ async fn anime_mapping_without_movie_link_does_not_create_interstitial_collectio
             .iter()
             .all(|collection| collection.collection_type != CollectionType::Interstitial),
         "unexpected interstitial collection created"
+    );
+}
+
+#[tokio::test]
+async fn anime_hydration_persists_scoped_anibridge_ids_for_episode_and_full_season() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "The Apothecary Diaries".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                external_ids: vec![ExternalId {
+                    source: "tvdb_id".into(),
+                    value: "431162".into(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let seasons = vec![SeasonMetadata {
+        tvdb_id: 4_311_622,
+        number: 2,
+        label: "Season 2".into(),
+        episode_type: "official".into(),
+    }];
+    let episodes = (1..=24)
+        .map(|episode_number| EpisodeMetadata {
+            tvdb_id: 431_162_200 + i64::from(episode_number),
+            episode_number,
+            name: format!("Episode {episode_number}"),
+            aired: "2025-01-10".into(),
+            runtime_minutes: 24,
+            is_filler: false,
+            is_recap: false,
+            overview: String::new(),
+            absolute_number: episode_number.to_string(),
+            season_number: 2,
+        })
+        .collect::<Vec<_>>();
+    let anime_mappings = vec![AnimeMapping {
+        mal_id: Some(58514),
+        mal_dub_id: Some(999_58514),
+        anilist_id: Some(176301),
+        anidb_id: Some(18562),
+        kitsu_id: Some(48924),
+        simkl_id: Some(231_001),
+        thetvdb_id: Some(431162),
+        themoviedb_id: Some(156_067),
+        imdb_id: Some(2_024_544),
+        trakt_id: Some(314_159),
+        alt_tvdb_id: None,
+        thetvdb_season: Some(2),
+        thetvdb_part: Some(1),
+        score: Some(1.0),
+        anime_media_type: "TV".into(),
+        global_media_type: "series".into(),
+        status: "current".into(),
+        mapping_type: "R".into(),
+        episode_mappings: vec![AnimeEpisodeMapping {
+            tvdb_season: 2,
+            episode_start: 1,
+            episode_end: 24,
+        }],
+    }];
+
+    app.create_series_seasons_and_episodes(&title, &seasons, &episodes, &anime_mappings, &[])
+        .await;
+
+    let collections = app
+        .services
+        .catalog
+        .shows
+        .list_collections_for_title(&title.id)
+        .await
+        .expect("list collections");
+    let season_two = collections
+        .iter()
+        .find(|collection| collection.collection_index == "2")
+        .expect("season two collection");
+    let collection_ids = app
+        .services
+        .catalog
+        .shows
+        .list_collection_external_ids(&season_two.id)
+        .await
+        .expect("list collection external ids");
+    assert!(
+        collection_ids.iter().any(|id| {
+            id.source == "anilist"
+                && id.external_id == "176301"
+                && id.source_scope.as_deref() == Some("R")
+        }),
+        "expected full-season scoped AniList ID"
+    );
+    assert!(
+        collection_ids
+            .iter()
+            .any(|id| id.source == "simkl" && id.external_id == "231001"),
+        "expected all available AniBridge ID sources to be persisted"
+    );
+
+    let episodes = app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await
+        .expect("list episodes");
+    let episode_23 = episodes
+        .iter()
+        .find(|episode| {
+            episode.season_number.as_deref() == Some("2")
+                && episode.episode_number.as_deref() == Some("23")
+        })
+        .expect("season two episode 23");
+    let episode_ids = app
+        .services
+        .catalog
+        .shows
+        .list_episode_external_ids(&episode_23.id)
+        .await
+        .expect("list episode external ids");
+    assert!(
+        episode_ids.iter().any(|id| {
+            id.source == "anilist"
+                && id.external_id == "176301"
+                && id.source_scope.as_deref() == Some("R")
+        }),
+        "expected episode-scoped AniList ID"
     );
 }
 
@@ -10543,13 +10897,18 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
     ];
     let anime_mappings = vec![AnimeMapping {
         mal_id: Some(36665),
+        mal_dub_id: None,
         anilist_id: None,
         anidb_id: None,
         kitsu_id: None,
+        simkl_id: None,
         thetvdb_id: Some(305074),
         themoviedb_id: Some(505262),
+        imdb_id: None,
+        trakt_id: None,
         alt_tvdb_id: Some(149921),
         thetvdb_season: Some(0),
+        thetvdb_part: None,
         score: None,
         anime_media_type: "TV".into(),
         global_media_type: "series".into(),
@@ -11339,6 +11698,43 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
     assert_eq!(decoded.source_hint, selection.source_hint);
     assert_eq!(decoded.source_kind, selection.source_kind);
     assert_eq!(decoded.source_title, selection.source_title);
+}
+
+#[tokio::test]
+async fn release_candidate_token_round_trips_episode_set_scope() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_episode_set_user",
+        "password123",
+        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/range-pack.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
+    };
+    let scope = SubmissionScope::EpisodeSet {
+        episode_ids: vec![
+            "episode-1".to_string(),
+            "episode-2".to_string(),
+            "episode-3".to_string(),
+        ],
+    };
+
+    let token = app
+        .issue_release_candidate_token(&authenticated_user, "title-1", &scope, &selection)
+        .await
+        .expect("candidate token should issue");
+    let (decoded, signed_scope) = app
+        .verify_release_candidate_token_for_signed_scope(&authenticated_user, "title-1", &token)
+        .await
+        .expect("candidate token should verify");
+
+    assert_eq!(decoded.source_hint, selection.source_hint);
+    assert_eq!(signed_scope, scope);
 }
 
 #[tokio::test]

@@ -18,3 +18,4 @@ export * from "./notifications";
 export * from "./title-history";
 export * from "./jobs";
 export * from "./pending-imports";
+export * from "./subtitle-providers";

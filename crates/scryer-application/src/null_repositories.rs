@@ -133,6 +133,7 @@ pub struct NullDownloadQueueCommandRepository;
 impl DownloadQueueCommandRepository for NullDownloadQueueCommandRepository {
     async fn queue_delete_command(
         &self,
+        _: Option<&str>,
         _: &str,
         _: &str,
         _: bool,
@@ -165,7 +166,7 @@ impl DownloadQueueCommandRepository for NullDownloadQueueCommandRepository {
 
     async fn list_latest_delete_commands_for_sources(
         &self,
-        _: &[(String, String, bool)],
+        _: &[(Option<String>, String, String, bool)],
     ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
         Ok(vec![])
     }
@@ -213,6 +214,16 @@ impl MediaFileRepository for NullMediaFileRepository {
     }
 
     async fn list_media_files_for_title(&self, _title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
+        Err(AppError::Repository(
+            "media file repository is not configured".to_string(),
+        ))
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        _title_id: &str,
+        _episode_ids: &[String],
+    ) -> AppResult<Vec<crate::EpisodeScopedMediaFile>> {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),
         ))
@@ -601,6 +612,7 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
         _name: &str,
         _description: &str,
         _version: &str,
+        _plugin_type: &str,
         _provider_type: &str,
     ) -> AppResult<()> {
         Ok(())
@@ -828,6 +840,7 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     }
     async fn find_by_client_item_id(
         &self,
+        _: Option<&str>,
         _: &str,
         _: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
@@ -835,7 +848,7 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     }
     async fn list_for_client_items(
         &self,
-        _: &[(String, String)],
+        _: &[(Option<String>, String, String)],
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
     }
@@ -852,13 +865,29 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     async fn delete_for_title(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_by_client_item_id(&self, _: &str) -> AppResult<()> {
+    async fn delete_by_client_item_id(
+        &self,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
-    async fn update_tracked_state(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+    async fn update_tracked_state(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
-    async fn get_tracked_state(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+    async fn get_tracked_state(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<String>> {
         Ok(None)
     }
 }
@@ -1203,8 +1232,8 @@ pub mod test_nulls {
         DownloadGrabResult, EpisodeUpdate, IndexerClient, IndexerRoutingPlan,
         IndexerSearchResponse, PendingTitleHydration, PrimaryCollectionSummary, QualityProfile,
         QualityProfileRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
-        ReleaseDownloadFailureSignature, SearchMode, ShowRepository, TitleMetadataUpdate,
-        TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
+        ReleaseDownloadFailureSignature, ScopedExternalId, SearchMode, ShowRepository,
+        TitleMetadataUpdate, TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
     };
     use async_trait::async_trait;
     use scryer_domain::{
@@ -1258,6 +1287,12 @@ pub mod test_nulls {
             _: usize,
             _: &[MediaFacet],
         ) -> AppResult<Vec<PendingTitleHydration>> {
+            Ok(vec![])
+        }
+        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+            &self,
+            _: usize,
+        ) -> AppResult<Vec<String>> {
             Ok(vec![])
         }
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
@@ -1323,6 +1358,9 @@ pub mod test_nulls {
         async fn list_collections_for_title(&self, _: &str) -> AppResult<Vec<Collection>> {
             Ok(vec![])
         }
+        async fn list_collection_external_ids(&self, _: &str) -> AppResult<Vec<ScopedExternalId>> {
+            Ok(vec![])
+        }
         async fn list_collections_for_titles(
             &self,
             _: &[String],
@@ -1377,6 +1415,9 @@ pub mod test_nulls {
         async fn list_episodes_for_title(&self, _: &str) -> AppResult<Vec<Episode>> {
             Ok(vec![])
         }
+        async fn list_episode_external_ids(&self, _: &str) -> AppResult<Vec<ScopedExternalId>> {
+            Ok(vec![])
+        }
         async fn get_episode_by_id(&self, _: &str) -> AppResult<Option<Episode>> {
             Ok(None)
         }
@@ -1419,6 +1460,14 @@ pub mod test_nulls {
             _: &str,
         ) -> AppResult<Vec<CalendarEpisode>> {
             Ok(vec![])
+        }
+        async fn replace_anibridge_scoped_external_ids_for_title(
+            &self,
+            _: &str,
+            _: Vec<ScopedExternalId>,
+            _: Vec<ScopedExternalId>,
+        ) -> AppResult<()> {
+            Ok(())
         }
     }
 

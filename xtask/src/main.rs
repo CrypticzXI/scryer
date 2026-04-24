@@ -14,7 +14,10 @@ use tempfile::NamedTempFile;
 use toml::Value as TomlValue;
 use toml_edit::{DocumentMut, value};
 
+mod corpus;
 mod profile;
+mod release_parser_compare;
+mod release_parser_v2;
 mod seed;
 
 const BLUE: &str = "\x1b[0;34m";
@@ -45,6 +48,7 @@ enum Commands {
     Nzbget(NzbgetArgs),
     Seed(SeedArgs),
     Profile(ProfileArgs),
+    Corpus(CorpusArgs),
 }
 
 #[derive(Args)]
@@ -166,6 +170,60 @@ struct ProfileHotpathsArgs {
     interval_seconds: Option<String>,
 }
 
+#[derive(Args)]
+struct CorpusArgs {
+    #[command(subcommand)]
+    command: CorpusCommand,
+}
+
+#[derive(Subcommand)]
+enum CorpusCommand {
+    ReleaseParser(ReleaseParserCorpusArgs),
+    ReleaseParserV2Eval(ReleaseParserV2EvalArgs),
+    ReleaseParserV1Eval(ReleaseParserEvalArgs),
+    GuessitEval(ReleaseParserEvalArgs),
+    SonarrEval(ReleaseParserEvalArgs),
+    RadarrEval(ReleaseParserEvalArgs),
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct ReleaseParserCorpusArgs {
+    #[arg(long, default_value_t = 1000)]
+    total: usize,
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 8)]
+    nzbgeek_movie_pages: usize,
+    #[arg(long, default_value_t = 8)]
+    nzbgeek_series_pages: usize,
+    #[arg(long, default_value_t = 6)]
+    nzbgeek_anime_pages: usize,
+    #[arg(long, default_value_t = 12)]
+    animetosho_pages: usize,
+    #[arg(long, default_value_t = 4)]
+    max_per_title: usize,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct ReleaseParserV2EvalArgs {
+    #[arg(long)]
+    input: Option<PathBuf>,
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 50)]
+    max_mismatches: usize,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct ReleaseParserEvalArgs {
+    #[arg(long)]
+    input: Option<PathBuf>,
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 50)]
+    max_mismatches: usize,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
 enum VersionBump {
     Patch,
@@ -181,9 +239,18 @@ struct TaskContext {
 
 impl TaskContext {
     fn new() -> Self {
+        let rtk_available = match validated_release_rtk_available() {
+            Ok(available) => available,
+            Err(err) => {
+                eprintln!(
+                    "{YELLOW}warning:{RESET} {err}. Falling back to direct command execution."
+                );
+                false
+            }
+        };
         Self {
             repo_root: repo_root(),
-            rtk_available: command_available("rtk").unwrap_or(false),
+            rtk_available,
         }
     }
 
@@ -258,6 +325,18 @@ fn main() -> Result<()> {
         Commands::Profile(args) => match args.command {
             ProfileCommand::Hotpaths(args) => profile_hotpaths(&ctx, args),
         },
+        Commands::Corpus(args) => match args.command {
+            CorpusCommand::ReleaseParser(args) => corpus::run_release_parser(&ctx, args),
+            CorpusCommand::ReleaseParserV2Eval(args) => release_parser_v2::run_eval(&ctx, args),
+            CorpusCommand::ReleaseParserV1Eval(args) => {
+                release_parser_compare::run_v1_eval(&ctx, args)
+            }
+            CorpusCommand::GuessitEval(args) => {
+                release_parser_compare::run_guessit_eval(&ctx, args)
+            }
+            CorpusCommand::SonarrEval(args) => release_parser_compare::run_sonarr_eval(&ctx, args),
+            CorpusCommand::RadarrEval(args) => release_parser_compare::run_radarr_eval(&ctx, args),
+        },
     }
 }
 
@@ -299,6 +378,28 @@ fn command_available(command: &str) -> Result<bool> {
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()?;
     Ok(status.success())
+}
+
+fn validated_release_rtk_available() -> Result<bool> {
+    if !command_available("rtk")? {
+        return Ok(false);
+    }
+
+    let mut help_command = Command::new("rtk");
+    help_command.arg("--help");
+    let help = run_capture(&mut help_command).context("failed to inspect `rtk --help`")?;
+
+    let looks_like_rust_token_killer = help.contains("filter and summarize system outputs")
+        && help.contains("gain")
+        && help.contains("proxy");
+
+    if looks_like_rust_token_killer {
+        Ok(true)
+    } else {
+        Err(anyhow!(
+            "`rtk` was found on PATH, but it does not appear to be Rust Token Killer"
+        ))
+    }
 }
 
 fn run_status(command: &mut Command) -> Result<ExitStatus> {
@@ -1159,8 +1260,6 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "tmp/scryer-media/series",
         "tmp/nzbget/config",
         "tmp/nzbget-downloads",
-        "tmp/sabnzbd/config",
-        "tmp/sabnzbd-downloads",
         "tmp/weaver/data",
         "tmp/weaver-downloads",
     ] {
@@ -1170,10 +1269,7 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
     );
-    let infra_services = env_list(
-        "SCRYER_DOCKER_INFRA_SERVICES",
-        &["nzbget", "sabnzbd", "weaver"],
-    );
+    let infra_services = env_list("SCRYER_DOCKER_INFRA_SERVICES", &["nzbget", "weaver"]);
     let force_infra_restart = std::env::var("SCRYER_DOCKER_FORCE_INFRA_RESTART")
         .map(|value| value == "1")
         .unwrap_or(false);

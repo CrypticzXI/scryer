@@ -1387,7 +1387,8 @@ const fr: LocaleDictionary = {
   "subtitle.download": "Téléchargement",
   "subtitle.downloading": "Téléchargement...",
   "subtitle.noResults": "Aucun sous-titre trouvé",
-  "subtitle.score": "Note : {{score}}",
+  "subtitle.score": "Note",
+  "subtitle.scoreWithValue": "Note : {{score}}",
   "subtitle.hashMatch": "Correspondance de hachage",
   "subtitle.hearingImpaired": "Malentendants",
   "subtitle.forced": "Forcé",
@@ -1512,6 +1513,8 @@ const fr: LocaleDictionary = {
   "status.indexerUpdated": "Indexeur mis à jour.",
   "status.searchMonitoredQueued":
     "{{count}} élément(s) surveillé(s) mis en file d'attente pour la recherche en arrière-plan.",
+  "status.mismatchRecoveryQueued":
+    "{{count}} élément(s) de récupération des incohérences ont été mis en file d’attente.",
   "status.searchMonitoredEmpty":
     "Aucun élément surveillé n'est actuellement éligible pour la recherche.",
   "status.titleScanSuccess":

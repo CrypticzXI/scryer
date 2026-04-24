@@ -13,10 +13,7 @@ use crate::domain_events::{
 use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
-use scryer_domain::{
-    DomainEventPayload, MediaFileDeletedEventData, MediaFileDeletedReason,
-    MediaFileUpgradedEventData, Title, User,
-};
+use scryer_domain::{DomainEventPayload, MediaFileUpgradedEventData, Title, User};
 
 /// Result of a successful upgrade operation.
 #[derive(Debug)]
@@ -106,7 +103,11 @@ pub(crate) async fn execute_upgrade(
         .delete_media_file(&old_file_id)
         .await
     {
-        tracing::warn!(error = %err, file_id = %old_file_id, "failed to delete old media file record during upgrade");
+        remove_imported_replacement(dest_path).await;
+        restore_old_file(&recycle_result, &old_path).await;
+        return Err(AppError::Repository(format!(
+            "failed to delete old media file record during upgrade: {err}"
+        )));
     }
 
     // 6. Insert new record with rich schema
@@ -185,21 +186,6 @@ pub(crate) async fn execute_upgrade(
             }),
         ))
         .await?;
-
-        if existing_file.file_path != dest_path.to_string_lossy() {
-            app.append_domain_event(new_title_domain_event(
-                None,
-                title,
-                DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
-                    title: title_context_snapshot(title),
-                    media_updates: vec![deleted_media_update(existing_file.file_path.clone())],
-                    file_id: Some(existing_file.id.clone()),
-                    reason: MediaFileDeletedReason::UpgradeCleanup,
-                    episode_ids: target_episode_ids.to_vec(),
-                }),
-            ))
-            .await?;
-        }
     }
 
     Ok(UpgradeResult::Upgraded(UpgradeOutcome {
@@ -207,6 +193,18 @@ pub(crate) async fn execute_upgrade(
         new_score: final_score,
         new_file_id,
     }))
+}
+
+async fn remove_imported_replacement(dest_path: &std::path::Path) {
+    if let Err(remove_err) = tokio::fs::remove_file(dest_path).await
+        && remove_err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::error!(
+            error = %remove_err,
+            path = %dest_path.display(),
+            "failed to remove imported replacement after upgrade database failure"
+        );
+    }
 }
 
 async fn restore_old_file(

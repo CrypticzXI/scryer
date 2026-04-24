@@ -12,7 +12,7 @@ struct MockPluginInstallationRepo {
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
 }
 
-type SeededPluginRecord = (String, String, String, String, String);
+type SeededPluginRecord = (String, String, String, String, String, String);
 
 impl MockPluginInstallationRepo {
     fn new() -> Self {
@@ -86,6 +86,7 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         name: &str,
         description: &str,
         version: &str,
+        plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
         self.seeded.lock().await.push((
@@ -93,6 +94,7 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
             name.to_string(),
             description.to_string(),
             version.to_string(),
+            plugin_type.to_string(),
             provider_type.to_string(),
         ));
         Ok(())
@@ -1052,12 +1054,17 @@ async fn seed_calls_for_nzbgeek_and_newznab() {
     h.app.seed_builtin_plugins().await.unwrap();
 
     let seeded = h.plugin_repo.seeded.lock().await;
-    assert_eq!(seeded.len(), 3);
+    assert_eq!(seeded.len(), 5);
 
-    let ids: Vec<&str> = seeded.iter().map(|(id, _, _, _, _)| id.as_str()).collect();
+    let ids: Vec<&str> = seeded
+        .iter()
+        .map(|(id, _, _, _, _, _)| id.as_str())
+        .collect();
     assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"dognzb"));
     assert!(ids.contains(&"newznab"));
+    assert!(ids.contains(&"opensubtitles"));
+    assert!(ids.contains(&"jimaku"));
 }
 
 // ── reconcile_indexer_configs ────────────────────────────────────────────────

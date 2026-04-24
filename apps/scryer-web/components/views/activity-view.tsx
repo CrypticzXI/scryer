@@ -21,7 +21,15 @@ import {
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Fragment, type UIEvent, useCallback, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type UIEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { DownloadClientTypeLogo } from "@/components/common/download-client-type-logo";
 import { Button } from "@/components/ui/button";
@@ -51,7 +59,11 @@ import type {
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import { buildQueueStatusDetail, normalizeQueueState } from "@/lib/utils/download-queue";
+import {
+  buildQueueStatusDetail,
+  downloadQueueItemIdentityKey,
+  normalizeQueueState,
+} from "@/lib/utils/download-queue";
 
 type TranslateFn = ReturnType<typeof useTranslate>;
 
@@ -65,9 +77,11 @@ type ActivityViewState = {
   requestManualImport: (item: DownloadQueueItem) => Promise<void>;
   requestAssignTitle: (item: DownloadQueueItem) => Promise<void>;
   requestIgnore: (item: DownloadQueueItem) => Promise<void>;
+  requestIgnoreItems: (items: DownloadQueueItem[]) => Promise<void>;
   requestPause: (item: DownloadQueueItem) => Promise<void>;
   requestResume: (item: DownloadQueueItem) => Promise<void>;
   requestDelete: (item: DownloadQueueItem) => Promise<void>;
+  requestDeleteItems: (items: DownloadQueueItem[]) => Promise<void>;
   activeTab: ActivityTab;
   setActiveTab: (tab: ActivityTab) => void;
   importNotificationCount: number;
@@ -363,6 +377,21 @@ function deriveQueueRowPresentation(
     canInteractiveManualImport,
     canDirectManualImport,
   };
+}
+
+function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
+  const trackedStateKey = normalizeQueueState(queueItem.trackedState);
+  const displayStateKey = normalizeQueueState(queueItem.displayState);
+  return (
+    trackedStateKey === "import_blocked" &&
+    displayStateKey !== "importing" &&
+    displayStateKey !== "removing"
+  );
+}
+
+function canDeleteImportItem(queueItem: DownloadQueueItem): boolean {
+  const displayStateKey = normalizeQueueState(queueItem.displayState);
+  return displayStateKey !== "importing" && displayStateKey !== "removing";
 }
 
 function ActivityQueueStatusBadge({
@@ -675,9 +704,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     requestManualImport,
     requestAssignTitle,
     requestIgnore,
+    requestIgnoreItems,
     requestPause,
     requestResume,
     requestDelete,
+    requestDeleteItems,
     activeTab,
     setActiveTab,
     importNotificationCount,
@@ -710,9 +741,14 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   } = state;
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<DownloadQueueItem | null>(null);
+  const [bulkDeleteConfirmItems, setBulkDeleteConfirmItems] = useState<DownloadQueueItem[]>([]);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
+  const [bulkActionInProgress, setBulkActionInProgress] = useState<"ignore" | "delete" | null>(
+    null,
+  );
   const [rowActionBusy, setRowActionBusy] = useState<Record<string, true>>({});
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, true>>({});
+  const [selectedImportItemKeys, setSelectedImportItemKeys] = useState<Record<string, true>>({});
   const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
   const rowActionBusyRef = useRef<Record<string, true>>({});
   const scrollHeightClass = isMobile ? "max-h-[70vh]" : "max-h-[1700px]";
@@ -740,16 +776,70 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
   const handleDelete = useCallback(async () => {
     if (!deleteConfirmItem) return;
-    setRowBusy(deleteConfirmItem.id, true);
+    const rowId = downloadQueueItemIdentityKey(deleteConfirmItem);
+    setRowBusy(rowId, true);
     setDeleteInProgress(true);
     try {
       await requestDelete(deleteConfirmItem);
     } finally {
       setDeleteInProgress(false);
-      setRowBusy(deleteConfirmItem.id, false);
+      setRowBusy(rowId, false);
       setDeleteConfirmItem(null);
     }
   }, [deleteConfirmItem, requestDelete, setRowBusy]);
+
+  const clearSelectedImportItems = useCallback((items: DownloadQueueItem[]) => {
+    const keys = new Set(items.map(downloadQueueItemIdentityKey));
+    setSelectedImportItemKeys((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([key]) => !keys.has(key)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, []);
+
+  const handleBulkIgnore = useCallback(async (items: DownloadQueueItem[]) => {
+    if (items.length === 0) {
+      return;
+    }
+
+    const rowIds = items.map(downloadQueueItemIdentityKey);
+    rowIds.forEach((rowId) => setRowBusy(rowId, true));
+    setBulkActionInProgress("ignore");
+    try {
+      await requestIgnoreItems(items);
+      clearSelectedImportItems(items);
+    } finally {
+      rowIds.forEach((rowId) => setRowBusy(rowId, false));
+      setBulkActionInProgress(null);
+    }
+  }, [clearSelectedImportItems, requestIgnoreItems, setRowBusy]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (bulkDeleteConfirmItems.length === 0) {
+      return;
+    }
+
+    const items = bulkDeleteConfirmItems;
+    const rowIds = items.map(downloadQueueItemIdentityKey);
+    rowIds.forEach((rowId) => setRowBusy(rowId, true));
+    setBulkActionInProgress("delete");
+    setDeleteInProgress(true);
+    try {
+      await requestDeleteItems(items);
+      clearSelectedImportItems(items);
+      setBulkDeleteConfirmItems([]);
+    } finally {
+      setDeleteInProgress(false);
+      setBulkActionInProgress(null);
+      rowIds.forEach((rowId) => setRowBusy(rowId, false));
+    }
+  }, [
+    bulkDeleteConfirmItems,
+    clearSelectedImportItems,
+    requestDeleteItems,
+    setRowBusy,
+  ]);
 
   const toggleExpandedDetails = useCallback((rowId: string) => {
     setExpandedItemIds((current) => {
@@ -898,6 +988,104 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     return items;
   }, [activeSortConfig.direction, activeSortConfig.key, activeTab, queueItems, t]);
 
+  const visibleImportItems = useMemo(
+    () => (activeTab === "import" ? sortedQueueItems : []),
+    [activeTab, sortedQueueItems],
+  );
+  const selectedImportItems = useMemo(
+    () =>
+      visibleImportItems.filter((item) => selectedImportItemKeys[downloadQueueItemIdentityKey(item)]),
+    [selectedImportItemKeys, visibleImportItems],
+  );
+  const selectedImportCount = selectedImportItems.length;
+  const visibleImportKeys = useMemo(
+    () => visibleImportItems.map(downloadQueueItemIdentityKey),
+    [visibleImportItems],
+  );
+  const allVisibleImportItemsSelected =
+    visibleImportKeys.length > 0 &&
+    visibleImportKeys.every((key) => selectedImportItemKeys[key]);
+  const someVisibleImportItemsSelected =
+    !allVisibleImportItemsSelected &&
+    visibleImportKeys.some((key) => selectedImportItemKeys[key]);
+  const selectedIgnoreItems = useMemo(
+    () =>
+      selectedImportItems.filter((item) => {
+        const rowId = downloadQueueItemIdentityKey(item);
+        return (
+          canIgnoreImportItem(item) &&
+          !rowActionBusy[rowId] &&
+          !rowActionBusyRef.current[rowId] &&
+          actionLoadingId !== rowId
+        );
+      }),
+    [actionLoadingId, rowActionBusy, selectedImportItems],
+  );
+  const selectedDeleteItems = useMemo(
+    () =>
+      selectedImportItems.filter((item) => {
+        const rowId = downloadQueueItemIdentityKey(item);
+        return (
+          canDeleteImportItem(item) &&
+          !rowActionBusy[rowId] &&
+          !rowActionBusyRef.current[rowId] &&
+          actionLoadingId !== rowId
+        );
+      }),
+    [actionLoadingId, rowActionBusy, selectedImportItems],
+  );
+
+  useEffect(() => {
+    if (activeTab !== "import") {
+      setSelectedImportItemKeys({});
+      return;
+    }
+
+    const visibleKeys = new Set(visibleImportKeys);
+    setSelectedImportItemKeys((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([key]) => visibleKeys.has(key)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [activeTab, visibleImportKeys]);
+
+  const toggleImportItemSelected = useCallback((item: DownloadQueueItem) => {
+    const rowId = downloadQueueItemIdentityKey(item);
+    setSelectedImportItemKeys((current) => {
+      if (current[rowId]) {
+        const { [rowId]: _removed, ...next } = current;
+        return next;
+      }
+      return {
+        ...current,
+        [rowId]: true,
+      };
+    });
+  }, []);
+
+  const toggleAllVisibleImportItemsSelected = useCallback(() => {
+    setSelectedImportItemKeys((current) => {
+      if (visibleImportKeys.length === 0) {
+        return current;
+      }
+
+      const allSelected = visibleImportKeys.every((key) => current[key]);
+      if (allSelected) {
+        const visibleKeySet = new Set(visibleImportKeys);
+        return Object.fromEntries(
+          Object.entries(current).filter(([key]) => !visibleKeySet.has(key)),
+        );
+      }
+
+      const next = { ...current };
+      for (const key of visibleImportKeys) {
+        next[key] = true;
+      }
+      return next;
+    });
+  }, [visibleImportKeys]);
+
   const renderFilterPopoverContent = useCallback(() => {
     if (activeTab === "import") {
       return (
@@ -991,33 +1179,46 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   ) => (
     <div className="space-y-3">
       {items.map((queueItem) => {
+        const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
-        const isActionLoading = actionLoadingId === queueItem.id;
+        const isActionLoading = actionLoadingId === rowId;
         const isRowBusy =
-          rowActionBusy[queueItem.id] ?? rowActionBusyRef.current[queueItem.id] ?? false;
+          rowActionBusy[rowId] ?? rowActionBusyRef.current[rowId] ?? false;
         const isManualImportPending = row.displayStateKey === "importing";
         const isDeletePending = row.displayStateKey === "removing";
         const isRowBlocked =
           isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
-        const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
+        const isDeleteConfirming =
+          deleteConfirmItem !== null && downloadQueueItemIdentityKey(deleteConfirmItem) === rowId;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
-        const isExpanded = Boolean(expandedItemIds[queueItem.id]);
-        const detailId = `activity-queue-details-${queueItem.id}`;
+        const isExpanded = Boolean(expandedItemIds[rowId]);
+        const detailId = `activity-queue-details-${rowId}`;
         const rowActionVisualClass = isRowFullyBusy
           ? "pointer-events-none opacity-45 grayscale"
           : "";
+        const isImportSelected = Boolean(selectedImportItemKeys[rowId]);
 
         return (
-          <div key={queueItem.id} className="rounded-xl border border-border bg-card/40 p-3">
+          <div key={rowId} className="rounded-xl border border-border bg-card/40 p-3">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <ActivityQueueTitleContent
-                  displayTitle={row.displayTitle}
-                  releaseTitle={row.releaseTitle}
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
-                </p>
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                {activeTab === "import" ? (
+                  <Checkbox
+                    checked={isImportSelected}
+                    aria-label={t("activity.selectImportItem")}
+                    className="mt-0.5"
+                    onCheckedChange={() => toggleImportItemSelected(queueItem)}
+                  />
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <ActivityQueueTitleContent
+                    displayTitle={row.displayTitle}
+                    releaseTitle={row.releaseTitle}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
+                  </p>
+                </div>
               </div>
               <div className="shrink-0">
                 <ActivityQueueStatusBadge
@@ -1029,7 +1230,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   expandLabel={t(
                     isExpanded ? "queue.hideDetails" : "queue.showDetails",
                   )}
-                  onToggle={() => toggleExpandedDetails(queueItem.id)}
+                  onToggle={() => toggleExpandedDetails(rowId)}
                 />
               </div>
             </div>
@@ -1070,17 +1271,17 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[queueItem.id] ||
+                      rowActionBusyRef.current[rowId] ||
                       isActionLoading ||
                       isRowBlocked
                     ) {
                       return;
                     }
-                    setActionLoadingId(queueItem.id);
-                    setRowBusy(queueItem.id, true);
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
                     void requestPause(queueItem).finally(() => {
-                      setRowBusy(queueItem.id, false);
-                      setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                      setRowBusy(rowId, false);
+                      setActionLoadingId((c) => (c === rowId ? null : c));
                     });
                   }}
                 >
@@ -1097,17 +1298,17 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[queueItem.id] ||
+                      rowActionBusyRef.current[rowId] ||
                       isActionLoading ||
                       isRowBlocked
                     ) {
                       return;
                     }
-                    setActionLoadingId(queueItem.id);
-                    setRowBusy(queueItem.id, true);
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
                     void requestResume(queueItem).finally(() => {
-                      setRowBusy(queueItem.id, false);
-                      setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                      setRowBusy(rowId, false);
+                      setActionLoadingId((c) => (c === rowId ? null : c));
                     });
                   }}
                 >
@@ -1124,15 +1325,15 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[queueItem.id] ||
+                      rowActionBusyRef.current[rowId] ||
                       isActionLoading ||
                       isRowBlocked
                     ) {
                       return;
                     }
-                    setRowBusy(queueItem.id, true);
+                    setRowBusy(rowId, true);
                     void requestManualImport(queueItem).finally(() => {
-                      setRowBusy(queueItem.id, false);
+                      setRowBusy(rowId, false);
                     });
                   }}
                 >
@@ -1157,18 +1358,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[queueItem.id] ||
+                      rowActionBusyRef.current[rowId] ||
                       isActionLoading ||
                       isRowBlocked
                     ) {
                       return;
                     }
-                    setActionLoadingId(queueItem.id);
-                    setRowBusy(queueItem.id, true);
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
                     void requestAssignTitle(queueItem).finally(() => {
-                      setRowBusy(queueItem.id, false);
+                      setRowBusy(rowId, false);
                       setActionLoadingId((current) =>
-                        current === queueItem.id ? null : current,
+                        current === rowId ? null : current,
                       );
                     });
                   }}
@@ -1190,18 +1391,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[queueItem.id] ||
+                      rowActionBusyRef.current[rowId] ||
                       isActionLoading ||
                       isRowBlocked
                     ) {
                       return;
                     }
-                    setActionLoadingId(queueItem.id);
-                    setRowBusy(queueItem.id, true);
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
                     void requestIgnore(queueItem).finally(() => {
-                      setRowBusy(queueItem.id, false);
+                      setRowBusy(rowId, false);
                       setActionLoadingId((current) =>
-                        current === queueItem.id ? null : current,
+                        current === rowId ? null : current,
                       );
                     });
                   }}
@@ -1218,13 +1419,13 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 disabled={isRowFullyBusy}
                 onClick={() => {
                   if (
-                    rowActionBusyRef.current[queueItem.id] ||
+                    rowActionBusyRef.current[rowId] ||
                     isActionLoading ||
                     isRowBlocked
                   ) {
                     return;
                   }
-                  setRowBusy(queueItem.id, true);
+                  setRowBusy(rowId, true);
                   setDeleteConfirmItem(queueItem);
                 }}
               >
@@ -1250,27 +1451,38 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   ) => (
     <>
       {items.map((queueItem) => {
+        const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
-        const isActionLoading = actionLoadingId === queueItem.id;
+        const isActionLoading = actionLoadingId === rowId;
         const isRowBusy =
-          rowActionBusy[queueItem.id] ??
-          rowActionBusyRef.current[queueItem.id] ??
+          rowActionBusy[rowId] ??
+          rowActionBusyRef.current[rowId] ??
           false;
         const isManualImportPending = row.displayStateKey === "importing";
         const isDeletePending = row.displayStateKey === "removing";
         const isRowBlocked =
           isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
-        const isDeleteConfirming = deleteConfirmItem?.id === queueItem.id;
+        const isDeleteConfirming =
+          deleteConfirmItem !== null && downloadQueueItemIdentityKey(deleteConfirmItem) === rowId;
         const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
         const rowActionVisualClass = isRowFullyBusy
           ? "pointer-events-none opacity-45 grayscale"
           : "";
-        const isExpanded = Boolean(expandedItemIds[queueItem.id]);
-        const detailId = `activity-queue-details-${queueItem.id}`;
+        const isExpanded = Boolean(expandedItemIds[rowId]);
+        const detailId = `activity-queue-details-${rowId}`;
 
         return (
-          <Fragment key={queueItem.id}>
+          <Fragment key={rowId}>
             <TableRow>
+              {activeTab === "import" ? (
+                <TableCell className="w-12 min-w-12 align-middle">
+                  <Checkbox
+                    checked={Boolean(selectedImportItemKeys[rowId])}
+                    aria-label={t("activity.selectImportItem")}
+                    onCheckedChange={() => toggleImportItemSelected(queueItem)}
+                  />
+                </TableCell>
+              ) : null}
               <TableCell className="min-w-0">
                 <ActivityQueueTitleContent
                   displayTitle={row.displayTitle}
@@ -1293,7 +1505,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   expandLabel={t(
                     isExpanded ? "queue.hideDetails" : "queue.showDetails",
                   )}
-                  onToggle={() => toggleExpandedDetails(queueItem.id)}
+                  onToggle={() => toggleExpandedDetails(rowId)}
                 />
                 {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
                   !row.hasStatusDetails && (
@@ -1330,17 +1542,17 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.pause")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[queueItem.id] ||
+                          rowActionBusyRef.current[rowId] ||
                           isActionLoading ||
                           isRowBlocked
                         ) {
                           return;
                         }
-                        setActionLoadingId(queueItem.id);
-                        setRowBusy(queueItem.id, true);
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
                         void requestPause(queueItem).finally(() => {
-                          setRowBusy(queueItem.id, false);
-                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                          setRowBusy(rowId, false);
+                          setActionLoadingId((c) => (c === rowId ? null : c));
                         });
                       }}
                     >
@@ -1358,17 +1570,17 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.resume")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[queueItem.id] ||
+                          rowActionBusyRef.current[rowId] ||
                           isActionLoading ||
                           isRowBlocked
                         ) {
                           return;
                         }
-                        setActionLoadingId(queueItem.id);
-                        setRowBusy(queueItem.id, true);
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
                         void requestResume(queueItem).finally(() => {
-                          setRowBusy(queueItem.id, false);
-                          setActionLoadingId((c) => (c === queueItem.id ? null : c));
+                          setRowBusy(rowId, false);
+                          setActionLoadingId((c) => (c === rowId ? null : c));
                         });
                       }}
                     >
@@ -1394,15 +1606,15 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       }
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[queueItem.id] ||
+                          rowActionBusyRef.current[rowId] ||
                           isActionLoading ||
                           isRowBlocked
                         ) {
                           return;
                         }
-                        setRowBusy(queueItem.id, true);
+                        setRowBusy(rowId, true);
                         void requestManualImport(queueItem).finally(() => {
-                          setRowBusy(queueItem.id, false);
+                          setRowBusy(rowId, false);
                         });
                       }}
                     >
@@ -1432,18 +1644,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       }
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[queueItem.id] ||
+                          rowActionBusyRef.current[rowId] ||
                           isActionLoading ||
                           isRowBlocked
                         ) {
                           return;
                         }
-                        setActionLoadingId(queueItem.id);
-                        setRowBusy(queueItem.id, true);
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
                         void requestAssignTitle(queueItem).finally(() => {
-                          setRowBusy(queueItem.id, false);
+                          setRowBusy(rowId, false);
                           setActionLoadingId((current) =>
-                            current === queueItem.id ? null : current,
+                            current === rowId ? null : current,
                           );
                         });
                       }}
@@ -1462,18 +1674,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.ignore")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[queueItem.id] ||
+                          rowActionBusyRef.current[rowId] ||
                           isActionLoading ||
                           isRowBlocked
                         ) {
                           return;
                         }
-                        setActionLoadingId(queueItem.id);
-                        setRowBusy(queueItem.id, true);
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
                         void requestIgnore(queueItem).finally(() => {
-                          setRowBusy(queueItem.id, false);
+                          setRowBusy(rowId, false);
                           setActionLoadingId((current) =>
-                            current === queueItem.id ? null : current,
+                            current === rowId ? null : current,
                           );
                         });
                       }}
@@ -1491,13 +1703,13 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     aria-label={t("label.delete")}
                     onClick={() => {
                       if (
-                        rowActionBusyRef.current[queueItem.id] ||
+                        rowActionBusyRef.current[rowId] ||
                         isActionLoading ||
                         isRowBlocked
                       ) {
                         return;
                       }
-                      setRowBusy(queueItem.id, true);
+                      setRowBusy(rowId, true);
                       setDeleteConfirmItem(queueItem);
                     }}
                   >
@@ -1508,7 +1720,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             </TableRow>
             {row.hasExpandableDetails && isExpanded ? (
               <TableRow>
-                <TableCell colSpan={activeTab === "activity" ? 6 : 5} className="bg-muted/10 p-3">
+                <TableCell
+                  colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
+                  className="bg-muted/10 p-3"
+                >
                   <ActivityQueueDetailsPanel
                     detailId={detailId}
                     releaseTitle={row.releaseTitle}
@@ -1525,7 +1740,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       {showHistorySpinner ? (
         <TableRow>
           <TableCell
-            colSpan={activeTab === "activity" ? 6 : 5}
+            colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
             className="py-4 text-center text-sm text-muted-foreground"
           >
             <span className="inline-flex items-center">
@@ -1550,9 +1765,23 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         onConfirm={handleDelete}
         onCancel={() => {
           if (deleteConfirmItem) {
-            setRowBusy(deleteConfirmItem.id, false);
+            setRowBusy(downloadQueueItemIdentityKey(deleteConfirmItem), false);
           }
           setDeleteConfirmItem(null);
+        }}
+      />
+      <ConfirmDialog
+        open={bulkDeleteConfirmItems.length > 0}
+        title={t("queue.bulkDeleteConfirmTitle")}
+        description={t("queue.bulkDeleteConfirmDescription", {
+          count: bulkDeleteConfirmItems.length,
+        })}
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        isBusy={deleteInProgress}
+        onConfirm={handleBulkDelete}
+        onCancel={() => {
+          setBulkDeleteConfirmItems([]);
         }}
       />
       <Card>
@@ -1621,7 +1850,53 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               {queueError}
             </p>
           ) : null}
-          <div className="flex justify-end">
+          <div
+            className={cn(
+              "flex flex-col gap-3 sm:flex-row sm:items-center",
+              activeTab === "import" && selectedImportCount > 0
+                ? "sm:justify-between"
+                : "sm:justify-end",
+            )}
+          >
+            {activeTab === "import" && selectedImportCount > 0 ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-card/60 px-3 py-2">
+                <span className="text-sm text-muted-foreground">
+                  {t("activity.selectedImportCount", { count: selectedImportCount })}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={bulkActionInProgress !== null || selectedIgnoreItems.length === 0}
+                  onClick={() => {
+                    void handleBulkIgnore(selectedIgnoreItems);
+                  }}
+                >
+                  {bulkActionInProgress === "ignore" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CircleOff className="mr-2 h-4 w-4" />
+                  )}
+                  {t("queue.ignore")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={bulkActionInProgress !== null || selectedDeleteItems.length === 0}
+                  onClick={() => {
+                    setBulkDeleteConfirmItems(selectedDeleteItems);
+                  }}
+                >
+                  {bulkActionInProgress === "delete" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-2 h-4 w-4" />
+                  )}
+                  {t("label.delete")}
+                </Button>
+              </div>
+            ) : null}
             <Popover open={filterPopoverOpen} onOpenChange={setFilterPopoverOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -1672,6 +1947,22 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 >
                   <TableHeader>
                     <TableRow>
+                      {activeTab === "import" ? (
+                        <TableHead className="w-12 min-w-12">
+                          <Checkbox
+                            checked={
+                              allVisibleImportItemsSelected
+                                ? true
+                                : someVisibleImportItemsSelected
+                                  ? "indeterminate"
+                                  : false
+                            }
+                            disabled={visibleImportKeys.length === 0}
+                            aria-label={t("activity.selectAllImportItems")}
+                            onCheckedChange={toggleAllVisibleImportItemsSelected}
+                          />
+                        </TableHead>
+                      ) : null}
                       {renderSortableHeader("title", t("queue.title"), "w-[34%] min-w-0")}
                       {renderSortableHeader("client", t("queue.client"), "w-32 min-w-0")}
                       {renderSortableHeader("status", t("queue.status"), "w-44 min-w-0")}
@@ -1686,7 +1977,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     {sortedQueueItems.length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={activeTab === "activity" ? 6 : 5}
+                          colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
                           className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
                         >
                           {queueLoading ? (

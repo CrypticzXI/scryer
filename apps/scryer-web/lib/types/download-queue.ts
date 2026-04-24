@@ -93,6 +93,7 @@ export type TitleMatchType =
 export type DownloadQueueItem = {
   id: string;
   titleId: string | null;
+  episodeId: string | null;
   titleName: string;
   facet: string | null;
   isScryerOrigin: boolean;

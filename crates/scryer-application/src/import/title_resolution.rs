@@ -1,7 +1,11 @@
-use crate::ParsedReleaseMetadata;
+use crate::{
+    ParsedReleaseMetadata, analyze_release_against_targets_v2, build_candidate_bank_contexts,
+};
 use scryer_domain::{MediaFacet, Title, TitleMatchType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+const CONTEXT_CANDIDATE_LIMIT: usize = 8;
 
 pub(crate) struct ResolvedMonitoredTitle<'a> {
     pub title: &'a Title,
@@ -83,10 +87,10 @@ impl MonitoredTitleMatcher {
             .or_else(|| {
                 parsed
                     .tmdb_id
-                    .map(|id| id.to_string())
+                    .as_deref()
                     .and_then(|tmdb_id| {
                         lookup_unique_title(
-                            self.tmdb_index.get(&tmdb_id).map(Vec::as_slice),
+                            self.tmdb_index.get(tmdb_id).map(Vec::as_slice),
                             &self.titles,
                             |title| title.facet == MediaFacet::Movie,
                         )
@@ -114,14 +118,19 @@ impl MonitoredTitleMatcher {
                     });
                 }
 
-                year_matches
-                    .into_iter()
-                    .next()
-                    .or_else(|| any_matches.into_iter().next())
-                    .map(|title| ResolvedMonitoredTitle {
-                        title,
-                        match_type: TitleMatchType::TitleParse,
-                    })
+                contextual_candidate_bank_match(
+                    if !year_matches.is_empty() {
+                        &year_matches
+                    } else {
+                        &any_matches
+                    },
+                    parsed,
+                    Some("movie"),
+                )
+                .map(|title| ResolvedMonitoredTitle {
+                    title,
+                    match_type: TitleMatchType::TitleParse,
+                })
             })
     }
 
@@ -142,8 +151,8 @@ impl MonitoredTitleMatcher {
             }
         }
 
-        if let Some(tmdb_id) = parsed.tmdb_id.map(|id| id.to_string()) {
-            for index in self.tmdb_index.get(&tmdb_id).into_iter().flatten().copied() {
+        if let Some(tmdb_id) = parsed.tmdb_id.as_deref() {
+            for index in self.tmdb_index.get(tmdb_id).into_iter().flatten().copied() {
                 if self.titles.get(index).is_some_and(|title| {
                     episodic_facet_matches_hint(title.facet.clone(), facet_hint)
                 }) {
@@ -217,7 +226,7 @@ impl MonitoredTitleMatcher {
                 }
 
                 if let Some(year) = parsed.year
-                    && title.year.map(|value| value as u32) == Some(year)
+                    && title.year == Some(year)
                     && seen_year.insert(index)
                 {
                     year_matches.push(title);
@@ -384,7 +393,7 @@ fn find_title_by_external_ids<'a>(
         }
     }
 
-    if let Some(parsed_tmdb_id) = parsed.tmdb_id.map(|id| id.to_string()) {
+    if let Some(parsed_tmdb_id) = parsed.tmdb_id.as_deref() {
         let mut matches = titles
             .iter()
             .copied()
@@ -422,15 +431,12 @@ fn find_unique_title_by_external_ids<'a>(
                                 == Some(parsed_imdb_id.as_str())
                     })
                 })
-                || parsed
-                    .tmdb_id
-                    .map(|id| id.to_string())
-                    .is_some_and(|parsed_tmdb_id| {
-                        title.external_ids.iter().any(|external_id| {
-                            external_id.source.eq_ignore_ascii_case("tmdb")
-                                && external_id.value.trim() == parsed_tmdb_id
-                        })
+                || parsed.tmdb_id.as_deref().is_some_and(|parsed_tmdb_id| {
+                    title.external_ids.iter().any(|external_id| {
+                        external_id.source.eq_ignore_ascii_case("tmdb")
+                            && external_id.value.trim() == parsed_tmdb_id
                     })
+                })
         })
         .collect::<Vec<_>>();
 
@@ -460,7 +466,7 @@ fn find_movie_title_by_name<'a>(
             }
 
             if let Some(year) = parsed.year
-                && title.year.map(|value| value as u32) == Some(year)
+                && title.year == Some(year)
                 && !year_matches.iter().any(|existing| existing.id == title.id)
             {
                 year_matches.push(*title);
@@ -476,10 +482,15 @@ fn find_movie_title_by_name<'a>(
         return any_matches.into_iter().next();
     }
 
-    year_matches
-        .into_iter()
-        .next()
-        .or_else(|| any_matches.into_iter().next())
+    contextual_candidate_bank_match(
+        if !year_matches.is_empty() {
+            &year_matches
+        } else {
+            &any_matches
+        },
+        parsed,
+        Some("movie"),
+    )
 }
 
 fn find_unique_title_by_name<'a>(
@@ -505,7 +516,7 @@ fn find_unique_title_by_name<'a>(
             }
 
             if let Some(year) = parsed.year
-                && title.year.map(|value| value as u32) == Some(year)
+                && title.year == Some(year)
                 && !year_matches.iter().any(|existing| existing.id == title.id)
             {
                 year_matches.push(*title);
@@ -517,7 +528,78 @@ fn find_unique_title_by_name<'a>(
         return year_matches.into_iter().next();
     }
 
-    (any_matches.len() == 1).then(|| any_matches[0])
+    if any_matches.len() == 1 {
+        return Some(any_matches[0]);
+    }
+    if year_matches.is_empty() && any_matches.len() > 1 {
+        return None;
+    }
+
+    contextual_candidate_bank_match(
+        if !year_matches.is_empty() {
+            &year_matches
+        } else {
+            &any_matches
+        },
+        parsed,
+        None,
+    )
+}
+
+fn contextual_candidate_bank_match<'a>(
+    titles: &[&'a Title],
+    parsed: &ParsedReleaseMetadata,
+    facet_hint: Option<&str>,
+) -> Option<&'a Title> {
+    let shortlist = titles
+        .iter()
+        .copied()
+        .take(CONTEXT_CANDIDATE_LIMIT)
+        .collect::<Vec<_>>();
+    if shortlist.len() < 2 {
+        return None;
+    }
+
+    let contexts = build_candidate_bank_contexts(
+        shortlist.iter().copied(),
+        None,
+        None,
+        facet_hint,
+        shortlist.len(),
+    );
+    let analysis = analyze_release_against_targets_v2(&parsed.raw_title, &contexts);
+    if analysis.is_ambiguous() {
+        return None;
+    }
+    let best_target = analysis.best_target()?;
+    if best_target.analysis.is_unparseable() || best_target.analysis.is_ambiguous {
+        return None;
+    }
+    let best_context_index = best_target.target_index;
+    let best_candidate = best_target.analysis.best_candidate()?;
+
+    let parsed_candidates = {
+        let mut values = best_candidate
+            .projected
+            .normalized_title_variants
+            .iter()
+            .map(|title| crate::app_usecase_rss::normalize_for_matching(title))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        let primary = crate::app_usecase_rss::normalize_for_matching(
+            &best_candidate.projected.normalized_title,
+        );
+        if !primary.is_empty() && !values.iter().any(|value| value == &primary) {
+            values.push(primary);
+        }
+        values
+    };
+
+    shortlist.get(best_context_index).copied().filter(|title| {
+        parsed_candidates
+            .iter()
+            .any(|candidate| title_matches_normalized_candidate(title, candidate))
+    })
 }
 
 #[cfg(test)]
@@ -615,6 +697,20 @@ mod tests {
     }
 
     #[test]
+    fn does_not_match_ambiguous_movie_titles_without_year() {
+        let titles = vec![
+            test_title("The Thing", MediaFacet::Movie, Some(1982), &[]),
+            test_title("The Thing", MediaFacet::Movie, Some(2011), &[]),
+        ];
+        let mut parsed = crate::parse_release_metadata("The.Thing.1080p.WEB-DL");
+        parsed.year = None;
+
+        let matched = find_monitored_movie_title_from_release(&titles, &parsed);
+
+        assert!(matched.is_none());
+    }
+
+    #[test]
     fn matches_unique_episodic_title_by_imdb_id() {
         let mut title = test_title("Completely Different Name", MediaFacet::Series, None, &[]);
         title.external_ids.push(ExternalId {
@@ -665,5 +761,27 @@ mod tests {
 
         assert_eq!(matched.title.id, titles[0].id);
         assert_eq!(matched.match_type, TitleMatchType::TitleParse);
+    }
+
+    #[test]
+    fn contextual_candidate_bank_prefers_stacked_anime_alias_match() {
+        let titles = [
+            test_title("Random Other Show", MediaFacet::Anime, Some(2023), &[]),
+            test_title(
+                "Frieren Beyond Journey's End",
+                MediaFacet::Anime,
+                Some(2023),
+                &["Sousou no Frieren", "Frieren Beyond Journeys End"],
+            ),
+        ];
+        let parsed = crate::parse_release_metadata(
+            "[SubsPlease] Sousou.no.Frieren.Frieren.Beyond.Journeys.End.-.01.[1080p].[HEVC]",
+        );
+
+        let matched =
+            contextual_candidate_bank_match(&[&titles[0], &titles[1]], &parsed, Some("anime"))
+                .expect("contextual match");
+
+        assert_eq!(matched.id, titles[1].id);
     }
 }

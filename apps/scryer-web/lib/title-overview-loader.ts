@@ -1,12 +1,15 @@
 import type { Client } from "urql";
 
 import type { Facet } from "@/lib/types";
+import type { DownloadQueueItem } from "@/lib/types/download-queue";
 
 import { titleBySlugQuery, titleOverviewInitQuery } from "@/lib/graphql/queries";
 
 export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   acquisitionDiagnostics: TDiagnostics | null;
+  downloadQueueItems: DownloadQueueItem[];
+  completedDownloadQueueItems: DownloadQueueItem[];
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
   subtitleDownloads: TSubtitle[];
@@ -47,6 +50,8 @@ export async function fetchTitleOverviewSnapshot<
   return {
     title: (data?.title ?? null) as TTitle | null,
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
+    downloadQueueItems: (data?.downloadQueueItems ?? []) as DownloadQueueItem[],
+    completedDownloadQueueItems: (data?.completedDownloadQueueItems ?? []) as DownloadQueueItem[],
     titleEvents: (data?.titleEvents ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],
