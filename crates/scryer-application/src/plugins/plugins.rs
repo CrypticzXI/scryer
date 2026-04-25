@@ -239,15 +239,6 @@ impl AppUseCase {
         )
         .await?;
         repo.seed_builtin(
-            "opensubtitles",
-            "OpenSubtitles",
-            "OpenSubtitles subtitle provider with provider-managed auth, search, and download",
-            "0.1.0",
-            "subtitle_provider",
-            "opensubtitles",
-        )
-        .await?;
-        repo.seed_builtin(
             "jimaku",
             "Jimaku",
             "Jimaku anime subtitle provider",

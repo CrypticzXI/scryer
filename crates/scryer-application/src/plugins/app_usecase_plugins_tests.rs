@@ -1054,7 +1054,7 @@ async fn seed_calls_for_nzbgeek_and_newznab() {
     h.app.seed_builtin_plugins().await.unwrap();
 
     let seeded = h.plugin_repo.seeded.lock().await;
-    assert_eq!(seeded.len(), 5);
+    assert_eq!(seeded.len(), 4);
 
     let ids: Vec<&str> = seeded
         .iter()
@@ -1063,7 +1063,6 @@ async fn seed_calls_for_nzbgeek_and_newznab() {
     assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"dognzb"));
     assert!(ids.contains(&"newznab"));
-    assert!(ids.contains(&"opensubtitles"));
     assert!(ids.contains(&"jimaku"));
 }
 

@@ -1275,10 +1275,7 @@ pub fn build_subtitle_plugin_provider(
         provider = provider.with_external_bytes(bytes);
     }
 
-    for loaded in load_builtin_bytes_parallel(&[
-        crate::builtins::OPENSUBTITLES_WASM,
-        crate::builtins::JIMAKU_WASM,
-    ]) {
+    for loaded in load_builtin_bytes_parallel(&[crate::builtins::JIMAKU_WASM]) {
         provider = provider.with_loaded_builtin(loaded);
     }
 

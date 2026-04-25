@@ -18,12 +18,5 @@ pub const ANIMETOSHO_WASM: &[u8] = include_bytes!("../builtins/animetosho_indexe
 /// Jackett, Prowlarr, and other compatible torrent indexer proxies.
 pub const TORZNAB_WASM: &[u8] = include_bytes!("../builtins/torznab_indexer.wasm");
 
-/// Built-in OpenSubtitles subtitle-provider WASM plugin.
-///
-/// The artifact is added alongside the other embedded builtins when the
-/// corresponding plugin has been built in `scryer-plugins`.
-pub const OPENSUBTITLES_WASM: &[u8] =
-    include_bytes!("../builtins/opensubtitles_subtitle_provider.wasm");
-
 /// Built-in Jimaku subtitle-provider WASM plugin.
 pub const JIMAKU_WASM: &[u8] = include_bytes!("../builtins/jimaku_subtitle_provider.wasm");
