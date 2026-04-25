@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ReleaseParserCorpusArgs, TaskContext, ok, step, warn};
 use scryer_release_parser::{
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    parse_release_metadata,
+    ContextFacetHint, ContextTitle, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
+    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseParseContext, best_parse_for_target,
 };
 
 const ANIMETOSHO_BASE_URL: &str = "https://feed.animetosho.org";
@@ -152,8 +152,8 @@ struct ParserSnapshot {
     languages_audio: Vec<String>,
     languages_subtitles: Vec<String>,
     imdb_id: Option<String>,
-    tmdb_id: Option<u32>,
-    year: Option<u32>,
+    tmdb_id: Option<String>,
+    year: Option<i32>,
     quality: Option<String>,
     source: Option<String>,
     video_codec: Option<String>,
@@ -193,7 +193,7 @@ struct TrainingLabel {
     kind: ReleaseKind,
     title: String,
     title_variants: Vec<String>,
-    year: Option<u32>,
+    year: Option<i32>,
     quality: Option<String>,
     source: Option<String>,
     video_codec: Option<String>,
@@ -772,7 +772,7 @@ fn evaluate_candidates(candidates: Vec<HarvestedRelease>) -> Vec<EvaluatedCandid
             continue;
         }
 
-        let parsed = parse_release_metadata(raw_title);
+        let parsed = parse_for_corpus(raw_title, Some(harvested.facet));
         let label = build_training_label(&parsed, harvested.facet);
         if label.title.trim().is_empty() {
             continue;
@@ -1282,7 +1282,7 @@ fn build_parser_snapshot(parsed: &ParsedReleaseMetadata) -> ParserSnapshot {
         languages_audio: parsed.languages_audio.clone(),
         languages_subtitles: parsed.languages_subtitles.clone(),
         imdb_id: parsed.imdb_id.clone(),
-        tmdb_id: parsed.tmdb_id,
+        tmdb_id: parsed.tmdb_id.clone(),
         year: parsed.year,
         quality: parsed.quality.clone(),
         source: parsed.source.clone(),
@@ -1600,14 +1600,34 @@ fn first_attr<'a>(attrs: &'a [NewznabAttr], name: &str) -> Option<&'a str> {
         .map(|attr| attr.value.as_str())
 }
 
+fn parse_for_corpus(raw: &str, facet: Option<CorpusFacet>) -> ParsedReleaseMetadata {
+    let facet_hint = match facet {
+        Some(CorpusFacet::Movie) => ContextFacetHint::Movie,
+        Some(CorpusFacet::Series) => ContextFacetHint::Series,
+        Some(CorpusFacet::Anime) => ContextFacetHint::Anime,
+        None => ContextFacetHint::Unknown,
+    };
+    best_parse_for_target(
+        raw,
+        &ReleaseParseContext {
+            facet_hint,
+            title: ContextTitle::default(),
+            aliases: Vec::new(),
+            known_years: Vec::new(),
+            imdb_ids: Vec::new(),
+            episodes: Vec::new(),
+        },
+    )
+}
+
 fn special_kind_to_string(kind: ParsedSpecialKind) -> String {
     match kind {
         ParsedSpecialKind::Special => "special",
-        ParsedSpecialKind::OVA => "ova",
-        ParsedSpecialKind::OVD => "ovd",
-        ParsedSpecialKind::NCOP => "ncop",
-        ParsedSpecialKind::NCED => "nced",
-        ParsedSpecialKind::Other => "other",
+        ParsedSpecialKind::Ova => "ova",
+        ParsedSpecialKind::Oad => "oad",
+        ParsedSpecialKind::Ncop => "ncop",
+        ParsedSpecialKind::Nced => "nced",
+        ParsedSpecialKind::Extra => "extra",
     }
     .to_string()
 }
@@ -1617,6 +1637,8 @@ fn episode_release_type_to_string(kind: ParsedEpisodeReleaseType) -> &'static st
         ParsedEpisodeReleaseType::SingleEpisode => "single_episode",
         ParsedEpisodeReleaseType::MultiEpisode => "multi_episode",
         ParsedEpisodeReleaseType::SeasonPack => "season_pack",
+        ParsedEpisodeReleaseType::RangePack => "range_pack",
+        ParsedEpisodeReleaseType::Daily => "daily",
         ParsedEpisodeReleaseType::Unknown => "unknown",
     }
 }
@@ -1637,7 +1659,7 @@ mod tests {
         facet: CorpusFacet,
         complexity: ComplexityBucket,
     ) -> EvaluatedCandidate {
-        let parsed = parse_release_metadata(raw_title);
+        let parsed = parse_for_corpus(raw_title, Some(facet));
         EvaluatedCandidate {
             source: CorpusSource::AnimeTosho,
             facet,
@@ -1718,14 +1740,15 @@ mod tests {
 
     #[test]
     fn complexity_marks_basic_movie_as_simple() {
-        let parsed = parse_release_metadata("Movie.2024.1080p");
+        let parsed = parse_for_corpus("Movie.2024.1080p", None);
         assert_eq!(classify_complexity(&parsed), ComplexityBucket::Simple);
     }
 
     #[test]
     fn complexity_marks_multilang_hdr_release_as_complex() {
-        let parsed = parse_release_metadata(
+        let parsed = parse_for_corpus(
             "Show.S01E01.REPACK.2160p.NF.WEB-DL.DoVi.HDR10Plus.10bit.DUAL.DDP5.1.Atmos.H.265-GROUP",
+            None,
         );
         assert_eq!(classify_complexity(&parsed), ComplexityBucket::Complex);
     }
