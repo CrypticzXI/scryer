@@ -653,6 +653,17 @@ impl TitleImageRepository for SqliteLibraryStateStore {
         self.db.replace_title_image(title_id, replacement).await
     }
 
+    async fn replace_title_image_and_append_event(
+        &self,
+        title_id: &str,
+        replacement: TitleImageReplacement,
+        event: scryer_domain::NewDomainEvent,
+    ) -> AppResult<scryer_domain::DomainEvent> {
+        self.db
+            .replace_title_image_and_append_event(title_id, replacement, event)
+            .await
+    }
+
     async fn get_title_image_blob(
         &self,
         title_id: &str,

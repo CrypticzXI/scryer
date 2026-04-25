@@ -121,6 +121,11 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             ActivitySeverity::Success,
             format!("Imported media file for '{}'.", data.title.title_name),
         ),
+        DomainEventPayload::MediaFileAnalyzed(data) => (
+            ActivityKind::FileAnalyzed,
+            ActivitySeverity::Info,
+            format!("Analyzed media file for '{}'.", data.title.title_name),
+        ),
         DomainEventPayload::MediaFileRenamed(data) => (
             ActivityKind::SystemNotice,
             ActivitySeverity::Info,
@@ -805,7 +810,8 @@ mod tests {
     use scryer_domain::{
         DomainEventStream, DomainExternalIds, DownloadQueueState, ImportCompletedEventData,
         JobRunStartedEventData, LibraryScanCompletedEventData, LibraryScanProgressedEventData,
-        MediaFacet, MediaPathUpdate, MediaUpdateType, TitleContextSnapshot,
+        MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate, MediaUpdateType,
+        TitleContextSnapshot,
     };
 
     fn title_snapshot(name: &str, facet: MediaFacet) -> TitleContextSnapshot {
@@ -914,6 +920,29 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].source_title.as_deref(), Some("/data/new.mkv"));
         assert_eq!(records[1].source_title.as_deref(), Some("/data/old.mkv"));
+    }
+
+    #[test]
+    fn media_file_analyzed_projects_to_file_analyzed_activity() {
+        let activity = activity_event_from_domain_event(&event(
+            1,
+            Utc::now(),
+            DomainEventPayload::MediaFileAnalyzed(MediaFileAnalyzedEventData {
+                title: title_snapshot("Example", MediaFacet::Series),
+                media_updates: vec![MediaPathUpdate {
+                    path: "/data/episode.mkv".to_string(),
+                    update_type: MediaUpdateType::Modified,
+                }],
+                file_id: "file-1".to_string(),
+                analysis_status: "scanned".to_string(),
+                episode_ids: vec!["ep-1".to_string()],
+            }),
+        ))
+        .expect("media file analyzed should project to activity");
+
+        assert_eq!(activity.kind, ActivityKind::FileAnalyzed);
+        assert_eq!(activity.severity, ActivitySeverity::Info);
+        assert_eq!(activity.title_id.as_deref(), Some("title-1"));
     }
 
     #[test]

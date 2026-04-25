@@ -7,14 +7,15 @@ use scryer_application::{
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
     NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDecision,
     ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository, SubmissionScope,
-    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
-    TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-    UserRepository, WantedItem, WantedItemRepository, WantedStatus,
+    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
     Entitlement, Episode, ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet,
-    NotificationChannelConfig, NotificationEventType, NotificationSubscription, Title,
+    NotificationChannelConfig, NotificationEventType, NotificationSubscription,
+    SubtitleProviderConfig, Title,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 use std::sync::{Arc, RwLock};
@@ -773,6 +774,226 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
             .await
             .expect("migration statement should succeed");
     }
+}
+
+#[tokio::test]
+async fn review_regression_download_client_identity_migration_deduplicates_legacy_submissions() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE download_submissions (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            facet TEXT NOT NULL,
+            download_client_type TEXT NOT NULL,
+            download_client_item_id TEXT NOT NULL,
+            source_title TEXT,
+            submitted_at TEXT NOT NULL,
+            collection_id TEXT,
+            tracked_state TEXT,
+            tracked_state_at TEXT,
+            source_hint TEXT,
+            source_kind TEXT,
+            request_signature TEXT,
+            episode_id TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy download_submissions should be created");
+    sqlx::query(
+        "CREATE TABLE download_queue_commands (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            client_type TEXT NOT NULL,
+            download_client_item_id TEXT NOT NULL,
+            is_history INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy download_queue_commands should be created");
+
+    for (id, submitted_at) in [
+        ("old-submission", "2025-01-01T00:00:00Z"),
+        ("new-submission", "2025-01-02T00:00:00Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO download_submissions
+             (id, title_id, facet, download_client_type, download_client_item_id, submitted_at)
+             VALUES (?, 'title-1', 'series', 'sabnzbd', 'native-id-1', ?)",
+        )
+        .bind(id)
+        .bind(submitted_at)
+        .execute(&pool)
+        .await
+        .expect("legacy submission should insert");
+    }
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../scryer/src/db/migrations/0087_download_queue_client_identity.sql"),
+    )
+    .await;
+
+    let kept_id: String = sqlx::query_scalar("SELECT id FROM download_submissions")
+        .fetch_one(&pool)
+        .await
+        .expect("migrated submission should exist");
+    assert_eq!(kept_id, "new-submission");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_submissions")
+        .fetch_one(&pool)
+        .await
+        .expect("migrated submission count should load");
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn review_regression_download_submission_episode_links_cascade_with_parent_records() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("foreign keys should enable");
+    sqlx::query(
+        "CREATE TABLE download_submissions (
+            id TEXT PRIMARY KEY,
+            download_client_id TEXT NOT NULL DEFAULT '',
+            download_client_type TEXT NOT NULL,
+            download_client_item_id TEXT NOT NULL,
+            UNIQUE(download_client_id, download_client_type, download_client_item_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("download_submissions should be created");
+    sqlx::query("CREATE TABLE episodes (id TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("episodes should be created");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../scryer/src/db/migrations/0089_download_submission_episode_links.sql"),
+    )
+    .await;
+
+    sqlx::query(
+        "INSERT INTO download_submissions
+         (id, download_client_id, download_client_type, download_client_item_id)
+         VALUES ('submission-1', 'client-1', 'sabnzbd', 'native-id-1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("submission should insert");
+    sqlx::query("INSERT INTO episodes (id) VALUES ('episode-1')")
+        .execute(&pool)
+        .await
+        .expect("episode should insert");
+    sqlx::query(
+        "INSERT INTO download_submission_episode_links
+         (download_client_id, download_client_type, download_client_item_id, episode_id)
+         VALUES ('client-1', 'sabnzbd', 'native-id-1', 'episode-1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("episode link should insert");
+
+    sqlx::query("DELETE FROM download_submissions WHERE id = 'submission-1'")
+        .execute(&pool)
+        .await
+        .expect("submission should delete");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_submission_episode_links")
+        .fetch_one(&pool)
+        .await
+        .expect("link count should load");
+    assert_eq!(count, 0);
+
+    sqlx::query(
+        "INSERT INTO download_submissions
+         (id, download_client_id, download_client_type, download_client_item_id)
+         VALUES ('submission-2', 'client-1', 'sabnzbd', 'native-id-1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("submission should reinsert");
+    sqlx::query(
+        "INSERT INTO download_submission_episode_links
+         (download_client_id, download_client_type, download_client_item_id, episode_id)
+         VALUES ('client-1', 'sabnzbd', 'native-id-1', 'episode-1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("episode link should reinsert");
+    sqlx::query("DELETE FROM episodes WHERE id = 'episode-1'")
+        .execute(&pool)
+        .await
+        .expect("episode should delete");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_submission_episode_links")
+        .fetch_one(&pool)
+        .await
+        .expect("link count should load");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_until() {
+    let (services, db) = single_connection_services("scryer_subtitle_disabled_until").await;
+    let now = Utc::now();
+    let config = SubtitleProviderConfig {
+        id: "subtitle-provider-1".to_string(),
+        name: "Subtitles".to_string(),
+        provider_type: "mock".to_string(),
+        config_json: "{}".to_string(),
+        enabled_facets: vec!["movie".to_string()],
+        is_enabled: true,
+        last_health_status: None,
+        last_error: None,
+        last_error_at: None,
+        disabled_until: None,
+        created_at: now,
+        updated_at: now,
+    };
+    services
+        .create_subtitle_provider_config(config)
+        .await
+        .expect("subtitle provider should be created");
+
+    let disabled_until = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
+        .expect("fixed timestamp should parse")
+        .with_timezone(&Utc);
+    let updated = services
+        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+            id: "subtitle-provider-1".to_string(),
+            disabled_until: Some(Some(disabled_until)),
+            ..Default::default()
+        })
+        .await
+        .expect("subtitle provider disabled_until should update");
+    assert_eq!(updated.disabled_until, Some(disabled_until));
+
+    let updated = services
+        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+            id: "subtitle-provider-1".to_string(),
+            disabled_until: Some(None),
+            ..Default::default()
+        })
+        .await
+        .expect("subtitle provider disabled_until should clear");
+    assert_eq!(updated.disabled_until, None);
+
+    let _ = std::fs::remove_file(db);
 }
 
 async fn single_connection_services(name: &str) -> (SqliteServices, std::path::PathBuf) {

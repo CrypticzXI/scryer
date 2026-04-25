@@ -851,6 +851,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       new Set([
         "movie_downloaded",
         "series_episode_imported",
+        "file_analyzed",
         "file_upgraded",
         "subtitle_downloaded",
       ]),

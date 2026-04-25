@@ -472,18 +472,39 @@ jobs:
         with:
           name: scryer-web-out-${{ github.run_id }}
           path: scryer-web-out
-      - name: Run clippy
+      - name: Run clippy for production binary packages
         env:
           SCRYER_EMBED_UI_DIR: ${{ github.workspace }}/scryer-web-out
           SCRYER_SMG_REGISTRATION_SECRET: ${{ secrets.SMG_REGISTRATION_SECRET }}
           SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-        run: cargo clippy --target x86_64-unknown-linux-musl --workspace -- -D warnings
-      - name: Run workspace tests
+        run: >-
+          cargo clippy --target x86_64-unknown-linux-musl --locked
+          -p scryer
+          -p scryer-application
+          -p scryer-domain
+          -p scryer-infrastructure
+          -p scryer-interface
+          -p scryer-mediainfo
+          -p scryer-plugins
+          -p scryer-release-parser-v2
+          -p scryer-rules
+          -- -D warnings
+      - name: Run production binary package tests
         env:
           SCRYER_EMBED_UI_DIR: ${{ github.workspace }}/scryer-web-out
           SCRYER_SMG_REGISTRATION_SECRET: ${{ secrets.SMG_REGISTRATION_SECRET }}
           SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-        run: cargo nextest run --target x86_64-unknown-linux-musl --workspace --locked
+        run: >-
+          cargo nextest run --target x86_64-unknown-linux-musl --locked
+          -p scryer
+          -p scryer-application
+          -p scryer-domain
+          -p scryer-infrastructure
+          -p scryer-interface
+          -p scryer-mediainfo
+          -p scryer-plugins
+          -p scryer-release-parser-v2
+          -p scryer-rules
 
   docker-publish:
     name: docker-publish

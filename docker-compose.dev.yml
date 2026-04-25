@@ -62,9 +62,9 @@ services:
       - scryer-config:/config
       #- ./tmp/scryer-media/movies:/data/movies
       #- ./tmp/scryer-media/series:/data/series
-      - /Volumes/Media/Anime:/data/anime:ro
-      - /Volumes/Media/TV:/data/series:ro
-      - /Volumes/Media/Movies:/data/movies:ro
+      - /Volumes/Media/Anime:/data/anime
+      - /Volumes/Media/TV:/data/series
+      - /Volumes/Media/Movies:/data/movies
       - ./tmp/nzbget-downloads:/nzbget-downloads
       - ./tmp/weaver-downloads:/weaver-downloads
     ports:

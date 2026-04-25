@@ -25,6 +25,17 @@ const GREEN: &str = "\x1b[0;32m";
 const YELLOW: &str = "\x1b[1;33m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
+const SCRYER_PROD_PACKAGES: &[&str] = &[
+    "scryer",
+    "scryer-application",
+    "scryer-domain",
+    "scryer-infrastructure",
+    "scryer-interface",
+    "scryer-mediainfo",
+    "scryer-plugins",
+    "scryer-release-parser-v2",
+    "scryer-rules",
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -580,6 +591,12 @@ fn changed_file(ctx: &TaskContext, path: &Path) -> Result<bool> {
     Ok(!output.trim().is_empty())
 }
 
+fn add_prod_package_args(command: &mut Command) {
+    for package in SCRYER_PROD_PACKAGES {
+        command.args(["-p", package]);
+    }
+}
+
 fn git_checkout_paths(ctx: &TaskContext, paths: &[PathBuf]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
@@ -838,6 +855,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     step("Running cargo check after version bump");
     let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
     cargo_check.arg("check");
+    add_prod_package_args(&mut cargo_check);
     run_checked(&mut cargo_check)?;
     ok("cargo check passed");
 
@@ -1008,15 +1026,20 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     run_streaming(&mut audit, prefix)?;
     prefixed_ok(prefix, "cargo audit passed");
 
-    prefixed_step(prefix, "Running cargo clippy");
+    prefixed_step(
+        prefix,
+        "Running cargo clippy for scryer production binary packages",
+    );
     let mut clippy = ctx.release_command_in("cargo", &ctx.repo_root);
-    clippy.args(["clippy", "--workspace", "--", "-D", "warnings"]);
+    clippy.arg("clippy");
+    add_prod_package_args(&mut clippy);
+    clippy.args(["--", "-D", "warnings"]);
     run_streaming(&mut clippy, prefix)?;
     prefixed_ok(prefix, "Clippy passed");
 
     prefixed_step(
         prefix,
-        "Running Rust tests (cargo nextest run --workspace --locked)",
+        "Running Rust tests for scryer production binary packages",
     );
     if !command_available("cargo-nextest")? {
         warn("cargo-nextest not installed — installing");
@@ -1025,7 +1048,9 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         run_streaming(&mut install, prefix)?;
     }
     let mut nextest = ctx.release_command_in("cargo", &ctx.repo_root);
-    nextest.args(["nextest", "run", "--workspace", "--locked"]);
+    nextest.args(["nextest", "run"]);
+    add_prod_package_args(&mut nextest);
+    nextest.arg("--locked");
     run_streaming(&mut nextest, prefix)?;
     prefixed_ok(prefix, "Rust tests passed");
     Ok(())

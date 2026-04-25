@@ -1,4 +1,4 @@
-use async_graphql::{Enum, InputObject, Json, OneofObject, SimpleObject};
+use async_graphql::{Enum, InputObject, Json, MaybeUndefined, OneofObject, SimpleObject};
 use scryer_application::{
     ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
     ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
@@ -395,6 +395,7 @@ pub enum DomainEventTypeValue {
     ImportCompleted,
     ImportRejected,
     MediaFileImported,
+    MediaFileAnalyzed,
     MediaFileRenamed,
     MediaFileDeleted,
     MediaFileUpgraded,
@@ -436,6 +437,7 @@ impl DomainEventTypeValue {
             DomainEventType::ImportCompleted => Self::ImportCompleted,
             DomainEventType::ImportRejected => Self::ImportRejected,
             DomainEventType::MediaFileImported => Self::MediaFileImported,
+            DomainEventType::MediaFileAnalyzed => Self::MediaFileAnalyzed,
             DomainEventType::MediaFileRenamed => Self::MediaFileRenamed,
             DomainEventType::MediaFileDeleted => Self::MediaFileDeleted,
             DomainEventType::MediaFileUpgraded => Self::MediaFileUpgraded,
@@ -477,6 +479,7 @@ impl DomainEventTypeValue {
             Self::ImportCompleted => DomainEventType::ImportCompleted,
             Self::ImportRejected => DomainEventType::ImportRejected,
             Self::MediaFileImported => DomainEventType::MediaFileImported,
+            Self::MediaFileAnalyzed => DomainEventType::MediaFileAnalyzed,
             Self::MediaFileRenamed => DomainEventType::MediaFileRenamed,
             Self::MediaFileDeleted => DomainEventType::MediaFileDeleted,
             Self::MediaFileUpgraded => DomainEventType::MediaFileUpgraded,
@@ -746,6 +749,7 @@ pub enum ActivityKindValue {
     AcquisitionCandidateRejected,
     AcquisitionDownloadFailed,
     PostProcessingCompleted,
+    FileAnalyzed,
     FileUpgraded,
     ImportRejected,
     SubtitleDownloaded,
@@ -770,6 +774,7 @@ impl ActivityKindValue {
             AppActivityKind::AcquisitionCandidateRejected => Self::AcquisitionCandidateRejected,
             AppActivityKind::AcquisitionDownloadFailed => Self::AcquisitionDownloadFailed,
             AppActivityKind::PostProcessingCompleted => Self::PostProcessingCompleted,
+            AppActivityKind::FileAnalyzed => Self::FileAnalyzed,
             AppActivityKind::FileUpgraded => Self::FileUpgraded,
             AppActivityKind::ImportRejected => Self::ImportRejected,
             AppActivityKind::SubtitleDownloaded => Self::SubtitleDownloaded,
@@ -2606,6 +2611,7 @@ pub struct UpdateSubtitleProviderConfigInput {
     pub config_json: Option<String>,
     pub enabled_facets: Option<Vec<MediaFacetValue>>,
     pub is_enabled: Option<bool>,
+    pub disabled_until: MaybeUndefined<String>,
 }
 
 #[derive(InputObject)]

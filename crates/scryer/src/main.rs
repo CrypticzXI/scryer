@@ -1357,6 +1357,27 @@ mod tests {
             Ok(())
         }
 
+        async fn replace_title_image_and_append_event(
+            &self,
+            _title_id: &str,
+            _replacement: TitleImageReplacement,
+            event: scryer_domain::NewDomainEvent,
+        ) -> AppResult<scryer_domain::DomainEvent> {
+            Ok(scryer_domain::DomainEvent {
+                sequence: 1,
+                event_id: event.event_id,
+                occurred_at: event.occurred_at,
+                actor_user_id: event.actor_user_id,
+                title_id: event.title_id,
+                facet: event.facet,
+                correlation_id: event.correlation_id,
+                causation_id: event.causation_id,
+                schema_version: event.schema_version,
+                stream: event.stream,
+                payload: event.payload,
+            })
+        }
+
         async fn get_title_image_blob(
             &self,
             _title_id: &str,

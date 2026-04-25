@@ -1554,7 +1554,12 @@ async fn process_single_wanted_item(
             .await
         {
             let mut title = search_title;
-            title.external_ids.retain(|id| id.source != "anidb");
+            title.external_ids.retain(|id| {
+                !matches!(
+                    id.source.trim().to_ascii_lowercase().as_str(),
+                    "anidb" | "anidb_id"
+                )
+            });
             title.external_ids.push(scryer_domain::ExternalId {
                 source: "anidb".into(),
                 value: anidb_id,

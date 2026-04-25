@@ -334,6 +334,17 @@ impl TitleImageRepository for NullTitleImageRepository {
         ))
     }
 
+    async fn replace_title_image_and_append_event(
+        &self,
+        _title_id: &str,
+        _replacement: TitleImageReplacement,
+        _event: NewDomainEvent,
+    ) -> AppResult<DomainEvent> {
+        Err(AppError::Repository(
+            "title image repository is not configured".to_string(),
+        ))
+    }
+
     async fn get_title_image_blob(
         &self,
         _title_id: &str,

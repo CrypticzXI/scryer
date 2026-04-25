@@ -140,6 +140,12 @@ pub(crate) enum DbCommand {
         replacement: TitleImageReplacement,
         reply: Sender<AppResult<()>>,
     },
+    ReplaceTitleImageAndAppendEvent {
+        title_id: String,
+        replacement: TitleImageReplacement,
+        event: NewDomainEvent,
+        reply: Sender<AppResult<DomainEvent>>,
+    },
     SetTitleFolderPath {
         title_id: String,
         folder_path: String,
@@ -939,6 +945,27 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 replacement.clone(),
                             )
                         })
+                        .await,
+                    );
+                }
+                DbCommand::ReplaceTitleImageAndAppendEvent {
+                    title_id,
+                    replacement,
+                    event,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries(
+                            "replace_title_image_and_append_event",
+                            || {
+                                crate::title_images::replace_title_image_and_append_event_query(
+                                    &pool,
+                                    &title_id,
+                                    replacement.clone(),
+                                    event.clone(),
+                                )
+                            },
+                        )
                         .await,
                     );
                 }

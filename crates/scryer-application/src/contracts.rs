@@ -191,6 +191,7 @@ pub struct SubtitleProviderConfigUpdate {
     pub last_health_status: Option<String>,
     pub last_error: Option<Option<String>>,
     pub last_error_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    pub disabled_until: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl SubtitleProviderConfigUpdate {
@@ -203,6 +204,7 @@ impl SubtitleProviderConfigUpdate {
             || self.last_health_status.is_some()
             || self.last_error.is_some()
             || self.last_error_at.is_some()
+            || self.disabled_until.is_some()
     }
 }
 

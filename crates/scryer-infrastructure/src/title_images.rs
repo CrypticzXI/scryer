@@ -10,7 +10,8 @@ use scryer_application::{
     AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
 };
-use sqlx::{Row, SqlitePool};
+use scryer_domain::{DomainEvent, NewDomainEvent};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -360,30 +361,26 @@ pub(crate) async fn list_titles_requiring_image_refresh_query(
         .collect())
 }
 
-pub(crate) async fn replace_title_image_query(
-    pool: &SqlitePool,
+async fn replace_title_image_tx(
+    tx: &mut Transaction<'_, Sqlite>,
     title_id: &str,
-    replacement: TitleImageReplacement,
+    replacement: &TitleImageReplacement,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let image_id = sqlx::query_scalar::<_, String>(
         "SELECT id FROM title_images WHERE title_id = ? AND kind = ?",
     )
     .bind(title_id)
     .bind(replacement.kind.as_str())
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?
     .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM title_images WHERE id = ?")
         .bind(&image_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?
         > 0;
@@ -420,7 +417,7 @@ pub(crate) async fn replace_title_image_query(
         .bind(&replacement.master_bytes)
         .bind(&now)
         .bind(&image_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
     } else {
@@ -452,14 +449,14 @@ pub(crate) async fn replace_title_image_query(
         .bind(&replacement.master_bytes)
         .bind(&now)
         .bind(&now)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
     }
 
     sqlx::query("DELETE FROM title_image_variants WHERE title_image_id = ?")
         .bind(&image_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -480,7 +477,7 @@ pub(crate) async fn replace_title_image_query(
         .bind(&variant.sha256)
         .bind(&now)
         .bind(&now)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
     }
@@ -498,18 +495,55 @@ pub(crate) async fn replace_title_image_query(
         TitleImageKind::Fanart => "background_local_path",
     };
     let update_title_sql = format!("UPDATE titles SET {local_path_column} = ? WHERE id = ?");
-    sqlx::query(&update_title_sql)
+    let result = sqlx::query(&update_title_sql)
         .bind(&local_path)
         .bind(title_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!("title {title_id}")));
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn replace_title_image_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    replacement: TitleImageReplacement,
+) -> AppResult<()> {
+    let mut tx = pool
+        .begin()
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
+    replace_title_image_tx(&mut tx, title_id, &replacement).await?;
     tx.commit()
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     Ok(())
+}
+
+pub(crate) async fn replace_title_image_and_append_event_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    replacement: TitleImageReplacement,
+    event: NewDomainEvent,
+) -> AppResult<DomainEvent> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    replace_title_image_tx(&mut tx, title_id, &replacement).await?;
+    let stored = crate::queries::domain_event::append_domain_event_tx(&mut tx, &event).await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(stored)
 }
 
 pub(crate) async fn get_title_image_blob_query(

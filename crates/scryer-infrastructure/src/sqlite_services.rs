@@ -266,6 +266,28 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
+    pub async fn replace_title_image_and_append_event(
+        &self,
+        title_id: &str,
+        replacement: TitleImageReplacement,
+        event: NewDomainEvent,
+    ) -> AppResult<DomainEvent> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::ReplaceTitleImageAndAppendEvent {
+                title_id: title_id.to_string(),
+                replacement,
+                event,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
     pub async fn set_title_folder_path(&self, title_id: &str, folder_path: &str) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender

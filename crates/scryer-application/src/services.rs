@@ -984,6 +984,11 @@ impl AppUseCase {
 
     pub async fn append_domain_event(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
         let stored = self.services.events.domain_events.append(event).await?;
+        self.publish_stored_domain_event(&stored).await;
+        Ok(stored)
+    }
+
+    pub async fn publish_stored_domain_event(&self, stored: &DomainEvent) {
         if should_invalidate_monitored_title_matcher(&stored.payload) {
             self.invalidate_monitored_title_matcher().await;
         }
@@ -1004,7 +1009,6 @@ impl AppUseCase {
                 .notification_event_broadcast
                 .send(stored.sequence);
         }
-        Ok(stored)
     }
 
     pub async fn append_domain_events(

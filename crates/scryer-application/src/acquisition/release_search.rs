@@ -516,18 +516,15 @@ impl AppUseCase {
         episode: Option<&Episode>,
     ) -> Option<String> {
         let episode = episode?;
-        let episode_ids = self
-            .services
-            .catalog
-            .shows
-            .list_episode_external_ids(&episode.id)
-            .await
-            .unwrap_or_default();
-        if let Some(anidb_id) = preferred_scoped_external_id(&episode_ids, "anidb") {
-            return Some(anidb_id);
-        }
-
+        // AnimeTosho's `aid` is an AniDB anime/collection identity, not an
+        // episode identity. Prefer season/collection-scoped mappings, then let
+        // callers fall back to the title-level AniDB ID.
         let collection_id = episode.collection_id.as_deref()?;
+        self.local_scoped_anidb_id_for_collection(collection_id)
+            .await
+    }
+
+    async fn local_scoped_anidb_id_for_collection(&self, collection_id: &str) -> Option<String> {
         let collection_ids = self
             .services
             .catalog
@@ -785,6 +782,15 @@ impl AppUseCase {
         let anidb_id = anidb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
+        let collection_anidb_id = match episode.and_then(|episode| episode.collection_id.as_deref())
+        {
+            Some(collection_id) => {
+                self.local_scoped_anidb_id_for_collection(collection_id)
+                    .await
+            }
+            None => None,
+        };
+        let anidb_id = collection_anidb_id.or(anidb_id);
         let category = self.release_search_category_for_facet(&title.facet);
         let mut queries = vec![format!("{} S{:0>2}", title.name.trim(), season_num)];
         queries.retain(|query| !query.trim().is_empty());

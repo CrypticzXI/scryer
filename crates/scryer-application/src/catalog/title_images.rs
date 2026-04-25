@@ -1,4 +1,6 @@
 use super::*;
+use crate::domain_events::{new_title_domain_event, title_context_snapshot};
+use scryer_domain::{DomainEventPayload, TitleUpdatedEventData};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -88,34 +90,15 @@ async fn process_image_refresh_chunk(
                 .await
             {
                 Ok(replacement) => {
-                    if let Err(error) = app
-                        .services
-                        .library
-                        .title_images
-                        .replace_title_image(&task.title_id, replacement)
-                        .await
-                    {
-                        warn!(
-                            error = %error,
-                            elapsed_ms = started_at.elapsed().as_millis(),
-                            title_id = %task.title_id,
-                            source_url = %task.source_url,
-                            kind = %label,
-                            "image loop: failed to store processed image"
-                        );
-                        return false;
-                    }
-                    debug!(
-                        elapsed_ms = started_at.elapsed().as_millis(),
-                        title_id = %task.title_id,
-                        kind = %label,
-                        "image loop: cached"
-                    );
-                    if kind == TitleImageKind::Poster {
-                        match app.services.catalog.titles.get_by_id(&task.title_id).await {
-                            Ok(Some(title)) => {
-                                app.emit_title_updated_activity(None, &title).await;
-                            }
+                    let stored_event = if kind == TitleImageKind::Poster {
+                        let title = match app
+                            .services
+                            .catalog
+                            .titles
+                            .get_by_id(&task.title_id)
+                            .await
+                        {
+                            Ok(Some(title)) => title,
                             Ok(None) => {
                                 warn!(
                                     elapsed_ms = started_at.elapsed().as_millis(),
@@ -123,6 +106,7 @@ async fn process_image_refresh_chunk(
                                     kind = %label,
                                     "image loop: cached image for missing title"
                                 );
+                                return false;
                             }
                             Err(error) => {
                                 warn!(
@@ -130,10 +114,71 @@ async fn process_image_refresh_chunk(
                                     elapsed_ms = started_at.elapsed().as_millis(),
                                     title_id = %task.title_id,
                                     kind = %label,
-                                    "image loop: failed to publish cached image refresh"
+                                    "image loop: failed to load title for cached image refresh event"
                                 );
+                                return false;
+                            }
+                        };
+                        let event = new_title_domain_event(
+                            None,
+                            &title,
+                            DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
+                                title: title_context_snapshot(&title),
+                            }),
+                        );
+                        match app
+                            .services
+                            .library
+                            .title_images
+                            .replace_title_image_and_append_event(
+                                &task.title_id,
+                                replacement,
+                                event,
+                            )
+                            .await
+                        {
+                            Ok(event) => Some(event),
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    source_url = %task.source_url,
+                                    kind = %label,
+                                    "image loop: failed to store processed image and append refresh event"
+                                );
+                                return false;
                             }
                         }
+                    } else {
+                        if let Err(error) = app
+                            .services
+                            .library
+                            .title_images
+                            .replace_title_image(&task.title_id, replacement)
+                            .await
+                        {
+                            warn!(
+                                error = %error,
+                                elapsed_ms = started_at.elapsed().as_millis(),
+                                title_id = %task.title_id,
+                                source_url = %task.source_url,
+                                kind = %label,
+                                "image loop: failed to store processed image"
+                            );
+                            return false;
+                        }
+                        None
+                    };
+
+                    debug!(
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        title_id = %task.title_id,
+                        kind = %label,
+                        "image loop: cached"
+                    );
+                    if let Some(event) = stored_event {
+                        app.publish_stored_domain_event(&event).await;
                     }
                     true
                 }

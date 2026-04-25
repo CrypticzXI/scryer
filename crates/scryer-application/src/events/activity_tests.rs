@@ -91,6 +91,7 @@ fn activity_kind_as_str_all_variants() {
         ActivityKind::AcquisitionDownloadFailed.as_str(),
         "acquisition_download_failed"
     );
+    assert_eq!(ActivityKind::FileAnalyzed.as_str(), "file_analyzed");
     assert_eq!(ActivityKind::SystemNotice.as_str(), "system_notice");
 }
 

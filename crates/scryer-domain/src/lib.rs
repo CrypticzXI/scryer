@@ -1136,6 +1136,7 @@ pub enum DomainEventType {
     ImportCompleted,
     ImportRejected,
     MediaFileImported,
+    MediaFileAnalyzed,
     MediaFileRenamed,
     MediaFileDeleted,
     MediaFileUpgraded,
@@ -1177,6 +1178,7 @@ impl DomainEventType {
             Self::ImportCompleted => "import_completed",
             Self::ImportRejected => "import_rejected",
             Self::MediaFileImported => "media_file_imported",
+            Self::MediaFileAnalyzed => "media_file_analyzed",
             Self::MediaFileRenamed => "media_file_renamed",
             Self::MediaFileDeleted => "media_file_deleted",
             Self::MediaFileUpgraded => "media_file_upgraded",
@@ -1218,6 +1220,7 @@ impl DomainEventType {
             "import_completed" => Some(Self::ImportCompleted),
             "import_rejected" => Some(Self::ImportRejected),
             "media_file_imported" => Some(Self::MediaFileImported),
+            "media_file_analyzed" => Some(Self::MediaFileAnalyzed),
             "media_file_renamed" => Some(Self::MediaFileRenamed),
             "media_file_deleted" => Some(Self::MediaFileDeleted),
             "media_file_upgraded" => Some(Self::MediaFileUpgraded),
@@ -1395,6 +1398,16 @@ pub struct ImportRejectedEventData {
 pub struct MediaFileImportedEventData {
     pub title: TitleContextSnapshot,
     pub media_updates: Vec<MediaPathUpdate>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaFileAnalyzedEventData {
+    pub title: TitleContextSnapshot,
+    pub media_updates: Vec<MediaPathUpdate>,
+    pub file_id: String,
+    pub analysis_status: String,
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1700,6 +1713,7 @@ pub enum DomainEventPayload {
     ImportCompleted(ImportCompletedEventData),
     ImportRejected(ImportRejectedEventData),
     MediaFileImported(MediaFileImportedEventData),
+    MediaFileAnalyzed(MediaFileAnalyzedEventData),
     MediaFileRenamed(MediaFileRenamedEventData),
     MediaFileDeleted(MediaFileDeletedEventData),
     MediaFileUpgraded(MediaFileUpgradedEventData),
@@ -1741,6 +1755,7 @@ impl DomainEventPayload {
             Self::ImportCompleted(_) => DomainEventType::ImportCompleted,
             Self::ImportRejected(_) => DomainEventType::ImportRejected,
             Self::MediaFileImported(_) => DomainEventType::MediaFileImported,
+            Self::MediaFileAnalyzed(_) => DomainEventType::MediaFileAnalyzed,
             Self::MediaFileRenamed(_) => DomainEventType::MediaFileRenamed,
             Self::MediaFileDeleted(_) => DomainEventType::MediaFileDeleted,
             Self::MediaFileUpgraded(_) => DomainEventType::MediaFileUpgraded,

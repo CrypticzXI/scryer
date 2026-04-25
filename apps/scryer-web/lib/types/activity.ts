@@ -15,6 +15,7 @@ export const activityKindValues = [
   "acquisition_candidate_rejected",
   "acquisition_download_failed",
   "post_processing_completed",
+  "file_analyzed",
   "file_upgraded",
   "import_rejected",
   "subtitle_downloaded",

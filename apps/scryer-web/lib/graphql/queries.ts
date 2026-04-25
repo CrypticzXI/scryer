@@ -602,6 +602,8 @@ export const TITLE_LIST_FIELDS = `
     episodesMonitored
     episodesTotal
     contentStatus
+    metadataFetchedAt
+    createdAt
     externalIds {
       source
       value

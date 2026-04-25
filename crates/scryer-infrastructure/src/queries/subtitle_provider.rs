@@ -236,31 +236,67 @@ pub(crate) async fn update_subtitle_provider_config_query(
     update: &SubtitleProviderConfigUpdate,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<SubtitleProviderConfig> {
-    let mut assignments = vec!["updated_at = ?".to_string()];
+    enum AssignmentValue {
+        Integer(i64),
+        OptionalText(Option<String>),
+        Text(String),
+    }
 
-    if update.name.is_some() {
-        assignments.push("name = ?".to_string());
+    let mut assignments = vec![(
+        "updated_at = ?",
+        AssignmentValue::Text(Utc::now().to_rfc3339()),
+    )];
+
+    if let Some(name) = update.name.as_ref() {
+        assignments.push(("name = ?", AssignmentValue::Text(name.clone())));
     }
-    if update.provider_type.is_some() {
-        assignments.push("provider_type = ?".to_string());
+    if let Some(provider_type) = update.provider_type.as_ref() {
+        assignments.push((
+            "provider_type = ?",
+            AssignmentValue::Text(provider_type.clone()),
+        ));
     }
-    if update.config_json.is_some() {
-        assignments.push("config_json = ?".to_string());
+    if let Some(config_json) = update.config_json.as_ref() {
+        assignments.push((
+            "config_json = ?",
+            AssignmentValue::Text(maybe_encrypt_config_json(encryption_key, config_json)?),
+        ));
     }
-    if update.enabled_facets.is_some() {
-        assignments.push("enabled_facets = ?".to_string());
+    if let Some(enabled_facets) = update.enabled_facets.as_ref() {
+        assignments.push((
+            "enabled_facets = ?",
+            AssignmentValue::Text(serialize_enabled_facets(enabled_facets)?),
+        ));
     }
-    if update.is_enabled.is_some() {
-        assignments.push("is_enabled = ?".to_string());
+    if let Some(is_enabled) = update.is_enabled {
+        assignments.push((
+            "is_enabled = ?",
+            AssignmentValue::Integer(if is_enabled { 1_i64 } else { 0_i64 }),
+        ));
     }
-    if update.last_health_status.is_some() {
-        assignments.push("last_health_status = ?".to_string());
+    if let Some(last_health_status) = update.last_health_status.as_ref() {
+        assignments.push((
+            "last_health_status = ?",
+            AssignmentValue::Text(last_health_status.clone()),
+        ));
     }
-    if update.last_error.is_some() {
-        assignments.push("last_error = ?".to_string());
+    if let Some(last_error) = update.last_error.as_ref() {
+        assignments.push((
+            "last_error = ?",
+            AssignmentValue::OptionalText(last_error.clone()),
+        ));
     }
-    if update.last_error_at.is_some() {
-        assignments.push("last_error_at = ?".to_string());
+    if let Some(last_error_at) = update.last_error_at.as_ref() {
+        assignments.push((
+            "last_error_at = ?",
+            AssignmentValue::OptionalText(last_error_at.as_ref().map(DateTime::<Utc>::to_rfc3339)),
+        ));
+    }
+    if let Some(disabled_until) = update.disabled_until.as_ref() {
+        assignments.push((
+            "disabled_until = ?",
+            AssignmentValue::OptionalText(disabled_until.as_ref().map(DateTime::<Utc>::to_rfc3339)),
+        ));
     }
 
     if assignments.len() == 1 {
@@ -270,36 +306,22 @@ pub(crate) async fn update_subtitle_provider_config_query(
     }
 
     let mut sql = String::from("UPDATE subtitle_provider_configs SET ");
-    sql.push_str(&assignments.join(", "));
+    sql.push_str(
+        &assignments
+            .iter()
+            .map(|(assignment, _)| *assignment)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     sql.push_str(" WHERE id = ?");
 
     let mut statement = sqlx::query(&sql);
-    statement = statement.bind(Utc::now().to_rfc3339());
-
-    if let Some(name) = update.name.as_ref() {
-        statement = statement.bind(name);
-    }
-    if let Some(provider_type) = update.provider_type.as_ref() {
-        statement = statement.bind(provider_type);
-    }
-    if let Some(config_json) = update.config_json.as_ref() {
-        let stored = maybe_encrypt_config_json(encryption_key, config_json)?;
-        statement = statement.bind(stored);
-    }
-    if let Some(enabled_facets) = update.enabled_facets.as_ref() {
-        statement = statement.bind(serialize_enabled_facets(enabled_facets)?);
-    }
-    if let Some(is_enabled) = update.is_enabled {
-        statement = statement.bind(if is_enabled { 1_i64 } else { 0_i64 });
-    }
-    if let Some(last_health_status) = update.last_health_status.as_ref() {
-        statement = statement.bind(last_health_status);
-    }
-    if let Some(last_error) = update.last_error.as_ref() {
-        statement = statement.bind(last_error.as_ref());
-    }
-    if let Some(last_error_at) = update.last_error_at.as_ref() {
-        statement = statement.bind(last_error_at.as_ref().map(DateTime::<Utc>::to_rfc3339));
+    for (_, value) in assignments {
+        statement = match value {
+            AssignmentValue::Integer(value) => statement.bind(value),
+            AssignmentValue::OptionalText(value) => statement.bind(value),
+            AssignmentValue::Text(value) => statement.bind(value),
+        };
     }
 
     statement = statement.bind(&update.id);

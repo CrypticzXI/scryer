@@ -83,6 +83,13 @@ pub trait TitleImageRepository: Send + Sync {
         replacement: TitleImageReplacement,
     ) -> AppResult<()>;
 
+    async fn replace_title_image_and_append_event(
+        &self,
+        title_id: &str,
+        replacement: TitleImageReplacement,
+        event: NewDomainEvent,
+    ) -> AppResult<DomainEvent>;
+
     async fn get_title_image_blob(
         &self,
         title_id: &str,

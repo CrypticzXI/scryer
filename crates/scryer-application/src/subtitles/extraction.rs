@@ -466,10 +466,11 @@ fn inner_file_from_parts(
     content: Vec<u8>,
     suffix: &str,
 ) -> SubtitleFile {
-    let filename = parent_filename
-        .as_deref()
-        .and_then(|name| strip_extension_suffix(name, suffix))
-        .or_else(|| compressed_tar_alias(parent_filename.as_deref(), suffix));
+    let filename = compressed_tar_alias(parent_filename.as_deref(), suffix).or_else(|| {
+        parent_filename
+            .as_deref()
+            .and_then(|name| strip_extension_suffix(name, suffix))
+    });
     let format = filename
         .as_deref()
         .and_then(extension_for_filename)
@@ -909,6 +910,19 @@ mod tests {
 
         assert_eq!(normalized.format, "ass");
         assert_eq!(normalized.content, ASS_CONTENT);
+    }
+
+    #[test]
+    fn review_regression_tgz_aliases_to_tar_when_unwrapping_gzip() {
+        let file = inner_file_from_parts(
+            Some("release.tgz".to_string()),
+            "gz".to_string(),
+            Vec::new(),
+            ".gz",
+        );
+
+        assert_eq!(file.filename.as_deref(), Some("release.tar"));
+        assert_eq!(file.format, "tar");
     }
 
     #[tokio::test]

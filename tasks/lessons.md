@@ -43,6 +43,7 @@
 - **When the user narrows a task to backend planning or backend stabilization, do not broaden the work into frontend validation or install repair unless they ask for it.** Keep the active scope tight before major refactors.
 - **Never create unsigned commits or tags.** Before any commit or release rewrite, verify the real SSH signer path works first; if a pushed unsigned commit must be fixed, rewrite from the earliest bad commit and re-sign every descendant plus any affected release tags.
 - **Before releasing from a temp clone, verify the source branch matches the intended remote base.** If local `main` is ahead of `origin/main`, stop and ask whether those unpublished commits should ship instead of silently releasing from local-only history.
+- **Release validation should follow the production binary package graph, not the whole workspace by default.** Do not make `cargo xtask release` gate on `xtask`, fixture-only crates, or unreferenced legacy crates unless the release artifact actually depends on them.
 
 ## Indexer Search Contracts
 - **Do not bake alias language or script policy into core search query construction.** Core should pass canonical title plus tagged alias context through to indexer plugins, and plugins should decide whether to prefer romanized Japanese, Korean aliases, or other provider-specific naming conventions.
@@ -76,6 +77,7 @@
 ## Frontend Reactive Refresh
 - Debouncing websocket-driven refreshes is an action-spooling problem, not a subscriber-coupling problem. Events should be collected by action type and deduped so a 300ms flush performs one instance of each action, instead of each subscriber independently firing duplicate network requests.
 - Do not scope reactive batching to one container. Event-driven refreshes must enqueue into a shared root-level spool so title lists, title overviews, import history, and any future reactive query actions can collapse into the same aliased GraphQL flush.
+- Do not paper over missed poster/title hydration updates with client watchdog polling. Poster hydration must persist a durable domain event with the image write so the existing activity subscription can drive refresh deterministically.
 
 ## Frontend Search Scope
 - When the user narrows a search UX fix to title-owned search surfaces, do not broaden it back out to global search, add-title flows, or result queue actions. Gate the actual title search entrypoints the user named.

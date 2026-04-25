@@ -1,4 +1,5 @@
-use async_graphql::{Context, Error, Object, Result as GqlResult};
+use async_graphql::{Context, Error, MaybeUndefined, Object, Result as GqlResult};
+use chrono::{DateTime, Utc};
 use scryer_application::{
     DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
 };
@@ -14,6 +15,19 @@ use crate::types::*;
 
 fn should_seed_download_client_routing(client_type: &str) -> bool {
     matches!(client_type, "nzbget" | "sabnzbd" | "weaver")
+}
+
+fn optional_datetime_input(
+    value: MaybeUndefined<String>,
+    field_name: &str,
+) -> GqlResult<Option<Option<DateTime<Utc>>>> {
+    match value {
+        MaybeUndefined::Undefined => Ok(None),
+        MaybeUndefined::Null => Ok(Some(None)),
+        MaybeUndefined::Value(value) => DateTime::parse_from_rfc3339(&value)
+            .map(|value| Some(Some(value.with_timezone(&Utc))))
+            .map_err(|error| Error::new(format!("invalid {field_name}: {error}"))),
+    }
 }
 
 #[derive(Default)]
@@ -296,6 +310,7 @@ impl ConfigMutations {
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let disabled_until = optional_datetime_input(input.disabled_until, "disabled_until")?;
         let config = app
             .update_subtitle_provider_config(
                 &actor,
@@ -314,6 +329,7 @@ impl ConfigMutations {
                     last_health_status: None,
                     last_error: None,
                     last_error_at: None,
+                    disabled_until,
                 },
             )
             .await

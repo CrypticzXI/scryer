@@ -123,10 +123,10 @@ async fn persist_scanned_media_analysis_outcome(
     title: &Title,
     file_id: &str,
     outcome: MediaAnalysisOutcome,
-) -> Duration {
+) -> (Duration, bool) {
     let db_started = Instant::now();
 
-    match outcome {
+    let persisted = match outcome {
         MediaAnalysisOutcome::Valid(analysis) => {
             let update_result = app
                 .services
@@ -134,13 +134,17 @@ async fn persist_scanned_media_analysis_outcome(
                 .media_files
                 .update_media_file_analysis(file_id, *analysis)
                 .await;
-            if let Err(error) = update_result {
-                warn!(
-                    error = %error,
-                    title_id = %title.id,
-                    file_id = %file_id,
-                    "failed to persist scanned media analysis"
-                );
+            match update_result {
+                Ok(()) => true,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id = %title.id,
+                        file_id = %file_id,
+                        "failed to persist scanned media analysis"
+                    );
+                    false
+                }
             }
         }
         MediaAnalysisOutcome::Invalid(error_message) => {
@@ -150,18 +154,61 @@ async fn persist_scanned_media_analysis_outcome(
                 .media_files
                 .mark_scan_failed(file_id, &error_message)
                 .await;
-            if let Err(error) = mark_result {
-                warn!(
-                    error = %error,
-                    title_id = %title.id,
-                    file_id = %file_id,
-                    "failed to mark scanned media analysis failure"
-                );
+            match mark_result {
+                Ok(()) => true,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id = %title.id,
+                        file_id = %file_id,
+                        "failed to mark scanned media analysis failure"
+                    );
+                    false
+                }
             }
         }
-    }
+    };
 
-    db_started.elapsed()
+    (db_started.elapsed(), persisted)
+}
+
+fn scanned_media_analysis_status(outcome: &MediaAnalysisOutcome) -> &'static str {
+    match outcome {
+        MediaAnalysisOutcome::Valid(_) => "scanned",
+        MediaAnalysisOutcome::Invalid(_) => "failed",
+    }
+}
+
+async fn emit_scanned_media_file_analyzed_event(
+    app: &AppUseCase,
+    title: &Title,
+    file_id: &str,
+    file_path: &str,
+    analysis_status: &str,
+    episode_ids: Vec<String>,
+) {
+    let event = crate::domain_events::new_title_domain_event(
+        None,
+        title,
+        scryer_domain::DomainEventPayload::MediaFileAnalyzed(
+            scryer_domain::MediaFileAnalyzedEventData {
+                title: crate::domain_events::title_context_snapshot(title),
+                media_updates: vec![crate::domain_events::modified_media_update(file_path)],
+                file_id: file_id.to_string(),
+                analysis_status: analysis_status.to_string(),
+                episode_ids,
+            },
+        ),
+    );
+
+    if let Err(error) = app.append_domain_event(event).await {
+        warn!(
+            error = %error,
+            title_id = %title.id,
+            file_id = %file_id,
+            "failed to append scanned media file analyzed domain event"
+        );
+    }
 }
 
 async fn ensure_movie_collection_for_file(
@@ -314,10 +361,25 @@ pub(super) async fn finalize_title_scan_file(
     }
 
     if let Some(outcome) = analysis_outcome {
-        *db_elapsed = db_elapsed.saturating_add(
+        let analysis_status = scanned_media_analysis_status(&outcome);
+        let (analysis_db_elapsed, analysis_persisted) =
             persist_scanned_media_analysis_outcome(app, title, &persisted_file.file_id, outcome)
-                .await,
-        );
+                .await;
+        *db_elapsed = db_elapsed.saturating_add(analysis_db_elapsed);
+        if analysis_persisted {
+            emit_scanned_media_file_analyzed_event(
+                app,
+                title,
+                &persisted_file.file_id,
+                &file.path,
+                analysis_status,
+                target_episodes
+                    .iter()
+                    .map(|episode| episode.id.clone())
+                    .collect(),
+            )
+            .await;
+        }
     }
 
     TitleScanFinalizeOutcome {
@@ -447,13 +509,25 @@ pub(super) async fn finalize_movie_scan_file(
         if library_scan_cancel_requested(cancel_token) {
             return;
         }
-        persist_scanned_media_analysis_outcome(
+        let analysis_status = scanned_media_analysis_status(&analysis_outcome);
+        let (_, analysis_persisted) = persist_scanned_media_analysis_outcome(
             app,
             title,
             &persisted_file.file_id,
             analysis_outcome,
         )
         .await;
+        if analysis_persisted {
+            emit_scanned_media_file_analyzed_event(
+                app,
+                title,
+                &persisted_file.file_id,
+                &file.path,
+                analysis_status,
+                Vec::new(),
+            )
+            .await;
+        }
     }
 
     if library_scan_cancel_requested(cancel_token) {

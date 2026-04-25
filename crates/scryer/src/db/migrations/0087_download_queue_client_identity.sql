@@ -56,7 +56,29 @@ SELECT
     source_kind,
     request_signature,
     episode_id
-FROM download_submissions;
+FROM (
+    SELECT
+        id,
+        title_id,
+        facet,
+        download_client_type,
+        download_client_item_id,
+        source_title,
+        submitted_at,
+        collection_id,
+        tracked_state,
+        tracked_state_at,
+        source_hint,
+        source_kind,
+        request_signature,
+        episode_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY download_client_type, download_client_item_id
+            ORDER BY submitted_at DESC, rowid DESC
+        ) AS migration_rank
+    FROM download_submissions
+) legacy
+WHERE migration_rank = 1;
 
 DROP TABLE download_submissions;
 ALTER TABLE download_submissions_new RENAME TO download_submissions;

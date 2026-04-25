@@ -325,7 +325,7 @@ export function SubtitleSearchModal({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex max-h-[85vh] w-[min(96vw,80rem)] max-w-none flex-col overflow-hidden">
+        <DialogContent className="flex h-[min(92vh,58rem)] !w-[calc(100vw-1.5rem)] !max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden sm:!w-[min(98vw,96rem)] sm:!max-w-[min(98vw,96rem)]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Search className="h-4 w-4" />
@@ -464,31 +464,31 @@ export function SubtitleSearchModal({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border/70 bg-background/30">
             {results.length > 0 ? (
-              <Table className="min-w-[980px]">
+              <Table className="w-full min-w-[760px] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="min-w-[460px]">
+                    <TableHead className="w-[58%]">
                       {t("subtitle.releaseInfo")}
                     </TableHead>
-                    <TableHead className="w-24 text-center">
+                    <TableHead className="w-20 text-center">
                       {t("subtitle.score")}
                     </TableHead>
-                    <TableHead className="w-40 text-center">
+                    <TableHead className="w-32 text-center">
                       {t("subtitle.flags")}
                     </TableHead>
-                    <TableHead className="w-40">
+                    <TableHead className="w-28">
                       {t("subtitle.provider")}
                     </TableHead>
-                    <TableHead className="w-44 text-right" />
+                    <TableHead className="w-36 text-right" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {results.map((r) => (
                     <TableRow key={r.providerFileId}>
-                      <TableCell className="max-w-[560px]">
-                        <span className="block truncate text-xs">
+                      <TableCell className="min-w-0">
+                        <span className="block break-words text-xs leading-relaxed">
                           {r.releaseInfo || "—"}
                         </span>
                         {r.uploader ? (
