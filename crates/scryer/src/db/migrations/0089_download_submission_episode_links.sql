@@ -11,9 +11,6 @@ CREATE TABLE IF NOT EXISTS download_submission_episode_links (
     ),
     FOREIGN KEY (download_client_id, download_client_type, download_client_item_id)
         REFERENCES download_submissions(download_client_id, download_client_type, download_client_item_id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (episode_id)
-        REFERENCES episodes(id)
         ON DELETE CASCADE
 );
 
