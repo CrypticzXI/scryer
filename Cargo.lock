@@ -4547,7 +4547,7 @@ dependencies = [
  "ring",
  "scryer-domain",
  "scryer-mediainfo",
- "scryer-release-parser-v2",
+ "scryer-release-parser",
  "scryer-rules",
  "semver",
  "serde",
@@ -4686,13 +4686,6 @@ dependencies = [
 [[package]]
 name = "scryer-release-parser"
 version = "0.11.4"
-dependencies = [
- "chrono",
-]
-
-[[package]]
-name = "scryer-release-parser-v2"
-version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -7487,7 +7480,6 @@ dependencies = [
  "quick-xml",
  "reqwest",
  "scryer-release-parser",
- "scryer-release-parser-v2",
  "semver",
  "serde",
  "serde_json",

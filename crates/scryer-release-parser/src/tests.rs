@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use crate::enrichment::{enrich_candidate, project_final_metadata};
 use crate::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseFamily,
-    ParsedEpisodeReleaseTypeV2, ReleaseParseContext, analyze_release_against_targets,
+    ParsedEpisodeReleaseType, ReleaseParseContext, analyze_release_against_targets,
     analyze_release_for_target,
 };
 
@@ -38,7 +38,7 @@ fn lex_and_parse_standard_episode_release() {
             .episode
             .as_ref()
             .map(|episode| episode.release_type),
-        Some(ParsedEpisodeReleaseTypeV2::SingleEpisode)
+        Some(ParsedEpisodeReleaseType::SingleEpisode)
     );
 }
 
@@ -265,7 +265,7 @@ fn range_pack_parser_handles_bleach_batch_release() {
             .episode
             .as_ref()
             .map(|episode| episode.release_type),
-        Some(ParsedEpisodeReleaseTypeV2::RangePack)
+        Some(ParsedEpisodeReleaseType::RangePack)
     );
 }
 
@@ -284,7 +284,7 @@ fn anime_context_prefers_season_pack_with_trailing_episode_range() {
             .episode
             .as_ref()
             .map(|episode| episode.release_type),
-        Some(ParsedEpisodeReleaseTypeV2::SeasonPack)
+        Some(ParsedEpisodeReleaseType::SeasonPack)
     );
 }
 
@@ -350,10 +350,7 @@ fn standard_episode_range_token_projects_multi_episode() {
     assert_eq!(candidate.family, ParseFamily::StandardEpisode);
     assert_eq!(episode.season, Some(1));
     assert_eq!(episode.episode_numbers, (1..=11).collect::<Vec<_>>());
-    assert_eq!(
-        episode.release_type,
-        ParsedEpisodeReleaseTypeV2::MultiEpisode
-    );
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::MultiEpisode);
 }
 
 #[test]
@@ -945,7 +942,7 @@ fn numbered_ova_projects_special_absolute_episode_number() {
     let episode = projected.episode.as_ref().expect("episode");
 
     assert_eq!(projected.parse_family, ParseFamily::Special);
-    assert_eq!(episode.special_kind, Some(crate::ParsedSpecialKindV2::Ova));
+    assert_eq!(episode.special_kind, Some(crate::ParsedSpecialKind::Ova));
     assert_eq!(episode.special_absolute_episode_numbers, vec![1]);
 }
 
@@ -1380,7 +1377,7 @@ fn labeled_episode_range_stays_multi_episode() {
             .episode
             .as_ref()
             .map(|episode| episode.release_type),
-        Some(ParsedEpisodeReleaseTypeV2::RangePack)
+        Some(ParsedEpisodeReleaseType::RangePack)
     );
 }
 
@@ -1405,7 +1402,7 @@ fn labeled_single_episode_does_not_become_range_pack() {
             .episode
             .as_ref()
             .map(|episode| episode.release_type),
-        Some(ParsedEpisodeReleaseTypeV2::SingleEpisode)
+        Some(ParsedEpisodeReleaseType::SingleEpisode)
     );
     assert_eq!(
         candidate
@@ -1450,7 +1447,7 @@ fn bastard_part_one_and_two_release_projects_full_season_pack() {
     let episode = candidate.projected.episode.as_ref().expect("episode");
 
     assert_eq!(candidate.family, ParseFamily::SeasonPack);
-    assert_eq!(episode.release_type, ParsedEpisodeReleaseTypeV2::SeasonPack);
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::SeasonPack);
     assert_eq!(episode.season, Some(1));
     assert!(episode.full_season);
     assert!(!episode.is_partial_season);
@@ -1466,7 +1463,7 @@ fn bastard_standalone_part_two_release_projects_partial_season_pack() {
     let episode = candidate.projected.episode.as_ref().expect("episode");
 
     assert_eq!(candidate.family, ParseFamily::SeasonPack);
-    assert_eq!(episode.release_type, ParsedEpisodeReleaseTypeV2::SeasonPack);
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::SeasonPack);
     assert_eq!(episode.season, Some(1));
     assert!(episode.is_partial_season);
     assert_eq!(episode.season_part, Some(2));

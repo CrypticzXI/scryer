@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 scryer-domain = { path = "../scryer-domain" }
-scryer-release-parser-v2 = { path = "../scryer-release-parser-v2" }
+scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo" }
 jsonwebtoken = { workspace = true }

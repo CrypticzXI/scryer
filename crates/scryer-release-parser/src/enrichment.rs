@@ -1,6 +1,6 @@
 use crate::lex::Token;
 use crate::model::{
-    MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadataV2, ReleaseParseCandidate,
+    MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata, ReleaseParseCandidate,
 };
 
 #[derive(Clone, Copy)]
@@ -301,9 +301,9 @@ pub(crate) fn enrich_candidate(
 }
 
 pub(crate) fn project_final_metadata(
-    mut projected: ParsedReleaseMetadataV2,
+    mut projected: ParsedReleaseMetadata,
     enrichment: &MetadataEnrichment,
-) -> ParsedReleaseMetadataV2 {
+) -> ParsedReleaseMetadata {
     projected.languages_audio = enrichment.languages_audio.clone();
     projected.languages_subtitles = enrichment.languages_subtitles.clone();
 
@@ -404,7 +404,7 @@ pub(crate) fn project_final_metadata(
     projected
 }
 
-pub(crate) fn collect_missing_fields(projected: &ParsedReleaseMetadataV2) -> Vec<String> {
+pub(crate) fn collect_missing_fields(projected: &ParsedReleaseMetadata) -> Vec<String> {
     let mut missing_fields = Vec::new();
     if projected.quality.is_none() {
         missing_fields.push("quality".to_string());

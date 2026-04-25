@@ -16,14 +16,14 @@ fuzz_target!(|data: &[u8]| {
         .iter()
         .skip(1)
         .take(2)
-        .map(|value| scryer_release_parser_v2::ContextAlias {
+        .map(|value| scryer_release_parser::ContextAlias {
             name: value.clone(),
         })
         .collect::<Vec<_>>();
 
-    let context = scryer_release_parser_v2::ReleaseParseContext {
-        facet_hint: scryer_release_parser_v2::ContextFacetHint::Anime,
-        title: scryer_release_parser_v2::ContextTitle { name: title },
+    let context = scryer_release_parser::ReleaseParseContext {
+        facet_hint: scryer_release_parser::ContextFacetHint::Anime,
+        title: scryer_release_parser::ContextTitle { name: title },
         aliases,
         known_years: candidate
             .split(|ch: char| !ch.is_ascii_digit())
@@ -37,9 +37,9 @@ fuzz_target!(|data: &[u8]| {
         episodes: Vec::new(),
     };
 
-    let alternate = scryer_release_parser_v2::ReleaseParseContext {
-        facet_hint: scryer_release_parser_v2::ContextFacetHint::Series,
-        title: scryer_release_parser_v2::ContextTitle {
+    let alternate = scryer_release_parser::ReleaseParseContext {
+        facet_hint: scryer_release_parser::ContextFacetHint::Series,
+        title: scryer_release_parser::ContextTitle {
             name: words
                 .get(1)
                 .cloned()
@@ -52,5 +52,5 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let _ =
-        scryer_release_parser_v2::analyze_release_against_targets(candidate.as_ref(), &[context, alternate]);
+        scryer_release_parser::analyze_release_against_targets(candidate.as_ref(), &[context, alternate]);
 });

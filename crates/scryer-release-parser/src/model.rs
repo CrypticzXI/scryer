@@ -29,7 +29,7 @@ pub enum ParseFamily {
 /// Special episode kinds recognized by the parser.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ParsedSpecialKindV2 {
+pub enum ParsedSpecialKind {
     #[default]
     Special,
     Ova,
@@ -39,7 +39,7 @@ pub enum ParsedSpecialKindV2 {
     Extra,
 }
 
-impl ParsedSpecialKindV2 {
+impl ParsedSpecialKind {
     pub const OVA: Self = Self::Ova;
     pub const OAD: Self = Self::Oad;
     pub const OVD: Self = Self::Oad;
@@ -50,7 +50,7 @@ impl ParsedSpecialKindV2 {
 /// Episodic release type recognized by the parser.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ParsedEpisodeReleaseTypeV2 {
+pub enum ParsedEpisodeReleaseType {
     SingleEpisode,
     MultiEpisode,
     SeasonPack,
@@ -62,7 +62,7 @@ pub enum ParsedEpisodeReleaseTypeV2 {
 
 /// Structured episodic metadata projected from the winning parse candidate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct ParsedEpisodeMetadataV2 {
+pub struct ParsedEpisodeMetadata {
     pub season: Option<u32>,
     pub episode_numbers: Vec<u32>,
     pub absolute_episode: Option<u32>,
@@ -77,12 +77,12 @@ pub struct ParsedEpisodeMetadataV2 {
     pub is_season_extra: bool,
     pub is_split_episode: bool,
     pub is_mini_series: bool,
-    pub special_kind: Option<ParsedSpecialKindV2>,
-    pub release_type: ParsedEpisodeReleaseTypeV2,
+    pub special_kind: Option<ParsedSpecialKind>,
+    pub release_type: ParsedEpisodeReleaseType,
     pub raw: Option<String>,
 }
 
-impl ParsedEpisodeMetadataV2 {
+impl ParsedEpisodeMetadata {
     #[must_use]
     pub fn first_episode(&self) -> Option<u32> {
         self.episode_numbers
@@ -112,7 +112,7 @@ pub enum ParseDisposition {
 
 /// Structured release parse returned by the v2 parser.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ParsedReleaseMetadataV2 {
+pub struct ParsedReleaseMetadata {
     pub raw_title: String,
     pub normalized_title: String,
     pub normalized_title_variants: Vec<String>,
@@ -151,7 +151,7 @@ pub struct ParsedReleaseMetadataV2 {
     pub streaming_service: Option<String>,
     pub edition: Option<String>,
     pub anime_version: Option<u32>,
-    pub episode: Option<ParsedEpisodeMetadataV2>,
+    pub episode: Option<ParsedEpisodeMetadata>,
     pub parser_version: &'static str,
     pub scoring_model_version: u16,
     pub parse_confidence: f32,
@@ -163,7 +163,7 @@ pub struct ParsedReleaseMetadataV2 {
     pub parse_hints: Vec<String>,
 }
 
-impl ParsedReleaseMetadataV2 {
+impl ParsedReleaseMetadata {
     /// Build an empty parse projection for irrecoverable parse failures.
     #[must_use]
     pub fn empty(raw: &str, parser_version: &'static str) -> Self {
@@ -220,7 +220,7 @@ impl ParsedReleaseMetadataV2 {
     }
 }
 
-impl Default for ParsedReleaseMetadataV2 {
+impl Default for ParsedReleaseMetadata {
     fn default() -> Self {
         Self::empty("", "unknown")
     }
@@ -347,7 +347,7 @@ pub enum ReleaseIdentity {
         range_end: u32,
     },
     SpecialIdentity {
-        special_kind: ParsedSpecialKindV2,
+        special_kind: ParsedSpecialKind,
         season_hint: Option<u32>,
         episode_hint: Option<u32>,
     },
@@ -370,7 +370,7 @@ pub struct ReleaseParseCandidate {
     pub context_evidence: Vec<String>,
     pub raw_score: i32,
     pub enrichment: Option<MetadataEnrichment>,
-    pub projected: ParsedReleaseMetadataV2,
+    pub projected: ParsedReleaseMetadata,
 }
 
 /// Explicit token zones handed off from the beam to metadata enrichment.

@@ -13,10 +13,10 @@ use crate::lex::{
     normalize_token,
 };
 use crate::model::{
-    CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason,
-    ParsedEpisodeMetadataV2, ParsedEpisodeReleaseTypeV2, ParsedExternalId, ParsedReleaseMetadataV2,
-    ParsedSpecialKindV2, ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate,
-    TitleSegment, TitleSegmentKind, TokenAnnotations, TokenRange, TokenRole,
+    CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
+    ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
+    ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, TitleSegment, TitleSegmentKind,
+    TokenAnnotations, TokenRange, TokenRole,
 };
 
 const BEAM_WIDTH: usize = 24;
@@ -2265,7 +2265,7 @@ fn parse_identity_at(
 fn parse_numbered_special_at(
     tokens: &[Token],
     index: usize,
-) -> Option<(ParsedSpecialKindV2, u32, usize)> {
+) -> Option<(ParsedSpecialKind, u32, usize)> {
     let episode_hint = parse_numeric_token(tokens.get(index)?.normalized.as_str())?;
     for candidate_index in index + 1..=(index + 3).min(tokens.len().saturating_sub(1)) {
         let candidate = tokens.get(candidate_index)?;
@@ -2700,7 +2700,7 @@ fn build_candidate(
         .edition
         .as_deref()
         .is_some_and(|value| value.eq_ignore_ascii_case("remux"));
-    let projected = ParsedReleaseMetadataV2 {
+    let projected = ParsedReleaseMetadata {
         raw_title: raw_input.to_string(),
         normalized_title,
         normalized_title_variants,
@@ -3268,12 +3268,12 @@ fn project_episode(
     identity: &ReleaseIdentity,
     tokens: &[Token],
     context: &ContextIndex,
-) -> Option<ParsedEpisodeMetadataV2> {
+) -> Option<ParsedEpisodeMetadata> {
     match identity {
         ReleaseIdentity::StandardEpisodeIdentity {
             season,
             episode_numbers,
-        } => Some(ParsedEpisodeMetadataV2 {
+        } => Some(ParsedEpisodeMetadata {
             season: *season,
             episode_numbers: episode_numbers.clone(),
             absolute_episode: contextual_absolute_companion(identity, tokens, context)
@@ -3292,13 +3292,13 @@ fn project_episode(
             is_mini_series: detect_mini_series_tokens(tokens),
             special_kind: None,
             release_type: if episode_numbers.len() > 1 {
-                ParsedEpisodeReleaseTypeV2::MultiEpisode
+                ParsedEpisodeReleaseType::MultiEpisode
             } else {
-                ParsedEpisodeReleaseTypeV2::SingleEpisode
+                ParsedEpisodeReleaseType::SingleEpisode
             },
             raw: Some(render_identity_raw(identity, tokens)),
         }),
-        ReleaseIdentity::DailyIdentity { air_date, part } => Some(ParsedEpisodeMetadataV2 {
+        ReleaseIdentity::DailyIdentity { air_date, part } => Some(ParsedEpisodeMetadata {
             season: None,
             episode_numbers: Vec::new(),
             absolute_episode: contextual_absolute_companion(identity, tokens, context)
@@ -3316,13 +3316,13 @@ fn project_episode(
             is_split_episode: false,
             is_mini_series: false,
             special_kind: None,
-            release_type: ParsedEpisodeReleaseTypeV2::Daily,
+            release_type: ParsedEpisodeReleaseType::Daily,
             raw: Some(render_identity_raw(identity, tokens)),
         }),
         ReleaseIdentity::AbsoluteIdentity {
             absolute_episode_numbers,
             ..
-        } => Some(ParsedEpisodeMetadataV2 {
+        } => Some(ParsedEpisodeMetadata {
             season: None,
             episode_numbers: Vec::new(),
             absolute_episode: absolute_episode_numbers.first().copied(),
@@ -3339,9 +3339,9 @@ fn project_episode(
             is_mini_series: detect_mini_series_tokens(tokens),
             special_kind: None,
             release_type: if absolute_episode_numbers.len() > 1 {
-                ParsedEpisodeReleaseTypeV2::RangePack
+                ParsedEpisodeReleaseType::RangePack
             } else {
-                ParsedEpisodeReleaseTypeV2::SingleEpisode
+                ParsedEpisodeReleaseType::SingleEpisode
             },
             raw: Some(render_identity_raw(identity, tokens)),
         }),
@@ -3350,7 +3350,7 @@ fn project_episode(
             is_partial,
             season_part,
             ..
-        } => Some(ParsedEpisodeMetadataV2 {
+        } => Some(ParsedEpisodeMetadata {
             season: (seasons.len() == 1).then_some(seasons[0]),
             episode_numbers: Vec::new(),
             absolute_episode: None,
@@ -3366,14 +3366,14 @@ fn project_episode(
             is_split_episode: false,
             is_mini_series: false,
             special_kind: None,
-            release_type: ParsedEpisodeReleaseTypeV2::SeasonPack,
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
             raw: Some(render_identity_raw(identity, tokens)),
         }),
         ReleaseIdentity::RangePackIdentity {
             season,
             range_start,
             range_end,
-        } => Some(ParsedEpisodeMetadataV2 {
+        } => Some(ParsedEpisodeMetadata {
             season: *season,
             episode_numbers: if season.is_some() {
                 (*range_start..=*range_end).collect()
@@ -3397,14 +3397,14 @@ fn project_episode(
             is_split_episode: false,
             is_mini_series: false,
             special_kind: None,
-            release_type: ParsedEpisodeReleaseTypeV2::RangePack,
+            release_type: ParsedEpisodeReleaseType::RangePack,
             raw: Some(render_identity_raw(identity, tokens)),
         }),
         ReleaseIdentity::SpecialIdentity {
             special_kind,
             episode_hint,
             ..
-        } => Some(ParsedEpisodeMetadataV2 {
+        } => Some(ParsedEpisodeMetadata {
             season: None,
             episode_numbers: Vec::new(),
             absolute_episode: None,
@@ -3420,7 +3420,7 @@ fn project_episode(
             is_split_episode: false,
             is_mini_series: false,
             special_kind: Some(*special_kind),
-            release_type: ParsedEpisodeReleaseTypeV2::SingleEpisode,
+            release_type: ParsedEpisodeReleaseType::SingleEpisode,
             raw: Some(render_identity_raw(identity, tokens)),
         }),
         ReleaseIdentity::MovieIdentity | ReleaseIdentity::Unknown => None,
@@ -4799,14 +4799,14 @@ fn previous_numeric_token_is_context_title(
         .any(|alias| alias.tokens.len() == 1 && alias.tokens[0] == previous.normalized)
 }
 
-fn parse_special_kind(token: &str) -> Option<ParsedSpecialKindV2> {
+fn parse_special_kind(token: &str) -> Option<ParsedSpecialKind> {
     match token {
-        "OVA" => Some(ParsedSpecialKindV2::Ova),
-        "OAD" => Some(ParsedSpecialKindV2::Oad),
-        "NCOP" => Some(ParsedSpecialKindV2::Ncop),
-        "NCED" => Some(ParsedSpecialKindV2::Nced),
-        "SPECIAL" => Some(ParsedSpecialKindV2::Special),
-        "EXTRA" => Some(ParsedSpecialKindV2::Extra),
+        "OVA" => Some(ParsedSpecialKind::Ova),
+        "OAD" => Some(ParsedSpecialKind::Oad),
+        "NCOP" => Some(ParsedSpecialKind::Ncop),
+        "NCED" => Some(ParsedSpecialKind::Nced),
+        "SPECIAL" => Some(ParsedSpecialKind::Special),
+        "EXTRA" => Some(ParsedSpecialKind::Extra),
         _ => None,
     }
 }

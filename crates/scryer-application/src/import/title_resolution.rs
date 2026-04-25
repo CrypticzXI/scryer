@@ -1,5 +1,5 @@
 use crate::{
-    ParsedReleaseMetadata, analyze_release_against_targets_v2, build_candidate_bank_contexts,
+    ParsedReleaseMetadata, analyze_release_against_targets, build_candidate_bank_contexts,
 };
 use scryer_domain::{MediaFacet, Title, TitleMatchType};
 use std::collections::{HashMap, HashSet};
@@ -567,7 +567,7 @@ fn contextual_candidate_bank_match<'a>(
         facet_hint,
         shortlist.len(),
     );
-    let analysis = analyze_release_against_targets_v2(&parsed.raw_title, &contexts);
+    let analysis = analyze_release_against_targets(&parsed.raw_title, &contexts);
     if analysis.is_ambiguous() {
         return None;
     }

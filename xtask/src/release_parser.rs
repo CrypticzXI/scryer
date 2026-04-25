@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::{ReleaseParserV2EvalArgs, TaskContext, ok, step};
+use crate::{ReleaseParserEvalArgs, TaskContext, ok, step};
 
 #[derive(Debug, Deserialize)]
 struct StructuredSample {
@@ -237,7 +237,7 @@ struct ActualEpisode {
     raw: Option<String>,
 }
 
-pub(crate) fn run_eval(ctx: &TaskContext, args: ReleaseParserV2EvalArgs) -> Result<()> {
+pub(crate) fn run_eval(ctx: &TaskContext, args: ReleaseParserEvalArgs) -> Result<()> {
     let input_path = resolve_input_path(ctx, args.input.as_ref())?;
     let output_dir = args
         .output_dir
@@ -246,7 +246,7 @@ pub(crate) fn run_eval(ctx: &TaskContext, args: ReleaseParserV2EvalArgs) -> Resu
     fs::create_dir_all(&output_dir)?;
 
     step(format!(
-        "Evaluating v2 release parser against {}",
+        "Evaluating release parser against {}",
         input_path.display()
     ));
     let file = File::open(&input_path)
@@ -294,7 +294,7 @@ pub(crate) fn run_eval(ctx: &TaskContext, args: ReleaseParserV2EvalArgs) -> Resu
         summary.total += 1;
 
         let context = build_context(&sample);
-        let parsed = scryer_release_parser_v2::best_parse_for_target(&sample.raw_title, &context);
+        let parsed = scryer_release_parser::best_parse_for_target(&sample.raw_title, &context);
         score_parse(
             &sample,
             &parsed,
@@ -304,8 +304,8 @@ pub(crate) fn run_eval(ctx: &TaskContext, args: ReleaseParserV2EvalArgs) -> Resu
         );
     }
 
-    let summary_path = output_dir.join("release_parser_v2_eval_summary.json");
-    let mismatches_path = output_dir.join("release_parser_v2_eval_mismatches.json");
+    let summary_path = output_dir.join("release_parser_eval_summary.json");
+    let mismatches_path = output_dir.join("release_parser_eval_mismatches.json");
     fs::write(&summary_path, serde_json::to_vec_pretty(&summary)?)?;
     fs::write(&mismatches_path, serde_json::to_vec_pretty(&mismatches)?)?;
 
@@ -341,7 +341,7 @@ fn resolve_input_path(ctx: &TaskContext, requested: Option<&PathBuf>) -> Result<
     })
 }
 
-fn build_context(sample: &StructuredSample) -> scryer_release_parser_v2::ReleaseParseContext {
+fn build_context(sample: &StructuredSample) -> scryer_release_parser::ReleaseParseContext {
     let authoritative_facet = if sample
         .label
         .kind
@@ -358,16 +358,16 @@ fn build_context(sample: &StructuredSample) -> scryer_release_parser_v2::Release
             .trim()
     };
     let facet_hint = match authoritative_facet.to_ascii_lowercase().as_str() {
-        "movie" => scryer_release_parser_v2::ContextFacetHint::Movie,
-        "anime" => scryer_release_parser_v2::ContextFacetHint::Anime,
-        _ => scryer_release_parser_v2::ContextFacetHint::Series,
+        "movie" => scryer_release_parser::ContextFacetHint::Movie,
+        "anime" => scryer_release_parser::ContextFacetHint::Anime,
+        _ => scryer_release_parser::ContextFacetHint::Series,
     };
     let aliases = sample
         .label
         .title_variants
         .iter()
         .filter(|value| !value.eq_ignore_ascii_case(&sample.label.title))
-        .map(|value| scryer_release_parser_v2::ContextAlias {
+        .map(|value| scryer_release_parser::ContextAlias {
             name: value.clone(),
         })
         .collect::<Vec<_>>();
@@ -376,7 +376,7 @@ fn build_context(sample: &StructuredSample) -> scryer_release_parser_v2::Release
         .episode
         .as_ref()
         .map(|episode| {
-            vec![scryer_release_parser_v2::ContextEpisode {
+            vec![scryer_release_parser::ContextEpisode {
                 season: episode.season,
                 episode: episode.episode_numbers.first().copied(),
                 absolute_number: episode.absolute_episode_numbers.first().copied(),
@@ -390,9 +390,9 @@ fn build_context(sample: &StructuredSample) -> scryer_release_parser_v2::Release
         })
         .unwrap_or_default();
 
-    scryer_release_parser_v2::ReleaseParseContext {
+    scryer_release_parser::ReleaseParseContext {
         facet_hint,
-        title: scryer_release_parser_v2::ContextTitle {
+        title: scryer_release_parser::ContextTitle {
             name: sample.label.title.clone(),
         },
         aliases,
@@ -404,7 +404,7 @@ fn build_context(sample: &StructuredSample) -> scryer_release_parser_v2::Release
 
 fn score_parse(
     sample: &StructuredSample,
-    parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2,
+    parsed: &scryer_release_parser::ParsedReleaseMetadata,
     summary: &mut EvalSummary,
     mismatches: &mut Vec<EvalMismatch>,
     max_mismatches: usize,
@@ -650,7 +650,7 @@ fn score_parse(
 
 fn matches_title(
     sample: &StructuredSample,
-    parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2,
+    parsed: &scryer_release_parser::ParsedReleaseMetadata,
 ) -> bool {
     let expected = normalize_title(sample.label.title.as_str());
     let mut actuals = parsed
@@ -664,7 +664,7 @@ fn matches_title(
 
 fn matches_episode(
     expected: Option<&ExpectedEpisode>,
-    actual: Option<&scryer_release_parser_v2::ParsedEpisodeMetadataV2>,
+    actual: Option<&scryer_release_parser::ParsedEpisodeMetadata>,
 ) -> bool {
     match (expected, actual) {
         (None, None) => true,
@@ -698,7 +698,7 @@ fn matches_episode(
 fn matches_episode_contract(
     raw_title: &str,
     expected: Option<&ExpectedEpisode>,
-    actual: Option<&scryer_release_parser_v2::ParsedEpisodeMetadataV2>,
+    actual: Option<&scryer_release_parser::ParsedEpisodeMetadata>,
 ) -> bool {
     match (expected, actual) {
         (None, None) => true,
@@ -734,7 +734,7 @@ fn matches_episode_contract(
 
 fn split_episode_contract_match(
     expected: &ExpectedEpisode,
-    actual: &scryer_release_parser_v2::ParsedEpisodeMetadataV2,
+    actual: &scryer_release_parser::ParsedEpisodeMetadata,
 ) -> bool {
     expected.is_split_episode == actual.is_split_episode
         || (!expected.is_split_episode
@@ -745,7 +745,7 @@ fn split_episode_contract_match(
 fn mini_series_contract_match(
     raw_title: &str,
     expected: &ExpectedEpisode,
-    actual: &scryer_release_parser_v2::ParsedEpisodeMetadataV2,
+    actual: &scryer_release_parser::ParsedEpisodeMetadata,
 ) -> bool {
     expected.is_mini_series == actual.is_mini_series
         || (expected.is_mini_series
@@ -765,7 +765,7 @@ fn raw_has_trusted_mini_series_evidence(raw_title: &str) -> bool {
 
 fn episode_numbers_contract_match(
     expected: &ExpectedEpisode,
-    actual: &scryer_release_parser_v2::ParsedEpisodeMetadataV2,
+    actual: &scryer_release_parser::ParsedEpisodeMetadata,
 ) -> bool {
     expected.episode_numbers == actual.episode_numbers
         || (!expected.episode_numbers.is_empty()
@@ -774,18 +774,17 @@ fn episode_numbers_contract_match(
             && expected.episode_numbers == expected.absolute_episode_numbers)
 }
 
-fn kind_label(parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2) -> &'static str {
+fn kind_label(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> &'static str {
     match parsed.parse_family {
-        scryer_release_parser_v2::ParseFamily::Movie => "movie",
-        scryer_release_parser_v2::ParseFamily::SeasonPack => "season_pack",
-        scryer_release_parser_v2::ParseFamily::EpisodeRangePack => "multi_episode",
-        scryer_release_parser_v2::ParseFamily::Special => "episode",
-        scryer_release_parser_v2::ParseFamily::DailyEpisode => "episode",
-        scryer_release_parser_v2::ParseFamily::StandardEpisode
-        | scryer_release_parser_v2::ParseFamily::AnimeAbsolute => {
+        scryer_release_parser::ParseFamily::Movie => "movie",
+        scryer_release_parser::ParseFamily::SeasonPack => "season_pack",
+        scryer_release_parser::ParseFamily::EpisodeRangePack => "multi_episode",
+        scryer_release_parser::ParseFamily::Special => "episode",
+        scryer_release_parser::ParseFamily::DailyEpisode => "episode",
+        scryer_release_parser::ParseFamily::StandardEpisode
+        | scryer_release_parser::ParseFamily::AnimeAbsolute => {
             if parsed.episode.as_ref().is_some_and(|episode| {
-                episode.release_type
-                    == scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::RangePack
+                episode.release_type == scryer_release_parser::ParsedEpisodeReleaseType::RangePack
                     || episode.episode_numbers.len() > 1
                     || episode.absolute_episode_numbers.len() > 1
             }) {
@@ -794,7 +793,7 @@ fn kind_label(parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2) -> &'s
                 "episode"
             }
         }
-        scryer_release_parser_v2::ParseFamily::Unknown => "unknown",
+        scryer_release_parser::ParseFamily::Unknown => "unknown",
     }
 }
 
@@ -972,7 +971,7 @@ fn trusted_language_terms(language: &str) -> Option<&'static [&'static str]> {
 
 fn missing_fields_match_or_improved(
     label: &ExpectedLabel,
-    parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2,
+    parsed: &scryer_release_parser::ParsedReleaseMetadata,
 ) -> bool {
     let expected_missing = normalize_string_vec(label.missing_fields.as_slice());
     let actual_missing = normalize_string_vec(parsed.missing_fields.as_slice());
@@ -1092,7 +1091,7 @@ fn raw_has_trusted_service_evidence(raw_title: &str, service: &str) -> bool {
     has_any_token(&tokens, terms)
 }
 
-fn actual_flags(parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2) -> ExpectedFlags {
+fn actual_flags(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> ExpectedFlags {
     ExpectedFlags {
         dual_audio: parsed.is_dual_audio,
         atmos: parsed.is_atmos,
@@ -1246,7 +1245,7 @@ fn metadata_snapshot_from_expected(label: &ExpectedLabel) -> MetadataSnapshot {
 }
 
 fn metadata_snapshot_from_actual(
-    parsed: &scryer_release_parser_v2::ParsedReleaseMetadataV2,
+    parsed: &scryer_release_parser::ParsedReleaseMetadata,
 ) -> MetadataSnapshot {
     MetadataSnapshot {
         quality: parsed.quality.clone(),
@@ -1275,25 +1274,25 @@ fn push_field_mismatch(field_mismatches: &mut Vec<String>, field: &str, matched:
 }
 
 fn episode_release_type_label(
-    value: scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2,
+    value: scryer_release_parser::ParsedEpisodeReleaseType,
 ) -> &'static str {
     match value {
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::SingleEpisode => "single_episode",
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::MultiEpisode => "multi_episode",
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::SeasonPack => "season_pack",
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::RangePack => "multi_episode",
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::Daily => "single_episode",
-        scryer_release_parser_v2::ParsedEpisodeReleaseTypeV2::Unknown => "unknown",
+        scryer_release_parser::ParsedEpisodeReleaseType::SingleEpisode => "single_episode",
+        scryer_release_parser::ParsedEpisodeReleaseType::MultiEpisode => "multi_episode",
+        scryer_release_parser::ParsedEpisodeReleaseType::SeasonPack => "season_pack",
+        scryer_release_parser::ParsedEpisodeReleaseType::RangePack => "multi_episode",
+        scryer_release_parser::ParsedEpisodeReleaseType::Daily => "single_episode",
+        scryer_release_parser::ParsedEpisodeReleaseType::Unknown => "unknown",
     }
 }
 
-fn special_kind_label(value: scryer_release_parser_v2::ParsedSpecialKindV2) -> String {
+fn special_kind_label(value: scryer_release_parser::ParsedSpecialKind) -> String {
     match value {
-        scryer_release_parser_v2::ParsedSpecialKindV2::Special => "special".to_string(),
-        scryer_release_parser_v2::ParsedSpecialKindV2::Ova => "ova".to_string(),
-        scryer_release_parser_v2::ParsedSpecialKindV2::Oad => "oad".to_string(),
-        scryer_release_parser_v2::ParsedSpecialKindV2::Ncop => "ncop".to_string(),
-        scryer_release_parser_v2::ParsedSpecialKindV2::Nced => "nced".to_string(),
-        scryer_release_parser_v2::ParsedSpecialKindV2::Extra => "extra".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Special => "special".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Ova => "ova".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Oad => "oad".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Ncop => "ncop".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Nced => "nced".to_string(),
+        scryer_release_parser::ParsedSpecialKind::Extra => "extra".to_string(),
     }
 }

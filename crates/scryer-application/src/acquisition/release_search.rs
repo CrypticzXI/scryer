@@ -284,8 +284,7 @@ fn contextual_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
-    let contextual =
-        crate::analyze_release_for_target_v2(&parsed.raw_title, &evidence.parse_context);
+    let contextual = crate::analyze_release_for_target(&parsed.raw_title, &evidence.parse_context);
     if contextual.is_unparseable() || contextual.is_ambiguous {
         return false;
     }

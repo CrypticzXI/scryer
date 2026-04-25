@@ -197,7 +197,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "scryer-release-parser-v2"
+name = "scryer-release-parser"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -207,11 +207,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "scryer-release-parser-v2-fuzz"
+name = "scryer-release-parser-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "scryer-release-parser-v2",
+ "scryer-release-parser",
 ]
 
 [[package]]

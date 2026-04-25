@@ -486,7 +486,7 @@ jobs:
           -p scryer-interface
           -p scryer-mediainfo
           -p scryer-plugins
-          -p scryer-release-parser-v2
+          -p scryer-release-parser
           -p scryer-rules
           -- -D warnings
       - name: Run production binary package tests
@@ -503,7 +503,7 @@ jobs:
           -p scryer-interface
           -p scryer-mediainfo
           -p scryer-plugins
-          -p scryer-release-parser-v2
+          -p scryer-release-parser
           -p scryer-rules
 
   docker-publish:

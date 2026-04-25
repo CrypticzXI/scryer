@@ -246,11 +246,11 @@ pub use ports::{
     WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata,
-    ParsedReleaseMetadataV2, ParsedSpecialKind, ReleaseParseAnalysis, ReleaseParseContext,
-    TargetedReleaseParseAnalysis, analyze_release_against_targets_v2,
-    analyze_release_for_target_v2, best_parse_v2, build_candidate_bank_contexts,
-    build_release_parse_context, build_release_parse_context_for_title, parse_release_metadata,
+    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
+    ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis,
+    analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
+    build_candidate_bank_contexts, build_release_parse_context,
+    build_release_parse_context_for_title, parse_release_metadata,
     parse_release_metadata_for_target,
 };
 pub use quality::scoring_weights::{

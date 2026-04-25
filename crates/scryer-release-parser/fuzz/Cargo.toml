@@ -1,5 +1,5 @@
 [package]
-name = "scryer-release-parser-v2-fuzz"
+name = "scryer-release-parser-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-scryer-release-parser-v2 = { path = ".." }
+scryer-release-parser = { path = ".." }
 
 [[bin]]
 name = "analyze_release_for_target"

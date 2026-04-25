@@ -1,27 +1,23 @@
 use chrono::NaiveDate;
 use scryer_domain::{Collection, Episode, MediaFacet, Title};
 
-pub use scryer_release_parser_v2::{
+pub use scryer_release_parser::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseDisposition,
-    ParsedEpisodeMetadataV2 as ParsedEpisodeMetadata,
-    ParsedEpisodeReleaseTypeV2 as ParsedEpisodeReleaseType, ParsedReleaseMetadataV2,
-    ParsedReleaseMetadataV2 as ParsedReleaseMetadata, ParsedSpecialKindV2 as ParsedSpecialKind,
+    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
     ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis,
-    analyze_release_against_targets as analyze_release_against_targets_v2,
-    analyze_release_for_target as analyze_release_for_target_v2,
-    best_parse_for_target as best_parse_v2,
+    analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
 };
 
 pub fn parse_release_metadata(raw: &str) -> ParsedReleaseMetadata {
     let context = synthesize_release_parse_context(raw);
-    project_analysis(raw, &analyze_release_for_target_v2(raw, &context))
+    project_analysis(raw, &analyze_release_for_target(raw, &context))
 }
 
 pub fn parse_release_metadata_for_target(
     raw: &str,
     context: &ReleaseParseContext,
 ) -> ParsedReleaseMetadata {
-    project_analysis(raw, &analyze_release_for_target_v2(raw, context))
+    project_analysis(raw, &analyze_release_for_target(raw, context))
 }
 
 pub fn build_release_parse_context(
@@ -30,7 +26,7 @@ pub fn build_release_parse_context(
     _collection: Option<&Collection>,
     facet_hint: Option<&str>,
 ) -> ReleaseParseContext {
-    build_release_parse_context_from_episodes(title, episode.into_iter(), facet_hint)
+    build_release_parse_context_from_episodes(title, episode, facet_hint)
 }
 
 pub fn build_release_parse_context_for_title(

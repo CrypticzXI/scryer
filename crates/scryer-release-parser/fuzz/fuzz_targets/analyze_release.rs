@@ -12,14 +12,14 @@ fuzz_target!(|data: &[u8]| {
         .unwrap_or("Unknown")
         .to_string();
 
-    let context = scryer_release_parser_v2::ReleaseParseContext {
-        facet_hint: scryer_release_parser_v2::ContextFacetHint::Series,
-        title: scryer_release_parser_v2::ContextTitle { name: title },
+    let context = scryer_release_parser::ReleaseParseContext {
+        facet_hint: scryer_release_parser::ContextFacetHint::Series,
+        title: scryer_release_parser::ContextTitle { name: title },
         aliases: Vec::new(),
         known_years: Vec::new(),
         imdb_ids: Vec::new(),
         episodes: Vec::new(),
     };
 
-    let _ = scryer_release_parser_v2::analyze_release_for_target(candidate.as_ref(), &context);
+    let _ = scryer_release_parser::analyze_release_for_target(candidate.as_ref(), &context);
 });

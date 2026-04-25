@@ -129,68 +129,6 @@ struct RadarrRow {
     error: Option<String>,
 }
 
-pub(crate) fn run_v1_eval(ctx: &TaskContext, args: ReleaseParserEvalArgs) -> Result<()> {
-    let input_path = resolve_input_path(ctx, args.input.as_ref())?;
-    let output_dir = args
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| input_path.parent().unwrap_or(Path::new(".")).to_path_buf());
-    fs::create_dir_all(&output_dir)?;
-
-    step(format!(
-        "Evaluating v1 release parser against {}",
-        input_path.display()
-    ));
-
-    let file = File::open(&input_path)
-        .with_context(|| format!("failed to open {}", input_path.display()))?;
-    let reader = BufReader::new(file);
-
-    let mut summary = EvalSummary {
-        parser: "scryer-release-parser-v1".to_string(),
-        input_path: input_path.display().to_string(),
-        total: 0,
-        exact_title: 0,
-        full_match: 0,
-        kind_match: 0,
-        year_match: 0,
-        episode_match: 0,
-        source_match: 0,
-        mismatches_recorded: 0,
-        facets: BTreeMap::new(),
-    };
-    let mut mismatches = Vec::<EvalMismatch>::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let sample: StructuredSample =
-            serde_json::from_str(&line).context("failed to deserialize structured sample")?;
-        summary.total += 1;
-        let parsed = scryer_release_parser::parse_release_metadata(&sample.raw_title);
-        let comparable = comparable_from_v1(&parsed);
-        score_parse(
-            &sample,
-            comparable,
-            &mut summary,
-            &mut mismatches,
-            args.max_mismatches,
-        );
-    }
-
-    write_eval_outputs(
-        &output_dir,
-        "release_parser_v1_eval_summary.json",
-        "release_parser_v1_eval_mismatches.json",
-        &summary,
-        &mismatches,
-    )?;
-
-    Ok(())
-}
-
 pub(crate) fn run_guessit_eval(ctx: &TaskContext, args: ReleaseParserEvalArgs) -> Result<()> {
     let input_path = resolve_input_path(ctx, args.input.as_ref())?;
     let output_dir = args
@@ -513,38 +451,6 @@ fn score_parse(
             parser_error: parsed.parser_error,
         });
         summary.mismatches_recorded = mismatches.len();
-    }
-}
-
-fn comparable_from_v1(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> ComparableParse {
-    let mut titles = parsed.normalized_title_variants.clone();
-    if !parsed.normalized_title.is_empty()
-        && titles
-            .iter()
-            .all(|title| !title.eq_ignore_ascii_case(&parsed.normalized_title))
-    {
-        titles.push(parsed.normalized_title.clone());
-    }
-
-    let episode = parsed.episode.as_ref().map(|episode| ActualEpisode {
-        season: episode.season,
-        episode_numbers: episode.episode_numbers.clone(),
-        absolute_episode_numbers: if episode.absolute_episode_numbers.is_empty() {
-            episode.absolute_episode.into_iter().collect()
-        } else {
-            episode.absolute_episode_numbers.clone()
-        },
-        air_date: episode.air_date.map(|value| value.to_string()),
-        release_type: format!("{:?}", episode.release_type),
-    });
-
-    ComparableParse {
-        titles,
-        kind: kind_label_v1(parsed).to_string(),
-        year: parsed.year.map(|value| value as i32),
-        source: parsed.source.clone(),
-        episode,
-        parser_error: None,
     }
 }
 
@@ -924,29 +830,6 @@ fn matches_episode(expected: Option<&ExpectedEpisode>, actual: Option<&ActualEpi
         }
         _ => false,
     }
-}
-
-fn kind_label_v1(parsed: &scryer_release_parser::ParsedReleaseMetadata) -> &'static str {
-    let Some(episode) = parsed.episode.as_ref() else {
-        return "movie";
-    };
-
-    if episode.full_season
-        || episode.is_partial_season
-        || episode.is_multi_season
-        || episode.release_type == scryer_release_parser::ParsedEpisodeReleaseType::SeasonPack
-    {
-        return "season_pack";
-    }
-
-    if episode.episode_numbers.len() > 1
-        || episode.absolute_episode_numbers.len() > 1
-        || episode.release_type == scryer_release_parser::ParsedEpisodeReleaseType::MultiEpisode
-    {
-        return "multi_episode";
-    }
-
-    "episode"
 }
 
 fn guessit_kind(

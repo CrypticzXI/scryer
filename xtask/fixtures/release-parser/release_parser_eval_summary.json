@@ -1,5 +1,5 @@
 {
-  "input_path": "xtask/fixtures/release-parser-v2/bastard_animetosho_17175.jsonl",
+  "input_path": "xtask/fixtures/release-parser/bastard_animetosho_17175.jsonl",
   "total": 14,
   "exact_title": 14,
   "full_match": 14,
