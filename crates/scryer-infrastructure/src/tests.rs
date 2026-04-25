@@ -944,7 +944,13 @@ async fn review_regression_download_submission_episode_links_cascade_with_parent
         .fetch_one(&pool)
         .await
         .expect("link count should load");
-    assert_eq!(count, 0);
+    // Episode deletion does not cascade — the link table is a submission-time
+    // audit record and outlives episode catalog churn. Cascade applies only
+    // to the download_submissions parent.
+    assert_eq!(
+        count, 1,
+        "link survives episode deletion: episode_id has no FK cascade"
+    );
 }
 
 #[tokio::test]
