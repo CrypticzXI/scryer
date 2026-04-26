@@ -11,6 +11,17 @@ pub(crate) struct DownloadClientRoutingEntry {
     pub(crate) remove_failed: bool,
 }
 
+pub(crate) fn default_download_client_routing_entry() -> DownloadClientRoutingEntry {
+    DownloadClientRoutingEntry {
+        enabled: true,
+        category: None,
+        recent_queue_priority: None,
+        older_queue_priority: None,
+        remove_completed: true,
+        remove_failed: false,
+    }
+}
+
 pub(crate) fn is_logical_specials_collection(collection: &Collection) -> bool {
     collection.collection_type == CollectionType::Specials
         || (collection.collection_type == CollectionType::Season
@@ -49,6 +60,15 @@ fn read_routing_bool(raw_value: Option<&serde_json::Value>, default: bool) -> bo
     }
 }
 
+/// Parse a stored download-client routing JSON object into the typed entry.
+///
+/// Per-field default fallbacks (`removeCompleted` → `true`, `removeFailed` →
+/// `false`) and legacy key aliases (`removeComplete`, `remove_completed`,
+/// `recentPriority`, etc.) are transitional legacy-compat behavior. The
+/// canonical write paths in `settings.rs` and the startup
+/// `normalize_routing_settings` migration always emit fully-materialized
+/// entries; once every install has been normalized, the fallbacks here can be
+/// removed.
 pub(crate) fn parse_download_client_routing_entry(
     config: &serde_json::Value,
 ) -> DownloadClientRoutingEntry {
@@ -72,7 +92,7 @@ pub(crate) fn parse_download_client_routing_entry(
                 .get("removeCompleted")
                 .or_else(|| config.get("remove_completed"))
                 .or_else(|| config.get("removeComplete")),
-            false,
+            true,
         ),
         remove_failed: read_routing_bool(
             config
@@ -299,6 +319,19 @@ mod routing_tests {
         assert_eq!(entry.older_queue_priority.as_deref(), Some("low"));
         assert!(entry.remove_completed);
         assert!(entry.remove_failed);
+    }
+
+    #[test]
+    fn routing_entry_defaults_remove_completed_when_flag_is_missing() {
+        let entry = parse_download_client_routing_entry(&json!({
+            "enabled": true,
+            "category": "series"
+        }));
+
+        assert!(entry.enabled);
+        assert_eq!(entry.category.as_deref(), Some("series"));
+        assert!(entry.remove_completed);
+        assert!(!entry.remove_failed);
     }
 }
 

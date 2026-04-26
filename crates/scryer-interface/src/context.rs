@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Error, Result as GqlResult, Schema};
+use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, Schema};
 use scryer_application::AppError;
 use scryer_application::AppUseCase;
 use scryer_domain::User;
@@ -66,7 +66,13 @@ pub(crate) fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
 }
 
 pub(crate) fn to_gql_error(err: AppError) -> Error {
-    Error::new(err.to_string())
+    match err {
+        AppError::DownloadFeedbackTimeout(message) => Error::new(message)
+            .extend_with(|_, extensions| {
+                extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
+            }),
+        _ => Error::new(err.to_string()),
+    }
 }
 
 pub(crate) fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {

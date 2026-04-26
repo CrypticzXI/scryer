@@ -229,6 +229,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<SubtitleDownloadRecord[]>([]);
   const [wantedItem, setWantedItem] = React.useState<WantedItem | null>(null);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
+  const [downloadFeedbackWarning, setDownloadFeedbackWarning] = React.useState<string | null>(null);
   const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
     React.useState(false);
   const [monitoredUpdating, setMonitoredUpdating] = React.useState(false);
@@ -250,6 +251,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
+  const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const [wantedActionLoading, setWantedActionLoading] = React.useState<
     "pause" | "resume" | "reset" | null
   >(null);
@@ -308,6 +310,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setSubtitleDownloads(snapshot.subtitleDownloads);
       setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
       setHasDownloadClients(snapshot.hasDownloadClients);
+      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
       setRenamePlan(null);
     },
     [onTitleResolved],
@@ -318,6 +321,20 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setShowSearchPrerequisiteNotice(false);
     }
   }, [hasDownloadClients]);
+
+  React.useEffect(() => {
+    if (downloadFeedbackWarning === null) {
+      lastShownDownloadFeedbackWarningRef.current = null;
+      return;
+    }
+
+    if (lastShownDownloadFeedbackWarningRef.current === downloadFeedbackWarning) {
+      return;
+    }
+
+    lastShownDownloadFeedbackWarningRef.current = downloadFeedbackWarning;
+    setGlobalStatus(downloadFeedbackWarning);
+  }, [downloadFeedbackWarning, setGlobalStatus]);
 
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
@@ -348,6 +365,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setRenamePreviewing(false);
       setRenameApplying(false);
       setHasDownloadClients(true);
+      setDownloadFeedbackWarning(null);
       setShowSearchPrerequisiteNotice(false);
       setTitleLookupAttempted(false);
       setTitleLookupFailed(false);

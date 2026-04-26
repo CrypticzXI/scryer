@@ -256,7 +256,7 @@ fn encode_setting_json<T: Serialize>(value: &T) -> AppResult<String> {
     serde_json::to_string(value).map_err(|error| AppError::Repository(error.to_string()))
 }
 
-fn parse_download_client_routing_priority(raw_priority: &serde_json::Value) -> Option<i64> {
+fn parse_routing_priority(raw_priority: &serde_json::Value) -> Option<i64> {
     match raw_priority {
         serde_json::Value::Number(number) => number.as_i64(),
         serde_json::Value::String(value) => value.parse::<i64>().ok(),
@@ -264,22 +264,20 @@ fn parse_download_client_routing_priority(raw_priority: &serde_json::Value) -> O
     }
 }
 
-fn next_download_client_routing_priority(
-    routing_by_client: &serde_json::Map<String, serde_json::Value>,
-) -> i64 {
-    let max_explicit_priority = routing_by_client
+fn next_routing_priority(routing_by_id: &serde_json::Map<String, serde_json::Value>) -> i64 {
+    let max_explicit_priority = routing_by_id
         .values()
         .filter_map(|value| value.get("priority"))
-        .filter_map(parse_download_client_routing_priority)
+        .filter_map(parse_routing_priority)
         .max();
 
     match max_explicit_priority {
         Some(max_priority) => max_priority + 1,
-        None => routing_by_client.len() as i64 + 1,
+        None => routing_by_id.len() as i64 + 1,
     }
 }
 
-fn default_download_client_routing_entry(priority: i64) -> serde_json::Value {
+fn default_download_client_routing_entry_json(priority: i64) -> serde_json::Value {
     serde_json::json!({
         "enabled": true,
         "category": "",
@@ -289,6 +287,88 @@ fn default_download_client_routing_entry(priority: i64) -> serde_json::Value {
         "removeFailed": false,
         "priority": priority,
     })
+}
+
+fn default_indexer_routing_entry_json(priority: i64) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "categories": Vec::<String>::new(),
+        "priority": priority,
+    })
+}
+
+/// Fill in any fields missing from a stored download-client routing entry with
+/// canonical defaults. Returns `true` if the entry was modified. This is the
+/// single source of truth for what a "complete" entry looks like at rest, used
+/// by both the per-client ensure path and the startup normalization migration.
+fn normalize_download_client_routing_entry_in_place(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    fallback_priority: i64,
+) -> bool {
+    let mut changed = false;
+    if !entry.contains_key("enabled") {
+        entry.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("category") {
+        entry.insert("category".to_string(), serde_json::Value::String(String::new()));
+        changed = true;
+    }
+    if !entry.contains_key("recentQueuePriority") {
+        entry.insert(
+            "recentQueuePriority".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("olderQueuePriority") {
+        entry.insert(
+            "olderQueuePriority".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("removeCompleted") {
+        entry.insert("removeCompleted".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("removeFailed") {
+        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(false));
+        changed = true;
+    }
+    if !entry.contains_key("priority") {
+        entry.insert(
+            "priority".to_string(),
+            serde_json::Value::Number(fallback_priority.into()),
+        );
+        changed = true;
+    }
+    changed
+}
+
+/// Fill in any fields missing from a stored indexer routing entry with
+/// canonical defaults. Returns `true` if the entry was modified.
+fn normalize_indexer_routing_entry_in_place(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    fallback_priority: i64,
+) -> bool {
+    let mut changed = false;
+    if !entry.contains_key("enabled") {
+        entry.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("categories") {
+        entry.insert("categories".to_string(), serde_json::Value::Array(Vec::new()));
+        changed = true;
+    }
+    if !entry.contains_key("priority") {
+        entry.insert(
+            "priority".to_string(),
+            serde_json::Value::Number(fallback_priority.into()),
+        );
+        changed = true;
+    }
+    changed
 }
 
 fn library_path_key(facet: &MediaFacet) -> &'static str {
@@ -2427,10 +2507,10 @@ impl AppUseCase {
                 continue;
             }
 
-            let next_priority = next_download_client_routing_priority(&payload);
+            let next_priority = next_routing_priority(&payload);
             payload.insert(
                 client_id.to_string(),
-                default_download_client_routing_entry(next_priority),
+                default_download_client_routing_entry_json(next_priority),
             );
 
             self.services
@@ -2439,6 +2519,49 @@ impl AppUseCase {
                 .upsert_setting_json(
                     SETTINGS_SCOPE_SYSTEM,
                     DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                    Some(scope_id.to_string()),
+                    serde_json::Value::Object(payload).to_string(),
+                    "admin_graphql",
+                    Some(actor.id.clone()),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn ensure_indexer_routing_entry_for_indexer(
+        &self,
+        actor: &User,
+        indexer_id: &str,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        for scope_id in ["movie", "series", "anime"] {
+            let current = self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
+                .await?;
+            let mut payload = current
+                .as_deref()
+                .and_then(parse_json_object)
+                .unwrap_or_default();
+
+            if payload.contains_key(indexer_id) {
+                continue;
+            }
+
+            let next_priority = next_routing_priority(&payload);
+            payload.insert(
+                indexer_id.to_string(),
+                default_indexer_routing_entry_json(next_priority),
+            );
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    INDEXER_ROUTING_SETTINGS_KEY,
                     Some(scope_id.to_string()),
                     serde_json::Value::Object(payload).to_string(),
                     "admin_graphql",
@@ -2531,6 +2654,80 @@ impl AppUseCase {
         .await;
 
         self.get_indexer_routing(actor, scope_id).await
+    }
+
+    /// Idempotent backfill: walks all persisted routing settings and rewrites
+    /// any entry that is missing canonical fields with explicit defaults.
+    /// Intended to run once per startup so legacy installs converge on the
+    /// fully-materialized JSON shape that the typed write paths now produce.
+    /// Reads stay read-only — this is the single explicit write boundary for
+    /// the migration.
+    pub async fn normalize_routing_settings(&self) -> AppResult<()> {
+        const NORMALIZE_SOURCE: &str = "startup_normalize_routing";
+
+        for scope_id in ["movie", "series", "anime"] {
+            if let Some(raw_json) = self.load_download_client_routing_json(scope_id).await?
+                && let Some(mut payload) = parse_json_object(&raw_json)
+            {
+                let mut changed = false;
+                let next_priority = next_routing_priority(&payload);
+                for (_, value) in payload.iter_mut() {
+                    if let Some(entry) = value.as_object_mut()
+                        && normalize_download_client_routing_entry_in_place(entry, next_priority)
+                    {
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                            Some(scope_id.to_string()),
+                            serde_json::Value::Object(payload).to_string(),
+                            NORMALIZE_SOURCE,
+                            None,
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        for scope_id in ["movie", "series", "anime"] {
+            if let Some(raw_json) = self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
+                .await?
+                && let Some(mut payload) = parse_json_object(&raw_json)
+            {
+                let mut changed = false;
+                let next_priority = next_routing_priority(&payload);
+                for (_, value) in payload.iter_mut() {
+                    if let Some(entry) = value.as_object_mut()
+                        && normalize_indexer_routing_entry_in_place(entry, next_priority)
+                    {
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            INDEXER_ROUTING_SETTINGS_KEY,
+                            Some(scope_id.to_string()),
+                            serde_json::Value::Object(payload).to_string(),
+                            NORMALIZE_SOURCE,
+                            None,
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn update_subtitle_settings(

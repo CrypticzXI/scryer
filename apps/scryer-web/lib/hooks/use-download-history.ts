@@ -52,6 +52,7 @@ export function useDownloadHistory({
     [],
   );
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const lastReportedErrorRef = useRef<string | null>(null);
   const filtersKey = filters.join("|");
   const clientIdsKey = clientIds?.join("|") ?? "";
   const sortKey = `${sort.key}:${sort.direction}`;
@@ -107,16 +108,24 @@ export function useDownloadHistory({
       setHistoryTotalPages(Math.max(1, Math.ceil(historyPage.totalCount / HISTORY_PAGE_SIZE)));
       setHistoryAvailableClients(historyPage.availableClients);
       setHistoryError(null);
+      lastReportedErrorRef.current = null;
       setLastRefreshedAt(new Date());
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to load activity history.";
       setHistoryError(message);
-      setGlobalStatus(message);
+      if (lastReportedErrorRef.current !== message) {
+        lastReportedErrorRef.current = message;
+        setGlobalStatus(message);
+      }
     } finally {
       setHistoryLoading(false);
     }
   }, [enabled, fetchHistoryPage, setGlobalStatus]);
+
+  useEffect(() => {
+    lastReportedErrorRef.current = null;
+  }, [clientIdsKey, enabled, filtersKey, page, sortKey, sourceKey]);
 
   useEffect(() => {
     if (!enabled) {

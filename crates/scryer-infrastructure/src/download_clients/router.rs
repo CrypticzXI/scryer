@@ -1,15 +1,19 @@
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::Client;
 use scryer_application::{
-    AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientConfigRepository,
-    DownloadClientPluginProvider, DownloadGrabResult, DownloadSourceKind, SettingsRepository,
-    StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
+    AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
+    DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
+    DownloadGrabResult, DownloadSourceKind, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    accepted_inputs_for_client,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tracing::warn;
 
 use super::nzbget::NzbgetDownloadClient;
@@ -22,6 +26,7 @@ use super::{
 
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
+const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone)]
 pub struct PrioritizedDownloadClientRouter {
@@ -32,6 +37,197 @@ pub struct PrioritizedDownloadClientRouter {
     staged_nzb_pipeline_limit: Arc<Semaphore>,
     plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
     http_client: Client,
+    feedback_read_timeout: Duration,
+}
+
+#[derive(Clone)]
+struct FeedbackTimeoutDownloadClient {
+    inner: Arc<dyn DownloadClient>,
+    read_timeout: Duration,
+}
+
+impl FeedbackTimeoutDownloadClient {
+    fn new(inner: Arc<dyn DownloadClient>, read_timeout: Duration) -> Self {
+        Self {
+            inner,
+            read_timeout,
+        }
+    }
+
+    async fn run_feedback_read<T, F>(&self, future: F) -> AppResult<T>
+    where
+        F: Future<Output = AppResult<T>> + Send,
+        T: Send,
+    {
+        timeout(self.read_timeout, future)
+            .await
+            .map_err(|_| {
+                AppError::DownloadFeedbackTimeout(DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string())
+            })?
+    }
+}
+
+#[async_trait]
+impl DownloadClient for FeedbackTimeoutDownloadClient {
+    async fn submit_download(
+        &self,
+        request: &DownloadClientAddRequest,
+    ) -> AppResult<DownloadGrabResult> {
+        self.inner.submit_download(request).await
+    }
+
+    async fn submit_to_download_queue(
+        &self,
+        title: &scryer_domain::Title,
+        source_hint: Option<String>,
+        source_kind: Option<DownloadSourceKind>,
+        source_title: Option<String>,
+        source_password: Option<String>,
+        category: Option<String>,
+    ) -> AppResult<DownloadGrabResult> {
+        self.inner
+            .submit_to_download_queue(
+                title,
+                source_hint,
+                source_kind,
+                source_title,
+                source_password,
+                category,
+            )
+            .await
+    }
+
+    async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_queue()).await
+    }
+
+    async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_queue_for_title(title_id))
+            .await
+    }
+
+    async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_history()).await
+    }
+
+    async fn list_history_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_history_page(offset, limit))
+            .await
+    }
+
+    async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_recent_activity(limit))
+            .await
+    }
+
+    async fn list_recent_activity_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_recent_activity_for_title(title_id, limit))
+            .await
+    }
+
+    async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.inner.list_completed_downloads().await
+    }
+
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.inner.list_recent_completed_downloads(limit).await
+    }
+
+    async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
+        self.inner.pause_queue_item(id).await
+    }
+
+    async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        self.inner.pause_queue_item_for_client(client_id, id).await
+    }
+
+    async fn resume_queue_item(&self, id: &str) -> AppResult<()> {
+        self.inner.resume_queue_item(id).await
+    }
+
+    async fn resume_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        self.inner.resume_queue_item_for_client(client_id, id).await
+    }
+
+    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+        self.inner.delete_queue_item(id, is_history).await
+    }
+
+    async fn delete_queue_item_for_client_id(
+        &self,
+        client_id: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .delete_queue_item_for_client_id(client_id, id, is_history)
+            .await
+    }
+
+    async fn delete_queue_item_for_client(
+        &self,
+        client_type: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .delete_queue_item_for_client(client_type, id, is_history)
+            .await
+    }
+
+    async fn mark_imported(
+        &self,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner.mark_imported(request).await
+    }
+
+    async fn get_client_status(&self) -> AppResult<scryer_application::DownloadClientStatus> {
+        self.inner.get_client_status().await
+    }
+
+    async fn test_connection(&self) -> AppResult<String> {
+        self.inner.test_connection().await
+    }
+}
+
+#[derive(Default)]
+struct FeedbackReadSummary {
+    successful_clients: usize,
+    timed_out_clients: usize,
+}
+
+impl FeedbackReadSummary {
+    fn record_success(&mut self) {
+        self.successful_clients += 1;
+    }
+
+    fn record_error(&mut self, error: &AppError) {
+        if matches!(error, AppError::DownloadFeedbackTimeout(_)) {
+            self.timed_out_clients += 1;
+        }
+    }
+
+    fn finish(self) -> AppResult<()> {
+        if self.successful_clients == 0 && self.timed_out_clients > 0 {
+            return Err(AppError::DownloadFeedbackTimeout(
+                DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 struct FacetClientSelection {
@@ -58,15 +254,46 @@ impl PrioritizedDownloadClientRouter {
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
     ) -> Self {
-        Self {
+        Self::with_feedback_read_timeout(
             download_client_configs,
             settings,
             fallback_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
+            Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS),
+        )
+    }
+
+    fn with_feedback_read_timeout(
+        download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+        settings: Arc<dyn SettingsRepository>,
+        fallback_client: Arc<dyn DownloadClient>,
+        staged_nzb_store: Arc<dyn StagedNzbStore>,
+        staged_nzb_pipeline_limit: Arc<Semaphore>,
+        plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
+        feedback_read_timeout: Duration,
+    ) -> Self {
+        Self {
+            download_client_configs,
+            settings,
+            fallback_client: Self::wrap_feedback_client(fallback_client, feedback_read_timeout),
+            staged_nzb_store,
+            staged_nzb_pipeline_limit,
+            plugin_provider,
             http_client: Client::new(),
+            feedback_read_timeout,
         }
+    }
+
+    fn wrap_feedback_client(
+        client: Arc<dyn DownloadClient>,
+        feedback_read_timeout: Duration,
+    ) -> Arc<dyn DownloadClient> {
+        Arc::new(FeedbackTimeoutDownloadClient::new(
+            client,
+            feedback_read_timeout,
+        ))
     }
 
     async fn list_enabled_clients_by_priority(&self) -> AppResult<Vec<DownloadClientConfig>> {
@@ -349,11 +576,12 @@ impl PrioritizedDownloadClientRouter {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<&Arc<dyn DownloadClientPluginProvider>>,
+        feedback_read_timeout: Duration,
     ) -> AppResult<Arc<dyn DownloadClient>> {
         if let Some(provider) = plugin_provider
             && let Some(client) = provider.client_for_config(config)
         {
-            return Ok(client);
+            return Ok(Self::wrap_feedback_client(client, feedback_read_timeout));
         }
 
         match config.client_type.as_str() {
@@ -378,7 +606,10 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 );
-                Ok(Arc::new(client))
+                Ok(Self::wrap_feedback_client(
+                    Arc::new(client),
+                    feedback_read_timeout,
+                ))
             }
             "sabnzbd" => {
                 let parsed_config = parse_download_client_config_json(&config.config_json)?;
@@ -402,7 +633,10 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 );
-                Ok(Arc::new(client))
+                Ok(Self::wrap_feedback_client(
+                    Arc::new(client),
+                    feedback_read_timeout,
+                ))
             }
             "weaver" => {
                 let client = WeaverDownloadClient::from_config_with_staged_nzb_store(
@@ -410,7 +644,10 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 )?;
-                Ok(Arc::new(client))
+                Ok(Self::wrap_feedback_client(
+                    Arc::new(client),
+                    feedback_read_timeout,
+                ))
             }
             _ => Err(AppError::Validation(format!(
                 "unsupported download client type '{}' for config {}",
@@ -436,6 +673,7 @@ impl PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => clients.push((config, client)),
                 Err(error) => {
@@ -510,6 +748,7 @@ impl PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             )
             .map(Some);
         }
@@ -541,6 +780,7 @@ impl PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             )
             .map(Some);
         }
@@ -626,6 +866,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -736,12 +977,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             return self.fallback_client.list_queue().await;
         }
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -751,6 +994,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_queue().await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -758,10 +1002,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list queue");
                 }
             }
         }
+        read_summary.finish()?;
         Ok(all_items)
     }
 
@@ -771,12 +1017,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             return self.fallback_client.list_queue_for_title(title_id).await;
         }
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -786,6 +1034,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_queue_for_title(title_id).await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -793,10 +1042,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped queue");
                 }
             }
         }
+        read_summary.finish()?;
         Ok(all_items)
     }
 
@@ -806,12 +1057,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             return self.fallback_client.list_history().await;
         }
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -821,6 +1074,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_history().await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -828,10 +1082,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list history");
                 }
             }
         }
+        read_summary.finish()?;
         Ok(all_items)
     }
 
@@ -846,12 +1102,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -861,6 +1119,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_recent_activity(limit).await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -868,10 +1127,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
                 }
             }
         }
+
+        read_summary.finish()?;
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
@@ -898,12 +1160,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -913,6 +1177,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_recent_activity_for_title(title_id, limit).await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -920,10 +1185,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped recent activity");
                 }
             }
         }
+
+        read_summary.finish()?;
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
@@ -948,12 +1216,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let fetch_limit = offset.saturating_add(limit);
         let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
         for config in clients {
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -963,6 +1233,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             };
             match client.list_history_page(0, fetch_limit).await {
                 Ok(mut items) => {
+                    read_summary.record_success();
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -970,10 +1241,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
+                    read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list paged history");
                 }
             }
         }
+
+        read_summary.finish()?;
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
@@ -994,6 +1268,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -1045,6 +1320,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 self.staged_nzb_store.clone(),
                 self.staged_nzb_pipeline_limit.clone(),
                 self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
             ) {
                 Ok(client) => client,
                 Err(error) => {
@@ -1335,6 +1611,30 @@ mod tests {
 
         fn accepted_inputs_for_provider(&self, _provider_type: &str) -> Vec<String> {
             self.accepted_inputs.clone()
+        }
+    }
+
+    struct DelayedQueueDownloadClient {
+        delay: Duration,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for DelayedQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Ok(DownloadGrabResult {
+                job_id: "job-1".to_string(),
+                client_id: None,
+                client_type: "delayed".to_string(),
+            })
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(self.queue_items.clone())
         }
     }
 
@@ -2222,5 +2522,124 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn download_client_timeout_wrapper_times_out_feedback_reads() {
+        let wrapped = FeedbackTimeoutDownloadClient::new(
+            Arc::new(DelayedQueueDownloadClient {
+                delay: Duration::from_millis(25),
+                queue_items: vec![test_queue_item("slow")],
+            }),
+            Duration::from_millis(5),
+        );
+
+        let error = wrapped
+            .list_queue()
+            .await
+            .expect_err("slow feedback reads should time out");
+
+        assert!(matches!(
+            error,
+            AppError::DownloadFeedbackTimeout(ref message)
+                if message == DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_queue_returns_partial_data_when_a_client_times_out() {
+        let fast_client = Arc::new(MockDownloadClient::default());
+        fast_client
+            .queue_items
+            .lock()
+            .unwrap()
+            .push(test_queue_item("fast"));
+
+        let slow_client: Arc<dyn DownloadClient> = Arc::new(DelayedQueueDownloadClient {
+            delay: Duration::from_millis(25),
+            queue_items: vec![test_queue_item("slow")],
+        });
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("fast".to_string(), fast_client.clone()),
+                    ("slow".to_string(), slow_client),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("fast", "Fast", "qbittorrent", 0),
+                    test_config("slow", "Slow", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_millis(5),
+        );
+
+        let items = router
+            .list_queue()
+            .await
+            .expect("partial data should still succeed when one client times out");
+
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["fast".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_queue_returns_timeout_error_when_all_clients_time_out() {
+        let slow_a: Arc<dyn DownloadClient> = Arc::new(DelayedQueueDownloadClient {
+            delay: Duration::from_millis(25),
+            queue_items: vec![test_queue_item("slow-a")],
+        });
+        let slow_b: Arc<dyn DownloadClient> = Arc::new(DelayedQueueDownloadClient {
+            delay: Duration::from_millis(25),
+            queue_items: vec![test_queue_item("slow-b")],
+        });
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("slow-a".to_string(), slow_a),
+                    ("slow-b".to_string(), slow_b),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("slow-a", "Slow A", "qbittorrent", 0),
+                    test_config("slow-b", "Slow B", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_millis(5),
+        );
+
+        let error = router
+            .list_queue()
+            .await
+            .expect_err("timeout-only outages should surface as typed timeout errors");
+
+        assert!(matches!(
+            error,
+            AppError::DownloadFeedbackTimeout(ref message)
+                if message == DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE
+        ));
     }
 }

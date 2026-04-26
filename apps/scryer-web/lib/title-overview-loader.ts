@@ -1,5 +1,6 @@
 import type { Client } from "urql";
 
+import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-timeout";
 import type { Facet } from "@/lib/types";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 
@@ -10,6 +11,7 @@ export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSub
   acquisitionDiagnostics: TDiagnostics | null;
   downloadQueueItems: DownloadQueueItem[];
   completedDownloadQueueItems: DownloadQueueItem[];
+  downloadFeedbackWarning: string | null;
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
   subtitleDownloads: TSubtitle[];
@@ -43,8 +45,19 @@ export async function fetchTitleOverviewSnapshot<
     )
     .toPromise();
 
+  let downloadFeedbackWarning: string | null = null;
   if (error) {
-    throw error;
+    if (error.networkError || !data) {
+      throw error;
+    }
+
+    downloadFeedbackWarning = extractDownloadFeedbackWarning(error.graphQLErrors, [
+      "downloadQueueItems",
+      "completedDownloadQueueItems",
+    ]);
+    if (!downloadFeedbackWarning) {
+      throw error;
+    }
   }
 
   return {
@@ -52,6 +65,7 @@ export async function fetchTitleOverviewSnapshot<
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
     downloadQueueItems: (data?.downloadQueueItems ?? []) as DownloadQueueItem[],
     completedDownloadQueueItems: (data?.completedDownloadQueueItems ?? []) as DownloadQueueItem[],
+    downloadFeedbackWarning,
     titleEvents: (data?.titleEvents ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],

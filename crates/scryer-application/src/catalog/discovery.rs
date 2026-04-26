@@ -6,7 +6,7 @@ use scryer_domain::TaggedAlias;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::task::JoinSet;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 fn source_kind_matches_preference(result: &IndexerSearchResult, preferred: &str) -> bool {
     match result.source_kind {
@@ -1155,11 +1155,22 @@ impl AppUseCase {
 
         let mut entries = std::collections::HashMap::new();
 
+        // The canonical write paths in settings.rs and the startup
+        // `normalize_routing_settings` migration always emit `enabled` and
+        // `priority`. The `unwrap_or` fallbacks here are transitional
+        // legacy-compat for installs that haven't yet been normalized.
         for (indexer_id, config) in obj {
-            let enabled = config
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let enabled = match config.get("enabled").and_then(|v| v.as_bool()) {
+                Some(value) => value,
+                None => {
+                    debug!(
+                        scope_id,
+                        indexer_id,
+                        "indexer routing entry missing `enabled`; using legacy default `true`"
+                    );
+                    true
+                }
+            };
 
             let mut categories: Vec<String> = Vec::new();
             if let Some(cats) = config.get("categories").and_then(|v| v.as_array()) {
@@ -1173,10 +1184,17 @@ impl AppUseCase {
                 }
             }
 
-            let priority = config
-                .get("priority")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(i64::MAX);
+            let priority = match config.get("priority").and_then(|v| v.as_i64()) {
+                Some(value) => value,
+                None => {
+                    debug!(
+                        scope_id,
+                        indexer_id,
+                        "indexer routing entry missing `priority`; using legacy default `i64::MAX`"
+                    );
+                    i64::MAX
+                }
+            };
 
             entries.insert(
                 indexer_id.clone(),

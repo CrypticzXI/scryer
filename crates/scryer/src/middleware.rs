@@ -456,6 +456,11 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             Json(ErrorResponse { error: message }),
         )
             .into_response(),
+        AppError::DownloadFeedbackTimeout(message) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
         AppError::Repository(message) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse { error: message }),

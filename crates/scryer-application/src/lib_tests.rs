@@ -1624,6 +1624,34 @@ impl StoredSettingsRepo {
             value.to_string(),
         );
     }
+
+    async fn set_scoped_value(&self, scope: &str, key_name: &str, scope_id: &str, value: &str) {
+        self.values.lock().await.insert(
+            (
+                scope.to_string(),
+                key_name.to_string(),
+                Some(scope_id.to_string()),
+            ),
+            value.to_string(),
+        );
+    }
+
+    async fn get_scoped_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: &str,
+    ) -> Option<String> {
+        self.values
+            .lock()
+            .await
+            .get(&(
+                scope.to_string(),
+                key_name.to_string(),
+                Some(scope_id.to_string()),
+            ))
+            .cloned()
+    }
 }
 
 #[async_trait]
@@ -3424,6 +3452,291 @@ fn bootstrap_with_search_settings_and_indexer(
     );
 
     (app, User::new_admin("admin"))
+}
+
+#[tokio::test]
+async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry() {
+    // Legacy-compat coverage: a stored scope JSON exists but does not include
+    // an entry for "weaver". Read path must fall back to the canonical
+    // defaults (`removeCompleted=true`, `removeFailed=false`). New installs
+    // converge on fully-materialized entries via `normalize_routing_settings`.
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "other-client": {
+                    "enabled": true,
+                    "removeCompleted": false,
+                    "removeFailed": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
+
+    assert!(
+        app.should_remove_completed_download(&MediaFacet::Movie, "weaver")
+            .await
+    );
+    assert!(
+        !app.should_remove_failed_download(&MediaFacet::Movie, "weaver")
+            .await
+    );
+}
+
+#[tokio::test]
+async fn ensure_download_client_routing_entry_for_client_writes_full_default_entry() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, actor) = bootstrap_with_search_settings_and_indexer(
+        settings.clone(),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.ensure_download_client_routing_entry_for_client(&actor, "weaver")
+        .await
+        .expect("ensure routing entry");
+
+    for scope_id in ["movie", "series", "anime"] {
+        let raw = settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                scope_id,
+            )
+            .await
+            .unwrap_or_else(|| panic!("expected routing JSON for scope {scope_id}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("routing JSON parses");
+        let entry = parsed
+            .get("weaver")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("expected weaver entry for scope {scope_id}"));
+        assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
+        assert_eq!(entry.get("category"), Some(&serde_json::json!("")));
+        assert_eq!(
+            entry.get("recentQueuePriority"),
+            Some(&serde_json::json!(""))
+        );
+        assert_eq!(
+            entry.get("olderQueuePriority"),
+            Some(&serde_json::json!(""))
+        );
+        assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(true)));
+        assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(false)));
+        assert!(entry.contains_key("priority"));
+    }
+}
+
+#[tokio::test]
+async fn normalize_routing_settings_backfills_partial_legacy_download_client_json() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "category": "",
+                    "priority": 1
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) = bootstrap_with_search_settings_and_indexer(
+        settings.clone(),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.normalize_routing_settings()
+        .await
+        .expect("normalize routing settings");
+
+    let raw = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+        )
+        .await
+        .expect("routing JSON present after normalize");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("routing JSON parses");
+    let entry = parsed
+        .get("weaver")
+        .and_then(|v| v.as_object())
+        .expect("weaver entry");
+    assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(true)));
+    assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(false)));
+    assert_eq!(
+        entry.get("recentQueuePriority"),
+        Some(&serde_json::json!(""))
+    );
+    assert_eq!(
+        entry.get("olderQueuePriority"),
+        Some(&serde_json::json!(""))
+    );
+    // Existing explicit values must not be overwritten.
+    assert_eq!(entry.get("priority"), Some(&serde_json::json!(1)));
+    assert_eq!(entry.get("category"), Some(&serde_json::json!("")));
+}
+
+#[tokio::test]
+async fn normalize_routing_settings_is_idempotent_for_complete_entries() {
+    // Pre-seed a fully-normalized entry with non-default values. The normalize
+    // pass must not overwrite explicit values back to canonical defaults.
+    let original = serde_json::json!({
+        "weaver": {
+            "enabled": false,
+            "category": "movies",
+            "recentQueuePriority": "high",
+            "olderQueuePriority": "low",
+            "removeCompleted": false,
+            "removeFailed": true,
+            "priority": 7
+        }
+    })
+    .to_string();
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &original,
+        )
+        .await;
+
+    let (app, _) = bootstrap_with_search_settings_and_indexer(
+        settings.clone(),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.normalize_routing_settings()
+        .await
+        .expect("first normalize");
+    app.normalize_routing_settings()
+        .await
+        .expect("second normalize");
+
+    let after = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+        )
+        .await
+        .expect("routing JSON present");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&after).expect("routing JSON parses");
+    let entry = parsed
+        .get("weaver")
+        .and_then(|v| v.as_object())
+        .expect("weaver entry");
+    assert_eq!(entry.get("enabled"), Some(&serde_json::json!(false)));
+    assert_eq!(entry.get("category"), Some(&serde_json::json!("movies")));
+    assert_eq!(
+        entry.get("recentQueuePriority"),
+        Some(&serde_json::json!("high"))
+    );
+    assert_eq!(
+        entry.get("olderQueuePriority"),
+        Some(&serde_json::json!("low"))
+    );
+    assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(false)));
+    assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(true)));
+    assert_eq!(entry.get("priority"), Some(&serde_json::json!(7)));
+}
+
+#[tokio::test]
+async fn ensure_indexer_routing_entry_for_indexer_writes_full_default_entry() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, actor) = bootstrap_with_search_settings_and_indexer(
+        settings.clone(),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.ensure_indexer_routing_entry_for_indexer(&actor, "indexer-1")
+        .await
+        .expect("ensure indexer routing entry");
+
+    for scope_id in ["movie", "series", "anime"] {
+        let raw = settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                INDEXER_ROUTING_SETTINGS_KEY,
+                scope_id,
+            )
+            .await
+            .unwrap_or_else(|| panic!("expected indexer routing JSON for scope {scope_id}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("indexer routing JSON parses");
+        let entry = parsed
+            .get("indexer-1")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("expected indexer-1 entry for scope {scope_id}"));
+        assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
+        assert_eq!(entry.get("categories"), Some(&serde_json::json!([])));
+        assert!(entry.contains_key("priority"));
+    }
+}
+
+#[tokio::test]
+async fn normalize_routing_settings_backfills_partial_legacy_indexer_json() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "indexer-1": {
+                    "categories": ["2000"]
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) = bootstrap_with_search_settings_and_indexer(
+        settings.clone(),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.normalize_routing_settings()
+        .await
+        .expect("normalize indexer routing");
+
+    let raw = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "movie",
+        )
+        .await
+        .expect("indexer routing JSON present after normalize");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("indexer routing JSON parses");
+    let entry = parsed
+        .get("indexer-1")
+        .and_then(|v| v.as_object())
+        .expect("indexer-1 entry");
+    assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
+    assert!(entry.contains_key("priority"));
+    // Existing categories must not be overwritten.
+    assert_eq!(
+        entry.get("categories"),
+        Some(&serde_json::json!(["2000"]))
+    );
 }
 
 fn bootstrap_with_cutoff_projection_state(
@@ -9393,7 +9706,11 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         .await
         .expect("start anime scan");
 
-    app.run_acquisition_cycle_once().await;
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+        &app,
+        &[MediaFacet::Anime],
+    )
+    .await;
 
     assert!(
         pending_releases

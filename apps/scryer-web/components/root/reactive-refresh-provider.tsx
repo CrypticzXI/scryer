@@ -6,6 +6,7 @@ import {
   type ReactiveRefreshQueryActionInput,
   type ReactiveRefreshQueryActionPlan,
 } from "@/lib/graphql/queries";
+import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-timeout";
 import {
   ReactiveRefreshContext,
   type QueueCatalogTitleRefreshOptions,
@@ -101,6 +102,7 @@ function applyReactiveRefreshActionResult(
   action: ReactiveRefreshAction,
   actionPlan: ReactiveRefreshQueryActionPlan,
   payload: Record<string, unknown>,
+  downloadFeedbackWarning: string | null = null,
 ) {
   switch (action.kind) {
     case "catalogTitles": {
@@ -146,6 +148,7 @@ function applyReactiveRefreshActionResult(
             unknown,
             unknown
           >["completedDownloadQueueItems"],
+        downloadFeedbackWarning,
         titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<
           unknown,
           unknown,
@@ -316,8 +319,12 @@ export function ReactiveRefreshProvider({
       }
 
       const actionsByKey = new Map(queuedActions.map((action) => [action.key, action]));
+      const actionPlansByKey = new Map(
+        queryPlan.actionPlans.map((actionPlan) => [actionPlan.key, actionPlan]),
+      );
       const failedActionKeys = new Set<string>();
       const actionErrorsByKey = new Map<string, CombinedError>();
+      const titleOverviewWarningsByKey = new Map<string, string>();
 
       if (error) {
         if (error.networkError || !isRecord(data)) {
@@ -329,10 +336,20 @@ export function ReactiveRefreshProvider({
           throw error;
         }
 
-        routedErrors.failedActionKeys.forEach((actionKey) => {
-          failedActionKeys.add(actionKey);
-        });
         routedErrors.actionErrorsByKey.forEach((actionError, actionKey) => {
+          const actionPlan = actionPlansByKey.get(actionKey);
+          if (actionPlan?.kind === "titleOverview") {
+            const warning = extractDownloadFeedbackWarning(actionError.graphQLErrors, [
+              actionPlan.downloadQueueItemsAlias,
+              actionPlan.completedDownloadQueueItemsAlias,
+            ]);
+            if (warning) {
+              titleOverviewWarningsByKey.set(actionKey, warning);
+              return;
+            }
+          }
+
+          failedActionKeys.add(actionKey);
           actionErrorsByKey.set(actionKey, actionError);
         });
       }
@@ -346,7 +363,12 @@ export function ReactiveRefreshProvider({
         if (!action) {
           return;
         }
-        applyReactiveRefreshActionResult(action, actionPlan, payload);
+        applyReactiveRefreshActionResult(
+          action,
+          actionPlan,
+          payload,
+          titleOverviewWarningsByKey.get(actionPlan.key) ?? null,
+        );
       });
 
       actionErrorsByKey.forEach((actionError, actionKey) => {

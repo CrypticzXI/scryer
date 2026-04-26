@@ -51,6 +51,7 @@ export function useDownloadQueue({
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scopeKey = `${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}:${includeImportActivity ? 1 : 0}:${titleId ?? "all"}:${activityFilter}`;
   const activeScopeKeyRef = useRef(scopeKey);
+  const lastReportedErrorRef = useRef<string | null>(null);
   activeScopeKeyRef.current = scopeKey;
 
   // Track whether the initial HTTP query has completed so the WS subscription
@@ -93,6 +94,7 @@ export function useDownloadQueue({
       // snapshot remove stale rows immediately.
       setQueueItems((prev) => mergeLiveQueueItems(items, prev));
       setQueueError(null);
+      lastReportedErrorRef.current = null;
       setLastRefreshedAt(new Date());
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
@@ -137,6 +139,7 @@ export function useDownloadQueue({
         setQueueItems((prev) => mergeAuthoritativeQueueItems(queryItems, prev));
       }
       setQueueError(null);
+      lastReportedErrorRef.current = null;
       setLastRefreshedAt(new Date());
     } catch (error) {
       if (activeScopeKeyRef.current !== requestScopeKey) {
@@ -145,7 +148,10 @@ export function useDownloadQueue({
       const message =
         error instanceof Error ? error.message : "Failed to load queue.";
       setQueueError(message);
-      (onErrorStatus ?? contextGlobalStatus)?.(message);
+      if (lastReportedErrorRef.current !== message) {
+        lastReportedErrorRef.current = message;
+        (onErrorStatus ?? contextGlobalStatus)?.(message);
+      }
     } finally {
       if (activeScopeKeyRef.current === requestScopeKey) {
         setQueueLoading(false);
@@ -166,6 +172,8 @@ export function useDownloadQueue({
 
   // --- Initial fetch + polling for history-only mode ---
   useEffect(() => {
+    lastReportedErrorRef.current = null;
+
     if (!enabled) {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);

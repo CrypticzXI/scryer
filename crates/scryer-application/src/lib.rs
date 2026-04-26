@@ -186,6 +186,9 @@ pub use subtitles::orchestration::{
     spawn_subtitle_search_for_file, start_background_subtitle_poller,
 };
 
+pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =
+    "download feedback timed out after 10s; queue status is temporarily unavailable";
+
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 4;
 pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use app_usecase_integration::publish_download_queue_snapshot_events;
@@ -331,6 +334,9 @@ pub enum AppError {
 
     #[error("not found: {0}")]
     NotFound(String),
+
+    #[error("{0}")]
+    DownloadFeedbackTimeout(String),
 
     #[error("repository: {0}")]
     Repository(String),

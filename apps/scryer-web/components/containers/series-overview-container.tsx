@@ -261,6 +261,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [manualImportItem, setManualImportItem] = React.useState<DownloadQueueItem | null>(null);
   const [hydratingFromActivity, setHydratingFromActivity] = React.useState(false);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
+  const [downloadFeedbackWarning, setDownloadFeedbackWarning] = React.useState<string | null>(null);
   const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
     React.useState(false);
   const [monitoredUpdating, setMonitoredUpdating] = React.useState(false);
@@ -279,6 +280,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
+  const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const downloadQueueItems = useTitleDownloadQueue({
     enabled: Boolean(titleId),
     titleId,
@@ -350,6 +352,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setDownloadQueueSeed(snapshot.downloadQueueItems);
       setSubtitleDownloads(snapshot.subtitleDownloads);
       setHasDownloadClients(snapshot.hasDownloadClients);
+      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
 
       if (!nextTitle) {
         setCompletedDownloads([]);
@@ -365,6 +368,20 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setShowSearchPrerequisiteNotice(false);
     }
   }, [hasDownloadClients]);
+
+  React.useEffect(() => {
+    if (downloadFeedbackWarning === null) {
+      lastShownDownloadFeedbackWarningRef.current = null;
+      return;
+    }
+
+    if (lastShownDownloadFeedbackWarningRef.current === downloadFeedbackWarning) {
+      return;
+    }
+
+    lastShownDownloadFeedbackWarningRef.current = downloadFeedbackWarning;
+    setGlobalStatus(downloadFeedbackWarning);
+  }, [downloadFeedbackWarning, setGlobalStatus]);
 
   const refreshTitleDetail = React.useCallback(async () => {
     const snapshot = await fetchTitleOverviewSnapshot<
@@ -393,6 +410,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setManualImportItem(null);
       setHydratingFromActivity(false);
       setHasDownloadClients(true);
+      setDownloadFeedbackWarning(null);
       setShowSearchPrerequisiteNotice(false);
       setTitleLookupAttempted(false);
       setTitleLookupFailed(false);

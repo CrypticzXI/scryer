@@ -2,9 +2,10 @@ use super::*;
 use crate::catalog_helpers::{
     DownloadClientRoutingEntry, anime_mapping_identity_keys, anime_movie_after_season,
     anime_movie_identity_keys, anime_movie_release_sort_key, build_rematched_external_ids,
-    interstitial_movie_from_anime_movie, is_logical_specials_collection,
-    parse_download_client_routing_entry, parse_download_client_routing_map,
-    release_is_recent_for_queue_priority, strip_derived_match_tags,
+    default_download_client_routing_entry, interstitial_movie_from_anime_movie,
+    is_logical_specials_collection, parse_download_client_routing_entry,
+    parse_download_client_routing_map, release_is_recent_for_queue_priority,
+    strip_derived_match_tags,
 };
 use crate::domain_events::{deleted_media_update, new_title_domain_event, title_context_snapshot};
 use scryer_domain::{
@@ -319,6 +320,11 @@ impl AppUseCase {
             .await
     }
 
+    /// Returns `Some(entry)` when the persisted JSON has an entry for this
+    /// client in this scope, else `None`. Callers are responsible for applying
+    /// the canonical default — the explicit fallback site — so the read path
+    /// stays a thin lookup over normalized data. Legacy installs converge via
+    /// the startup `normalize_routing_settings` pass.
     async fn read_download_client_routing_entry(
         &self,
         facet: &MediaFacet,
@@ -344,11 +350,15 @@ impl AppUseCase {
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
-        self.read_download_client_routing_entry(facet, client_id)
+        match self
+            .read_download_client_routing_entry(facet, client_id)
             .await
             .ok()
             .flatten()
-            .is_some_and(|entry| entry.remove_completed)
+        {
+            Some(entry) => entry.remove_completed,
+            None => default_download_client_routing_entry().remove_completed,
+        }
     }
 
     pub(crate) async fn should_remove_failed_download(
@@ -356,11 +366,15 @@ impl AppUseCase {
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
-        self.read_download_client_routing_entry(facet, client_id)
+        match self
+            .read_download_client_routing_entry(facet, client_id)
             .await
             .ok()
             .flatten()
-            .is_some_and(|entry| entry.remove_failed)
+        {
+            Some(entry) => entry.remove_failed,
+            None => default_download_client_routing_entry().remove_failed,
+        }
     }
 
     pub(crate) fn is_recent_for_queue_priority(&self, baseline_date: Option<&str>) -> Option<bool> {

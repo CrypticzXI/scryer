@@ -91,4 +91,4 @@ cd apps/scryer-web && npm ci && npm run build
 ./scripts/stack-restart.sh
 ```
 
-**NEVER run `cargo build`, `cargo check`, or `cargo test` while another Cargo process is already running against this workspace.** Concurrent Cargo invocations generate conflicting incremental cache entries and duplicate artifacts in `target/debug/deps/`, ballooning disk usage by hundreds of gigabytes. If you need to verify a build, first check `ps aux | grep cargo` and wait for any existing Cargo process to finish.
+**Always pass `--locked` to Cargo invocations** (`cargo build --locked`, `cargo check --locked`, `cargo test --locked`, etc). The `Cargo.lock` is the source of truth; agent runs must not implicitly resolve or mutate it.

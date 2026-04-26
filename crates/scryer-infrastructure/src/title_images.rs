@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn pipeline_decodes_supported_formats() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(true);
+        let processor = SqliteTitleImageProcessor::new_for_tests(false);
         for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
             let bytes = encode_test_image(format);
             let processed = processor
