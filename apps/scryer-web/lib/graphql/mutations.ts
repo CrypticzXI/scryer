@@ -230,6 +230,13 @@ export const resolvePendingImportMutation = `mutation ResolvePendingImport($inpu
   }
 }`;
 
+export const ignorePendingImportMutation = `mutation IgnorePendingImport($input: IgnorePendingImportInput!) {
+  ignorePendingImport(input: $input) {
+    id
+    status
+  }
+}`;
+
 export const triggerJobMutation = `mutation TriggerJob($jobKey: JobKeyValue!) {
   triggerJob(jobKey: $jobKey) {
 ${JOB_RUN_FIELDS}

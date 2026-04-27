@@ -12,6 +12,7 @@ import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import type {
+  ActivitySection,
   ViewId,
   SettingsSection,
   ContentSettingsSection,
@@ -70,6 +71,7 @@ export function MovieOverviewShell() {
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
+      nextActivitySection?: ActivitySection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
@@ -77,6 +79,7 @@ export function MovieOverviewShell() {
         nextView === "movies" || nextView === "series" || nextView === "anime" ? nextContentSection : undefined,
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
+        nextView === "activity" ? nextActivitySection : undefined,
       );
       navigate(targetPath);
     },
@@ -87,6 +90,7 @@ export function MovieOverviewShell() {
     return buildRouteCommands({
       t,
       pendingImportCounts: null,
+      activityImportCount: 0,
       onNavigate: navigateTo,
     });
   }, [navigateTo, t]);
@@ -118,6 +122,7 @@ export function MovieOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  activitySection="activity"
                   wantedSection="wanted"
                   entitlements={[]}
                   pendingImportCounts={null}

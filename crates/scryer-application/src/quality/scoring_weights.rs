@@ -15,7 +15,7 @@ pub enum ScoringPersona {
 
 /// Five toggles that patch specific weights regardless of persona.
 /// `None` means "use the persona's default". `Some(true/false)` overrides it.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ScoringOverrides {
     /// Allow x265/HEVC at non-4K resolutions without penalty.
     #[serde(default)]

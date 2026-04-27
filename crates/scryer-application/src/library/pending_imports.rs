@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle};
 
+use chrono::Utc;
+
 use super::*;
 
 const MAX_PENDING_IMPORTS_PAGE_SIZE: i64 = 200;
@@ -68,6 +70,7 @@ fn pending_import_item_from_unmatched(item: LibraryScanUnmatchedItem) -> Pending
     PendingImportItem {
         id: item.id,
         facet: item.facet,
+        status: item.status,
         display_name: item.display_name,
         path: item.item_path,
         folder_path,
@@ -162,9 +165,21 @@ impl AppUseCase {
         let series_repo = repository.clone();
         let anime_repo = repository;
         let (movie, series, anime) = tokio::try_join!(
-            movie_repo.count_library_scan_unmatched_items(Some(MediaFacet::Movie), None),
-            series_repo.count_library_scan_unmatched_items(Some(MediaFacet::Series), None),
-            anime_repo.count_library_scan_unmatched_items(Some(MediaFacet::Anime), None),
+            movie_repo.count_library_scan_unmatched_items(
+                Some(MediaFacet::Movie),
+                None,
+                Some(PendingImportStatus::Pending),
+            ),
+            series_repo.count_library_scan_unmatched_items(
+                Some(MediaFacet::Series),
+                None,
+                Some(PendingImportStatus::Pending),
+            ),
+            anime_repo.count_library_scan_unmatched_items(
+                Some(MediaFacet::Anime),
+                None,
+                Some(PendingImportStatus::Pending),
+            ),
         )?;
 
         Ok(PendingImportCounts {
@@ -178,6 +193,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: MediaFacet,
+        status: PendingImportStatus,
         limit: i64,
         offset: i64,
     ) -> AppResult<PendingImportConnection> {
@@ -189,19 +205,57 @@ impl AppUseCase {
             .services
             .library
             .library_scan_unmatched_items
-            .count_library_scan_unmatched_items(Some(facet.clone()), None)
+            .count_library_scan_unmatched_items(Some(facet.clone()), None, Some(status))
             .await?;
         let items = self
             .services
             .library
             .library_scan_unmatched_items
-            .list_library_scan_unmatched_items(Some(facet), None, limit, offset)
+            .list_library_scan_unmatched_items(Some(facet), None, Some(status), limit, offset)
             .await?
             .into_iter()
             .map(pending_import_item_from_unmatched)
             .collect();
 
         Ok(PendingImportConnection { total, items })
+    }
+
+    pub async fn ignore_pending_import(
+        &self,
+        actor: &User,
+        pending_import_id: &str,
+    ) -> AppResult<IgnorePendingImportResult> {
+        require(actor, &Entitlement::ManageTitle)?;
+
+        let pending_import_id = pending_import_id.trim();
+        if pending_import_id.is_empty() {
+            return Err(AppError::Validation("pending import id is required".into()));
+        }
+        let _pending_import_resolution_guard =
+            self.acquire_pending_import_resolution_guard(pending_import_id)?;
+
+        let mut item = self
+            .services
+            .library
+            .library_scan_unmatched_items
+            .get_library_scan_unmatched_item(pending_import_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+
+        if item.status != PendingImportStatus::Ignored {
+            item.status = PendingImportStatus::Ignored;
+            item.updated_at = Utc::now().to_rfc3339();
+            self.services
+                .library
+                .library_scan_unmatched_items
+                .upsert_library_scan_unmatched_item(&item)
+                .await?;
+        }
+
+        Ok(IgnorePendingImportResult {
+            id: item.id,
+            status: item.status,
+        })
     }
 
     pub async fn resolve_pending_import(

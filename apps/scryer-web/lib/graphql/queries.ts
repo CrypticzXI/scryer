@@ -210,7 +210,13 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     trackedState
     trackedStatus
     trackedStatusMessages
-    trackedMatchType`;
+    trackedMatchType
+    queueScope {
+      kind
+      episodeId
+      episodeIds
+      collectionId
+    }`;
 
   const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
@@ -385,12 +391,8 @@ export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId:
   }
 }`;
 
-export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $blocklistLimit: Int) {
+export const titleOverviewNativeQuery = `query TitleOverviewNative($id: String!, $blocklistLimit: Int) {
   title(id: $id) {${TITLE_OVERVIEW_FIELDS}
-  }
-  downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
-  }
-  completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
   titleAcquisitionDiagnostics(titleId: $id) {
     recentDecisions {
@@ -431,6 +433,13 @@ export const titleOverviewInitQuery = `query TitleOverviewInit($id: String!, $bl
   }
   setupStatus {
     hasDownloadClients
+  }
+}`;
+
+export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: String!) {
+  downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+  completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
@@ -642,9 +651,14 @@ export type ReactiveRefreshQueryActionInput =
     }
   | {
       key: string;
-      kind: "titleOverview";
+      kind: "titleOverviewNative";
       titleId: string;
       blocklistLimit: number;
+    }
+  | {
+      key: string;
+      kind: "titleOverviewDownloadFeedback";
+      titleId: string;
     }
   | {
       key: string;
@@ -665,15 +679,19 @@ export type ReactiveRefreshQueryActionPlan =
     }
   | {
       key: string;
-      kind: "titleOverview";
+      kind: "titleOverviewNative";
       titleAlias: string;
-      downloadQueueItemsAlias: string;
-      completedDownloadQueueItemsAlias: string;
       titleAcquisitionDiagnosticsAlias: string;
       titleEventsAlias: string;
       titleReleaseBlocklistAlias: string;
       subtitleDownloadsAlias: string;
       setupStatusAlias: string;
+    }
+  | {
+      key: string;
+      kind: "titleOverviewDownloadFeedback";
+      downloadQueueItemsAlias: string;
+      completedDownloadQueueItemsAlias: string;
     }
   | {
       key: string;
@@ -713,13 +731,10 @@ export function buildReactiveRefreshQuery(
         actionPlans.push({ key: action.key, kind: action.kind, titleAlias });
         break;
       }
-      case "titleOverview": {
+      case "titleOverviewNative": {
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
-        const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
-        const completedDownloadQueueItemsAlias =
-          `titleOverviewCompletedDownloadQueueAction${index}`;
         const titleAcquisitionDiagnosticsAlias =
           `titleOverviewDiagnosticsAction${index}`;
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
@@ -733,12 +748,6 @@ export function buildReactiveRefreshQuery(
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
-        );
-        fields.push(
-          `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
-        );
-        fields.push(
-          `  ${completedDownloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
         );
         fields.push(
           `  ${titleAcquisitionDiagnosticsAlias}: titleAcquisitionDiagnostics(titleId: $${titleIdVariableName}) {\n    recentDecisions {\n      id\n      wantedItemId\n      titleId\n      releaseTitle\n      releaseUrl\n      releaseSizeBytes\n      decisionCode\n      candidateScore\n      currentScore\n      scoreDelta\n      explanationJson\n      createdAt\n    }\n    decisionCounts {\n      code\n      count\n    }\n    wantedStatusCounts {\n      status\n      count\n    }\n    pendingReleaseCounts {\n      status\n      count\n    }\n    mismatchRecoveryEligibleCount\n    latestDecisionAt\n    latestWantedSearchAt\n  }`,
@@ -761,13 +770,33 @@ export function buildReactiveRefreshQuery(
           key: action.key,
           kind: action.kind,
           titleAlias,
-          downloadQueueItemsAlias,
-          completedDownloadQueueItemsAlias,
           titleAcquisitionDiagnosticsAlias,
           titleEventsAlias,
           titleReleaseBlocklistAlias,
           subtitleDownloadsAlias,
           setupStatusAlias,
+        });
+        break;
+      }
+      case "titleOverviewDownloadFeedback": {
+        const titleIdVariableName = `titleOverviewDownloadFeedbackId${index}`;
+        const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
+        const completedDownloadQueueItemsAlias =
+          `titleOverviewCompletedDownloadQueueAction${index}`;
+
+        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        fields.push(
+          `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
+        );
+        fields.push(
+          `  ${completedDownloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
+        );
+        variables[titleIdVariableName] = action.titleId;
+        actionPlans.push({
+          key: action.key,
+          kind: action.kind,
+          downloadQueueItemsAlias,
+          completedDownloadQueueItemsAlias,
         });
         break;
       }
@@ -1669,12 +1698,13 @@ export const pendingImportCountsQuery = `query PendingImportCounts {
   }
 }`;
 
-export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $limit: Int = 50, $offset: Int = 0) {
-  pendingImports(facet: $facet, limit: $limit, offset: $offset) {
+export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
+  pendingImports(facet: $facet, status: $status, limit: $limit, offset: $offset) {
     total
     items {
       id
       facet
+      status
       displayName
       path
       folderPath

@@ -22,6 +22,7 @@ import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import type {
+  ActivitySection,
   ViewId,
   SettingsSection,
   ContentSettingsSection,
@@ -42,6 +43,7 @@ import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import {
   buildOverviewDetailPath,
   buildViewPath,
+  parseActivitySectionFromPath,
   parseContentSectionFromPath,
   parseOverviewSlugFromPath,
   parseSettingsSectionFromPath,
@@ -53,11 +55,13 @@ import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
   importQueueCountQuery,
+  pendingImportsQuery,
   pendingImportCountsQuery,
 } from "@/lib/graphql/queries";
-import type { PendingImportCounts } from "@/lib/types";
-import { pendingImportCountForView } from "@/lib/types";
+import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
+
+const IMPORT_COUNT_FACETS = ["movie", "series", "anime"] as const;
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -180,6 +184,7 @@ function MainContent({
   setLanguagePreferenceFromShell,
   contentSettingsSection,
   systemSection,
+  activitySection,
   wantedSection,
   handleOpenOverview,
 }: {
@@ -198,6 +203,7 @@ function MainContent({
   setLanguagePreferenceFromShell: (code: string) => void;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  activitySection: ActivitySection;
   wantedSection: WantedSection;
   handleOpenOverview: (
     targetView: ViewId,
@@ -206,7 +212,7 @@ function MainContent({
   ) => void;
 }) {
   if (view === "activity") {
-    return <ActivityContainer key="activity" />;
+    return <ActivityContainer key="activity" activitySection={activitySection} />;
   }
   if (view === "calendar") {
     return <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />;
@@ -342,6 +348,7 @@ function AuthenticatedHomePage({
     parsedSettingsSection: settingsSection,
     parsedContentSection: contentSettingsSection,
     parsedSystemSection: systemSection,
+    parsedActivitySection: activitySection,
     parsedWantedSection: wantedSection,
     parsedOverviewSlug,
   } =
@@ -359,6 +366,9 @@ function AuthenticatedHomePage({
       const parsedSystemSection: SystemSection = parsedView === "system"
         ? parseSystemSectionFromPath(normalizedSegments[1] ?? null)
         : "overview";
+      const parsedActivitySection: ActivitySection = parsedView === "activity"
+        ? parseActivitySectionFromPath(normalizedSegments[1] ?? null)
+        : "activity";
       const parsedWantedSection: WantedSection = parsedView === "wanted"
         ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
         : "wanted";
@@ -370,6 +380,7 @@ function AuthenticatedHomePage({
         parsedSettingsSection,
         parsedContentSection,
         parsedSystemSection,
+        parsedActivitySection,
         parsedWantedSection,
         parsedOverviewSlug,
       };
@@ -401,6 +412,7 @@ function AuthenticatedHomePage({
     onServiceRestarting: useCallback(() => setServiceRestarting(true), [setServiceRestarting]),
   });
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
+  const [ignoredImportCounts, setIgnoredImportCounts] = useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
   const [resolvedOverviewTarget, setResolvedOverviewTarget] = useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
@@ -440,9 +452,21 @@ function AuthenticatedHomePage({
 
   const refreshSidebarCounts = useCallback(async () => {
     try {
-      const [pendingImportsResult, manualImportCountResult] = await Promise.all([
+      const [pendingImportsResult, manualImportCountResult, ignoredImportResults] = await Promise.all([
         backendClient.query(pendingImportCountsQuery, {}).toPromise(),
         backendClient.query(importQueueCountQuery, {}).toPromise(),
+        Promise.all(
+          IMPORT_COUNT_FACETS.map((facet) =>
+            backendClient
+              .query(pendingImportsQuery, {
+                facet,
+                status: "ignored",
+                limit: 1,
+                offset: 0,
+              })
+              .toPromise(),
+          ),
+        ),
       ]);
 
       if (pendingImportsResult.error) {
@@ -453,17 +477,30 @@ function AuthenticatedHomePage({
         throw manualImportCountResult.error;
       }
 
+      for (const result of ignoredImportResults) {
+        if (result.error) {
+          throw result.error;
+        }
+      }
+
       if (pendingImportsResult.data?.pendingImportCounts) {
         setPendingImportCounts(pendingImportsResult.data.pendingImportCounts as PendingImportCounts);
       } else {
         setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
       }
 
+      setIgnoredImportCounts({
+        movie: Number(ignoredImportResults[0]?.data?.pendingImports?.total ?? 0),
+        series: Number(ignoredImportResults[1]?.data?.pendingImports?.total ?? 0),
+        anime: Number(ignoredImportResults[2]?.data?.pendingImports?.total ?? 0),
+      });
+
       setManualImportRequiredCount(
         Number(manualImportCountResult.data?.downloadImport?.totalCount ?? 0),
       );
     } catch {
       setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
+      setIgnoredImportCounts({ movie: 0, series: 0, anime: 0 });
       setManualImportRequiredCount(0);
     }
   }, []);
@@ -507,6 +544,7 @@ function AuthenticatedHomePage({
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
+      nextActivitySection?: ActivitySection,
       nextOverviewTitleId?: string | null,
       nextEpisodeId?: string | null,
     ) => {
@@ -517,6 +555,7 @@ function AuthenticatedHomePage({
         isMedia ? nextContentSection : undefined,
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
+        nextView === "activity" ? nextActivitySection : undefined,
       );
       const normalizedContentSection = isMedia
         ? (nextContentSection ?? "overview")
@@ -757,9 +796,11 @@ function AuthenticatedHomePage({
     () => buildRouteCommands({
       t,
       pendingImportCounts,
+      ignoredImportCounts,
+      activityImportCount: manualImportRequiredCount,
       onNavigate: navigateTo,
     }),
-    [navigateTo, pendingImportCounts, t],
+    [ignoredImportCounts, manualImportRequiredCount, navigateTo, pendingImportCounts, t],
   );
 
   const routeCommandPaletteConfig = useMemo(
@@ -787,16 +828,34 @@ function AuthenticatedHomePage({
   );
 
   useEffect(() => {
-    if (!isMediaView(view) || contentSettingsSection !== "import" || !pendingImportCounts) {
+    if (
+      !isMediaView(view) ||
+      contentSettingsSection !== "import" ||
+      pendingImportCounts === null ||
+      ignoredImportCounts === null
+    ) {
       return;
     }
 
-    if (pendingImportCountForView(pendingImportCounts, view) > 0) {
+    if (hasImportItemsForView(pendingImportCounts, ignoredImportCounts, view)) {
       return;
     }
 
     navigateTo(view, undefined, "overview", undefined, undefined);
-  }, [contentSettingsSection, navigateTo, pendingImportCounts, view]);
+  }, [contentSettingsSection, ignoredImportCounts, navigateTo, pendingImportCounts, view]);
+
+  useEffect(() => {
+    if (
+      view !== "activity" ||
+      activitySection !== "import" ||
+      pendingImportCounts === null ||
+      manualImportRequiredCount > 0
+    ) {
+      return;
+    }
+
+    navigateTo("activity", undefined, undefined, undefined, undefined, "activity");
+  }, [activitySection, manualImportRequiredCount, navigateTo, pendingImportCounts, view]);
 
   return (
     <ScryerGraphqlProvider language={uiLanguage}>
@@ -858,9 +917,11 @@ function AuthenticatedHomePage({
                     settingsSection={settingsSection}
                     contentSettingsSection={contentSettingsSection}
                     systemSection={systemSection}
+                    activitySection={activitySection}
                     wantedSection={wantedSection}
                     entitlements={entitlements}
                     pendingImportCounts={pendingImportCounts}
+                    ignoredImportCounts={ignoredImportCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
                     onNavigate={navigateTo}
                   >
@@ -882,6 +943,7 @@ function AuthenticatedHomePage({
                           setLanguagePreferenceFromShell={setLanguagePreferenceFromShell}
                           contentSettingsSection={contentSettingsSection}
                           systemSection={systemSection}
+                          activitySection={activitySection}
                           wantedSection={wantedSection}
                           handleOpenOverview={handleOpenOverview}
                         />

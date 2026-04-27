@@ -3,7 +3,10 @@ import { useEffect, useMemo, useRef } from "react";
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
-import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type {
+  TitleOverviewDownloadFeedbackSnapshot,
+  TitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 
 type UseTitleOverviewReactiveRefreshOptions<
   TTitle = unknown,
@@ -14,8 +17,8 @@ type UseTitleOverviewReactiveRefreshOptions<
 > = {
   titleId?: string | null;
   blocklistLimit: number;
-  applySnapshot: (
-    snapshot: TitleOverviewSnapshot<
+  applyNativeSnapshot: (
+    snapshot: TitleOverviewNativeSnapshot<
       TTitle,
       TDiagnostics,
       TEvent,
@@ -23,8 +26,12 @@ type UseTitleOverviewReactiveRefreshOptions<
       TSubtitle
     >,
   ) => void;
+  applyDownloadFeedbackSnapshot: (
+    snapshot: TitleOverviewDownloadFeedbackSnapshot,
+  ) => void;
   importKinds: ReadonlySet<string>;
   pause?: boolean;
+  downloadFeedbackEnabled?: boolean;
   onHydrationStarted?: () => void;
   onHydrationCompleted?: () => void;
   onHydrationFailed?: () => void;
@@ -43,9 +50,11 @@ export function useTitleOverviewReactiveRefresh<
 >({
   titleId,
   blocklistLimit,
-  applySnapshot,
+  applyNativeSnapshot,
+  applyDownloadFeedbackSnapshot,
   importKinds,
   pause = false,
+  downloadFeedbackEnabled = true,
   onHydrationStarted,
   onHydrationCompleted,
   onHydrationFailed,
@@ -56,30 +65,35 @@ export function useTitleOverviewReactiveRefresh<
   TBlocklist,
   TSubtitle
 >) {
-  const { queueTitleOverviewRefresh } = useReactiveRefresh();
-  const applySnapshotRef = useRef(applySnapshot);
+  const {
+    queueTitleOverviewDownloadFeedbackRefresh,
+    queueTitleOverviewNativeRefresh,
+  } = useReactiveRefresh();
+  const applyNativeSnapshotRef = useRef(applyNativeSnapshot);
+  const applyDownloadFeedbackSnapshotRef = useRef(applyDownloadFeedbackSnapshot);
   const onHydrationStartedRef = useRef(onHydrationStarted);
   const onHydrationCompletedRef = useRef(onHydrationCompleted);
   const onHydrationFailedRef = useRef(onHydrationFailed);
 
   useEffect(() => {
-    applySnapshotRef.current = applySnapshot;
+    applyNativeSnapshotRef.current = applyNativeSnapshot;
+    applyDownloadFeedbackSnapshotRef.current = applyDownloadFeedbackSnapshot;
     onHydrationStartedRef.current = onHydrationStarted;
     onHydrationCompletedRef.current = onHydrationCompleted;
     onHydrationFailedRef.current = onHydrationFailed;
   });
 
-  const queueRefresh = () => {
+  const queueNativeRefresh = () => {
     if (!titleId) {
       return;
     }
 
-    queueTitleOverviewRefresh({
+    queueTitleOverviewNativeRefresh({
       titleId,
       blocklistLimit,
       apply(snapshot) {
-        applySnapshotRef.current(
-          snapshot as TitleOverviewSnapshot<
+        applyNativeSnapshotRef.current(
+          snapshot as TitleOverviewNativeSnapshot<
             TTitle,
             TDiagnostics,
             TEvent,
@@ -92,6 +106,27 @@ export function useTitleOverviewReactiveRefresh<
         console.error("[title-overview-reactive-refresh] refresh failed:", error);
       },
     });
+  };
+
+  const queueDownloadFeedbackRefresh = () => {
+    if (!titleId || !downloadFeedbackEnabled) {
+      return;
+    }
+
+    queueTitleOverviewDownloadFeedbackRefresh({
+      titleId,
+      apply(snapshot) {
+        applyDownloadFeedbackSnapshotRef.current(snapshot);
+      },
+      onError(error) {
+        console.error("[title-overview-reactive-refresh] feedback refresh failed:", error);
+      },
+    });
+  };
+
+  const queueRefresh = () => {
+    queueNativeRefresh();
+    queueDownloadFeedbackRefresh();
   };
 
   const activityKinds = useMemo(

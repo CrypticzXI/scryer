@@ -4,6 +4,8 @@ export type PendingImportCounts = {
   anime: number;
 };
 
+export type PendingImportStatus = "pending" | "ignored";
+
 export type PendingImportSearchAttempt = {
   query: string;
   resultCount: number;
@@ -14,6 +16,7 @@ export type PendingImportSearchAttempt = {
 export type PendingImportItem = {
   id: string;
   facet: "movie" | "series" | "anime";
+  status: PendingImportStatus;
   displayName: string;
   path: string;
   folderPath?: string | null;
@@ -63,6 +66,17 @@ export function pendingImportCountForView(
     default:
       return 0;
   }
+}
+
+export function hasImportItemsForView(
+  pendingCounts: PendingImportCounts | null | undefined,
+  ignoredCounts: PendingImportCounts | null | undefined,
+  view: string,
+): boolean {
+  return (
+    pendingImportCountForView(pendingCounts, view) > 0 ||
+    pendingImportCountForView(ignoredCounts, view) > 0
+  );
 }
 
 export function pendingImportFacetValueForView(

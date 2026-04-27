@@ -5,6 +5,12 @@ import path from "path";
 
 const DEV_PROXY_TARGET =
   process.env.SCRYER_DEV_PROXY_TARGET?.trim() || "http://127.0.0.1:8080";
+const DEV_WATCH_USE_POLLING =
+  process.env.SCRYER_VITE_USE_POLLING?.trim() === "true";
+const DEV_WATCH_POLL_INTERVAL = Number.parseInt(
+  process.env.SCRYER_VITE_POLL_INTERVAL_MS?.trim() || "250",
+  10,
+);
 
 const FOUNDATION_CHUNK_MODULES = [
   "/components/common/backend-restart-overlay.tsx",
@@ -123,6 +129,14 @@ export default defineConfig(({ command, mode }) => ({
   server: {
     port: 3000,
     host: "0.0.0.0",
+    watch: DEV_WATCH_USE_POLLING
+      ? {
+          usePolling: true,
+          interval: Number.isFinite(DEV_WATCH_POLL_INTERVAL)
+            ? DEV_WATCH_POLL_INTERVAL
+            : 250,
+        }
+      : undefined,
     proxy: {
       "/graphql": {
         target: DEV_PROXY_TARGET,

@@ -41,9 +41,14 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useSearchContext } from "@/lib/context/search-context";
+import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
 import { toast } from "sonner";
+
+const HYDRATION_POSTER_REFRESH_WINDOW_MS = 5 * 60 * 1000;
+const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
+
 type MediaContentContainerProps = {
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
@@ -62,6 +67,50 @@ function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
   });
 }
 
+function mergePreferLoadedImageFields(
+  current: TitleRecord,
+  incoming: TitleRecord,
+): TitleRecord {
+  const incomingHasPoster = Boolean(incoming.posterUrl || incoming.posterSourceUrl);
+  const incomingHasBanner = Boolean(incoming.bannerUrl || incoming.bannerSourceUrl);
+  const incomingHasBackground = Boolean(
+    incoming.backgroundUrl || incoming.backgroundSourceUrl,
+  );
+
+  return {
+    ...incoming,
+    posterUrl: incomingHasPoster ? incoming.posterUrl : (current.posterUrl ?? null),
+    posterSourceUrl: incomingHasPoster
+      ? incoming.posterSourceUrl
+      : (current.posterSourceUrl ?? null),
+    bannerUrl: incomingHasBanner ? incoming.bannerUrl : (current.bannerUrl ?? null),
+    bannerSourceUrl: incomingHasBanner
+      ? incoming.bannerSourceUrl
+      : (current.bannerSourceUrl ?? null),
+    backgroundUrl: incomingHasBackground
+      ? incoming.backgroundUrl
+      : (current.backgroundUrl ?? null),
+    backgroundSourceUrl: incomingHasBackground
+      ? incoming.backgroundSourceUrl
+      : (current.backgroundSourceUrl ?? null),
+    metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
+  };
+}
+
+function mergeCatalogTitlesPreservingImages(
+  currentTitles: TitleRecord[],
+  incomingTitles: TitleRecord[],
+): TitleRecord[] {
+  const currentById = new Map(currentTitles.map((title) => [title.id, title]));
+
+  return sortCatalogTitles(
+    incomingTitles.map((title) => {
+      const current = currentById.get(title.id);
+      return current ? mergePreferLoadedImageFields(current, title) : title;
+    }),
+  );
+}
+
 function upsertCatalogTitleRecord(
   titles: TitleRecord[],
   title: TitleRecord,
@@ -71,9 +120,22 @@ function upsertCatalogTitleRecord(
   if (existingIndex === -1) {
     next.push(title);
   } else {
-    next[existingIndex] = title;
+    next[existingIndex] = mergePreferLoadedImageFields(next[existingIndex], title);
   }
   return sortCatalogTitles(next);
+}
+
+function isPendingHydrationPosterTitle(title: TitleRecord, nowMs: number): boolean {
+  if (title.posterUrl || title.posterSourceUrl || title.metadataFetchedAt != null) {
+    return false;
+  }
+
+  const createdAtMs = title.createdAt ? Date.parse(title.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAtMs)) {
+    return true;
+  }
+
+  return nowMs - createdAtMs <= HYDRATION_POSTER_REFRESH_WINDOW_MS;
 }
 
 export const MediaContentContainer = React.memo(function MediaContentContainer({
@@ -91,6 +153,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { queueCatalogTitleRefresh } = useReactiveRefresh();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
@@ -358,7 +421,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         const nextTitles = (data?.titles ?? []) as TitleRecord[];
-        setMonitoredTitles(nextTitles);
+        setMonitoredTitles((current) =>
+          mergeCatalogTitlesPreservingImages(current, nextTitles),
+        );
         setTitleStatus(t("title.statusTemplate", { count: nextTitles.length }));
       } catch (error) {
         setTitleStatus(
@@ -388,7 +453,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         if (existingIndex === -1) {
           next.push(title);
         } else {
-          next[existingIndex] = title;
+          next[existingIndex] = mergePreferLoadedImageFields(
+            next[existingIndex],
+            title,
+          );
         }
         const sorted = sortCatalogTitles(next);
         setTitleStatus(t("title.statusTemplate", { count: next.length }));
@@ -398,11 +466,58 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [setMonitoredTitles, setTitleStatus, t],
   );
 
+  const pendingHydrationPosterTitleIds = React.useMemo(() => {
+    const nowMs = Date.now();
+    return monitoredTitles
+      .filter((title) => isPendingHydrationPosterTitle(title, nowMs))
+      .map((title) => title.id);
+  }, [monitoredTitles]);
+  const pendingHydrationPosterTitleIdsKey = React.useMemo(
+    () => pendingHydrationPosterTitleIds.join("|"),
+    [pendingHydrationPosterTitleIds],
+  );
+
   useTitleListReactiveRefresh({
     facet: activeFacet,
     pause: !shouldLoadCatalogTitles,
     onTitleRefreshed: applyRefreshedTitleRecord,
   });
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || pendingHydrationPosterTitleIds.length === 0) {
+      return;
+    }
+
+    const refreshPendingHydrationPosters = () => {
+      pendingHydrationPosterTitleIds.forEach((titleId) => {
+        queueCatalogTitleRefresh({
+          titleId,
+          apply(title) {
+            applyRefreshedTitleRecord(titleId, title);
+          },
+          onError(error) {
+            console.error("[catalog-hydration-poster-refresh] refresh failed:", error);
+          },
+        });
+      });
+    };
+
+    refreshPendingHydrationPosters();
+    const intervalId = window.setInterval(
+      refreshPendingHydrationPosters,
+      HYDRATION_POSTER_REFRESH_INTERVAL_MS,
+    );
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    applyRefreshedTitleRecord,
+    pendingHydrationPosterTitleIds,
+    pendingHydrationPosterTitleIdsKey,
+    queueCatalogTitleRefresh,
+    shouldLoadCatalogTitles,
+  ]);
 
   const onAddSubmit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {

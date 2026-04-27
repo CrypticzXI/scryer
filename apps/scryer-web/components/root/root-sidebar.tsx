@@ -4,6 +4,7 @@ import { useClient } from "urql";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LucideIcon } from "lucide-react";
 import type {
+  ActivitySection,
   ContentSettingsSection,
   SettingsSection,
   SystemSection,
@@ -37,7 +38,7 @@ import { useTheme } from "next-themes";
 import { getNextTheme, getThemeLabel } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { PendingImportCounts } from "@/lib/types";
-import { pendingImportCountForView } from "@/lib/types";
+import { hasImportItemsForView, pendingImportCountForView } from "@/lib/types";
 
 type NavItem = {
   id: ViewId;
@@ -51,9 +52,11 @@ type RootSidebarProps = {
   settingsSection: SettingsSection;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  activitySection: ActivitySection;
   wantedSection: WantedSection;
   entitlements: string[];
   pendingImportCounts: PendingImportCounts | null;
+  ignoredImportCounts?: PendingImportCounts | null;
   manualImportRequiredCount: number;
   children?: React.ReactNode;
   onNavigate: (
@@ -62,6 +65,7 @@ type RootSidebarProps = {
     nextContentSection?: ContentSettingsSection,
     nextSystemSection?: SystemSection,
     nextWantedSection?: WantedSection,
+    nextActivitySection?: ActivitySection,
   ) => void;
 };
 
@@ -148,11 +152,41 @@ const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "jobs", labelKey: "system.jobsTitle" },
 ];
 
+const ACTIVITY_SUB_PAGES: Array<{ id: ActivitySection; labelKey: string }> = [
+  { id: "import", labelKey: "activity.import" },
+  { id: "activity", labelKey: "activity.activity" },
+  { id: "history", labelKey: "activity.history" },
+];
+
 const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
   { id: "wanted", labelKey: "wanted.tabWanted" },
   { id: "cutoff", labelKey: "wanted.tabCutoff" },
   { id: "pending", labelKey: "wanted.tabPending" },
 ];
+
+const LEAF_NAV_BADGE_BASE_CLASS =
+  "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md px-1 text-[10px] font-medium leading-none tabular-nums";
+
+function LeafNavBadge({
+  count,
+  tone = "cta",
+}: {
+  count: number;
+  tone?: "cta" | "warning";
+}) {
+  return (
+    <span
+      className={cn(
+        LEAF_NAV_BADGE_BASE_CLASS,
+        tone === "warning"
+          ? "bg-red-600 text-white dark:bg-red-500 dark:text-white"
+          : "bg-primary text-primary-foreground",
+      )}
+    >
+      {count}
+    </span>
+  );
+}
 
 function isSettingsSubPage(section: ContentSettingsSection): boolean {
   return section === "settings" || section === "general" || section === "quality" || section === "renaming" || section === "routing";
@@ -172,9 +206,11 @@ function RootSidebarContent({
   settingsSection,
   contentSettingsSection,
   systemSection,
+  activitySection,
   wantedSection,
   entitlements,
   pendingImportCounts,
+  ignoredImportCounts,
   manualImportRequiredCount,
   children,
   onNavigate,
@@ -213,9 +249,20 @@ function RootSidebarContent({
     [entitlements],
   );
 
-  const hasPendingImportsForView = React.useCallback(
-    (viewId: ViewId) => pendingImportCountForView(pendingImportCounts, viewId) > 0,
+  const hasImportsForView = React.useCallback(
+    (viewId: ViewId) => hasImportItemsForView(pendingImportCounts, ignoredImportCounts, viewId),
+    [ignoredImportCounts, pendingImportCounts],
+  );
+
+  const pendingImportCountForNavView = React.useCallback(
+    (viewId: ViewId) => pendingImportCountForView(pendingImportCounts, viewId),
     [pendingImportCounts],
+  );
+  const activityImportBadgeCount = Math.max(0, manualImportRequiredCount);
+  const hasActivityImportBadge = activityImportBadgeCount > 0;
+  const visibleActivitySubPages = React.useMemo(
+    () => ACTIVITY_SUB_PAGES.filter((entry) => entry.id !== "import" || hasActivityImportBadge),
+    [hasActivityImportBadge],
   );
 
   const handleNavigate = React.useCallback(
@@ -226,6 +273,7 @@ function RootSidebarContent({
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
+      nextActivitySection?: ActivitySection,
     ) => {
       event.preventDefault();
       onNavigate(
@@ -234,6 +282,7 @@ function RootSidebarContent({
         nextContentSection,
         nextSystemSection,
         nextWantedSection,
+        nextActivitySection,
       );
       if (isMobile) {
         setOpenMobile(false);
@@ -275,6 +324,12 @@ function RootSidebarContent({
         : null;
     }
 
+    if (view === "activity") {
+      return ACTIVITY_SUB_PAGES.find((entry) => entry.id === activitySection)?.labelKey
+        ? t(ACTIVITY_SUB_PAGES.find((entry) => entry.id === activitySection)!.labelKey)
+        : null;
+    }
+
     if (view === "wanted") {
       return WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)?.labelKey
         ? t(WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)!.labelKey)
@@ -286,6 +341,7 @@ function RootSidebarContent({
     contentSettingsSection,
     settingsSection,
     systemSection,
+    activitySection,
     t,
     view,
     visibleSettingsEntries,
@@ -307,18 +363,21 @@ function RootSidebarContent({
                 const isMediaSection = ["movies", "series", "anime"].includes(item.id);
                 const isSettingsTop = item.id === "settings";
                 const isSystemTop = item.id === "system";
+                const isActivityTop = item.id === "activity";
                 const isWantedTop = item.id === "wanted";
                 const isActiveMediaSection = isMediaSection && view === item.id;
                 const isActiveSettingsSection = isSettingsTop && view === "settings";
                 const isActiveSystemSection = isSystemTop && view === "system";
+                const isActiveActivitySection = isActivityTop && view === "activity";
                 const isActiveWantedSection = isWantedTop && view === "wanted";
                 const shouldShowChildren =
                   isActiveMediaSection ||
                   isActiveSettingsSection ||
                   isActiveSystemSection ||
+                  isActiveActivitySection ||
                   isActiveWantedSection;
                 const showSeparator = index < topNav.length - 1;
-                if (!isMediaSection && !isSettingsTop && !isSystemTop && !isWantedTop) {
+                if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
                   return (
                     <React.Fragment key={item.id}>
                       <SidebarMenuItem>
@@ -331,9 +390,9 @@ function RootSidebarContent({
                           <Icon className="h-4 w-4" />
                           {item.label}
                         </SidebarMenuButton>
-                        {item.id === "activity" && manualImportRequiredCount > 0 ? (
+                        {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
-                            {manualImportRequiredCount}
+                            {activityImportBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
                       </SidebarMenuItem>
@@ -357,23 +416,23 @@ function RootSidebarContent({
                               handleNavigate(event, "system", undefined, undefined, systemSection);
                               return;
                             }
+                            if (isActivityTop) {
+                              handleNavigate(event, "activity", undefined, undefined, undefined, undefined, activitySection);
+                              return;
+                            }
                             if (isWantedTop) {
                               handleNavigate(event, "wanted", undefined, undefined, undefined, wantedSection);
                               return;
                             }
-                            const nextContentSection =
-                              contentSettingsSection === "import" && !hasPendingImportsForView(item.id)
-                                ? "overview"
-                                : contentSettingsSection;
-                            handleNavigate(event, item.id, undefined, nextContentSection);
+                            handleNavigate(event, item.id, undefined, contentSettingsSection);
                           }}
                         >
                           <Icon className="h-4 w-4" />
                           {item.label}
                         </SidebarMenuButton>
-                        {item.id === "activity" && manualImportRequiredCount > 0 ? (
+                        {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
-                            {manualImportRequiredCount}
+                            {activityImportBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
                       </SidebarMenuItem>
@@ -392,9 +451,7 @@ function RootSidebarContent({
                                   >
                                     {entry.label(t)}
                                     {entry.id === "plugins" && pluginUpgradeCount > 0 ? (
-                                      <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-medium leading-none text-white">
-                                        {pluginUpgradeCount}
-                                      </span>
+                                      <LeafNavBadge count={pluginUpgradeCount} tone="warning" />
                                     ) : null}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
@@ -409,6 +466,30 @@ function RootSidebarContent({
                                     }}
                                   >
                                     {t(entry.labelKey)}
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              ))
+                            ) : isActivityTop ? (
+                              visibleActivitySubPages.map((entry) => (
+                                <SidebarMenuSubItem key={entry.id}>
+                                  <SidebarMenuSubButton
+                                    isActive={activitySection === entry.id}
+                                    onClick={(event) => {
+                                      handleNavigate(
+                                        event,
+                                        "activity",
+                                        undefined,
+                                        undefined,
+                                        undefined,
+                                        undefined,
+                                        entry.id,
+                                      );
+                                    }}
+                                  >
+                                    {t(entry.labelKey)}
+                                    {entry.id === "import" && hasActivityImportBadge ? (
+                                      <LeafNavBadge count={activityImportBadgeCount} />
+                                    ) : null}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
                               ))
@@ -444,7 +525,7 @@ function RootSidebarContent({
                                     {getMediaOverviewLabel(item.id, t)}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
-                                {hasPendingImportsForView(item.id) ? (
+                                {hasImportsForView(item.id) ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       isActive={contentSettingsSection === "import"}
@@ -453,6 +534,9 @@ function RootSidebarContent({
                                       }}
                                     >
                                       {t("nav.import")}
+                                      {pendingImportCountForNavView(item.id) > 0 ? (
+                                        <LeafNavBadge count={pendingImportCountForNavView(item.id)} />
+                                      ) : null}
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}

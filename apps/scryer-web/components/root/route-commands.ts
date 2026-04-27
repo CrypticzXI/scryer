@@ -15,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import type {
+  ActivitySection,
   ContentSettingsSection,
   SettingsSection,
   SystemSection,
@@ -23,8 +24,7 @@ import type {
   WantedSection,
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
-import type { PendingImportCounts } from "@/lib/types";
-import { pendingImportCountForView } from "@/lib/types";
+import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
 
 export type RouteCommand = {
   id: string;
@@ -38,12 +38,15 @@ export type RouteCommand = {
 type BuildRouteCommandsArgs = {
   t: Translate;
   pendingImportCounts: PendingImportCounts | null;
+  ignoredImportCounts?: PendingImportCounts | null;
+  activityImportCount?: number;
   onNavigate: (
     nextView: ViewId,
     nextSettingsSection?: SettingsSection,
     nextContentSection?: ContentSettingsSection,
     nextSystemSection?: SystemSection,
     nextWantedSection?: WantedSection,
+    nextActivitySection?: ActivitySection,
   ) => void;
 };
 
@@ -54,15 +57,18 @@ function buildNavigate(
   contentSection?: ContentSettingsSection,
   systemSection?: SystemSection,
   wantedSection?: WantedSection,
+  activitySection?: ActivitySection,
 ): () => void {
   return () => {
-    onNavigate(view, settingsSection, contentSection, systemSection, wantedSection);
+    onNavigate(view, settingsSection, contentSection, systemSection, wantedSection, activitySection);
   };
 }
 
 export function buildRouteCommands({
   t,
   pendingImportCounts,
+  ignoredImportCounts,
+  activityImportCount = 0,
   onNavigate,
 }: BuildRouteCommandsArgs): RouteCommand[] {
   const mediaCommands = FACET_REGISTRY.flatMap((f) => {
@@ -77,12 +83,12 @@ export function buildRouteCommands({
       },
     ];
 
-    if (pendingImportCountForView(pendingImportCounts, f.viewId) > 0) {
+    if (hasImportItemsForView(pendingImportCounts, ignoredImportCounts, f.viewId)) {
       commands.push({
         id: `${f.viewId}-import`,
         label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
         description: t("nav.import"),
-        keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
+        keywords: [f.viewId, f.id, "import", "pending", "ignored", "unmatched", "match"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
       });
@@ -159,12 +165,30 @@ export function buildRouteCommands({
       onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
     },
     {
-      id: "activity",
-      label: t("nav.activity"),
-      description: t("nav.activity"),
-      keywords: ["activity", "events", "log", "audit", "system"],
+      id: "activity-overview",
+      label: `${t("nav.activity")} / ${t("activity.activity")}`,
+      description: t("activity.activity"),
+      keywords: ["activity", "events", "log", "audit", "system", "queue"],
       icon: ActivitySquare,
-      onSelect: buildNavigate(onNavigate, "activity"),
+      onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "activity"),
+    },
+    ...(activityImportCount > 0
+      ? [{
+          id: "activity-import",
+          label: `${t("nav.activity")} / ${t("activity.import")}`,
+          description: t("activity.import"),
+          keywords: ["activity", "import", "queue", "manual", "blocked"],
+          icon: ActivitySquare,
+          onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "import"),
+        } satisfies RouteCommand]
+      : []),
+    {
+      id: "activity-history",
+      label: `${t("nav.activity")} / ${t("activity.history")}`,
+      description: t("activity.history"),
+      keywords: ["activity", "history", "completed", "failed", "downloads"],
+      icon: ActivitySquare,
+      onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "history"),
     },
     {
       id: "calendar",

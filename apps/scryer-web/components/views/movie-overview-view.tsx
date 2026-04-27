@@ -602,15 +602,35 @@ export function MovieOverviewView({
       />
 
       {/* title header with poster */}
+      {(() => {
+        const overviewBackdropUrl = title.backgroundUrl ?? title.bannerUrl;
+        return (
       <Card
         className="relative overflow-hidden p-0"
-        style={(title.backgroundUrl ?? title.bannerUrl) ? {
-          backgroundImage: `linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 80%, transparent), color-mix(in srgb, var(--color-card) 50%, transparent)), url(${title.backgroundUrl ?? title.bannerUrl})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center top",
-          backgroundClip: "padding-box",
-        } : undefined}
+        style={overviewBackdropUrl ? { backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
       >
+        {overviewBackdropUrl ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{ position: "absolute", inset: 0, zIndex: 0 }}
+          >
+            <div
+              className="absolute -inset-1 scale-[1.03] bg-cover bg-no-repeat blur-[2px] brightness-[0.82] saturate-[0.9]"
+              style={{
+                backgroundImage: `url(${overviewBackdropUrl})`,
+                backgroundPosition: "center top",
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  "linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 82%, transparent), color-mix(in srgb, var(--color-card) 52%, transparent)), linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012) 40%, transparent 100%)",
+              }}
+            />
+          </div>
+        ) : null}
         <CardContent className="relative p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:gap-5">
             <div className="mx-auto shrink-0 sm:mx-0">
@@ -815,6 +835,8 @@ export function MovieOverviewView({
           </div>
         </CardContent>
       </Card>
+        );
+      })()}
 
       <OverviewControlPanel
         monitored={title.monitored}

@@ -67,10 +67,11 @@ pub(crate) fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
 
 pub(crate) fn to_gql_error(err: AppError) -> Error {
     match err {
-        AppError::DownloadFeedbackTimeout(message) => Error::new(message)
-            .extend_with(|_, extensions| {
+        AppError::DownloadFeedbackTimeout(message) => {
+            Error::new(message).extend_with(|_, extensions| {
                 extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
-            }),
+            })
+        }
         _ => Error::new(err.to_string()),
     }
 }

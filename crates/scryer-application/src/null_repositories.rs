@@ -9,7 +9,7 @@ use scryer_domain::{
 
 use scryer_domain::RuleSet;
 
-use crate::types::PendingReleaseStatus;
+use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit};
 use scryer_domain::PluginInstallation;
 
@@ -1220,6 +1220,7 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
         &self,
         _facet: Option<scryer_domain::MediaFacet>,
         _scan_root: Option<&str>,
+        _status: Option<PendingImportStatus>,
         _limit: i64,
         _offset: i64,
     ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
@@ -1230,6 +1231,7 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
         &self,
         _facet: Option<scryer_domain::MediaFacet>,
         _scan_root: Option<&str>,
+        _status: Option<PendingImportStatus>,
     ) -> AppResult<i64> {
         Ok(0)
     }

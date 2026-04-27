@@ -2,6 +2,7 @@ use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 
 use scryer_application::{
     AppError, AppResult, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    PendingImportStatus,
 };
 use scryer_domain::MediaFacet;
 
@@ -19,15 +20,24 @@ fn row_to_library_scan_unmatched_item(row: &SqliteRow) -> AppResult<LibraryScanU
     let search_attempts_json: String = row
         .try_get("search_attempts_json")
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    let status_raw: String = row
+        .try_get("status")
+        .map_err(|err| AppError::Repository(err.to_string()))?;
     let search_attempts =
         serde_json::from_str::<Vec<LibraryScanUnmatchedSearchAttempt>>(&search_attempts_json)
             .map_err(|err| AppError::Repository(err.to_string()))?;
+    let status = PendingImportStatus::parse(&status_raw).ok_or_else(|| {
+        AppError::Repository(format!(
+            "library scan unmatched item has invalid status '{status_raw}'"
+        ))
+    })?;
 
     Ok(LibraryScanUnmatchedItem {
         id: row
             .try_get("id")
             .map_err(|err| AppError::Repository(err.to_string()))?,
         facet,
+        status,
         scan_session_id: row
             .try_get("scan_session_id")
             .map_err(|err| AppError::Repository(err.to_string()))?,
@@ -68,8 +78,8 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
     sqlx::query(
         "INSERT INTO library_scan_unmatched_items
          (id, facet, scan_session_id, scan_root, item_path, display_name, query,
-          year_hint, reason_code, error_message, search_attempts_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             facet = excluded.facet,
             scan_session_id = excluded.scan_session_id,
@@ -81,6 +91,11 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
             reason_code = excluded.reason_code,
             error_message = excluded.error_message,
             search_attempts_json = excluded.search_attempts_json,
+            status = CASE
+                WHEN library_scan_unmatched_items.status = 'ignored' AND excluded.status = 'pending'
+                    THEN library_scan_unmatched_items.status
+                ELSE excluded.status
+            END,
             updated_at = excluded.updated_at",
     )
     .bind(&item.id)
@@ -94,6 +109,7 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
     .bind(&item.reason_code)
     .bind(&item.error_message)
     .bind(search_attempts_json)
+    .bind(item.status.as_str())
     .bind(&item.created_at)
     .bind(&item.updated_at)
     .execute(pool)
@@ -127,7 +143,7 @@ pub(crate) async fn get_library_scan_unmatched_item_query(
 ) -> AppResult<Option<LibraryScanUnmatchedItem>> {
     let row = sqlx::query(
         "SELECT id, facet, scan_session_id, scan_root, item_path, display_name, query,
-                year_hint, reason_code, error_message, search_attempts_json, created_at, updated_at
+                year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at
          FROM library_scan_unmatched_items
          WHERE id = ?",
     )
@@ -145,12 +161,13 @@ pub(crate) async fn list_library_scan_unmatched_items_query(
     pool: &SqlitePool,
     facet: Option<MediaFacet>,
     scan_root: Option<&str>,
+    status: Option<PendingImportStatus>,
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
     let mut sql = String::from(
         "SELECT id, facet, scan_session_id, scan_root, item_path, display_name, query,
-                year_hint, reason_code, error_message, search_attempts_json, created_at, updated_at
+                year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at
          FROM library_scan_unmatched_items
          WHERE 1=1",
     );
@@ -164,6 +181,11 @@ pub(crate) async fn list_library_scan_unmatched_items_query(
     if let Some(scan_root) = scan_root {
         sql.push_str(" AND scan_root = ?");
         binds.push(scan_root.to_string());
+    }
+
+    if let Some(status) = status {
+        sql.push_str(" AND status = ?");
+        binds.push(status.as_str().to_string());
     }
 
     sql.push_str(" ORDER BY updated_at DESC, item_path ASC LIMIT ? OFFSET ?");
@@ -188,6 +210,7 @@ pub(crate) async fn count_library_scan_unmatched_items_query(
     pool: &SqlitePool,
     facet: Option<MediaFacet>,
     scan_root: Option<&str>,
+    status: Option<PendingImportStatus>,
 ) -> AppResult<i64> {
     let mut sql = String::from(
         "SELECT COUNT(*) AS count
@@ -204,6 +227,11 @@ pub(crate) async fn count_library_scan_unmatched_items_query(
     if let Some(scan_root) = scan_root {
         sql.push_str(" AND scan_root = ?");
         binds.push(scan_root.to_string());
+    }
+
+    if let Some(status) = status {
+        sql.push_str(" AND status = ?");
+        binds.push(status.as_str().to_string());
     }
 
     let mut query = sqlx::query(&sql);

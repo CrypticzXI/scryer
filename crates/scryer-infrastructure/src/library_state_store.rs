@@ -3,10 +3,10 @@ use scryer_application::{
     AppResult, BlocklistRepository, EpisodeScopedMediaFile, HousekeepingRepository,
     InsertMediaFileInput, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileAnalysis, MediaFileRepository, NewBlocklistEntry,
-    PendingRelease, PendingReleaseRepository, ReleaseDecision, SubtitleDownloadRepository,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
-    TitleQualitySummary, WantedItem, WantedItemRepository,
+    PendingImportStatus, PendingRelease, PendingReleaseRepository, ReleaseDecision,
+    SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
@@ -108,11 +108,12 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
         self.db
-            .list_library_scan_unmatched_items(facet, scan_root, limit, offset)
+            .list_library_scan_unmatched_items(facet, scan_root, status, limit, offset)
             .await
     }
 
@@ -120,9 +121,10 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
     ) -> AppResult<i64> {
         self.db
-            .count_library_scan_unmatched_items(facet, scan_root)
+            .count_library_scan_unmatched_items(facet, scan_root, status)
             .await
     }
 }

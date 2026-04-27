@@ -1,5 +1,6 @@
 use super::*;
 use async_trait::async_trait;
+use scryer_domain::PluginHostBindingId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
@@ -167,8 +168,11 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
 
 struct MockPluginProvider {
     types: Vec<String>,
+    builtin_types: Vec<String>,
     default_urls: HashMap<String, String>,
     plugin_names: HashMap<String, String>,
+    plugin_versions: HashMap<String, String>,
+    plugin_types: HashMap<String, String>,
     reload_count: AtomicUsize,
 }
 
@@ -176,8 +180,11 @@ impl MockPluginProvider {
     fn new() -> Self {
         Self {
             types: vec![],
+            builtin_types: vec![],
             default_urls: HashMap::new(),
             plugin_names: HashMap::new(),
+            plugin_versions: HashMap::new(),
+            plugin_types: HashMap::new(),
             reload_count: AtomicUsize::new(0),
         }
     }
@@ -185,9 +192,19 @@ impl MockPluginProvider {
     fn with_provider(mut self, pt: &str, name: &str, default_url: Option<&str>) -> Self {
         self.types.push(pt.to_string());
         self.plugin_names.insert(pt.to_string(), name.to_string());
+        self.plugin_versions
+            .insert(pt.to_string(), "0.1.0".to_string());
+        self.plugin_types
+            .insert(pt.to_string(), "indexer".to_string());
         if let Some(url) = default_url {
             self.default_urls.insert(pt.to_string(), url.to_string());
         }
+        self
+    }
+
+    fn with_builtin_provider(mut self, pt: &str, name: &str, default_url: Option<&str>) -> Self {
+        self = self.with_provider(pt, name, default_url);
+        self.builtin_types.push(pt.to_string());
         self
     }
 }
@@ -199,6 +216,18 @@ impl IndexerPluginProvider for MockPluginProvider {
 
     fn available_provider_types(&self) -> Vec<String> {
         self.types.clone()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        self.builtin_types.clone()
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        self.plugin_versions.get(provider_type).cloned()
+    }
+
+    fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
+        self.plugin_types.get(provider_type).cloned()
     }
 
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
@@ -390,6 +419,112 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         app,
         plugin_repo,
         indexer_config_repo,
+    }
+}
+
+fn bootstrap_plugins_with_subtitles(
+    provider: Option<MockPluginProvider>,
+    subtitle_provider: Option<Arc<dyn SubtitlePluginProvider>>,
+) -> TestHarness {
+    use crate::null_repositories::NullSettingsRepository;
+    use crate::null_repositories::test_nulls::*;
+    use crate::types::JwtAuthConfig;
+
+    let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
+    let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
+
+    let mut services = AppServices::builder(
+        Arc::new(NullTitleRepository),
+        Arc::new(NullShowRepository),
+        Arc::new(NullUserRepository),
+        indexer_config_repo.clone() as Arc<dyn IndexerConfigRepository>,
+        Arc::new(NullIndexerClient),
+        Arc::new(NullDownloadClient),
+        Arc::new(NullDownloadClientConfigRepository),
+        Arc::new(NullReleaseAttemptRepository),
+        Arc::new(NullSettingsRepository),
+        Arc::new(NullQualityProfileRepository),
+        String::new(),
+    )
+    .with_plugin_installations(plugin_repo.clone());
+    if let Some(p) = provider {
+        services = services.with_plugin_provider(Arc::new(p));
+    }
+    if let Some(subtitle_provider) = subtitle_provider {
+        services = services.with_subtitle_plugin_provider(subtitle_provider);
+    }
+
+    let registry = FacetRegistry::new();
+    let app = AppUseCase::new(
+        services.build_partial_for_tests(),
+        JwtAuthConfig {
+            issuer: "test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    TestHarness {
+        app,
+        plugin_repo,
+        indexer_config_repo,
+    }
+}
+
+struct MockSubtitlePluginProvider {
+    builtin_types: Vec<String>,
+}
+
+impl MockSubtitlePluginProvider {
+    fn new(builtin_types: &[&str]) -> Self {
+        Self {
+            builtin_types: builtin_types
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+}
+
+impl SubtitlePluginProvider for MockSubtitlePluginProvider {
+    fn client_for_config(
+        &self,
+        _config: &SubtitleProviderConfig,
+        _host_bindings: &HashMap<PluginHostBindingId, String>,
+    ) -> Option<Arc<dyn SubtitleProviderClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.builtin_types.clone()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        self.builtin_types.clone()
+    }
+
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some("0.1.0".to_string())
+    }
+
+    fn supports_catalog_search_for_provider(&self, _provider_type: &str) -> bool {
+        false
+    }
+
+    fn recommended_facets_for_provider(&self, _provider_type: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        vec![]
+    }
+
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(provider_type.to_string())
     }
 }
 
@@ -670,6 +805,55 @@ async fn list_default_base_url_from_provider() {
     assert_eq!(
         result[0].default_base_url.as_deref(),
         Some("https://feed.animetosho.org")
+    );
+}
+
+#[tokio::test]
+async fn list_uses_application_builtin_provider_types_over_registry_flags() {
+    let provider = MockPluginProvider::new().with_builtin_provider(
+        "animetosho",
+        "AnimeTosho",
+        Some("https://feed.animetosho.org"),
+    );
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
+    let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
+    let json = make_registry_json(&[
+        registry_entry_with_type("animetosho", "indexer", "0.3.4", false, None),
+        registry_entry_with_type("jimaku", "subtitle_provider", "0.1.0", false, None),
+        registry_entry_with_type("opensubtitles", "subtitle_provider", "0.1.0", true, None),
+        registry_entry_with_type("whisper", "subtitle_provider", "0.1.0", true, None),
+    ]);
+    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+
+    assert!(
+        result
+            .iter()
+            .find(|plugin| plugin.id == "animetosho")
+            .unwrap()
+            .builtin
+    );
+    assert!(
+        result
+            .iter()
+            .find(|plugin| plugin.id == "jimaku")
+            .unwrap()
+            .builtin
+    );
+    assert!(
+        !result
+            .iter()
+            .find(|plugin| plugin.id == "opensubtitles")
+            .unwrap()
+            .builtin
+    );
+    assert!(
+        !result
+            .iter()
+            .find(|plugin| plugin.id == "whisper")
+            .unwrap()
+            .builtin
     );
 }
 
@@ -1049,12 +1233,27 @@ async fn upgrade_rejects_incompatible_host_version() {
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn seed_calls_for_nzbgeek_and_newznab() {
-    let h = bootstrap_plugins(None);
+async fn seed_uses_provider_builtin_inventory() {
+    let provider = MockPluginProvider::new()
+        .with_builtin_provider(
+            "nzbgeek",
+            "NZBGeek Indexer",
+            Some("https://api.nzbgeek.info"),
+        )
+        .with_builtin_provider("dognzb", "DogNZB Indexer", Some("https://api.dognzb.cr"))
+        .with_builtin_provider("newznab", "Newznab Indexer", None)
+        .with_builtin_provider(
+            "animetosho",
+            "AnimeTosho",
+            Some("https://feed.animetosho.org"),
+        )
+        .with_builtin_provider("torznab", "Torznab Indexer", None);
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
+    let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
     h.app.seed_builtin_plugins().await.unwrap();
 
     let seeded = h.plugin_repo.seeded.lock().await;
-    assert_eq!(seeded.len(), 4);
+    assert_eq!(seeded.len(), 6);
 
     let ids: Vec<&str> = seeded
         .iter()
@@ -1063,6 +1262,8 @@ async fn seed_calls_for_nzbgeek_and_newznab() {
     assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"dognzb"));
     assert!(ids.contains(&"newznab"));
+    assert!(ids.contains(&"animetosho"));
+    assert!(ids.contains(&"torznab"));
     assert!(ids.contains(&"jimaku"));
 }
 

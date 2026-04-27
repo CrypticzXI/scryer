@@ -93,8 +93,11 @@ function PluginActionButton({
 function categoryLabel(pluginType: string, t: Translate): string {
   switch (pluginType) {
     case "indexer": return t("settings.pluginCategoryIndexer");
+    case "usenet_indexer": return t("settings.pluginCategoryUsenetIndexer");
+    case "torrent_indexer": return t("settings.pluginCategoryTorrentIndexer");
     case "download_client": return t("settings.pluginCategoryDownloadClient");
     case "notification": return t("settings.pluginCategoryNotification");
+    case "subtitle_provider": return t("settings.pluginCategorySubtitleProvider");
     default: return pluginType;
   }
 }

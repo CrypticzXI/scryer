@@ -578,10 +578,20 @@ export function MediaContentView({
                     size="sm"
                     aria-label={t("title.viewModeToggle")}
                   >
-                    <ToggleGroupItem value="table" size="sm" aria-label={t("title.viewModeTable")}>
+                    <ToggleGroupItem
+                      value="table"
+                      size="sm"
+                      aria-label={t("title.viewModeTable")}
+                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
+                    >
                       <LayoutList className="h-4 w-4" />
                     </ToggleGroupItem>
-                    <ToggleGroupItem value="poster" size="sm" aria-label={t("title.viewModePoster")}>
+                    <ToggleGroupItem
+                      value="poster"
+                      size="sm"
+                      aria-label={t("title.viewModePoster")}
+                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
+                    >
                       <LayoutGrid className="h-4 w-4" />
                     </ToggleGroupItem>
                   </ToggleGroup>

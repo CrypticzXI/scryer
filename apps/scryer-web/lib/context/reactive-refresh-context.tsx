@@ -1,7 +1,10 @@
 import { createContext, useContext } from "react";
 
 import type { ImportRecord, TitleRecord } from "@/lib/types";
-import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type {
+  TitleOverviewDownloadFeedbackSnapshot,
+  TitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 
 type ReactiveRefreshErrorHandler = (error: unknown) => void;
 
@@ -17,7 +20,7 @@ export type QueueCatalogTitleRefreshOptions = {
   onError?: ReactiveRefreshErrorHandler;
 };
 
-export type QueueTitleOverviewRefreshOptions<
+export type QueueTitleOverviewNativeRefreshOptions<
   TTitle = unknown,
   TDiagnostics = unknown,
   TEvent = unknown,
@@ -27,7 +30,7 @@ export type QueueTitleOverviewRefreshOptions<
   titleId: string;
   blocklistLimit: number;
   apply: (
-    snapshot: TitleOverviewSnapshot<
+    snapshot: TitleOverviewNativeSnapshot<
       TTitle,
       TDiagnostics,
       TEvent,
@@ -35,6 +38,12 @@ export type QueueTitleOverviewRefreshOptions<
       TSubtitle
     >,
   ) => void;
+  onError?: ReactiveRefreshErrorHandler;
+};
+
+export type QueueTitleOverviewDownloadFeedbackRefreshOptions = {
+  titleId: string;
+  apply: (snapshot: TitleOverviewDownloadFeedbackSnapshot) => void;
   onError?: ReactiveRefreshErrorHandler;
 };
 
@@ -51,20 +60,23 @@ export type ReactiveRefreshContextValue = {
   queueCatalogTitleRefresh: (
     options: QueueCatalogTitleRefreshOptions,
   ) => void;
-  queueTitleOverviewRefresh: <
+  queueTitleOverviewNativeRefresh: <
     TTitle = unknown,
     TDiagnostics = unknown,
     TEvent = unknown,
     TBlocklist = unknown,
     TSubtitle = unknown,
   >(
-    options: QueueTitleOverviewRefreshOptions<
+    options: QueueTitleOverviewNativeRefreshOptions<
       TTitle,
       TDiagnostics,
       TEvent,
       TBlocklist,
       TSubtitle
     >,
+  ) => void;
+  queueTitleOverviewDownloadFeedbackRefresh: (
+    options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
   ) => void;
   queueImportHistoryRefresh: (
     options: QueueImportHistoryRefreshOptions,

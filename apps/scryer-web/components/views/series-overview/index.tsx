@@ -25,7 +25,6 @@ import { TitleSearchDownloadClientNotice } from "@/components/common/title-searc
 import {
   episodePanelReducer,
   initialEpisodePanelState,
-  type EpisodePanelTab,
 } from "./episode-panel-reducer";
 import {
   sortDbCollections,
@@ -41,8 +40,6 @@ import { SeasonSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
-import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
-import { downloadQueueItemIdentityKey } from "@/lib/utils/download-queue";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -70,6 +67,39 @@ function compareEpisodeQueueItems(
   }
 
   return right.progressPercent - left.progressPercent;
+}
+
+function coveredEpisodeIdsForQueueItem(
+  item: DownloadQueueItem,
+  episodesByCollection: Record<string, CollectionEpisode[]>,
+): string[] {
+  const episodeIds = new Set<string>();
+  if (item.episodeId) {
+    episodeIds.add(item.episodeId);
+  }
+
+  const scope = item.queueScope;
+  if (!scope) {
+    return Array.from(episodeIds);
+  }
+
+  if (scope.kind === "episode" && scope.episodeId) {
+    episodeIds.add(scope.episodeId);
+  }
+
+  if (scope.kind === "episode_set") {
+    for (const episodeId of scope.episodeIds) {
+      episodeIds.add(episodeId);
+    }
+  }
+
+  if (scope.kind === "collection" && scope.collectionId) {
+    for (const episode of episodesByCollection[scope.collectionId] ?? []) {
+      episodeIds.add(episode.id);
+    }
+  }
+
+  return Array.from(episodeIds);
 }
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
@@ -164,6 +194,7 @@ export function SeriesOverviewView({
   onDeleteFile,
   onOpenFixMatch,
 }: Props) {
+  const emptyEpisodes = React.useRef<CollectionEpisode[]>([]).current;
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -178,6 +209,18 @@ export function SeriesOverviewView({
     [sortedCollections],
   );
 
+  const sortedEpisodesByCollection = React.useMemo(
+    () => Object.fromEntries(
+      sortedCollections.map((collection) => [
+        collection.id,
+        [...(episodesByCollection[collection.id] ?? emptyEpisodes)].sort(
+          (left, right) => episodeSortValue(right) - episodeSortValue(left),
+        ),
+      ]),
+    ) as Record<string, CollectionEpisode[]>,
+    [emptyEpisodes, episodesByCollection, sortedCollections],
+  );
+
   const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [episodePanel, dispatchEpisodePanel] = React.useReducer(episodePanelReducer, initialEpisodePanelState);
@@ -186,18 +229,12 @@ export function SeriesOverviewView({
   const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
-  const {
-    primaryQueueItemByEpisodeId,
-    titleLevelQueueItems,
-  } = React.useMemo(() => {
+  const { primaryQueueItemByEpisodeId } = React.useMemo(() => {
     const queueItemsByEpisodeId: Record<string, DownloadQueueItem[]> = {};
-    const fallbackTitleQueueItems: DownloadQueueItem[] = [];
 
     for (const item of downloadQueueItems) {
-      if (item.episodeId) {
-        (queueItemsByEpisodeId[item.episodeId] ??= []).push(item);
-      } else {
-        fallbackTitleQueueItems.push(item);
+      for (const episodeId of coveredEpisodeIdsForQueueItem(item, sortedEpisodesByCollection)) {
+        (queueItemsByEpisodeId[episodeId] ??= []).push(item);
       }
     }
 
@@ -210,9 +247,8 @@ export function SeriesOverviewView({
 
     return {
       primaryQueueItemByEpisodeId: primaryByEpisodeId,
-      titleLevelQueueItems: fallbackTitleQueueItems.sort(compareEpisodeQueueItems),
     };
-  }, [downloadQueueItems]);
+  }, [downloadQueueItems, sortedEpisodesByCollection]);
 
   React.useEffect(() => {
     setSearchBlockedByEpisode({});
@@ -238,7 +274,6 @@ export function SeriesOverviewView({
         if (match) {
           initializedRef.current = true;
           setExpandedKeys(new Set([`s-${collectionId}`]));
-          dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId: initialEpisodeId });
           // Scroll to the episode row after DOM updates
           requestAnimationFrame(() => {
             const el = document.querySelector(`[data-episode-id="${initialEpisodeId}"]`);
@@ -316,64 +351,6 @@ export function SeriesOverviewView({
     [client, hasDownloadClients, title, collections],
   );
 
-  const handleToggleEpisodeSearch = React.useCallback(
-    (episode: CollectionEpisode) => {
-      const episodeId = episode.id;
-      const isOpen = episodePanel.expandedEpisodeRows.has(episodeId);
-      const currentTab = episodePanel.episodeActiveTab[episodeId] ?? "details";
-
-      if (isOpen && currentTab === "search") {
-        dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
-      } else {
-        if (!isOpen) {
-          dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
-        }
-        dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab: "search" });
-        if (
-          searchBlockedByEpisode[episodeId]
-          || !Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)
-        ) {
-          handleRunEpisodeSearch(episode);
-        }
-      }
-    },
-    [episodePanel.expandedEpisodeRows, episodePanel.episodeActiveTab, handleRunEpisodeSearch, episodePanel.searchResultsByEpisode, searchBlockedByEpisode],
-  );
-
-  const handleToggleEpisodeDetails = React.useCallback(
-    (episode: CollectionEpisode) => {
-      const episodeId = episode.id;
-      const isOpen = episodePanel.expandedEpisodeRows.has(episodeId);
-      const currentTab = episodePanel.episodeActiveTab[episodeId] ?? "details";
-
-      if (isOpen && currentTab === "details") {
-        dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
-      } else {
-        if (!isOpen) {
-          dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
-        }
-        dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab: "details" });
-      }
-    },
-    [episodePanel.expandedEpisodeRows, episodePanel.episodeActiveTab],
-  );
-
-  const handleEpisodeTabChange = React.useCallback(
-    (episodeId: string, tab: EpisodePanelTab, episode: CollectionEpisode) => {
-      dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab });
-      if (
-        tab === "search"
-        && (
-          searchBlockedByEpisode[episodeId]
-          || !Object.prototype.hasOwnProperty.call(episodePanel.searchResultsByEpisode, episodeId)
-        )
-      ) {
-        handleRunEpisodeSearch(episode);
-      }
-    },
-    [handleRunEpisodeSearch, episodePanel.searchResultsByEpisode, searchBlockedByEpisode],
-  );
-
   const handleQueueFromEpisodeSearch = React.useCallback(
     (episode: CollectionEpisode, release: Release) => {
       if (!title) return Promise.resolve();
@@ -407,10 +384,6 @@ export function SeriesOverviewView({
     (episode: CollectionEpisode) => {
       if (!hasDownloadClients) {
         const episodeId = episode.id;
-        if (!episodePanel.expandedEpisodeRows.has(episodeId)) {
-          dispatchEpisodePanel({ type: "TOGGLE_EPISODE_ROW", episodeId });
-        }
-        dispatchEpisodePanel({ type: "SET_EPISODE_TAB", episodeId, tab: "search" });
         dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
         setSearchBlockedByEpisode((prev) => ({ ...prev, [episodeId]: true }));
         return;
@@ -432,7 +405,7 @@ export function SeriesOverviewView({
           dispatchEpisodePanel({ type: "SET_AUTO_SEARCH_LOADING", episodeId, loading: false });
         });
     },
-    [episodePanel.expandedEpisodeRows, hasDownloadClients, onAutoSearchEpisode, setGlobalStatus, t],
+    [hasDownloadClients, onAutoSearchEpisode, setGlobalStatus, t],
   );
 
   const [interstitialSearchLoading, setInterstitialSearchLoading] = React.useState(false);
@@ -485,6 +458,8 @@ export function SeriesOverviewView({
     );
   }
 
+  const overviewBackdropUrl = title.backgroundUrl ?? title.bannerUrl;
+
   return (
     <div className="space-y-4">
       <OverviewBackLink
@@ -494,13 +469,30 @@ export function SeriesOverviewView({
 
       <Card
         className="relative overflow-hidden p-0"
-        style={(title.backgroundUrl ?? title.bannerUrl) ? {
-          backgroundImage: `linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 80%, transparent), color-mix(in srgb, var(--color-card) 50%, transparent)), url(${title.backgroundUrl ?? title.bannerUrl})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center top",
-          backgroundClip: "padding-box",
-        } : undefined}
+        style={overviewBackdropUrl ? { backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
       >
+        {overviewBackdropUrl ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{ position: "absolute", inset: 0, zIndex: 0 }}
+          >
+            <div
+              className="absolute -inset-1 scale-[1.03] bg-cover bg-no-repeat blur-[2px] brightness-[0.82] saturate-[0.9]"
+              style={{
+                backgroundImage: `url(${overviewBackdropUrl})`,
+                backgroundPosition: "center top",
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  "linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 82%, transparent), color-mix(in srgb, var(--color-card) 52%, transparent)), linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012) 40%, transparent 100%)",
+              }}
+            />
+          </div>
+        ) : null}
         <CardContent className="relative p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:gap-5">
             <div className="mx-auto shrink-0 sm:mx-0">
@@ -705,32 +697,10 @@ export function SeriesOverviewView({
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {titleLevelQueueItems.length > 0 ? (
-              <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-3">
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {t("activity.activity")}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {titleLevelQueueItems.map((item) => (
-                    <div
-                      key={downloadQueueItemIdentityKey(item)}
-                      className="rounded-md border border-border/70 bg-background/70 px-3 py-2"
-                    >
-                      <div className="mb-1 text-[11px] text-muted-foreground">
-                        {item.clientName}
-                      </div>
-                      <EpisodeQueueIndicator item={item} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
             {sortedCollections.length > 0 ? (
               sortedCollections.map((collection) => {
                 const key = `s-${collection.id}`;
-                const sortedEpisodes = [
-                  ...(episodesByCollection[collection.id] ?? []),
-                ].sort((left, right) => episodeSortValue(right) - episodeSortValue(left));
+                const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
 
                 // Hide specials section when it has no episodes and no movies
                 if (isSpecialsCollection(collection) && sortedEpisodes.length === 0 && collection.specialsMovies.length === 0) {
@@ -745,8 +715,7 @@ export function SeriesOverviewView({
                     facet={title.facet}
                     expanded={expandedKeys.has(key)}
                     onToggle={() => toggleKey(key)}
-                    expandedEpisodeRows={episodePanel.expandedEpisodeRows}
-                    episodeActiveTab={episodePanel.episodeActiveTab}
+                    initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
@@ -756,9 +725,6 @@ export function SeriesOverviewView({
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
                     searchBlockedByEpisode={searchBlockedByEpisode}
                     autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}
-                    onToggleEpisodeSearch={handleToggleEpisodeSearch}
-                    onToggleEpisodeDetails={handleToggleEpisodeDetails}
-                    onEpisodeTabChange={handleEpisodeTabChange}
                     onRunEpisodeSearch={handleRunEpisodeSearch}
                     onQueueFromEpisodeSearch={handleQueueFromEpisodeSearch}
                     onAutoSearchEpisode={handleAutoSearchEpisode}

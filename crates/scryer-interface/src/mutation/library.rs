@@ -5,8 +5,8 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_cancel_library_scan_result, from_library_scan_session, from_library_scan_summary,
-    from_media_rename_apply, from_resolve_pending_import_result,
+    from_cancel_library_scan_result, from_ignore_pending_import_result, from_library_scan_session,
+    from_library_scan_summary, from_media_rename_apply, from_resolve_pending_import_result,
 };
 use crate::types::*;
 
@@ -94,6 +94,20 @@ impl LibraryMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_resolve_pending_import_result(result))
+    }
+
+    async fn ignore_pending_import(
+        &self,
+        ctx: &Context<'_>,
+        input: IgnorePendingImportInput,
+    ) -> GqlResult<IgnorePendingImportPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .ignore_pending_import(&actor, &input.pending_import_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_ignore_pending_import_result(result))
     }
 
     async fn apply_media_rename(

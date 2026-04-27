@@ -311,7 +311,10 @@ fn normalize_download_client_routing_entry_in_place(
         changed = true;
     }
     if !entry.contains_key("category") {
-        entry.insert("category".to_string(), serde_json::Value::String(String::new()));
+        entry.insert(
+            "category".to_string(),
+            serde_json::Value::String(String::new()),
+        );
         changed = true;
     }
     if !entry.contains_key("recentQueuePriority") {
@@ -358,7 +361,10 @@ fn normalize_indexer_routing_entry_in_place(
         changed = true;
     }
     if !entry.contains_key("categories") {
-        entry.insert("categories".to_string(), serde_json::Value::Array(Vec::new()));
+        entry.insert(
+            "categories".to_string(),
+            serde_json::Value::Array(Vec::new()),
+        );
         changed = true;
     }
     if !entry.contains_key("priority") {
@@ -670,7 +676,7 @@ impl AppUseCase {
                 .services
                 .library
                 .library_scan_unmatched_items
-                .count_library_scan_unmatched_items(Some(facet.clone()), Some(removed_root))
+                .count_library_scan_unmatched_items(Some(facet.clone()), Some(removed_root), None)
                 .await?;
             if count <= 0 {
                 continue;
@@ -683,6 +689,7 @@ impl AppUseCase {
                 .list_library_scan_unmatched_items(
                     Some(facet.clone()),
                     Some(removed_root),
+                    None,
                     count,
                     0,
                 )

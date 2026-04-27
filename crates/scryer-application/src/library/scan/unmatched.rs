@@ -10,7 +10,8 @@ use crate::library_scan_metadata::{
     build_library_scan_unmatched_search_attempts, library_scan_unmatched_reason_code,
 };
 use crate::{
-    AppResult, AppUseCase, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, sha256_hex,
+    AppResult, AppUseCase, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    PendingImportStatus, sha256_hex,
 };
 
 #[derive(Clone, Debug)]
@@ -54,6 +55,7 @@ fn build_library_scan_unmatched_item(
     LibraryScanUnmatchedItem {
         id: build_library_scan_unmatched_item_id(facet, &item_path),
         facet: facet.clone(),
+        status: PendingImportStatus::Pending,
         scan_session_id: session_id.to_string(),
         scan_root: normalize_library_scan_root(library_path),
         item_path,
@@ -220,7 +222,7 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
         .services
         .library
         .library_scan_unmatched_items
-        .count_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root))
+        .count_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root), None)
         .await?;
     if count <= 0 {
         return Ok(());
@@ -230,7 +232,7 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
         .services
         .library
         .library_scan_unmatched_items
-        .list_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root), count, 0)
+        .list_library_scan_unmatched_items(Some(facet.clone()), Some(&scan_root), None, count, 0)
         .await?;
 
     for item in existing {

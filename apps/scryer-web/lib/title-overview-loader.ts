@@ -4,19 +4,30 @@ import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-
 import type { Facet } from "@/lib/types";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 
-import { titleBySlugQuery, titleOverviewInitQuery } from "@/lib/graphql/queries";
+import {
+  titleBySlugQuery,
+  titleOverviewDownloadFeedbackQuery,
+  titleOverviewNativeQuery,
+} from "@/lib/graphql/queries";
 
-export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
+export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   acquisitionDiagnostics: TDiagnostics | null;
-  downloadQueueItems: DownloadQueueItem[];
-  completedDownloadQueueItems: DownloadQueueItem[];
-  downloadFeedbackWarning: string | null;
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
   subtitleDownloads: TSubtitle[];
   hasDownloadClients: boolean;
 };
+
+export type TitleOverviewDownloadFeedbackSnapshot = {
+  downloadQueueItems: DownloadQueueItem[];
+  completedDownloadQueueItems: DownloadQueueItem[];
+  downloadFeedbackWarning: string | null;
+};
+
+export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> =
+  TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>
+  & TitleOverviewDownloadFeedbackSnapshot;
 
 export type ResolvedTitleOverviewTarget = {
   id: string;
@@ -26,7 +37,7 @@ export type ResolvedTitleOverviewTarget = {
 // Canonical base loader for title overview pages. Overview containers may
 // derive view-specific state locally, but should not duplicate the underlying
 // network-only title detail fetch and normalization.
-export async function fetchTitleOverviewSnapshot<
+export async function fetchTitleOverviewNativeSnapshot<
   TTitle,
   TDiagnostics = unknown,
   TEvent = unknown,
@@ -36,11 +47,45 @@ export async function fetchTitleOverviewSnapshot<
   client: Client,
   titleId: string,
   blocklistLimit: number,
-): Promise<TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
+) : Promise<TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
   const { data, error } = await client
     .query(
-      titleOverviewInitQuery,
+      titleOverviewNativeQuery,
       { id: titleId, blocklistLimit },
+      { requestPolicy: "network-only" },
+    )
+    .toPromise();
+
+  if (error) {
+    throw error;
+  }
+
+  return {
+    title: (data?.title ?? null) as TTitle | null,
+    acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
+    titleEvents: (data?.titleEvents ?? []) as TEvent[],
+    titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
+    subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],
+    hasDownloadClients: data?.setupStatus?.hasDownloadClients === true,
+  };
+}
+
+export function createEmptyTitleOverviewDownloadFeedbackSnapshot(): TitleOverviewDownloadFeedbackSnapshot {
+  return {
+    downloadQueueItems: [],
+    completedDownloadQueueItems: [],
+    downloadFeedbackWarning: null,
+  };
+}
+
+export async function fetchTitleOverviewDownloadFeedbackSnapshot(
+  client: Client,
+  titleId: string,
+): Promise<TitleOverviewDownloadFeedbackSnapshot> {
+  const { data, error } = await client
+    .query(
+      titleOverviewDownloadFeedbackQuery,
+      { id: titleId },
       { requestPolicy: "network-only" },
     )
     .toPromise();
@@ -61,15 +106,9 @@ export async function fetchTitleOverviewSnapshot<
   }
 
   return {
-    title: (data?.title ?? null) as TTitle | null,
-    acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
     downloadQueueItems: (data?.downloadQueueItems ?? []) as DownloadQueueItem[],
     completedDownloadQueueItems: (data?.completedDownloadQueueItems ?? []) as DownloadQueueItem[],
     downloadFeedbackWarning,
-    titleEvents: (data?.titleEvents ?? []) as TEvent[],
-    titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
-    subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],
-    hasDownloadClients: data?.setupStatus?.hasDownloadClients === true,
   };
 }
 

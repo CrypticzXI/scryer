@@ -41,25 +41,33 @@ import {
 } from "@/lib/utils/action-button-styles";
 import type {
   CollectionEpisode,
-  TitleCollection,
   EpisodeMediaFile,
+  InterstitialMovieMetadata,
+  TitleCollection,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
 import type { EpisodePanelTab } from "./episode-panel-reducer";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
+  blocklistEntryMatchesEpisode,
   buildSpecialsMovieEpisodeMatches,
-  isSpecialsCollection,
-  seasonHeading,
+  deriveMediaFileQualityLabel,
   formatDate,
   formatRuntimeFromSeconds,
-  blocklistEntryMatchesEpisode,
-  deriveMediaFileQualityLabel,
+  isSpecialsCollection,
+  seasonHeading,
 } from "./helpers";
 import { EpisodeDetailsPanel } from "./episode-details-panel";
 import { InterstitialMoviePanel } from "./interstitial-movie-panel";
 import { EpisodeBlocklistPanel } from "./episode-blocklist-panel";
+
+type TranslateFn = ReturnType<typeof useTranslate>;
+
+const EMPTY_EPISODE_FILES: EpisodeMediaFile[] = [];
+const EMPTY_RELEASES: Release[] = [];
+const EMPTY_SUBTITLE_DOWNLOADS: SubtitleDownloadRecord[] = [];
+const EMPTY_BLOCKLIST_ENTRIES: TitleReleaseBlocklistEntry[] = [];
 
 function EpisodeTableActionButton({
   label,
@@ -90,127 +98,8 @@ function EpisodeTableActionButton({
   );
 }
 
-export function SeasonSection({
-  collection,
-  episodes,
-  expanded,
-  facet,
-  onToggle,
-  expandedEpisodeRows,
-  episodeActiveTab,
-  mediaFilesByEpisode,
-  downloadQueueItemByEpisodeId,
-  releaseBlocklistEntries,
-  subtitleDownloads,
-  onRefreshSubtitles,
-  searchResultsByEpisode,
-  searchLoadingByEpisode,
-  searchBlockedByEpisode,
-  onToggleEpisodeSearch,
-  onToggleEpisodeDetails,
-  onEpisodeTabChange,
-  onRunEpisodeSearch,
-  onQueueFromEpisodeSearch,
-  autoSearchLoadingByEpisode,
-  onAutoSearchEpisode,
-  onSetCollectionMonitored,
-  onSetEpisodeMonitored,
-  seasonSearchResults,
-  seasonSearchLoading,
-  searchBlocked = false,
-  onRunSeasonSearch,
-  onQueueFromSeasonSearch,
-  onDeleteFile,
-  onAutoSearchInterstitialMovie,
-  autoSearchInterstitialMovieLoading,
-}: {
-  collection: TitleCollection;
-  facet: string;
-  episodes: CollectionEpisode[];
-  expanded: boolean;
-  onToggle: () => void;
-  expandedEpisodeRows: Set<string>;
-  episodeActiveTab: Record<string, EpisodePanelTab>;
-  mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
-  downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
-  subtitleDownloads?: SubtitleDownloadRecord[];
-  onRefreshSubtitles?: () => Promise<void> | void;
-  releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
-  searchResultsByEpisode: Record<string, Release[]>;
-  searchLoadingByEpisode: Record<string, boolean>;
-  searchBlockedByEpisode: Record<string, boolean>;
-  autoSearchLoadingByEpisode: Record<string, boolean>;
-  onToggleEpisodeSearch: (episode: CollectionEpisode) => void;
-  onToggleEpisodeDetails: (episode: CollectionEpisode) => void;
-  onEpisodeTabChange: (episodeId: string, tab: EpisodePanelTab, episode: CollectionEpisode) => void;
-  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
-  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
-  onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
-  onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
-  onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
-  seasonSearchResults?: Release[];
-  seasonSearchLoading?: boolean;
-  searchBlocked?: boolean;
-  onRunSeasonSearch?: () => void;
-  onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
-  onDeleteFile?: (fileId: string) => void;
-  onAutoSearchInterstitialMovie?: (collection: TitleCollection) => void;
-  autoSearchInterstitialMovieLoading?: boolean;
-}) {
-  const t = useTranslate();
-  const isMobile = useIsMobile();
-  const Chevron = expanded ? ChevronDown : ChevronRight;
-  const [seasonToggling, setSeasonToggling] = React.useState(false);
-  const [episodeToggling, setEpisodeToggling] = React.useState<Set<string>>(new Set());
-  const { linkedMovieByEpisodeId, standaloneSpecialMovies } = React.useMemo(
-    () => buildSpecialsMovieEpisodeMatches(collection, episodes),
-    [collection, episodes],
-  );
-
-  const seasonCheckedState: boolean | "indeterminate" = React.useMemo(() => {
-    if (episodes.length === 0) return collection.monitored;
-    const monitoredCount = episodes.filter((ep) => ep.monitored).length;
-    if (monitoredCount === 0) return false;
-    if (monitoredCount === episodes.length) return true;
-    return "indeterminate";
-  }, [episodes, collection.monitored]);
-
-  const episodeRangeLabel = React.useMemo(() => {
-    if (!collection.firstEpisodeNumber && !collection.lastEpisodeNumber) return null;
-    return t("title.episodeRange", {
-      start: collection.firstEpisodeNumber ?? "?",
-      end: collection.lastEpisodeNumber ?? "?",
-    });
-  }, [collection.firstEpisodeNumber, collection.lastEpisodeNumber, t]);
-
-  const episodeCountLabel = React.useMemo(
-    () => (
-      episodes.length === 1
-        ? t("title.episodeCountOne", { count: episodes.length })
-        : t("title.episodeCountOther", { count: episodes.length })
-    ),
-    [episodes.length, t],
-  );
-
-  const specialCountLabel = React.useMemo(
-    () => (
-      episodes.length === 1
-        ? t("title.specialCountOne", { count: episodes.length })
-        : t("title.specialCountOther", { count: episodes.length })
-    ),
-    [episodes.length, t],
-  );
-
-  const movieCountLabel = React.useMemo(
-    () => (
-      standaloneSpecialMovies.length === 1
-        ? t("title.movieCountOne", { count: standaloneSpecialMovies.length })
-        : t("title.movieCountOther", { count: standaloneSpecialMovies.length })
-    ),
-    [standaloneSpecialMovies.length, t],
-  );
-
-  const renderEpisodeTypeBadges = React.useCallback((episode: CollectionEpisode) => (
+function renderEpisodeTypeBadges(episode: CollectionEpisode, t: TranslateFn) {
+  return (
     <>
       {episode.episodeType === "special" ? (
         <span className="rounded border border-indigo-500/30 bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-300">
@@ -245,160 +134,676 @@ export function SeasonSection({
         </span>
       ) : null}
     </>
-  ), [t]);
-
-  const renderEpisodeQualityBadge = React.useCallback(
-    (episode: CollectionEpisode, episodeFiles: EpisodeMediaFile[]) => {
-      const primaryFile = episodeFiles[0];
-
-      if (primaryFile) {
-        const qualityLabel = deriveMediaFileQualityLabel(primaryFile);
-        if (qualityLabel) {
-          return (
-            <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
-              {qualityLabel}
-            </span>
-          );
-        }
-
-        if (primaryFile.scanStatus === "imported") {
-          return (
-            <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
-              {t("mediaFile.pendingScan")}
-            </span>
-          );
-        }
-
-        if (primaryFile.scanStatus === "scan_failed") {
-          return (
-            <span className="rounded border border-red-500/30 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
-              {t("mediaFile.scanFailed")}
-            </span>
-          );
-        }
-
-        return (
-          <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
-            {t("episode.fileOnDisk")}
-          </span>
-        );
-      }
-
-      if (episode.monitored) {
-        return (
-          <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
-            {t("episode.missing")}
-          </span>
-        );
-      }
-
-      return null;
-    },
-    [t],
   );
+}
 
-  const renderEpisodeQualityCell = React.useCallback(
-    (episode: CollectionEpisode, episodeFiles: EpisodeMediaFile[]) => {
-      const qualityBadge = renderEpisodeQualityBadge(episode, episodeFiles);
-      const queueItem = downloadQueueItemByEpisodeId?.[episode.id];
+function renderEpisodeQualityBadge(
+  episode: CollectionEpisode,
+  episodeFiles: EpisodeMediaFile[],
+  t: TranslateFn,
+) {
+  const primaryFile = episodeFiles[0];
 
-      if (!qualityBadge && !queueItem) {
-        return null;
-      }
-
+  if (primaryFile) {
+    const qualityLabel = deriveMediaFileQualityLabel(primaryFile);
+    if (qualityLabel) {
       return (
-        <div className="flex flex-col items-center gap-1">
-          {qualityBadge}
-          {queueItem ? <EpisodeQueueIndicator item={queueItem} /> : null}
-        </div>
+        <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
+          {qualityLabel}
+        </span>
       );
-    },
-    [downloadQueueItemByEpisodeId, renderEpisodeQualityBadge],
+    }
+
+    if (primaryFile.scanStatus === "imported") {
+      return (
+        <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+          {t("mediaFile.pendingScan")}
+        </span>
+      );
+    }
+
+    if (primaryFile.scanStatus === "scan_failed") {
+      return (
+        <span className="rounded border border-red-500/30 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+          {t("mediaFile.scanFailed")}
+        </span>
+      );
+    }
+
+    return (
+      <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
+        {t("episode.fileOnDisk")}
+      </span>
+    );
+  }
+
+  if (episode.monitored) {
+    return (
+      <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+        {t("episode.missing")}
+      </span>
+    );
+  }
+
+  return null;
+}
+
+function renderEpisodeQualityCell(
+  episode: CollectionEpisode,
+  episodeFiles: EpisodeMediaFile[],
+  queueItem: DownloadQueueItem | undefined,
+  t: TranslateFn,
+) {
+  const qualityBadge = renderEpisodeQualityBadge(episode, episodeFiles, t);
+
+  if (!qualityBadge && !queueItem) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      {qualityBadge}
+      {queueItem ? <EpisodeQueueIndicator item={queueItem} /> : null}
+    </div>
+  );
+}
+
+type EpisodePanelContentProps = {
+  activeTab: EpisodePanelTab;
+  collection: TitleCollection;
+  episode: CollectionEpisode;
+  episodeFiles: EpisodeMediaFile[];
+  episodeLoading: boolean;
+  episodeResults: Release[];
+  linkedMovie?: InterstitialMovieMetadata | null;
+  onDeleteFile?: (fileId: string) => void;
+  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onRefreshSubtitles?: () => Promise<void> | void;
+  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onTabChange: (tab: EpisodePanelTab) => void;
+  releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
+  searchBlocked: boolean;
+  subtitleDownloads: SubtitleDownloadRecord[];
+};
+
+const EpisodePanelContent = React.memo(function EpisodePanelContent({
+  activeTab,
+  collection,
+  episode,
+  episodeFiles,
+  episodeLoading,
+  episodeResults,
+  linkedMovie,
+  onDeleteFile,
+  onQueueFromEpisodeSearch,
+  onRefreshSubtitles,
+  onRunEpisodeSearch,
+  onTabChange,
+  releaseBlocklistEntries,
+  searchBlocked,
+  subtitleDownloads,
+}: EpisodePanelContentProps) {
+  const t = useTranslate();
+  const filteredBlocklistEntries = React.useMemo(() => {
+    if (activeTab !== "blocklist") {
+      return EMPTY_BLOCKLIST_ENTRIES;
+    }
+
+    return releaseBlocklistEntries.filter((entry) =>
+      blocklistEntryMatchesEpisode(entry, episode, collection),
+    );
+  }, [activeTab, collection, episode, releaseBlocklistEntries]);
+
+  return (
+    <Tabs
+      value={activeTab}
+      onValueChange={(value) => onTabChange(value as EpisodePanelTab)}
+    >
+      <TabsList className="flex w-full flex-nowrap overflow-x-auto">
+        <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
+        <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
+        <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
+      </TabsList>
+      <TabsContent value="details">
+        <EpisodeDetailsPanel
+          episode={episode}
+          mediaFiles={episodeFiles}
+          subtitleDownloads={subtitleDownloads}
+          onRefreshSubtitles={onRefreshSubtitles}
+          linkedMovie={linkedMovie}
+          onDeleteFile={onDeleteFile}
+        />
+      </TabsContent>
+      <TabsContent value="search">
+        {searchBlocked ? (
+          <TitleSearchDownloadClientNotice />
+        ) : (
+          <div className="mb-2 flex items-center justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onRunEpisodeSearch(episode)}
+              disabled={episodeLoading}
+              aria-label={t("label.search")}
+            >
+              <Search className="h-4 w-4" />
+              <span className="ml-1">
+                {episodeLoading ? t("label.searching") : t("label.refresh")}
+              </span>
+            </Button>
+          </div>
+        )}
+        {searchBlocked ? null : episodeLoading ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-16">
+            <Loader2 className="h-10 w-10 animate-spin text-emerald-500" />
+            <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
+          </div>
+        ) : episodeResults.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("nzb.noResultsYet")}</p>
+        ) : (
+          <SearchResultBuckets
+            results={episodeResults}
+            onQueue={(release) => onQueueFromEpisodeSearch(episode, release)}
+            requireCandidateToken
+          />
+        )}
+      </TabsContent>
+      <TabsContent value="blocklist">
+        <EpisodeBlocklistPanel entries={filteredBlocklistEntries} />
+      </TabsContent>
+    </Tabs>
+  );
+});
+
+type EpisodeRowProps = {
+  autoSearching: boolean;
+  collection: TitleCollection;
+  episode: CollectionEpisode;
+  episodeFiles: EpisodeMediaFile[];
+  episodeResults: Release[];
+  facet: string;
+  hasSearchResults: boolean;
+  initiallyOpen: boolean;
+  isMobile: boolean;
+  linkedMovie?: InterstitialMovieMetadata | null;
+  onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
+  onDeleteFile?: (fileId: string) => void;
+  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onRefreshSubtitles?: () => Promise<void> | void;
+  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
+  queueItem?: DownloadQueueItem;
+  releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
+  searchBlocked: boolean;
+  searchLoading: boolean;
+  subtitleDownloads: SubtitleDownloadRecord[];
+};
+
+const EpisodeRow = React.memo(function EpisodeRow({
+  autoSearching,
+  collection,
+  episode,
+  episodeFiles,
+  episodeResults,
+  facet,
+  hasSearchResults,
+  initiallyOpen,
+  isMobile,
+  linkedMovie,
+  onAutoSearchEpisode,
+  onDeleteFile,
+  onQueueFromEpisodeSearch,
+  onRefreshSubtitles,
+  onRunEpisodeSearch,
+  onSetEpisodeMonitored,
+  queueItem,
+  releaseBlocklistEntries,
+  searchBlocked,
+  searchLoading,
+  subtitleDownloads,
+}: EpisodeRowProps) {
+  const t = useTranslate();
+  const [isPanelOpen, setIsPanelOpen] = React.useState(initiallyOpen);
+  const [activeTab, setActiveTab] = React.useState<EpisodePanelTab>("details");
+  const [episodeToggling, setEpisodeToggling] = React.useState(false);
+
+  React.useEffect(() => {
+    if (initiallyOpen) {
+      setIsPanelOpen(true);
+      setActiveTab("details");
+    }
+  }, [initiallyOpen]);
+
+  const formattedAirDate = React.useMemo(
+    () => formatDate(episode.airDate),
+    [episode.airDate],
+  );
+  const episodeRuntime = React.useMemo(
+    () => formatRuntimeFromSeconds(episode.durationSeconds),
+    [episode.durationSeconds],
   );
 
-  const renderEpisodePanel = React.useCallback(
-      (
-        episode: CollectionEpisode,
-        activeTab: EpisodePanelTab,
-        episodeResults: Release[],
-        episodeLoading: boolean,
-        episodeFiles: EpisodeMediaFile[],
-        linkedMovie = linkedMovieByEpisodeId[episode.id] ?? null,
-      ) => (
-      <Tabs
-        value={activeTab}
-        onValueChange={(val) => onEpisodeTabChange(episode.id, val as EpisodePanelTab, episode)}
+  const openPanelTab = React.useCallback(
+    (tab: EpisodePanelTab) => {
+      setActiveTab(tab);
+      setIsPanelOpen(true);
+      if (tab === "search" && (searchBlocked || !hasSearchResults)) {
+        onRunEpisodeSearch(episode);
+      }
+    },
+    [episode, hasSearchResults, onRunEpisodeSearch, searchBlocked],
+  );
+
+  const handleToggleEpisodeDetails = React.useCallback(() => {
+    if (isPanelOpen && activeTab === "details") {
+      setIsPanelOpen(false);
+      return;
+    }
+
+    openPanelTab("details");
+  }, [activeTab, isPanelOpen, openPanelTab]);
+
+  const handleToggleEpisodeSearch = React.useCallback(() => {
+    if (isPanelOpen && activeTab === "search") {
+      setIsPanelOpen(false);
+      return;
+    }
+
+    openPanelTab("search");
+  }, [activeTab, isPanelOpen, openPanelTab]);
+
+  const handleEpisodeTabChange = React.useCallback(
+    (tab: EpisodePanelTab) => {
+      openPanelTab(tab);
+    },
+    [openPanelTab],
+  );
+
+  const handleAutoSearchClick = React.useCallback(() => {
+    openPanelTab("search");
+    onAutoSearchEpisode?.(episode);
+  }, [episode, onAutoSearchEpisode, openPanelTab]);
+
+  const handleToggleEpisodeMonitored = React.useCallback(() => {
+    if (!onSetEpisodeMonitored) {
+      return;
+    }
+
+    setEpisodeToggling(true);
+    onSetEpisodeMonitored(episode.id, !episode.monitored)
+      .finally(() => setEpisodeToggling(false));
+  }, [episode.id, episode.monitored, onSetEpisodeMonitored]);
+
+  const panelContent = isPanelOpen ? (
+    <EpisodePanelContent
+      activeTab={activeTab}
+      collection={collection}
+      episode={episode}
+      episodeFiles={episodeFiles}
+      episodeLoading={searchLoading}
+      episodeResults={episodeResults}
+      linkedMovie={linkedMovie}
+      onDeleteFile={onDeleteFile}
+      onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
+      onRefreshSubtitles={onRefreshSubtitles}
+      onRunEpisodeSearch={onRunEpisodeSearch}
+      onTabChange={handleEpisodeTabChange}
+      releaseBlocklistEntries={releaseBlocklistEntries}
+      searchBlocked={searchBlocked}
+      subtitleDownloads={subtitleDownloads}
+    />
+  ) : null;
+
+  const episodeTypeBadges = renderEpisodeTypeBadges(episode, t);
+  const qualityCell = renderEpisodeQualityCell(episode, episodeFiles, queueItem, t);
+
+  if (isMobile) {
+    return (
+      <div
+        data-episode-id={episode.id}
+        className={cn(
+          "rounded-lg border border-border bg-card/50 p-3",
+          !episode.monitored && "opacity-60",
+        )}
       >
-        <TabsList className="flex w-full flex-nowrap overflow-x-auto">
-          <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
-          <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
-          <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
-        </TabsList>
-        <TabsContent value="details">
-          <EpisodeDetailsPanel
-            episode={episode}
-            mediaFiles={episodeFiles}
-            subtitleDownloads={subtitleDownloads ?? []}
-            onRefreshSubtitles={onRefreshSubtitles}
-            linkedMovie={linkedMovie}
-            onDeleteFile={onDeleteFile}
-          />
-        </TabsContent>
-        <TabsContent value="search">
-          {searchBlockedByEpisode[episode.id] ? (
-            <TitleSearchDownloadClientNotice />
-          ) : (
-            <div className="mb-2 flex items-center justify-end">
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            disabled={episodeToggling}
+            aria-label={t("title.episodeMonitored")}
+            className={cn(
+              "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
+              episodeToggling && "opacity-50",
+              episode.monitored
+                ? "text-emerald-600 dark:text-emerald-300"
+                : "text-muted-foreground/60",
+            )}
+            onClick={handleToggleEpisodeMonitored}
+          >
+            {episode.monitored ? (
+              <Eye className="size-5" />
+            ) : (
+              <EyeOff className="size-5" />
+            )}
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                onClick={handleToggleEpisodeDetails}
+              >
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span className="rounded bg-accent px-2 py-0.5 font-mono text-card-foreground">
+                    {episode.episodeNumber ?? episode.episodeLabel ?? "—"}
+                  </span>
+                  {episode.absoluteNumber && facet === "anime" ? (
+                    <span>#{episode.absoluteNumber}</span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-sm font-medium text-card-foreground">
+                  {episode.title || episode.episodeLabel || "—"}
+                </p>
+              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                {qualityCell}
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {episodeTypeBadges}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <CalendarDays className="h-3.5 w-3.5" />
+                {formattedAirDate}
+              </span>
+              {episodeRuntime ? (
+                <span className="inline-flex items-center gap-1">
+                  <Clock3 className="h-3 w-3" />
+                  {episodeRuntime}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              {onAutoSearchEpisode ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={cn("w-full", boxedActionButtonToneClass.auto)}
+                  onClick={handleAutoSearchClick}
+                  disabled={autoSearching}
+                >
+                  {autoSearching ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Zap className="h-4 w-4" />
+                  )}
+                  <span>{t("label.search")}</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
-                variant="ghost"
                 size="sm"
-                onClick={() => onRunEpisodeSearch(episode)}
-                disabled={episodeLoading}
-                aria-label={t("label.search")}
+                variant="primary"
+                className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
+                onClick={handleToggleEpisodeSearch}
               >
                 <Search className="h-4 w-4" />
-                <span className="ml-1">
-                  {episodeLoading ? t("label.searching") : t("label.refresh")}
-                </span>
+                <span>{t("label.interactiveSearch")}</span>
               </Button>
             </div>
-          )}
-          {searchBlockedByEpisode[episode.id] ? null : episodeLoading ? (
-            <div className="flex flex-col items-center justify-center gap-4 py-16">
-              <Loader2 className="h-10 w-10 animate-spin text-emerald-500" />
-              <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
+            {isPanelOpen ? (
+              <div className="mt-3 border-t border-border pt-3">
+                {panelContent}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <React.Fragment>
+      <TableRow data-episode-id={episode.id} className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}>
+        <TableCell className="pl-2 pr-0 text-right align-middle">
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              disabled={episodeToggling}
+              aria-label={t("title.episodeMonitored")}
+              className={cn(
+                "inline-flex size-6 items-center justify-center rounded transition-colors",
+                episodeToggling && "opacity-50",
+                episode.monitored
+                  ? "text-emerald-600 dark:text-emerald-300"
+                  : "text-muted-foreground/60",
+              )}
+              onClick={handleToggleEpisodeMonitored}
+            >
+              {episode.monitored ? (
+                <Eye className="size-5" />
+              ) : (
+                <EyeOff className="size-5" />
+              )}
+            </button>
+          </div>
+        </TableCell>
+        <TableCell className="text-center align-middle font-mono text-sm text-card-foreground">
+          <div className="flex flex-col items-center gap-0.5">
+            <span>{episode.episodeNumber ?? episode.episodeLabel ?? "—"}</span>
+            {episode.absoluteNumber && facet === "anime" ? (
+              <span className="text-[10px] text-muted-foreground">
+                #{episode.absoluteNumber}
+              </span>
+            ) : null}
+          </div>
+        </TableCell>
+        <TableCell
+          className="cursor-pointer align-middle text-sm text-card-foreground hover:text-foreground"
+          onClick={handleToggleEpisodeDetails}
+        >
+          <div className="flex items-center gap-1.5">
+            <span>{episode.title || episode.episodeLabel || "—"}</span>
+            {episodeTypeBadges}
+          </div>
+          {episodeRuntime ? (
+            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Clock3 className="h-3 w-3" />
+              {episodeRuntime}
+            </span>
+          ) : null}
+        </TableCell>
+        <TableCell className="text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
+            <CalendarDays className="h-3.5 w-3.5" />
+            {formattedAirDate}
+          </span>
+        </TableCell>
+        <TableCell className="text-center">
+          <div className="inline-flex items-center justify-center gap-1">
+            {qualityCell}
+          </div>
+        </TableCell>
+        <TableCell className="text-right">
+          <div className="inline-flex items-center justify-end gap-2">
+            {onAutoSearchEpisode ? (
+              <HoverCard openDelay={3000} closeDelay={75}>
+                <HoverCardTrigger asChild>
+                  <EpisodeTableActionButton
+                    tone="auto"
+                    onClick={handleAutoSearchClick}
+                    disabled={autoSearching}
+                    label={t("label.search")}
+                  >
+                    {autoSearching ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Zap className="h-4 w-4" />
+                    )}
+                  </EpisodeTableActionButton>
+                </HoverCardTrigger>
+                <HoverCardContent>
+                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+                    {t("help.autoSearchTooltip")}
+                  </p>
+                </HoverCardContent>
+              </HoverCard>
+            ) : null}
+            <HoverCard openDelay={3000} closeDelay={75}>
+              <HoverCardTrigger asChild>
+                <EpisodeTableActionButton
+                  tone="search"
+                  onClick={handleToggleEpisodeSearch}
+                  label={t("label.search")}
+                >
+                  <Search className="h-4 w-4" />
+                </EpisodeTableActionButton>
+              </HoverCardTrigger>
+              <HoverCardContent>
+                <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+                  {t("help.interactiveSearchTooltip")}
+                </p>
+              </HoverCardContent>
+            </HoverCard>
+          </div>
+        </TableCell>
+      </TableRow>
+      {isPanelOpen ? (
+        <TableRow>
+          <TableCell colSpan={6} className="border-t border-border bg-background/40 p-0">
+            <div className="px-4 py-3">
+              {panelContent}
             </div>
-          ) : episodeResults.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t("nzb.noResultsYet")}</p>
-          ) : (
-            <SearchResultBuckets
-              results={episodeResults}
-              onQueue={(release) => onQueueFromEpisodeSearch(episode, release)}
-              requireCandidateToken
-            />
-          )}
-        </TabsContent>
-        <TabsContent value="blocklist">
-          <EpisodeBlocklistPanel entries={releaseBlocklistEntries.filter((entry) =>
-            blocklistEntryMatchesEpisode(entry, episode, collection),
-          )} />
-        </TabsContent>
-      </Tabs>
+          </TableCell>
+        </TableRow>
+      ) : null}
+    </React.Fragment>
+  );
+});
+
+export function SeasonSection({
+  collection,
+  episodes,
+  expanded,
+  facet,
+  onToggle,
+  initiallyOpenEpisodeId,
+  mediaFilesByEpisode,
+  downloadQueueItemByEpisodeId,
+  releaseBlocklistEntries,
+  subtitleDownloads,
+  onRefreshSubtitles,
+  searchResultsByEpisode,
+  searchLoadingByEpisode,
+  searchBlockedByEpisode,
+  onRunEpisodeSearch,
+  onQueueFromEpisodeSearch,
+  autoSearchLoadingByEpisode,
+  onAutoSearchEpisode,
+  onSetCollectionMonitored,
+  onSetEpisodeMonitored,
+  seasonSearchResults,
+  seasonSearchLoading,
+  searchBlocked = false,
+  onRunSeasonSearch,
+  onQueueFromSeasonSearch,
+  onDeleteFile,
+  onAutoSearchInterstitialMovie,
+  autoSearchInterstitialMovieLoading,
+}: {
+  collection: TitleCollection;
+  facet: string;
+  episodes: CollectionEpisode[];
+  expanded: boolean;
+  onToggle: () => void;
+  initiallyOpenEpisodeId?: string | null;
+  mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
+  downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
+  subtitleDownloads?: SubtitleDownloadRecord[];
+  onRefreshSubtitles?: () => Promise<void> | void;
+  releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
+  searchResultsByEpisode: Record<string, Release[]>;
+  searchLoadingByEpisode: Record<string, boolean>;
+  searchBlockedByEpisode: Record<string, boolean>;
+  autoSearchLoadingByEpisode: Record<string, boolean>;
+  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
+  onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
+  onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
+  seasonSearchResults?: Release[];
+  seasonSearchLoading?: boolean;
+  searchBlocked?: boolean;
+  onRunSeasonSearch?: () => void;
+  onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
+  onDeleteFile?: (fileId: string) => void;
+  onAutoSearchInterstitialMovie?: (collection: TitleCollection) => void;
+  autoSearchInterstitialMovieLoading?: boolean;
+}) {
+  const t = useTranslate();
+  const isMobile = useIsMobile();
+  const Chevron = expanded ? ChevronDown : ChevronRight;
+  const [seasonToggling, setSeasonToggling] = React.useState(false);
+  const stableSubtitleDownloads = subtitleDownloads ?? EMPTY_SUBTITLE_DOWNLOADS;
+  const { linkedMovieByEpisodeId, standaloneSpecialMovies } = React.useMemo(
+    () => buildSpecialsMovieEpisodeMatches(collection, episodes),
+    [collection, episodes],
+  );
+
+  const seasonCheckedState: boolean | "indeterminate" = React.useMemo(() => {
+    if (episodes.length === 0) {
+      return collection.monitored;
+    }
+
+    const monitoredCount = episodes.filter((episode) => episode.monitored).length;
+    if (monitoredCount === 0) {
+      return false;
+    }
+    if (monitoredCount === episodes.length) {
+      return true;
+    }
+    return "indeterminate";
+  }, [collection.monitored, episodes]);
+
+  const episodeRangeLabel = React.useMemo(() => {
+    if (!collection.firstEpisodeNumber && !collection.lastEpisodeNumber) {
+      return null;
+    }
+
+    return t("title.episodeRange", {
+      start: collection.firstEpisodeNumber ?? "?",
+      end: collection.lastEpisodeNumber ?? "?",
+    });
+  }, [collection.firstEpisodeNumber, collection.lastEpisodeNumber, t]);
+
+  const episodeCountLabel = React.useMemo(
+    () => (
+      episodes.length === 1
+        ? t("title.episodeCountOne", { count: episodes.length })
+        : t("title.episodeCountOther", { count: episodes.length })
     ),
-    [
-      collection,
-      linkedMovieByEpisodeId,
-      onDeleteFile,
-      onEpisodeTabChange,
-      onQueueFromEpisodeSearch,
-      onRefreshSubtitles,
-      onRunEpisodeSearch,
-      releaseBlocklistEntries,
-      searchBlockedByEpisode,
-      subtitleDownloads,
-      t,
-    ],
+    [episodes.length, t],
+  );
+
+  const specialCountLabel = React.useMemo(
+    () => (
+      episodes.length === 1
+        ? t("title.specialCountOne", { count: episodes.length })
+        : t("title.specialCountOther", { count: episodes.length })
+    ),
+    [episodes.length, t],
+  );
+
+  const movieCountLabel = React.useMemo(
+    () => (
+      standaloneSpecialMovies.length === 1
+        ? t("title.movieCountOne", { count: standaloneSpecialMovies.length })
+        : t("title.movieCountOther", { count: standaloneSpecialMovies.length })
+    ),
+    [standaloneSpecialMovies.length, t],
   );
 
   return (
@@ -430,9 +835,12 @@ export function SeasonSection({
                   ? "text-amber-500 dark:text-amber-400"
                   : "text-muted-foreground/60",
             )}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!onSetCollectionMonitored) return;
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!onSetCollectionMonitored) {
+                return;
+              }
+
               setSeasonToggling(true);
               const nextMonitored = seasonCheckedState !== true;
               onSetCollectionMonitored(collection.id, nextMonitored)
@@ -463,9 +871,7 @@ export function SeasonSection({
             ) : isSpecialsCollection(collection) ? (
               <span className="inline-flex items-center gap-1">
                 <Star className="h-3 w-3" />
-                {standaloneSpecialMovies.length > 0
-                  ? `${movieCountLabel} · `
-                  : ""}
+                {standaloneSpecialMovies.length > 0 ? `${movieCountLabel} · ` : ""}
                 {specialCountLabel}
               </span>
             ) : (
@@ -479,8 +885,8 @@ export function SeasonSection({
                   tone="search"
                   aria-label={t("series.searchSeason")}
                   disabled={seasonSearchLoading === true}
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onClick={(event) => {
+                    event.stopPropagation();
                     onRunSeasonSearch();
                   }}
                   label={t("series.searchSeason")}
@@ -563,310 +969,82 @@ export function SeasonSection({
             ) : null}
             {episodes.length === 0 ? (
               <div className="border-t border-border px-4 py-3 text-sm text-muted-foreground">
-                {standaloneSpecialMovies.length > 0
-                  ? "No episode records for this season."
-                  : "No episode records for this season."}
+                No episode records for this season.
+              </div>
+            ) : isMobile ? (
+              <div className="border-t border-border px-3 py-3">
+                <div className="space-y-3">
+                  {episodes.map((episode) => (
+                    <EpisodeRow
+                      key={episode.id}
+                      autoSearching={autoSearchLoadingByEpisode[episode.id] === true}
+                      collection={collection}
+                      episode={episode}
+                      episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
+                      episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
+                      facet={facet}
+                      hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}
+                      initiallyOpen={episode.id === initiallyOpenEpisodeId}
+                      isMobile={true}
+                      linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
+                      onAutoSearchEpisode={onAutoSearchEpisode}
+                      onDeleteFile={onDeleteFile}
+                      onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
+                      onRefreshSubtitles={onRefreshSubtitles}
+                      onRunEpisodeSearch={onRunEpisodeSearch}
+                      onSetEpisodeMonitored={onSetEpisodeMonitored}
+                      queueItem={downloadQueueItemByEpisodeId?.[episode.id]}
+                      releaseBlocklistEntries={releaseBlocklistEntries}
+                      searchBlocked={searchBlockedByEpisode[episode.id] === true}
+                      searchLoading={searchLoadingByEpisode[episode.id] === true}
+                      subtitleDownloads={stableSubtitleDownloads}
+                    />
+                  ))}
+                </div>
               </div>
             ) : (
-              isMobile ? (
-                <div className="border-t border-border px-3 py-3">
-                  <div className="space-y-3">
-                    {episodes.map((episode) => {
-                      const isPanelOpen = expandedEpisodeRows.has(episode.id);
-                      const activeTab = episodeActiveTab[episode.id] ?? "details";
-                      const episodeResults = searchResultsByEpisode[episode.id] ?? [];
-                      const episodeLoading = searchLoadingByEpisode[episode.id] === true;
-                      const autoSearching = autoSearchLoadingByEpisode[episode.id] === true;
-                      const episodeFiles = mediaFilesByEpisode[episode.id] ?? [];
-                      const episodeRuntime = formatRuntimeFromSeconds(episode.durationSeconds);
-
-                      return (
-                        <div
-                          key={episode.id}
-                          data-episode-id={episode.id}
-                          className={cn(
-                            "rounded-lg border border-border bg-card/50 p-3",
-                            !episode.monitored && "opacity-60",
-                          )}
-                        >
-                          <div className="flex items-start gap-3">
-                            <button
-                              type="button"
-                              disabled={episodeToggling.has(episode.id)}
-                              aria-label={t("title.episodeMonitored")}
-                              className={cn(
-                                "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
-                                episodeToggling.has(episode.id) && "opacity-50",
-                                episode.monitored
-                                  ? "text-emerald-600 dark:text-emerald-300"
-                                  : "text-muted-foreground/60",
-                              )}
-                              onClick={() => {
-                                if (!onSetEpisodeMonitored) return;
-                                setEpisodeToggling((prev) => new Set(prev).add(episode.id));
-                                onSetEpisodeMonitored(episode.id, !episode.monitored)
-                                  .finally(() => {
-                                    setEpisodeToggling((prev) => {
-                                      const next = new Set(prev);
-                                      next.delete(episode.id);
-                                      return next;
-                                    });
-                                  });
-                              }}
-                            >
-                              {episode.monitored ? (
-                                <Eye className="size-5" />
-                              ) : (
-                                <EyeOff className="size-5" />
-                              )}
-                            </button>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-3">
-                                <button
-                                  type="button"
-                                  className="min-w-0 flex-1 text-left"
-                                  onClick={() => onToggleEpisodeDetails(episode)}
-                                >
-                                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                    <span className="rounded bg-accent px-2 py-0.5 font-mono text-card-foreground">
-                                      {episode.episodeNumber ?? episode.episodeLabel ?? "—"}
-                                    </span>
-                                    {episode.absoluteNumber && facet === "anime" ? (
-                                      <span>#{episode.absoluteNumber}</span>
-                                    ) : null}
-                                  </div>
-                                  <p className="mt-1 text-sm font-medium text-card-foreground">
-                                    {episode.title || episode.episodeLabel || "—"}
-                                  </p>
-                              </button>
-                              <div className="flex shrink-0 items-center gap-1">
-                                  {renderEpisodeQualityCell(episode, episodeFiles)}
-                              </div>
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {renderEpisodeTypeBadges(episode)}
-                              </div>
-                              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                                <span className="inline-flex items-center gap-1">
-                                  <CalendarDays className="h-3.5 w-3.5" />
-                                  {formatDate(episode.airDate)}
-                                </span>
-                                {episodeRuntime ? (
-                                  <span className="inline-flex items-center gap-1">
-                                    <Clock3 className="h-3 w-3" />
-                                    {episodeRuntime}
-                                  </span>
-                                ) : null}
-                              </div>
-                              <div className="mt-3 flex flex-col gap-2">
-                                {onAutoSearchEpisode ? (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="secondary"
-                                    className={cn("w-full", boxedActionButtonToneClass.auto)}
-                                    onClick={() => onAutoSearchEpisode(episode)}
-                                    disabled={autoSearching}
-                                  >
-                                    {autoSearching ? (
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                      <Zap className="h-4 w-4" />
-                                    )}
-                                    <span>{t("label.search")}</span>
-                                  </Button>
-                                ) : null}
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="primary"
-                                  className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
-                                  onClick={() => onToggleEpisodeSearch(episode)}
-                                >
-                                  <Search className="h-4 w-4" />
-                                  <span>{t("label.interactiveSearch")}</span>
-                                </Button>
-                              </div>
-                              {isPanelOpen ? (
-                                <div className="mt-3 border-t border-border pt-3">
-                                  {renderEpisodePanel(
-                                    episode,
-                                    activeTab,
-                                    episodeResults,
-                                    episodeLoading,
-                                    episodeFiles,
-                                  )}
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                        <Table className="min-w-[760px]">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-10 text-center" />
-                        <TableHead className="w-16 text-center">{t("episode.numberLabel")}</TableHead>
-                        <TableHead>{t("label.title")}</TableHead>
-                        <TableHead className="w-40">{t("episode.airDate")}</TableHead>
-                        <TableHead className="w-40 text-center">{t("episode.quality")}</TableHead>
-                        <TableHead className="w-28 text-right">{t("label.actions")}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {episodes.map((episode) => {
-                        const isPanelOpen = expandedEpisodeRows.has(episode.id);
-                        const activeTab = episodeActiveTab[episode.id] ?? "details";
-                        const episodeResults = searchResultsByEpisode[episode.id] ?? [];
-                        const episodeLoading = searchLoadingByEpisode[episode.id] === true;
-                        const autoSearching = autoSearchLoadingByEpisode[episode.id] === true;
-                        const episodeFiles = mediaFilesByEpisode[episode.id] ?? [];
-                        const episodeRuntime = formatRuntimeFromSeconds(episode.durationSeconds);
-
-                        return (
-                          <React.Fragment key={episode.id}>
-                            <TableRow data-episode-id={episode.id} className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}>
-                              <TableCell className="pl-2 pr-0 text-right align-middle">
-                                <div className="flex items-center justify-end">
-                                  <button
-                                    type="button"
-                                    disabled={episodeToggling.has(episode.id)}
-                                    aria-label={t("title.episodeMonitored")}
-                                    className={cn(
-                                      "inline-flex size-6 items-center justify-center rounded transition-colors",
-                                      episodeToggling.has(episode.id) && "opacity-50",
-                                      episode.monitored
-                                        ? "text-emerald-600 dark:text-emerald-300"
-                                        : "text-muted-foreground/60",
-                                    )}
-                                    onClick={() => {
-                                      if (!onSetEpisodeMonitored) return;
-                                      setEpisodeToggling((prev) => new Set(prev).add(episode.id));
-                                      onSetEpisodeMonitored(episode.id, !episode.monitored)
-                                        .finally(() => {
-                                          setEpisodeToggling((prev) => {
-                                            const next = new Set(prev);
-                                            next.delete(episode.id);
-                                            return next;
-                                          });
-                                        });
-                                    }}
-                                  >
-                                    {episode.monitored ? (
-                                      <Eye className="size-5" />
-                                    ) : (
-                                      <EyeOff className="size-5" />
-                                    )}
-                                  </button>
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-center align-middle font-mono text-sm text-card-foreground">
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span>{episode.episodeNumber ?? episode.episodeLabel ?? "—"}</span>
-                                  {episode.absoluteNumber && facet === "anime" ? (
-                                    <span className="text-[10px] text-muted-foreground">
-                                      #{episode.absoluteNumber}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </TableCell>
-                              <TableCell
-                                className="cursor-pointer align-middle text-sm text-card-foreground hover:text-foreground"
-                                onClick={() => onToggleEpisodeDetails(episode)}
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  <span>{episode.title || episode.episodeLabel || "—"}</span>
-                                  {renderEpisodeTypeBadges(episode)}
-                                </div>
-                                {episodeRuntime ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                    <Clock3 className="h-3 w-3" />
-                                    {episodeRuntime}
-                                  </span>
-                                ) : null}
-                              </TableCell>
-                              <TableCell className="text-muted-foreground">
-                                <span className="inline-flex items-center gap-1">
-                                  <CalendarDays className="h-3.5 w-3.5" />
-                                  {formatDate(episode.airDate)}
-                                </span>
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <div className="inline-flex items-center justify-center gap-1">
-                                  {renderEpisodeQualityCell(episode, episodeFiles)}
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="inline-flex items-center justify-end gap-2">
-                                  {onAutoSearchEpisode ? (
-                                    <HoverCard openDelay={3000} closeDelay={75}>
-                                      <HoverCardTrigger asChild>
-                                        <EpisodeTableActionButton
-                                          tone="auto"
-                                          onClick={() => onAutoSearchEpisode?.(episode)}
-                                          disabled={autoSearching}
-                                          label={t("label.search")}
-                                        >
-                                          {autoSearching ? (
-                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                          ) : (
-                                            <Zap className="h-4 w-4" />
-                                          )}
-                                        </EpisodeTableActionButton>
-                                      </HoverCardTrigger>
-                                      <HoverCardContent>
-                                        <p className="max-w-[18rem] whitespace-normal break-words text-sm">
-                                          {t("help.autoSearchTooltip")}
-                                        </p>
-                                      </HoverCardContent>
-                                    </HoverCard>
-                                  ) : null}
-                                  <HoverCard openDelay={3000} closeDelay={75}>
-                                    <HoverCardTrigger asChild>
-                                      <EpisodeTableActionButton
-                                        tone="search"
-                                        onClick={() => onToggleEpisodeSearch(episode)}
-                                        label={t("label.search")}
-                                      >
-                                        <Search className="h-4 w-4" />
-                                      </EpisodeTableActionButton>
-                                    </HoverCardTrigger>
-                                    <HoverCardContent>
-                                      <p className="max-w-[18rem] whitespace-normal break-words text-sm">
-                                        {t("help.interactiveSearchTooltip")}
-                                      </p>
-                                    </HoverCardContent>
-                                  </HoverCard>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                            {isPanelOpen ? (
-                              <TableRow>
-                                <TableCell colSpan={6} className="border-t border-border bg-background/40 p-0">
-                                  <div className="px-4 py-3">
-                                    {renderEpisodePanel(
-                                      episode,
-                                      activeTab,
-                                      episodeResults,
-                                      episodeLoading,
-                                      episodeFiles,
-                                    )}
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            ) : null}
-                          </React.Fragment>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )
+              <div className="overflow-x-auto">
+                <Table className="min-w-[760px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10 text-center" />
+                      <TableHead className="w-16 text-center">{t("episode.numberLabel")}</TableHead>
+                      <TableHead>{t("label.title")}</TableHead>
+                      <TableHead className="w-40">{t("episode.airDate")}</TableHead>
+                      <TableHead className="w-40 text-center">{t("episode.quality")}</TableHead>
+                      <TableHead className="w-28 text-right">{t("label.actions")}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {episodes.map((episode) => (
+                      <EpisodeRow
+                        key={episode.id}
+                        autoSearching={autoSearchLoadingByEpisode[episode.id] === true}
+                        collection={collection}
+                        episode={episode}
+                        episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
+                        episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
+                        facet={facet}
+                        hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}
+                        initiallyOpen={episode.id === initiallyOpenEpisodeId}
+                        isMobile={false}
+                        linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
+                        onAutoSearchEpisode={onAutoSearchEpisode}
+                        onDeleteFile={onDeleteFile}
+                        onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
+                        onRefreshSubtitles={onRefreshSubtitles}
+                        onRunEpisodeSearch={onRunEpisodeSearch}
+                        onSetEpisodeMonitored={onSetEpisodeMonitored}
+                        queueItem={downloadQueueItemByEpisodeId?.[episode.id]}
+                        releaseBlocklistEntries={releaseBlocklistEntries}
+                        searchBlocked={searchBlockedByEpisode[episode.id] === true}
+                        searchLoading={searchLoadingByEpisode[episode.id] === true}
+                        subtitleDownloads={stableSubtitleDownloads}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             )}
           </>
         )

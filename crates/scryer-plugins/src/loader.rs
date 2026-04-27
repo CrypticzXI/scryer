@@ -51,6 +51,54 @@ struct LoadedPlugin {
     descriptor: PluginDescriptor,
 }
 
+fn builtin_provider_types_from_bytes(
+    wasm_bytes: &[&[u8]],
+    plugin_type_filter: impl Fn(&str) -> bool,
+    apply_overrides: impl Fn(PluginDescriptor) -> PluginDescriptor,
+) -> Vec<String> {
+    wasm_bytes
+        .iter()
+        .filter_map(|bytes| {
+            load_from_bytes(bytes)
+                .ok()
+                .map(|(descriptor, _)| descriptor)
+        })
+        .map(apply_overrides)
+        .filter(|descriptor| plugin_type_filter(descriptor.plugin_type.as_str()))
+        .map(|descriptor| descriptor.provider_type.trim().to_ascii_lowercase())
+        .collect()
+}
+
+fn builtin_indexer_provider_types() -> Vec<String> {
+    static BUILTIN_INDEXER_PROVIDER_TYPES: LazyLock<Vec<String>> = LazyLock::new(|| {
+        builtin_provider_types_from_bytes(
+            &[
+                crate::builtins::NZBGEEK_WASM,
+                crate::builtins::DOGNZB_WASM,
+                crate::builtins::NEWZNAB_WASM,
+                crate::builtins::ANIMETOSHO_WASM,
+                crate::builtins::TORZNAB_WASM,
+            ],
+            is_indexer_plugin_type,
+            apply_builtin_indexer_overrides,
+        )
+    });
+
+    BUILTIN_INDEXER_PROVIDER_TYPES.clone()
+}
+
+fn builtin_subtitle_provider_types() -> Vec<String> {
+    static BUILTIN_SUBTITLE_PROVIDER_TYPES: LazyLock<Vec<String>> = LazyLock::new(|| {
+        builtin_provider_types_from_bytes(
+            &[crate::builtins::JIMAKU_WASM],
+            |plugin_type| plugin_type == "subtitle_provider",
+            |descriptor| descriptor,
+        )
+    });
+
+    BUILTIN_SUBTITLE_PROVIDER_TYPES.clone()
+}
+
 pub struct WasmIndexerPluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
 }
@@ -231,6 +279,24 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             })
             .map(|(key, _)| key.clone())
             .collect()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        builtin_indexer_provider_types()
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.version.clone())
+    }
+
+    fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.plugin_type.clone())
     }
 
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
@@ -421,6 +487,26 @@ impl IndexerPluginProvider for DynamicPluginProvider {
             .read()
             .expect("DynamicPluginProvider lock poisoned");
         guard.available_provider_types()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        builtin_indexer_provider_types()
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.plugin_type_for_provider(provider_type)
     }
 
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
@@ -615,6 +701,17 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
             .collect()
     }
 
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.version.clone())
+    }
+
     fn config_fields_for_provider(
         &self,
         provider_type: &str,
@@ -704,6 +801,10 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
             .read()
             .expect("DynamicDownloadClientPluginProvider lock poisoned");
         guard.available_provider_types()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
     }
 
     fn config_fields_for_provider(
@@ -1086,6 +1187,17 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
             .collect()
     }
 
+    fn builtin_provider_types(&self) -> Vec<String> {
+        builtin_subtitle_provider_types()
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.version.clone())
+    }
+
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
@@ -1194,6 +1306,10 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
             .read()
             .expect("DynamicSubtitlePluginProvider lock poisoned");
         guard.available_provider_types()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        builtin_subtitle_provider_types()
     }
 
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
@@ -1682,6 +1798,17 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
             .collect()
     }
 
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.version.clone())
+    }
+
     fn config_fields_for_provider(
         &self,
         provider_type: &str,
@@ -1768,6 +1895,10 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
             .read()
             .expect("DynamicNotificationPluginProvider lock poisoned");
         guard.available_provider_types()
+    }
+
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
     }
 
     fn config_fields_for_provider(

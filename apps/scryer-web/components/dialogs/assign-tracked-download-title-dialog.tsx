@@ -63,7 +63,7 @@ export function AssignTrackedDownloadTitleDialog({
       setAssigningId(null);
       return;
     }
-    setQuery(queueItem.titleName ?? "");
+    setQuery("");
   }, [open, queueItem]);
 
   React.useEffect(() => {
@@ -71,29 +71,37 @@ export function AssignTrackedDownloadTitleDialog({
       return undefined;
     }
 
-    const searchTerm = query.trim() || queueItem.titleName || "";
-    const timeoutId = window.setTimeout(() => {
-      setLoading(true);
-      setError(null);
-      client
-        .query(titlesQuery, {
-          facet: queueItem.facet,
-          query: searchTerm,
-        })
-        .toPromise()
-        .then(({ data, error: queryError }) => {
-          if (queryError) throw queryError;
-          setResults((data?.titles ?? []) as TitleSearchResult[]);
-        })
-        .catch((err: unknown) => {
-          setResults([]);
-          setError(err instanceof Error ? err.message : t("status.failedToLoad"));
-        })
-        .finally(() => setLoading(false));
-    }, 180);
+    let cancelled = false;
 
-    return () => window.clearTimeout(timeoutId);
-  }, [client, open, query, queueItem, t]);
+    setLoading(true);
+    setError(null);
+    client
+      .query(titlesQuery, {})
+      .toPromise()
+      .then(({ data, error: queryError }) => {
+        if (cancelled) {
+          return;
+        }
+        if (queryError) throw queryError;
+        setResults((data?.titles ?? []) as TitleSearchResult[]);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setResults([]);
+        setError(err instanceof Error ? err.message : t("status.failedToLoad"));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, open, queueItem, t]);
 
   const handleSelect = React.useCallback(
     async (titleId: string) => {

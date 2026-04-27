@@ -486,6 +486,7 @@ pub trait LibraryScanUnmatchedItemRepository: Send + Sync {
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<LibraryScanUnmatchedItem>>;
@@ -494,6 +495,7 @@ pub trait LibraryScanUnmatchedItemRepository: Send + Sync {
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
     ) -> AppResult<i64>;
 }
 
@@ -1079,6 +1081,15 @@ pub trait IndexerClient: Send + Sync {
 pub trait IndexerPluginProvider: Send + Sync {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>>;
     fn available_provider_types(&self) -> Vec<String>;
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_type_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy>;
     fn reload_plugins(
         &self,
@@ -1128,6 +1139,12 @@ pub trait IndexerPluginProvider: Send + Sync {
 pub trait DownloadClientPluginProvider: Send + Sync {
     fn client_for_config(&self, config: &DownloadClientConfig) -> Option<Arc<dyn DownloadClient>>;
     fn available_provider_types(&self) -> Vec<String>;
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn config_fields_for_provider(
         &self,
         _provider_type: &str,
@@ -1189,6 +1206,12 @@ pub trait NotificationPluginProvider: Send + Sync {
         config: &scryer_domain::NotificationChannelConfig,
     ) -> Option<Arc<dyn NotificationClient>>;
     fn available_provider_types(&self) -> Vec<String>;
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
@@ -1209,6 +1232,12 @@ pub trait SubtitlePluginProvider: Send + Sync {
         host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>>;
     fn available_provider_types(&self) -> Vec<String>;
+    fn builtin_provider_types(&self) -> Vec<String> {
+        vec![]
+    }
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool;
     fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String>;
     fn config_fields_for_provider(&self, provider_type: &str)

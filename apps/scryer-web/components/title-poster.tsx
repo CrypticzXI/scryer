@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { ComponentProps } from "react";
 
 type TitlePosterProps = Omit<ComponentProps<"img">, "src"> & {
@@ -18,23 +19,36 @@ export function TitlePoster({
   src,
   sourceSrc,
   alt,
+  onError,
   ...props
 }: TitlePosterProps) {
   const avifUrl = src ?? undefined;
   const fallbackUrl = sourceSrc ?? avifUrl;
+  const [preferFallbackImage, setPreferFallbackImage] = React.useState(false);
+
+  React.useEffect(() => {
+    setPreferFallbackImage(false);
+  }, [avifUrl, sourceSrc]);
 
   if (!fallbackUrl) {
     return null;
   }
 
-  if (avifUrl && sourceSrc) {
+  const handleError: ComponentProps<"img">["onError"] = (event) => {
+    if (avifUrl && sourceSrc) {
+      setPreferFallbackImage(true);
+    }
+    onError?.(event);
+  };
+
+  if (avifUrl && sourceSrc && !preferFallbackImage) {
     return (
       <picture>
         <source srcSet={avifUrl} type="image/avif" />
-        <img src={sourceSrc} alt={alt} {...props} />
+        <img src={sourceSrc} alt={alt} onError={handleError} {...props} />
       </picture>
     );
   }
 
-  return <img src={fallbackUrl} alt={alt} {...props} />;
+  return <img src={fallbackUrl} alt={alt} onError={handleError} {...props} />;
 }

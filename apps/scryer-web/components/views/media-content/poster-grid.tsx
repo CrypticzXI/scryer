@@ -122,6 +122,9 @@ function PosterCard({
   const qualityLabel = qualityProfilesLoading
     ? null
     : resolveDisplayedQualityLabel(title, qualityProfiles, resolvedProfileName);
+  const posterClassName = isMobile
+    ? "h-full w-full object-cover"
+    : "h-full w-full object-cover transition-[filter,transform] duration-150 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
 
   return (
     <div className="cv-auto-poster group">
@@ -130,17 +133,17 @@ function PosterCard({
           <button
             type="button"
             onClick={() => onOpenOverview(overviewTargetView, title)}
-            className="block w-full overflow-hidden bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="block w-full overflow-hidden rounded-[calc(var(--radius)-1px)] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >
-            <div className="relative aspect-[2/3]">
+            <div className="relative isolate aspect-[2/3] overflow-hidden rounded-[calc(var(--radius)-1px)]">
               <TitlePosterSlot
                 src={posterUrl}
                 sourceSrc={title.posterSourceUrl}
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={t("media.posterAlt", { name: title.name })}
-                className="h-full w-full object-cover"
+                className={posterClassName}
                 placeholderClassName="flex h-full w-full items-center justify-center text-sm text-muted-foreground"
                 emptyLabel={t("label.noArt")}
                 loading="lazy"
@@ -150,18 +153,28 @@ function PosterCard({
               {!isMobile ? (
                 <>
                   <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 z-10 bg-black/50 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                  />
-                  <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    <p className="line-clamp-3 text-center text-sm font-semibold leading-tight text-white drop-shadow-md">
+                    className="pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-0 rounded-[calc(var(--radius)-1px)] border border-white/15 bg-gradient-to-t from-black/55 via-black/24 to-white/18"
+                    />
+                  </div>
+                  <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[calc(var(--radius)-1px)] px-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                    <p
+                      className="line-clamp-3 origin-center text-center text-lg font-semibold leading-tight tracking-tight text-white drop-shadow-md transition-transform duration-200 group-hover:scale-[1.05] group-focus-within:scale-[1.05]"
+                      style={{
+                        fontFamily:
+                          "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
+                      }}
+                    >
                       {title.name}
                     </p>
                   </div>
                 </>
               ) : null}
 
-              <div className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm">
+              <div className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/80 shadow-sm">
                 {title.monitored ? (
                   <Eye className="h-4.5 w-4.5 text-emerald-400" />
                 ) : (
@@ -170,13 +183,13 @@ function PosterCard({
               </div>
 
               {qualityLabel ? (
-                <div className="absolute right-1.5 top-1.5 z-20 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+                <div className="absolute right-1.5 top-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
                   {qualityLabel}
                 </div>
               ) : null}
 
               {!isMovieView && title.contentStatus?.toLowerCase() === "ended" ? (
-                <div className="absolute bottom-1.5 right-1.5 z-20 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur-sm">
+                <div className="absolute bottom-1.5 right-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 shadow-sm">
                   {t("title.ended")}
                 </div>
               ) : null}

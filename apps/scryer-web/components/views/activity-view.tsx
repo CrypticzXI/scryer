@@ -35,8 +35,7 @@ import { DownloadClientTypeLogo } from "@/components/common/download-client-type
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
@@ -56,6 +55,7 @@ import type {
   DownloadQueueItem,
   SortConfig,
 } from "@/lib/types";
+import type { ActivitySection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { cn } from "@/lib/utils";
@@ -67,7 +67,7 @@ import {
 
 type TranslateFn = ReturnType<typeof useTranslate>;
 
-type ActivityTab = "import" | "activity" | "history";
+type ActivityTab = ActivitySection;
 
 type ActivityViewState = {
   queueItems: DownloadQueueItem[];
@@ -83,8 +83,6 @@ type ActivityViewState = {
   requestDelete: (item: DownloadQueueItem) => Promise<void>;
   requestDeleteItems: (items: DownloadQueueItem[]) => Promise<void>;
   activeTab: ActivityTab;
-  setActiveTab: (tab: ActivityTab) => void;
-  importNotificationCount: number;
   sortConfigByTab: Record<ActivityTab, SortConfig>;
   toggleSort: (tab: ActivityTab, key: ActivitySortKey) => void;
   activityScryerSubmittedOnly: boolean;
@@ -710,8 +708,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     requestDelete,
     requestDeleteItems,
     activeTab,
-    setActiveTab,
-    importNotificationCount,
     sortConfigByTab,
     toggleSort,
     activityScryerSubmittedOnly,
@@ -1785,65 +1781,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         }}
       />
       <Card>
-        <CardHeader className="space-y-4">
-          <div className="flex flex-col gap-3">
-            <div className="flex justify-center overflow-x-auto">
-              <ToggleGroup
-                type="single"
-                value={activeTab}
-                onValueChange={(nextValue) => {
-                  if (
-                    nextValue === "import" ||
-                    nextValue === "activity" ||
-                    nextValue === "history"
-                  ) {
-                    setFilterPopoverOpen(false);
-                    setActiveTab(nextValue);
-                  }
-                }}
-                aria-label={t("activity.tabToggleLabel")}
-                size="lg"
-                className="h-14 min-w-max rounded-xl border-0 bg-card/80 divide-x divide-border/40"
-              >
-                <ToggleGroupItem
-                  value="import"
-                  size="lg"
-                  className="group h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <span>{t("activity.import")}</span>
-                    {importNotificationCount > 0 ? (
-                      <span
-                        className={cn(
-                          "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none",
-                          activeTab === "import"
-                            ? "border border-sky-900/70 bg-sky-950 text-sky-100"
-                            : "border border-primary/70 bg-primary text-primary-foreground",
-                        )}
-                      >
-                        {importNotificationCount}
-                      </span>
-                    ) : null}
-                  </span>
-                </ToggleGroupItem>
-                <ToggleGroupItem
-                  value="activity"
-                  size="lg"
-                  className="h-full min-w-28 rounded-none px-4 text-sm font-semibold sm:min-w-36 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
-                >
-                  {t("activity.activity")}
-                </ToggleGroupItem>
-                <ToggleGroupItem
-                  value="history"
-                  size="lg"
-                  className="h-full min-w-24 rounded-none px-4 text-sm font-semibold sm:min-w-28 sm:px-6 sm:text-base first:rounded-l-xl last:rounded-r-xl data-[state=off]:bg-accent/80 data-[state=off]:text-foreground data-[state=off]:hover:bg-accent/80 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-0 data-[state=on]:shadow-none"
-                >
-                  {t("activity.history")}
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </div>
-          </div>
-        </CardHeader>
         <CardContent className="space-y-4">
           {queueError ? (
             <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">

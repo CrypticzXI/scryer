@@ -80,6 +80,8 @@ services:
       - scryer-node_modules:/app/node_modules
     environment:
       SCRYER_GRAPHQL_URL: /graphql
+      SCRYER_VITE_USE_POLLING: "true"
+      SCRYER_VITE_POLL_INTERVAL_MS: "250"
     command: >
       sh -c '
         set -eu

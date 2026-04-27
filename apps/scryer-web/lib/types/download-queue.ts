@@ -1,3 +1,5 @@
+import type { ReleaseQueueScope } from "./releases";
+
 export type DownloadQueueState =
   | "queued"
   | "downloading"
@@ -120,6 +122,7 @@ export type DownloadQueueItem = {
   trackedStatus: TrackedDownloadStatus | null;
   trackedStatusMessages: string[];
   trackedMatchType: TitleMatchType | null;
+  queueScope: ReleaseQueueScope | null;
 };
 
 export type DownloadHistoryPage = {

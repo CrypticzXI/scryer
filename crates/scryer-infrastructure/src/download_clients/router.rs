@@ -59,11 +59,9 @@ impl FeedbackTimeoutDownloadClient {
         F: Future<Output = AppResult<T>> + Send,
         T: Send,
     {
-        timeout(self.read_timeout, future)
-            .await
-            .map_err(|_| {
-                AppError::DownloadFeedbackTimeout(DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string())
-            })?
+        timeout(self.read_timeout, future).await.map_err(|_| {
+            AppError::DownloadFeedbackTimeout(DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string())
+        })?
     }
 }
 

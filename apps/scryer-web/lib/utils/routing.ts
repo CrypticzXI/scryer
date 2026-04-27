@@ -1,5 +1,6 @@
 import type { LocaleCode } from "@/lib/i18n";
 import type {
+  ActivitySection,
   ContentSettingsSection,
   SettingsSection,
   SystemSection,
@@ -14,6 +15,7 @@ import {
   CONTENT_SECTION_PATH_TO_ID,
   CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID,
   SYSTEM_SECTION_PATH_TO_ID,
+  ACTIVITY_SECTION_PATH_TO_ID,
   WANTED_SECTION_PATH_TO_ID,
 } from "@/lib/constants/settings";
 import { isMediaView } from "@/lib/facets/registry";
@@ -51,6 +53,12 @@ export const WANTED_SECTION_PATH: Record<WantedSection, string> = {
   pending: "pending",
 };
 
+export const ACTIVITY_SECTION_PATH: Record<ActivitySection, string> = {
+  activity: "activity",
+  import: "import",
+  history: "history",
+};
+
 const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "settings"]);
 
 export function buildViewPath(
@@ -59,6 +67,7 @@ export function buildViewPath(
   nextContentSection?: ContentSettingsSection,
   nextSystemSection?: SystemSection,
   nextWantedSection?: WantedSection,
+  nextActivitySection?: ActivitySection,
 ) {
   const base = `/${nextView}`;
   if (nextView === "settings" && nextSettingsSection && nextSettingsSection !== "profile") {
@@ -66,6 +75,13 @@ export function buildViewPath(
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {
     return `${base}/${nextSystemSection}`;
+  }
+  if (nextView === "activity") {
+    const activitySection = nextActivitySection ?? "activity";
+    if (activitySection !== "activity") {
+      return `${base}/${ACTIVITY_SECTION_PATH[activitySection]}`;
+    }
+    return base;
   }
   if (nextView === "wanted") {
     return `${base}/${WANTED_SECTION_PATH[nextWantedSection ?? "wanted"]}`;
@@ -141,6 +157,13 @@ export function parseSystemSectionFromPath(value: string | null): SystemSection 
     return "overview";
   }
   return SYSTEM_SECTION_PATH_TO_ID[value] ?? "overview";
+}
+
+export function parseActivitySectionFromPath(value: string | null): ActivitySection {
+  if (!value) {
+    return "activity";
+  }
+  return ACTIVITY_SECTION_PATH_TO_ID[value] ?? "activity";
 }
 
 export function parseWantedSectionFromPath(value: string | null): WantedSection {

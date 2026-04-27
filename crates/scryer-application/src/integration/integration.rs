@@ -1596,6 +1596,26 @@ impl AppUseCase {
         }))
     }
 
+    pub async fn find_download_queue_scope(
+        &self,
+        actor: &User,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<SubmissionScope>> {
+        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
+            require(actor, &Entitlement::ManageConfig)?;
+        }
+
+        let submission = self
+            .services
+            .workflow
+            .download_submissions
+            .find_by_client_item_id(client_id, client_type, download_client_item_id)
+            .await?;
+        Ok(submission.map(|submission| submission.scope))
+    }
+
     pub fn subscribe_download_queue(
         &self,
         actor: &User,

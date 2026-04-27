@@ -215,6 +215,7 @@ function fillMissingQueueItemFields(
         ? primary.trackedStatusMessages
         : secondary.trackedStatusMessages,
     trackedMatchType: primary.trackedMatchType ?? secondary.trackedMatchType,
+    queueScope: primary.queueScope ?? secondary.queueScope,
   };
 }
 

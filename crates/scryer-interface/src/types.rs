@@ -6,9 +6,10 @@ use scryer_application::{
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
     JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
-    PendingReleaseStatus as AppPendingReleaseStatus, ScoringOverrides as AppScoringOverrides,
-    ScoringPersona as AppScoringPersona, SortDirection as AppSortDirection,
-    SubmissionScope as AppSubmissionScope, WantedStatus as AppWantedStatus,
+    PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
+    ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
+    SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
+    WantedStatus as AppWantedStatus,
 };
 use scryer_domain::{
     DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason,
@@ -55,6 +56,29 @@ impl MediaFacetValue {
             "series" => Some(Self::Series),
             "anime" => Some(Self::Anime),
             _ => None,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum PendingImportStatusValue {
+    Pending,
+    Ignored,
+}
+
+impl PendingImportStatusValue {
+    pub fn into_application(self) -> AppPendingImportStatus {
+        match self {
+            Self::Pending => AppPendingImportStatus::Pending,
+            Self::Ignored => AppPendingImportStatus::Ignored,
+        }
+    }
+
+    pub fn from_application(value: AppPendingImportStatus) -> Self {
+        match value {
+            AppPendingImportStatus::Pending => Self::Pending,
+            AppPendingImportStatus::Ignored => Self::Ignored,
         }
     }
 }
@@ -1881,6 +1905,7 @@ pub struct PendingImportSearchAttemptPayload {
 pub struct PendingImportItemPayload {
     pub id: String,
     pub facet: MediaFacetValue,
+    pub status: PendingImportStatusValue,
     pub display_name: String,
     pub path: String,
     pub folder_path: Option<String>,
@@ -1903,6 +1928,11 @@ pub struct ResolvePendingImportInput {
 }
 
 #[derive(InputObject)]
+pub struct IgnorePendingImportInput {
+    pub pending_import_id: String,
+}
+
+#[derive(InputObject)]
 pub struct CancelLibraryScanInput {
     pub session_id: String,
 }
@@ -1912,6 +1942,12 @@ pub struct ResolvePendingImportPayload {
     pub title: TitlePayload,
     pub created: bool,
     pub library_scan: LibraryScanSummaryPayload,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IgnorePendingImportPayload {
+    pub id: String,
+    pub status: PendingImportStatusValue,
 }
 
 #[derive(SimpleObject, Clone)]

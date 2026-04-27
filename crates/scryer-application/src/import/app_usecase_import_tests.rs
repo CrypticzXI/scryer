@@ -1,8 +1,20 @@
 use super::*;
 use crate::import_title_resolution::find_monitored_movie_title_from_release;
 use crate::missing_required_audio_languages;
+use crate::null_repositories::NullSettingsRepository;
+use crate::null_repositories::test_nulls::{
+    NullDownloadClientConfigRepository, NullIndexerClient, NullQualityProfileRepository,
+    NullReleaseAttemptRepository, NullShowRepository, NullUserRepository,
+};
 use crate::post_download_gate::facet_to_category_hint;
-use scryer_domain::{CompletedDownload, ExternalId, MediaFacet, Title};
+use crate::{
+    AppError, AppResult, AppServices, AppUseCase, DownloadClient, DownloadClientAddRequest,
+    DownloadGrabResult, FacetRegistry, IndexerConfigRepository, JwtAuthConfig, TitleRepository,
+};
+use async_trait::async_trait;
+use scryer_domain::{CompletedDownload, ExternalId, IndexerConfig, MediaFacet, Title};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -815,4 +827,286 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
 
     assert_eq!(plan.previous_best_score, 450);
     assert_eq!(plan.additional_superseded.len(), 1);
+}
+
+#[derive(Default)]
+struct ManualImportCleanupTitleRepo {
+    titles: Mutex<Vec<Title>>,
+}
+
+#[async_trait]
+impl TitleRepository for ManualImportCleanupTitleRepo {
+    async fn list(&self, facet: Option<MediaFacet>, query: Option<String>) -> AppResult<Vec<Title>> {
+        let titles = self.titles.lock().await.clone();
+        Ok(titles
+            .into_iter()
+            .filter(|title| facet.as_ref().is_none_or(|expected| &title.facet == expected))
+            .filter(|title| {
+                query.as_ref().is_none_or(|needle| {
+                    title
+                        .name
+                        .to_ascii_lowercase()
+                        .contains(&needle.to_ascii_lowercase())
+                })
+            })
+            .collect())
+    }
+
+    async fn list_by_external_ids(&self, _: &str, _: &[String]) -> AppResult<Vec<Title>> {
+        Ok(vec![])
+    }
+
+    async fn list_for_matching(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list(facet, query).await
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
+        Ok(self
+            .titles
+            .lock()
+            .await
+            .iter()
+            .find(|title| title.id == id)
+            .cloned())
+    }
+
+    async fn get_by_facet_and_slug(&self, _: MediaFacet, _: &str) -> AppResult<Option<Title>> {
+        Ok(None)
+    }
+
+    async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {
+        Ok(None)
+    }
+
+    async fn find_by_external_id_in_facet(
+        &self,
+        _: MediaFacet,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<Title>> {
+        Ok(None)
+    }
+
+    async fn create_or_get_existing(&self, _: Title) -> AppResult<crate::CreateTitleOutcome> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn create(&self, _: Title) -> AppResult<Title> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn list_titles_due_for_hydration(
+        &self,
+        _: usize,
+        _: &[MediaFacet],
+    ) -> AppResult<Vec<crate::PendingTitleHydration>> {
+        Ok(vec![])
+    }
+
+    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+        &self,
+        _: usize,
+    ) -> AppResult<Vec<String>> {
+        Ok(vec![])
+    }
+
+    async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn schedule_title_metadata_hydration_retry(
+        &self,
+        _: &str,
+        _: &str,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn clear_title_metadata_hydration_retry_state(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_monitored(&self, _: &str, _: bool) -> AppResult<Title> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update_metadata(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: Option<MediaFacet>,
+        _: Option<Vec<String>>,
+    ) -> AppResult<Title> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update_title_hydrated_metadata(
+        &self,
+        _: &str,
+        _: crate::TitleMetadataUpdate,
+    ) -> AppResult<Title> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn replace_match_state(
+        &self,
+        _: &str,
+        _: Vec<scryer_domain::ExternalId>,
+        _: Vec<String>,
+    ) -> AppResult<Title> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn set_folder_path(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn clear_folder_path(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
+struct ManualImportCleanupDownloadClient {
+    deleted_items: Mutex<Vec<(String, bool)>>,
+}
+
+#[async_trait]
+impl DownloadClient for ManualImportCleanupDownloadClient {
+    async fn submit_download(&self, _: &DownloadClientAddRequest) -> AppResult<DownloadGrabResult> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+        self.deleted_items
+            .lock()
+            .await
+            .push((id.to_string(), is_history));
+        Ok(())
+    }
+}
+
+struct ManualImportCleanupIndexerConfigRepo;
+
+#[async_trait]
+impl IndexerConfigRepository for ManualImportCleanupIndexerConfigRepo {
+    async fn list(&self, _: Option<String>) -> AppResult<Vec<IndexerConfig>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _: &str) -> AppResult<Option<IndexerConfig>> {
+        Ok(None)
+    }
+
+    async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
+        Ok(config)
+    }
+
+    async fn touch_last_error(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update(&self, _: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+fn build_manual_import_cleanup_app(
+    titles: Vec<Title>,
+    download_client: Arc<dyn DownloadClient>,
+) -> AppUseCase {
+    let services = AppServices::builder(
+        Arc::new(ManualImportCleanupTitleRepo {
+            titles: Mutex::new(titles),
+        }),
+        Arc::new(NullShowRepository),
+        Arc::new(NullUserRepository),
+        Arc::new(ManualImportCleanupIndexerConfigRepo),
+        Arc::new(NullIndexerClient),
+        download_client,
+        Arc::new(NullDownloadClientConfigRepository),
+        Arc::new(NullReleaseAttemptRepository),
+        Arc::new(NullSettingsRepository),
+        Arc::new(NullQualityProfileRepository),
+        String::new(),
+    )
+    .build_partial_for_tests();
+
+    AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(FacetRegistry::new()),
+    )
+}
+
+#[tokio::test]
+async fn maybe_remove_completed_manual_import_download_deletes_history_for_collection_success() {
+    let mut title = test_title(MediaFacet::Series);
+    title.id = "series-1".to_string();
+    title.name = "Bluey".to_string();
+
+    let download_client = Arc::new(ManualImportCleanupDownloadClient::default());
+    let app = build_manual_import_cleanup_app(vec![title], download_client.clone());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let completed = test_completed_download("Bluey.S01.Complete.1080p.WEB-DL", dir.path());
+
+    maybe_remove_completed_manual_import_download(
+        &app,
+        Some(&completed),
+        Some("series-1"),
+        true,
+    )
+    .await;
+
+    assert_eq!(
+        *download_client.deleted_items.lock().await,
+        vec![("job-1".to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn maybe_remove_completed_manual_import_download_deletes_history_for_episode_set_success() {
+    let mut title = test_title(MediaFacet::Anime);
+    title.id = "anime-1".to_string();
+    title.name = "Frieren".to_string();
+
+    let download_client = Arc::new(ManualImportCleanupDownloadClient::default());
+    let app = build_manual_import_cleanup_app(vec![title], download_client.clone());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = test_completed_download("Frieren.S01E03-E04.1080p.WEB-DL", dir.path());
+    completed.download_client_item_id = "job-episode-set".to_string();
+
+    maybe_remove_completed_manual_import_download(
+        &app,
+        Some(&completed),
+        Some("anime-1"),
+        true,
+    )
+    .await;
+
+    assert_eq!(
+        *download_client.deleted_items.lock().await,
+        vec![("job-episode-set".to_string(), true)]
+    );
 }

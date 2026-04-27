@@ -5,11 +5,12 @@ use scryer_application::{
     DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate, ImportRepository,
     InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository, SubmissionScope,
-    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedStatus,
+    NotificationSubscriptionRepository, PendingImportStatus, ReleaseAttemptRepository,
+    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository,
+    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
+    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -4144,6 +4145,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     let item = LibraryScanUnmatchedItem {
         id: "library_scan_unmatched:test".to_string(),
         facet: MediaFacet::Movie,
+        status: PendingImportStatus::Pending,
         scan_session_id: "session-1".to_string(),
         scan_root: "/library".to_string(),
         item_path: "/library/Unknown.Movie.2020.mkv".to_string(),
@@ -4167,13 +4169,23 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         .expect("insert unmatched item");
 
     let count = library_state
-        .count_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"))
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Pending),
+        )
         .await
         .expect("count unmatched items after insert");
     assert_eq!(count, 1);
 
     let listed = library_state
-        .list_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"), 10, 0)
+        .list_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Pending),
+            10,
+            0,
+        )
         .await
         .expect("list unmatched items after insert");
     assert_eq!(listed.len(), 1);
@@ -4203,7 +4215,13 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         .expect("update unmatched item");
 
     let listed_after_update = library_state
-        .list_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"), 10, 0)
+        .list_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Pending),
+            10,
+            0,
+        )
         .await
         .expect("list unmatched items after update");
     assert_eq!(listed_after_update.len(), 1);
@@ -4222,10 +4240,89 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         .expect("delete unmatched item");
 
     let count_after_delete = library_state
-        .count_library_scan_unmatched_items(Some(MediaFacet::Movie), Some("/library"))
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Pending),
+        )
         .await
         .expect("count unmatched items after delete");
     assert_eq!(count_after_delete, 0);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_scan_unmatched_status_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let library_state = library_state_store(&services);
+
+    let ignored_item = LibraryScanUnmatchedItem {
+        id: "library_scan_unmatched:ignored".to_string(),
+        facet: MediaFacet::Movie,
+        status: PendingImportStatus::Ignored,
+        scan_session_id: "session-1".to_string(),
+        scan_root: "/library".to_string(),
+        item_path: "/library/Unknown.Movie.2020.mkv".to_string(),
+        display_name: "Unknown.Movie.2020".to_string(),
+        query: "Unknown Movie".to_string(),
+        year_hint: Some(2020),
+        reason_code: "no_metadata_search_results".to_string(),
+        error_message: None,
+        search_attempts: vec![],
+        created_at: "2026-04-07T00:00:00Z".to_string(),
+        updated_at: "2026-04-07T00:00:00Z".to_string(),
+    };
+
+    library_state
+        .upsert_library_scan_unmatched_item(&ignored_item)
+        .await
+        .expect("seed ignored item");
+
+    let scan_refresh = LibraryScanUnmatchedItem {
+        status: PendingImportStatus::Pending,
+        scan_session_id: "session-2".to_string(),
+        updated_at: "2026-04-08T00:00:00Z".to_string(),
+        ..ignored_item.clone()
+    };
+
+    library_state
+        .upsert_library_scan_unmatched_item(&scan_refresh)
+        .await
+        .expect("refresh ignored item from scan");
+
+    let pending_count = library_state
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Pending),
+        )
+        .await
+        .expect("count pending items");
+    let ignored_count = library_state
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Movie),
+            Some("/library"),
+            Some(PendingImportStatus::Ignored),
+        )
+        .await
+        .expect("count ignored items");
+    assert_eq!(pending_count, 0);
+    assert_eq!(ignored_count, 1);
+
+    let stored = library_state
+        .get_library_scan_unmatched_item(&ignored_item.id)
+        .await
+        .expect("load stored item")
+        .expect("item should still exist");
+    assert_eq!(stored.status, PendingImportStatus::Ignored);
+    assert_eq!(stored.scan_session_id, "session-2");
 
     let _ = std::fs::remove_file(db);
 }

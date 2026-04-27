@@ -29,7 +29,11 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
-import { fetchTitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import {
+  createEmptyTitleOverviewDownloadFeedbackSnapshot,
+  fetchTitleOverviewDownloadFeedbackSnapshot,
+  fetchTitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 import { SeriesOverviewView } from "@/components/views/series-overview-view";
 import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
@@ -39,7 +43,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
-import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type {
+  TitleOverviewDownloadFeedbackSnapshot,
+  TitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 
 export type TitleDetail = {
@@ -254,6 +261,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     Record<string, EpisodeMediaFile[]>
   >({});
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
+  const [downloadFeedbackSettled, setDownloadFeedbackSettled] = React.useState(false);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<
     SubtitleDownloadRecord[]
   >([]);
@@ -280,9 +288,13 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
+  const currentTitleIdRef = React.useRef<string | null>(titleId ?? null);
+  React.useEffect(() => {
+    currentTitleIdRef.current = titleId ?? null;
+  }, [titleId]);
   const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const downloadQueueItems = useTitleDownloadQueue({
-    enabled: Boolean(titleId),
+    enabled: Boolean(titleId) && hasDownloadClients && downloadFeedbackSettled,
     titleId,
     initialItems: downloadQueueSeed,
   });
@@ -320,9 +332,18 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     mediaFileToDelete !== null,
   );
 
-  const applyTitleDetailSnapshot = React.useCallback(
+  const applyDownloadFeedbackSnapshot = React.useCallback(
+    (snapshot: TitleOverviewDownloadFeedbackSnapshot) => {
+      setDownloadQueueSeed(snapshot.downloadQueueItems);
+      setCompletedDownloads(snapshot.completedDownloadQueueItems);
+      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
+    },
+    [],
+  );
+
+  const applyNativeTitleDetailSnapshot = React.useCallback(
     (
-      snapshot: TitleOverviewSnapshot<
+      snapshot: TitleOverviewNativeSnapshot<
         SeriesOverviewSnapshotTitle,
         unknown,
         TitleHistoryEvent,
@@ -349,18 +370,14 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
-      setDownloadQueueSeed(snapshot.downloadQueueItems);
       setSubtitleDownloads(snapshot.subtitleDownloads);
       setHasDownloadClients(snapshot.hasDownloadClients);
-      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
-
-      if (!nextTitle) {
-        setCompletedDownloads([]);
-        return;
+      if (!nextTitle || !snapshot.hasDownloadClients) {
+        applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());
+        setDownloadFeedbackSettled(true);
       }
-      setCompletedDownloads(snapshot.completedDownloadQueueItems);
     },
-    [onTitleResolved],
+    [applyDownloadFeedbackSnapshot, onTitleResolved],
   );
 
   React.useEffect(() => {
@@ -383,16 +400,57 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     setGlobalStatus(downloadFeedbackWarning);
   }, [downloadFeedbackWarning, setGlobalStatus]);
 
+  const refreshDownloadFeedback = React.useCallback(async () => {
+    if (!titleId) {
+      return;
+    }
+
+    const requestedTitleId = titleId;
+    try {
+      const snapshot = await fetchTitleOverviewDownloadFeedbackSnapshot(
+        client,
+        requestedTitleId,
+      );
+      if (currentTitleIdRef.current !== requestedTitleId) {
+        return;
+      }
+      applyDownloadFeedbackSnapshot(snapshot);
+    } catch (error: unknown) {
+      if (currentTitleIdRef.current !== requestedTitleId) {
+        return;
+      }
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.apiError"),
+      );
+    } finally {
+      if (currentTitleIdRef.current === requestedTitleId) {
+        setDownloadFeedbackSettled(true);
+      }
+    }
+  }, [applyDownloadFeedbackSnapshot, client, setGlobalStatus, t, titleId]);
+
   const refreshTitleDetail = React.useCallback(async () => {
-    const snapshot = await fetchTitleOverviewSnapshot<
+    if (!titleId) {
+      return;
+    }
+
+    const requestedTitleId = titleId;
+    const snapshot = await fetchTitleOverviewNativeSnapshot<
       SeriesOverviewSnapshotTitle,
       unknown,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
       SubtitleDownloadRecord
-    >(client, titleId, 300);
-    applyTitleDetailSnapshot(snapshot);
-  }, [applyTitleDetailSnapshot, titleId, client]);
+    >(client, requestedTitleId, 300);
+    if (currentTitleIdRef.current !== requestedTitleId) {
+      return;
+    }
+    applyNativeTitleDetailSnapshot(snapshot);
+    if (!snapshot.title || !snapshot.hasDownloadClients) {
+      return;
+    }
+    void refreshDownloadFeedback();
+  }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -405,6 +463,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEpisodesByCollection({});
       setMediaFilesByEpisode({});
       setDownloadQueueSeed([]);
+      setDownloadFeedbackSettled(false);
       setSubtitleDownloads([]);
       setCompletedDownloads([]);
       setManualImportItem(null);
@@ -422,7 +481,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setTitleLookupAttempted(false);
     setTitleLookupFailed(false);
-  setShowSearchPrerequisiteNotice(false);
+    setDownloadQueueSeed([]);
+    setCompletedDownloads([]);
+    setDownloadFeedbackWarning(null);
+    setDownloadFeedbackSettled(false);
+    setShowSearchPrerequisiteNotice(false);
     setLoading(true);
     refreshTitleDetail()
       .catch((error: unknown) => {
@@ -879,8 +942,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   useTitleOverviewReactiveRefresh({
     titleId,
     blocklistLimit: 300,
-    applySnapshot: applyTitleDetailSnapshot,
+    applyNativeSnapshot: applyNativeTitleDetailSnapshot,
+    applyDownloadFeedbackSnapshot,
     importKinds: IMPORT_KINDS,
+    downloadFeedbackEnabled: hasDownloadClients,
     pause: !titleId,
     onHydrationStarted() {
       setHydratingFromActivity(true);

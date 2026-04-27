@@ -180,6 +180,24 @@ fn registry_entry_is_host_compatible(entry: &RegistryEntry) -> bool {
     }
 }
 
+fn provider_types_to_set(provider_types: Vec<String>) -> std::collections::HashSet<String> {
+    provider_types
+        .into_iter()
+        .map(|provider_type| provider_type.trim().to_ascii_lowercase())
+        .collect()
+}
+
+struct BuiltinPluginSeed {
+    name: String,
+    version: String,
+    plugin_type: String,
+    provider_type: String,
+}
+
+fn normalize_provider_key(provider_type: &str) -> String {
+    provider_type.trim().to_ascii_lowercase()
+}
+
 fn ensure_registry_entry_is_host_compatible(entry: &RegistryEntry) -> AppResult<()> {
     let Some(required_raw) = entry.min_scryer_version.as_deref().map(str::trim) else {
         return Ok(());
@@ -211,42 +229,106 @@ impl AppUseCase {
     /// existing user toggles are preserved across restarts.
     pub async fn seed_builtin_plugins(&self) -> AppResult<()> {
         let repo = &self.services.customization.plugin_installations;
-        repo.seed_builtin(
-            "nzbgeek",
-            "NZBGeek Indexer",
-            "NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)",
-            "0.1.0",
-            "usenet_indexer",
-            "nzbgeek",
-        )
-        .await?;
-        repo.seed_builtin(
-            "dognzb",
-            "DogNZB Indexer",
-            "DogNZB-specific Newznab indexer with rating, genre, and comment metadata",
-            "0.1.0",
-            "usenet_indexer",
-            "dognzb",
-        )
-        .await?;
-        repo.seed_builtin(
-            "newznab",
-            "Newznab Indexer",
-            "Generic Newznab protocol indexer for compatible services",
-            "0.1.0",
-            "usenet_indexer",
-            "newznab",
-        )
-        .await?;
-        repo.seed_builtin(
-            "jimaku",
-            "Jimaku",
-            "Jimaku anime subtitle provider",
-            "0.1.0",
-            "subtitle_provider",
-            "jimaku",
-        )
-        .await?;
+
+        let mut builtins: Vec<BuiltinPluginSeed> = Vec::new();
+
+        if let Some(provider) = self.services.integrations.plugin_provider.available() {
+            for provider_type in provider.builtin_provider_types() {
+                let provider_key = normalize_provider_key(&provider_type);
+                let Some(name) = provider.plugin_name_for_provider(&provider_key) else {
+                    continue;
+                };
+                let Some(version) = provider.plugin_version_for_provider(&provider_key) else {
+                    continue;
+                };
+                let plugin_type = provider
+                    .plugin_type_for_provider(&provider_key)
+                    .unwrap_or_else(|| LEGACY_INDEXER_PLUGIN_TYPE.to_string());
+                builtins.push(BuiltinPluginSeed {
+                    name,
+                    version,
+                    plugin_type,
+                    provider_type: provider_key,
+                });
+            }
+        }
+
+        if let Some(provider) = self
+            .services
+            .integrations
+            .subtitle_plugin_provider
+            .available()
+        {
+            for provider_type in provider.builtin_provider_types() {
+                let provider_key = normalize_provider_key(&provider_type);
+                let Some(name) = provider.plugin_name_for_provider(&provider_key) else {
+                    continue;
+                };
+                let Some(version) = provider.plugin_version_for_provider(&provider_key) else {
+                    continue;
+                };
+                builtins.push(BuiltinPluginSeed {
+                    name,
+                    version,
+                    plugin_type: "subtitle_provider".to_string(),
+                    provider_type: provider_key,
+                });
+            }
+        }
+
+        if let Some(provider) = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available()
+        {
+            for provider_type in provider.builtin_provider_types() {
+                let provider_key = normalize_provider_key(&provider_type);
+                let Some(name) = provider.plugin_name_for_provider(&provider_key) else {
+                    continue;
+                };
+                let Some(version) = provider.plugin_version_for_provider(&provider_key) else {
+                    continue;
+                };
+                builtins.push(BuiltinPluginSeed {
+                    name,
+                    version,
+                    plugin_type: "download_client".to_string(),
+                    provider_type: provider_key,
+                });
+            }
+        }
+
+        if let Some(provider) = self.services.notifications.notification_provider() {
+            for provider_type in provider.builtin_provider_types() {
+                let provider_key = normalize_provider_key(&provider_type);
+                let Some(name) = provider.plugin_name_for_provider(&provider_key) else {
+                    continue;
+                };
+                let Some(version) = provider.plugin_version_for_provider(&provider_key) else {
+                    continue;
+                };
+                builtins.push(BuiltinPluginSeed {
+                    name,
+                    version,
+                    plugin_type: "notification".to_string(),
+                    provider_type: provider_key,
+                });
+            }
+        }
+
+        for builtin in builtins {
+            repo.seed_builtin(
+                &builtin.provider_type,
+                &builtin.name,
+                "",
+                &builtin.version,
+                &builtin.plugin_type,
+                &builtin.provider_type,
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -550,6 +632,48 @@ impl AppUseCase {
             None => vec![],
         };
 
+        let builtin_indexer_provider_types = self
+            .services
+            .integrations
+            .plugin_provider
+            .available()
+            .map(|provider| provider_types_to_set(provider.builtin_provider_types()))
+            .unwrap_or_default();
+        let builtin_download_client_provider_types = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available()
+            .map(|provider| provider_types_to_set(provider.builtin_provider_types()))
+            .unwrap_or_default();
+        let builtin_notification_provider_types = self
+            .services
+            .notifications
+            .notification_provider()
+            .map(|provider| provider_types_to_set(provider.builtin_provider_types()))
+            .unwrap_or_default();
+        let builtin_subtitle_provider_types = self
+            .services
+            .integrations
+            .subtitle_plugin_provider
+            .available()
+            .map(|provider| provider_types_to_set(provider.builtin_provider_types()))
+            .unwrap_or_default();
+
+        let is_builtin_plugin = |plugin_type: &str, provider_type: &str| {
+            let provider_key = provider_type.trim().to_ascii_lowercase();
+            if is_indexer_plugin_type(plugin_type) {
+                return builtin_indexer_provider_types.contains(&provider_key);
+            }
+
+            match plugin_type {
+                "download_client" => builtin_download_client_provider_types.contains(&provider_key),
+                "notification" => builtin_notification_provider_types.contains(&provider_key),
+                "subtitle_provider" => builtin_subtitle_provider_types.contains(&provider_key),
+                _ => false,
+            }
+        };
+
         // Build merged list
         let mut result = Vec::new();
 
@@ -562,6 +686,7 @@ impl AppUseCase {
             }
             let plugin_type =
                 merged_plugin_type(&entry.plugin_type, inst.map(|i| i.plugin_type.as_str()));
+            let builtin = is_builtin_plugin(&plugin_type, &entry.provider_type);
             result.push(RegistryPlugin {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -571,7 +696,7 @@ impl AppUseCase {
                 provider_type: entry.provider_type.clone(),
                 author: entry.author.clone(),
                 official: entry.official,
-                builtin: entry.builtin,
+                builtin,
                 source_url: entry.source_url.clone(),
                 wasm_url: entry.wasm_url.clone(),
                 wasm_sha256: entry.wasm_sha256.clone(),
@@ -611,6 +736,7 @@ impl AppUseCase {
         // Add any installed plugins not in the registry (e.g. manually installed)
         for inst in &installations {
             if !result.iter().any(|r| r.id == inst.plugin_id) {
+                let builtin = is_builtin_plugin(&inst.plugin_type, &inst.provider_type);
                 result.push(RegistryPlugin {
                     id: inst.plugin_id.clone(),
                     name: inst.name.clone(),
@@ -620,7 +746,7 @@ impl AppUseCase {
                     provider_type: inst.provider_type.clone(),
                     author: String::new(),
                     official: false,
-                    builtin: inst.is_builtin,
+                    builtin,
                     source_url: inst.source_url.clone(),
                     wasm_url: None,
                     wasm_sha256: inst.wasm_sha256.clone(),

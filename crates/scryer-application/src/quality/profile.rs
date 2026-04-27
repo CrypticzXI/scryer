@@ -7,14 +7,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct QualityProfile {
     pub id: String,
     pub name: String,
     pub criteria: QualityProfileCriteria,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct QualityProfileCriteria {
     pub quality_tiers: Vec<String>,
     pub archival_quality: Option<String>,

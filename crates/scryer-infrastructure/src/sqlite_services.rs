@@ -208,11 +208,12 @@ impl DbRuntime {
         &self,
         facet: Option<scryer_domain::MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<scryer_application::PendingImportStatus>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<scryer_application::LibraryScanUnmatchedItem>> {
         crate::queries::library_scan_unmatched::list_library_scan_unmatched_items_query(
-            &self.pool, facet, scan_root, limit, offset,
+            &self.pool, facet, scan_root, status, limit, offset,
         )
         .await
     }
@@ -221,9 +222,10 @@ impl DbRuntime {
         &self,
         facet: Option<scryer_domain::MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<scryer_application::PendingImportStatus>,
     ) -> AppResult<i64> {
         crate::queries::library_scan_unmatched::count_library_scan_unmatched_items_query(
-            &self.pool, facet, scan_root,
+            &self.pool, facet, scan_root, status,
         )
         .await
     }

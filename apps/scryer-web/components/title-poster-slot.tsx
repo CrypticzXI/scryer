@@ -86,6 +86,10 @@ export function TitlePosterSlot({
   ...props
 }: TitlePosterSlotProps) {
   const hasPoster = Boolean(src || sourceSrc);
+  const posterRenderKey = React.useMemo(
+    () => [src ?? "", sourceSrc ?? "", metadataFetchedAt ?? ""].join("|"),
+    [metadataFetchedAt, sourceSrc, src],
+  );
   const showHydrationSpinner = useHydrationPosterGrace(
     hasPoster,
     metadataFetchedAt,
@@ -95,6 +99,7 @@ export function TitlePosterSlot({
   if (hasPoster) {
     return (
       <TitlePoster
+        key={posterRenderKey}
         src={src}
         sourceSrc={sourceSrc}
         alt={alt}

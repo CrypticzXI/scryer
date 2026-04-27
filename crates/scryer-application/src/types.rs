@@ -417,6 +417,31 @@ pub struct PendingImportCounts {
     pub anime: i64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingImportStatus {
+    #[default]
+    Pending,
+    Ignored,
+}
+
+impl PendingImportStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ignored => "ignored",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pending" => Some(Self::Pending),
+            "ignored" => Some(Self::Ignored),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingImportSearchAttempt {
     pub query: String,
@@ -429,6 +454,7 @@ pub struct PendingImportSearchAttempt {
 pub struct PendingImportItem {
     pub id: String,
     pub facet: scryer_domain::MediaFacet,
+    pub status: PendingImportStatus,
     pub display_name: String,
     pub path: String,
     pub folder_path: Option<String>,
@@ -449,6 +475,12 @@ pub struct ResolvePendingImportResult {
     pub title: scryer_domain::Title,
     pub created: bool,
     pub library_scan: LibraryScanSummary,
+}
+
+#[derive(Clone, Debug)]
+pub struct IgnorePendingImportResult {
+    pub id: String,
+    pub status: PendingImportStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -536,6 +568,7 @@ pub struct LibraryScanUnmatchedSearchAttempt {
 pub struct LibraryScanUnmatchedItem {
     pub id: String,
     pub facet: scryer_domain::MediaFacet,
+    pub status: PendingImportStatus,
     pub scan_session_id: String,
     pub scan_root: String,
     pub item_path: String,

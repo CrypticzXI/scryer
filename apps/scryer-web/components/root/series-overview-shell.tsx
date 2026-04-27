@@ -12,6 +12,7 @@ import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import type {
+  ActivitySection,
   ViewId,
   SettingsSection,
   ContentSettingsSection,
@@ -79,6 +80,7 @@ export function SeriesOverviewShell() {
       nextContentSection?: ContentSettingsSection,
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
+      nextActivitySection?: ActivitySection,
     ) => {
       const targetPath = buildViewPath(
         nextView,
@@ -90,6 +92,7 @@ export function SeriesOverviewShell() {
           : undefined,
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
+        nextView === "activity" ? nextActivitySection : undefined,
       );
       navigate(targetPath);
     },
@@ -100,6 +103,7 @@ export function SeriesOverviewShell() {
     return buildRouteCommands({
       t,
       pendingImportCounts: null,
+      activityImportCount: 0,
       onNavigate: navigateTo,
     });
   }, [navigateTo, t]);
@@ -131,6 +135,7 @@ export function SeriesOverviewShell() {
                   settingsSection="profile"
                   contentSettingsSection="overview"
                   systemSection="overview"
+                  activitySection="activity"
                   wantedSection="wanted"
                   entitlements={[]}
                   pendingImportCounts={null}

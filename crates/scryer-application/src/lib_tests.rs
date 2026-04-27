@@ -1948,6 +1948,11 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
         if let Some(existing) = items.iter_mut().find(|existing| existing.id == item.id) {
             let mut updated = item.clone();
             updated.created_at = existing.created_at.clone();
+            if existing.status == PendingImportStatus::Ignored
+                && updated.status == PendingImportStatus::Pending
+            {
+                updated.status = PendingImportStatus::Ignored;
+            }
             *existing = updated;
         } else {
             items.push(item.clone());
@@ -1985,6 +1990,7 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
@@ -2005,6 +2011,7 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
                     .as_ref()
                     .is_none_or(|expected| item.scan_root == *expected)
             })
+            .filter(|item| status.is_none_or(|expected| item.status == expected))
             .cloned()
             .collect();
         items.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
@@ -2016,6 +2023,7 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
         &self,
         facet: Option<MediaFacet>,
         scan_root: Option<&str>,
+        status: Option<PendingImportStatus>,
     ) -> AppResult<i64> {
         Ok(self
             .items
@@ -2032,6 +2040,7 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
                     .as_ref()
                     .is_none_or(|expected| item.scan_root == *expected)
             })
+            .filter(|item| status.is_none_or(|expected| item.status == expected))
             .count() as i64)
     }
 }
@@ -3493,10 +3502,8 @@ async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry()
 #[tokio::test]
 async fn ensure_download_client_routing_entry_for_client_writes_full_default_entry() {
     let settings = Arc::new(StoredSettingsRepo::default());
-    let (app, actor) = bootstrap_with_search_settings_and_indexer(
-        settings.clone(),
-        Arc::new(MockIndexerClient),
-    );
+    let (app, actor) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
 
     app.ensure_download_client_routing_entry_for_client(&actor, "weaver")
         .await
@@ -3511,8 +3518,7 @@ async fn ensure_download_client_routing_entry_for_client_writes_full_default_ent
             )
             .await
             .unwrap_or_else(|| panic!("expected routing JSON for scope {scope_id}"));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("routing JSON parses");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("routing JSON parses");
         let entry = parsed
             .get("weaver")
             .and_then(|v| v.as_object())
@@ -3552,10 +3558,8 @@ async fn normalize_routing_settings_backfills_partial_legacy_download_client_jso
         )
         .await;
 
-    let (app, _) = bootstrap_with_search_settings_and_indexer(
-        settings.clone(),
-        Arc::new(MockIndexerClient),
-    );
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
 
     app.normalize_routing_settings()
         .await
@@ -3569,8 +3573,7 @@ async fn normalize_routing_settings_backfills_partial_legacy_download_client_jso
         )
         .await
         .expect("routing JSON present after normalize");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).expect("routing JSON parses");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("routing JSON parses");
     let entry = parsed
         .get("weaver")
         .and_then(|v| v.as_object())
@@ -3616,10 +3619,8 @@ async fn normalize_routing_settings_is_idempotent_for_complete_entries() {
         )
         .await;
 
-    let (app, _) = bootstrap_with_search_settings_and_indexer(
-        settings.clone(),
-        Arc::new(MockIndexerClient),
-    );
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
 
     app.normalize_routing_settings()
         .await
@@ -3636,8 +3637,7 @@ async fn normalize_routing_settings_is_idempotent_for_complete_entries() {
         )
         .await
         .expect("routing JSON present");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&after).expect("routing JSON parses");
+    let parsed: serde_json::Value = serde_json::from_str(&after).expect("routing JSON parses");
     let entry = parsed
         .get("weaver")
         .and_then(|v| v.as_object())
@@ -3652,7 +3652,10 @@ async fn normalize_routing_settings_is_idempotent_for_complete_entries() {
         entry.get("olderQueuePriority"),
         Some(&serde_json::json!("low"))
     );
-    assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(false)));
+    assert_eq!(
+        entry.get("removeCompleted"),
+        Some(&serde_json::json!(false))
+    );
     assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(true)));
     assert_eq!(entry.get("priority"), Some(&serde_json::json!(7)));
 }
@@ -3660,10 +3663,8 @@ async fn normalize_routing_settings_is_idempotent_for_complete_entries() {
 #[tokio::test]
 async fn ensure_indexer_routing_entry_for_indexer_writes_full_default_entry() {
     let settings = Arc::new(StoredSettingsRepo::default());
-    let (app, actor) = bootstrap_with_search_settings_and_indexer(
-        settings.clone(),
-        Arc::new(MockIndexerClient),
-    );
+    let (app, actor) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
 
     app.ensure_indexer_routing_entry_for_indexer(&actor, "indexer-1")
         .await
@@ -3707,21 +3708,15 @@ async fn normalize_routing_settings_backfills_partial_legacy_indexer_json() {
         )
         .await;
 
-    let (app, _) = bootstrap_with_search_settings_and_indexer(
-        settings.clone(),
-        Arc::new(MockIndexerClient),
-    );
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
 
     app.normalize_routing_settings()
         .await
         .expect("normalize indexer routing");
 
     let raw = settings
-        .get_scoped_value(
-            SETTINGS_SCOPE_SYSTEM,
-            INDEXER_ROUTING_SETTINGS_KEY,
-            "movie",
-        )
+        .get_scoped_value(SETTINGS_SCOPE_SYSTEM, INDEXER_ROUTING_SETTINGS_KEY, "movie")
         .await
         .expect("indexer routing JSON present after normalize");
     let parsed: serde_json::Value =
@@ -3733,10 +3728,7 @@ async fn normalize_routing_settings_backfills_partial_legacy_indexer_json() {
     assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
     assert!(entry.contains_key("priority"));
     // Existing categories must not be overwritten.
-    assert_eq!(
-        entry.get("categories"),
-        Some(&serde_json::json!(["2000"]))
-    );
+    assert_eq!(entry.get("categories"), Some(&serde_json::json!(["2000"])));
 }
 
 fn bootstrap_with_cutoff_projection_state(
@@ -4071,6 +4063,7 @@ fn build_test_unmatched_item(
     LibraryScanUnmatchedItem {
         id: id.to_string(),
         facet,
+        status: PendingImportStatus::Pending,
         scan_session_id: "scan-session-1".to_string(),
         scan_root: scan_root.to_string(),
         item_path: item_path.to_string(),
@@ -5147,6 +5140,20 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         ))
         .await
         .expect("seed series item");
+    let mut ignored_movie = build_test_unmatched_item(
+        "movie-ignored-1",
+        MediaFacet::Movie,
+        "/movies",
+        "/movies/Ignored.Movie.2020.mkv",
+        "Ignored Movie",
+        "Ignored Movie",
+        Some(2020),
+    );
+    ignored_movie.status = PendingImportStatus::Ignored;
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&ignored_movie)
+        .await
+        .expect("seed ignored movie item");
 
     let counts = app
         .pending_import_counts(&user)
@@ -5157,7 +5164,13 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
     assert_eq!(counts.anime, 0);
 
     let movie_items = app
-        .pending_imports(&user, MediaFacet::Movie, 50, 0)
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
         .await
         .expect("movie pending imports");
     assert_eq!(movie_items.total, 1);
@@ -5166,8 +5179,32 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
     assert_eq!(movie_items.items[0].path, "/movies/Unknown.Movie.2020.mkv");
     assert_eq!(movie_items.items[0].folder_path, None);
 
+    let ignored_movie_items = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored movie imports");
+    assert_eq!(ignored_movie_items.total, 1);
+    assert_eq!(ignored_movie_items.items.len(), 1);
+    assert_eq!(ignored_movie_items.items[0].display_name, "Ignored Movie");
+    assert_eq!(
+        ignored_movie_items.items[0].status,
+        PendingImportStatus::Ignored
+    );
+
     let series_items = app
-        .pending_imports(&user, MediaFacet::Series, 50, 0)
+        .pending_imports(
+            &user,
+            MediaFacet::Series,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
         .await
         .expect("series pending imports");
     assert_eq!(series_items.total, 1);
@@ -5176,6 +5213,66 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         series_items.items[0].folder_path.as_deref(),
         Some("/series/Unknown Show (2020)")
     );
+}
+
+#[tokio::test]
+async fn ignore_pending_import_moves_item_out_of_pending_counts() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) =
+        bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-ignore-1",
+            MediaFacet::Movie,
+            "/movies",
+            "/movies/Needs.Ignore.2020.mkv",
+            "Needs Ignore",
+            "Needs Ignore",
+            Some(2020),
+        ))
+        .await
+        .expect("seed pending import");
+
+    let result = app
+        .ignore_pending_import(&user, "movie-ignore-1")
+        .await
+        .expect("ignore pending import");
+    assert_eq!(result.status, PendingImportStatus::Ignored);
+
+    let counts = app
+        .pending_import_counts(&user)
+        .await
+        .expect("pending import counts after ignore");
+    assert_eq!(counts.movie, 0);
+
+    let pending_items = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            PendingImportStatus::Pending,
+            50,
+            0,
+        )
+        .await
+        .expect("pending movie imports after ignore");
+    assert_eq!(pending_items.total, 0);
+
+    let ignored_items = app
+        .pending_imports(
+            &user,
+            MediaFacet::Movie,
+            PendingImportStatus::Ignored,
+            50,
+            0,
+        )
+        .await
+        .expect("ignored movie imports after ignore");
+    assert_eq!(ignored_items.total, 1);
+    assert_eq!(ignored_items.items[0].id, "movie-ignore-1");
+    assert_eq!(ignored_items.items[0].status, PendingImportStatus::Ignored);
 }
 
 #[tokio::test]
@@ -5630,6 +5727,83 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
             + result.library_scan.unmatched
             > 0
     );
+    assert!(unmatched_items.items().await.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clears_item() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_path = tempdir.path().join("Ignored.Movie.2020.mkv");
+    std::fs::write(&movie_path, b"fake-video").expect("seed movie file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(
+            movie_path.to_string_lossy().as_ref(),
+        )])
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items.clone(),
+        Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                123_456,
+                MovieMetadata {
+                    tvdb_id: 123_456,
+                    name: "Matched Movie".into(),
+                    slug: "matched-movie".into(),
+                    year: Some(2020),
+                    content_status: "Released".into(),
+                    overview: "Matched overview".into(),
+                    poster_url: "https://example.com/poster.jpg".into(),
+                    banner_url: None,
+                    background_url: None,
+                    language: "eng".into(),
+                    runtime_minutes: 101,
+                    sort_title: "Matched Movie".into(),
+                    imdb_id: "tt0123456".into(),
+                    anidb_id: None,
+                    genres: vec!["Drama".into()],
+                    studio: "Test Studio".into(),
+                    tmdb_release_date: Some("2020-01-01".into()),
+                },
+            )]),
+        }),
+    );
+
+    let mut ignored_item = build_test_unmatched_item(
+        "movie-resolve-ignored-1",
+        MediaFacet::Movie,
+        tempdir.path().to_string_lossy().as_ref(),
+        movie_path.to_string_lossy().as_ref(),
+        "Ignored Movie",
+        "Matched Movie",
+        Some(2020),
+    );
+    ignored_item.status = PendingImportStatus::Ignored;
+
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&ignored_item)
+        .await
+        .expect("seed ignored import");
+
+    let result = app
+        .resolve_pending_import(&user, "movie-resolve-ignored-1", "123456")
+        .await
+        .expect("resolve ignored pending import");
+
+    assert!(result.created);
+    assert_eq!(result.title.name, "Matched Movie");
     assert!(unmatched_items.items().await.is_empty());
 }
 

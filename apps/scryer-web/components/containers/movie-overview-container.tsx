@@ -32,7 +32,11 @@ import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
-import { fetchTitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import {
+  createEmptyTitleOverviewDownloadFeedbackSnapshot,
+  fetchTitleOverviewDownloadFeedbackSnapshot,
+  fetchTitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 import { MovieOverviewView } from "@/components/views/movie-overview-view";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
@@ -41,7 +45,10 @@ import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
-import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type {
+  TitleOverviewDownloadFeedbackSnapshot,
+  TitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
 
 export type TitleDetail = {
@@ -226,6 +233,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_MOVIE_LIBRARY_PATH);
   const [mediaFiles, setMediaFiles] = React.useState<TitleMediaFile[]>([]);
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
+  const [downloadFeedbackSettled, setDownloadFeedbackSettled] = React.useState(false);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<SubtitleDownloadRecord[]>([]);
   const [wantedItem, setWantedItem] = React.useState<WantedItem | null>(null);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
@@ -243,7 +251,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [mediaFileToDelete, setMediaFileToDelete] =
     React.useState<TitleMediaFile | null>(null);
   const downloadQueueItems = useTitleDownloadQueue({
-    enabled: Boolean(titleId),
+    enabled: Boolean(titleId) && hasDownloadClients && downloadFeedbackSettled,
     titleId,
     initialItems: downloadQueueSeed,
   });
@@ -251,6 +259,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
+  const currentTitleIdRef = React.useRef<string | null>(titleId ?? null);
+  React.useEffect(() => {
+    currentTitleIdRef.current = titleId ?? null;
+  }, [titleId]);
   const lastShownDownloadFeedbackWarningRef = React.useRef<string | null>(null);
   const [wantedActionLoading, setWantedActionLoading] = React.useState<
     "pause" | "resume" | "reset" | null
@@ -287,9 +299,17 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     mediaFileDeletePreviewVariables,
     mediaFileToDelete !== null,
   );
-  const applyTitleDetailSnapshot = React.useCallback(
+  const applyDownloadFeedbackSnapshot = React.useCallback(
+    (snapshot: TitleOverviewDownloadFeedbackSnapshot) => {
+      setDownloadQueueSeed(snapshot.downloadQueueItems);
+      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
+    },
+    [],
+  );
+
+  const applyNativeTitleDetailSnapshot = React.useCallback(
     (
-      snapshot: TitleOverviewSnapshot<
+      snapshot: TitleOverviewNativeSnapshot<
         MovieOverviewSnapshotTitle,
         TitleAcquisitionDiagnostics,
         TitleHistoryEvent,
@@ -306,14 +326,16 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setEvents(snapshot.titleEvents);
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
-      setDownloadQueueSeed(snapshot.downloadQueueItems);
       setSubtitleDownloads(snapshot.subtitleDownloads);
       setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
       setHasDownloadClients(snapshot.hasDownloadClients);
-      setDownloadFeedbackWarning(snapshot.downloadFeedbackWarning);
+      if (!nextTitle || !snapshot.hasDownloadClients) {
+        applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());
+        setDownloadFeedbackSettled(true);
+      }
       setRenamePlan(null);
     },
-    [onTitleResolved],
+    [applyDownloadFeedbackSnapshot, onTitleResolved],
   );
 
   React.useEffect(() => {
@@ -336,16 +358,55 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     setGlobalStatus(downloadFeedbackWarning);
   }, [downloadFeedbackWarning, setGlobalStatus]);
 
+  const refreshDownloadFeedback = React.useCallback(async () => {
+    if (!titleId) {
+      return;
+    }
+
+    const requestedTitleId = titleId;
+    try {
+      const snapshot = await fetchTitleOverviewDownloadFeedbackSnapshot(
+        client,
+        requestedTitleId,
+      );
+      if (currentTitleIdRef.current !== requestedTitleId) {
+        return;
+      }
+      applyDownloadFeedbackSnapshot(snapshot);
+    } catch (error: unknown) {
+      if (currentTitleIdRef.current !== requestedTitleId) {
+        return;
+      }
+      setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+    } finally {
+      if (currentTitleIdRef.current === requestedTitleId) {
+        setDownloadFeedbackSettled(true);
+      }
+    }
+  }, [applyDownloadFeedbackSnapshot, client, setGlobalStatus, t, titleId]);
+
   const refreshTitleDetail = React.useCallback(async () => {
-    const snapshot = await fetchTitleOverviewSnapshot<
+    if (!titleId) {
+      return;
+    }
+
+    const requestedTitleId = titleId;
+    const snapshot = await fetchTitleOverviewNativeSnapshot<
       MovieOverviewSnapshotTitle,
       TitleAcquisitionDiagnostics,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
       SubtitleDownloadRecord
-    >(client, titleId, 200);
-    applyTitleDetailSnapshot(snapshot);
-  }, [applyTitleDetailSnapshot, titleId, client]);
+    >(client, requestedTitleId, 200);
+    if (currentTitleIdRef.current !== requestedTitleId) {
+      return;
+    }
+    applyNativeTitleDetailSnapshot(snapshot);
+    if (!snapshot.title || !snapshot.hasDownloadClients) {
+      return;
+    }
+    void refreshDownloadFeedback();
+  }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
 
   // Load title detail on mount
   React.useEffect(() => {
@@ -360,6 +421,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setInteractiveSearchAttempted(false);
       setMediaFiles([]);
       setDownloadQueueSeed([]);
+      setDownloadFeedbackSettled(false);
       setSubtitleDownloads([]);
       setRenamePlan(null);
       setRenamePreviewing(false);
@@ -380,6 +442,9 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     setTitleLookupFailed(false);
     setSearchResults([]);
     setInteractiveSearchAttempted(false);
+    setDownloadQueueSeed([]);
+    setDownloadFeedbackWarning(null);
+    setDownloadFeedbackSettled(false);
     setShowSearchPrerequisiteNotice(false);
     setLoading(true);
     refreshTitleDetail()
@@ -854,8 +919,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   useTitleOverviewReactiveRefresh({
     titleId,
     blocklistLimit: 200,
-    applySnapshot: applyTitleDetailSnapshot,
+    applyNativeSnapshot: applyNativeTitleDetailSnapshot,
+    applyDownloadFeedbackSnapshot,
     importKinds: IMPORT_KINDS,
+    downloadFeedbackEnabled: hasDownloadClients,
     pause: !titleId,
   });
 

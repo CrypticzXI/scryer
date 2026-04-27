@@ -22,6 +22,7 @@ import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadImport } from "@/lib/hooks/use-download-import";
 import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
+import type { ActivitySection } from "@/components/root/types";
 import type {
   DownloadClientRecord,
   DownloadActivityStatus,
@@ -40,7 +41,7 @@ import {
 } from "@/lib/utils/download-queue";
 
 const HISTORY_STATES = new Set(["completed", "failed", "import_pending", "importpending"]);
-type ActivityTab = "import" | "activity" | "history";
+type ActivityTab = ActivitySection;
 type SortConfigByTab = Record<ActivityTab, SortConfig>;
 
 const IMPORT_STATUS_OPTIONS: DownloadImportStatus[] = [
@@ -113,7 +114,11 @@ function mergeDownloadClientFilterOptions(
   );
 }
 
-export const ActivityContainer = memo(function ActivityContainer() {
+export const ActivityContainer = memo(function ActivityContainer({
+  activitySection,
+}: {
+  activitySection: ActivitySection;
+}) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -124,7 +129,7 @@ export const ActivityContainer = memo(function ActivityContainer() {
   const [, executeResumeDownload] = useMutation(resumeDownloadMutation);
   const [, executeDeleteDownload] = useMutation(deleteDownloadMutation);
 
-  const [activeTab, setActiveTab] = useState<ActivityTab>("import");
+  const activeTab = activitySection;
   const importTabActive = activeTab === "import";
   const activityTabActive = activeTab === "activity";
   const historyTabActive = activeTab === "history";
@@ -175,7 +180,6 @@ export const ActivityContainer = memo(function ActivityContainer() {
     importLoadingMore,
     importError,
     importHasMore,
-    importTotalCount,
     lastRefreshedAt: importLastRefreshedAt,
     refreshImport,
     loadMoreImport,
@@ -203,11 +207,6 @@ export const ActivityContainer = memo(function ActivityContainer() {
   const filteredImportItems = useMemo(() => {
     return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
   }, [importItems, selectedImportStatuses]);
-  const hiddenImportItemCount = useMemo(() => {
-    return importItems.filter((item) => optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)])
-      .length;
-  }, [importItems, optimisticallyRemovedKeys]);
-  const importNotificationCount = Math.max(0, importTotalCount - hiddenImportItemCount);
   const statusFilteredActivityItems = useMemo(() => {
     return activityQueueItems.filter((item) => matchesActivityStatuses(item, selectedActivityStatuses));
   }, [activityQueueItems, selectedActivityStatuses]);
@@ -696,8 +695,6 @@ export const ActivityContainer = memo(function ActivityContainer() {
           requestDelete,
           requestDeleteItems,
           activeTab,
-          setActiveTab,
-          importNotificationCount,
           sortConfigByTab,
           toggleSort: (tab, nextKey) => {
             setSortConfigByTab((current) => {

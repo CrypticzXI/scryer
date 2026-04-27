@@ -849,6 +849,49 @@ mod tests {
                 && seed.default_value_json == "180"
         }));
     }
+
+    #[test]
+    fn merge_default_quality_profiles_normalizes_exact_legacy_seeded_defaults() {
+        let existing_profiles = vec![
+            legacy_seeded_default_quality_profile_for_search(),
+            legacy_seeded_default_quality_profile_1080p_for_search(),
+        ];
+        let mut expected_profiles = vec![
+            default_quality_profile_for_search(),
+            default_quality_profile_1080p_for_search(),
+        ];
+        expected_profiles.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let (profiles, changed) = merge_default_quality_profiles(
+            existing_profiles,
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(changed);
+        assert_eq!(profiles, expected_profiles);
+    }
+
+    #[test]
+    fn merge_default_quality_profiles_preserves_nonseeded_existing_profiles() {
+        let mut customized_profile = default_quality_profile_for_search();
+        customized_profile.criteria.atmos_preferred = true;
+        customized_profile.criteria.prefer_remux = true;
+        customized_profile.criteria.allow_unknown_quality = true;
+
+        let (profiles, changed) = merge_default_quality_profiles(
+            vec![customized_profile.clone()],
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(!changed);
+        assert_eq!(profiles, vec![customized_profile]);
+    }
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(
@@ -1131,26 +1174,76 @@ pub(crate) fn merge_default_quality_profiles(
     mut profiles: Vec<QualityProfile>,
     default_profiles: Vec<QualityProfile>,
 ) -> (Vec<QualityProfile>, bool) {
+    let mut changed =
+        normalize_legacy_seeded_default_quality_profiles(&mut profiles, &default_profiles);
+
     // Only seed defaults into an empty catalog. If profiles already exist
     // (wizard-created, user-created, or previously seeded), leave them alone.
     // This prevents the bootstrap from re-adding the basic 4K/1080P defaults
     // after the setup wizard has replaced them with per-facet profiles.
     if !profiles.is_empty() {
         profiles.sort_by(|a, b| a.id.cmp(&b.id));
-        return (profiles, false);
+        return (profiles, changed);
     }
 
     for profile in default_profiles {
         profiles.push(profile);
     }
+    changed = true;
 
     profiles.sort_by(|a, b| a.id.cmp(&b.id));
 
     if profiles.is_empty() {
         profiles.push(default_quality_profile_for_search());
+        changed = true;
     }
 
-    (profiles, true)
+    (profiles, changed)
+}
+
+fn normalize_legacy_seeded_default_quality_profiles(
+    profiles: &mut [QualityProfile],
+    default_profiles: &[QualityProfile],
+) -> bool {
+    let mut changed = false;
+
+    for profile in profiles.iter_mut() {
+        let Some(default_profile) = default_profiles
+            .iter()
+            .find(|candidate| candidate.id == profile.id)
+        else {
+            continue;
+        };
+
+        let legacy_profile = match profile.id.as_str() {
+            "4k" => legacy_seeded_default_quality_profile_for_search(),
+            "1080p" => legacy_seeded_default_quality_profile_1080p_for_search(),
+            _ => continue,
+        };
+
+        if *profile != legacy_profile {
+            continue;
+        }
+
+        *profile = default_profile.clone();
+        changed = true;
+    }
+
+    changed
+}
+
+fn legacy_seeded_default_quality_profile_for_search() -> QualityProfile {
+    let mut profile = default_quality_profile_for_search();
+    profile.criteria.atmos_preferred = true;
+    profile.criteria.prefer_remux = true;
+    profile
+}
+
+fn legacy_seeded_default_quality_profile_1080p_for_search() -> QualityProfile {
+    let mut profile = default_quality_profile_1080p_for_search();
+    profile.criteria.atmos_preferred = true;
+    profile.criteria.prefer_remux = true;
+    profile
 }
 
 pub(crate) async fn normalize_quality_profile_id_setting(

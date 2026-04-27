@@ -1,6 +1,6 @@
 use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport,
+    FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
     IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
     LibraryScanSummary, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
     PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
@@ -278,7 +278,7 @@ pub(crate) fn from_search_result(result: IndexerSearchResult) -> IndexerSearchRe
     }
 }
 
-fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
+pub(crate) fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
     match scope {
         SubmissionScope::Episode { episode_id } => QueueDownloadScopePayload {
             kind: "episode".to_string(),
@@ -731,6 +731,7 @@ pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImport
     PendingImportItemPayload {
         id: item.id,
         facet: MediaFacetValue::from_domain(item.facet),
+        status: PendingImportStatusValue::from_application(item.status),
         display_name: item.display_name,
         path: item.path,
         folder_path: item.folder_path,
@@ -765,6 +766,15 @@ pub(crate) fn from_resolve_pending_import_result(
         title: from_title(result.title),
         created: result.created,
         library_scan: from_library_scan_summary(result.library_scan),
+    }
+}
+
+pub(crate) fn from_ignore_pending_import_result(
+    result: IgnorePendingImportResult,
+) -> IgnorePendingImportPayload {
+    IgnorePendingImportPayload {
+        id: result.id,
+        status: PendingImportStatusValue::from_application(result.status),
     }
 }
 

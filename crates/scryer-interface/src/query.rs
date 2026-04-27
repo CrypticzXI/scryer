@@ -16,9 +16,10 @@ use crate::mappers::{
     from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
     from_media_settings, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_subtitle_provider_config, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_media_file, from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_service_settings, from_submission_scope, from_subtitle_provider_config,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
+    from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -710,13 +711,20 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
+        status: PendingImportStatusValue,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
     ) -> GqlResult<PendingImportConnectionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let connection = app
-            .pending_imports(&actor, facet.into_domain(), limit, offset)
+            .pending_imports(
+                &actor,
+                facet.into_domain(),
+                status.into_application(),
+                limit,
+                offset,
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(from_pending_import_connection(connection))
@@ -2335,6 +2343,46 @@ impl ReleaseDecisionPayload {
 
 #[ComplexObject]
 impl DownloadQueueItemPayload {
+    async fn queue_scope(&self, ctx: &Context<'_>) -> GqlResult<Option<QueueDownloadScopePayload>> {
+        let client_type = self.client_type.trim();
+        let download_client_item_id = self.download_client_item_id.trim();
+        if client_type.is_empty() || download_client_item_id.is_empty() {
+            return Ok(self
+                .episode_id
+                .as_ref()
+                .map(|episode_id| QueueDownloadScopePayload {
+                    kind: "episode".to_string(),
+                    episode_id: Some(episode_id.clone()),
+                    episode_ids: Vec::new(),
+                    collection_id: None,
+                }));
+        }
+
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let client_id = self.client_id.trim();
+        let client_id = if client_id.is_empty() {
+            None
+        } else {
+            Some(client_id)
+        };
+        let scope = app
+            .find_download_queue_scope(&actor, client_id, client_type, download_client_item_id)
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(scope.map(from_submission_scope).or_else(|| {
+            self.episode_id
+                .as_ref()
+                .map(|episode_id| QueueDownloadScopePayload {
+                    kind: "episode".to_string(),
+                    episode_id: Some(episode_id.clone()),
+                    episode_ids: Vec::new(),
+                    collection_id: None,
+                })
+        }))
+    }
+
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let Some(title_id) = self.title_id.as_deref() else {
             return Ok(None);

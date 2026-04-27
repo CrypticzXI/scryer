@@ -553,6 +553,40 @@ async fn remove_download_history_item(
     }
 }
 
+async fn maybe_remove_completed_manual_import_download(
+    app: &AppUseCase,
+    completed: Option<&CompletedDownload>,
+    title_id: Option<&str>,
+    imported: bool,
+) {
+    if !imported {
+        return;
+    }
+
+    let Some(completed) = completed else {
+        return;
+    };
+
+    let facet = match title_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(title_id) => match app.services.catalog.titles.get_by_id(title_id).await {
+            Ok(Some(title)) => Some(title.facet),
+            Ok(None) | Err(_) => facet_for_completed_download(completed),
+        },
+        None => facet_for_completed_download(completed),
+    };
+
+    let Some(facet) = facet else {
+        return;
+    };
+
+    if app
+        .should_remove_completed_download(&facet, &completed.client_id)
+        .await
+    {
+        remove_download_history_item(app, completed, "manual_import_completed").await;
+    }
+}
+
 pub async fn import_completed_download(
     app: &AppUseCase,
     actor: &User,
@@ -4144,6 +4178,14 @@ pub async fn execute_queued_manual_import(
                 )
             };
 
+        maybe_remove_completed_manual_import_download(
+            app,
+            Some(&completed),
+            result.title_id.as_deref().or(payload.title_id.as_deref()),
+            matches!(result.decision, ImportDecision::Imported),
+        )
+        .await;
+
         let result_json = if status == ImportStatus::Completed && error_code.is_none() {
             serde_json::to_string(&result).ok()
         } else {
@@ -4180,6 +4222,15 @@ pub async fn execute_queued_manual_import(
     )
     .await?;
     let (status, error_code, error_message) = manual_import_terminal_status_and_error(&results);
+
+    maybe_remove_completed_manual_import_download(
+        app,
+        completed.as_ref(),
+        Some(title_id),
+        status == ImportStatus::Completed,
+    )
+    .await;
+
     let result_json = manual_import_result_json(
         import_id,
         payload,

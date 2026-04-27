@@ -12,11 +12,15 @@ import {
   type QueueCatalogTitleRefreshOptions,
   type QueueCatalogTitlesRefreshOptions,
   type QueueImportHistoryRefreshOptions,
-  type QueueTitleOverviewRefreshOptions,
+  type QueueTitleOverviewDownloadFeedbackRefreshOptions,
+  type QueueTitleOverviewNativeRefreshOptions,
   type ReactiveRefreshContextValue,
 } from "@/lib/context/reactive-refresh-context";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
-import type { TitleOverviewSnapshot } from "@/lib/title-overview-loader";
+import type {
+  TitleOverviewDownloadFeedbackSnapshot,
+  TitleOverviewNativeSnapshot,
+} from "@/lib/title-overview-loader";
 
 type CatalogTitlesAction = {
   key: string;
@@ -28,13 +32,13 @@ type CatalogTitleAction = {
   kind: "catalogTitle";
 } & QueueCatalogTitleRefreshOptions;
 
-type TitleOverviewAction = {
+type TitleOverviewNativeAction = {
   key: string;
-  kind: "titleOverview";
+  kind: "titleOverviewNative";
   titleId: string;
   blocklistLimit: number;
   apply: (
-    snapshot: TitleOverviewSnapshot<
+    snapshot: TitleOverviewNativeSnapshot<
       unknown,
       unknown,
       unknown,
@@ -42,7 +46,15 @@ type TitleOverviewAction = {
       unknown
     >,
   ) => void;
-  onError?: QueueTitleOverviewRefreshOptions["onError"];
+  onError?: QueueTitleOverviewNativeRefreshOptions["onError"];
+};
+
+type TitleOverviewDownloadFeedbackAction = {
+  key: string;
+  kind: "titleOverviewDownloadFeedback";
+  titleId: string;
+  apply: (snapshot: TitleOverviewDownloadFeedbackSnapshot) => void;
+  onError?: QueueTitleOverviewDownloadFeedbackRefreshOptions["onError"];
 };
 
 type ImportHistoryAction = {
@@ -53,8 +65,11 @@ type ImportHistoryAction = {
 type ReactiveRefreshAction =
   | CatalogTitlesAction
   | CatalogTitleAction
-  | TitleOverviewAction
+  | TitleOverviewNativeAction
+  | TitleOverviewDownloadFeedbackAction
   | ImportHistoryAction;
+
+type ReactiveRefreshBatchGroup = "default" | "downloadFeedback";
 
 const REACTIVE_REFRESH_DEBOUNCE_MS = 300;
 
@@ -78,12 +93,18 @@ function actionInputFromPendingAction(
         kind: action.kind,
         titleId: action.titleId,
       };
-    case "titleOverview":
+    case "titleOverviewNative":
       return {
         key: action.key,
         kind: action.kind,
         titleId: action.titleId,
         blocklistLimit: action.blocklistLimit,
+      };
+    case "titleOverviewDownloadFeedback":
+      return {
+        key: action.key,
+        kind: action.kind,
+        titleId: action.titleId,
       };
     case "importHistory":
       return {
@@ -123,47 +144,30 @@ function applyReactiveRefreshActionResult(
       );
       return;
     }
-    case "titleOverview": {
+    case "titleOverviewNative": {
       const typedActionPlan = actionPlan as Extract<
         ReactiveRefreshQueryActionPlan,
-        { kind: "titleOverview" }
+        { kind: "titleOverviewNative" }
       >;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
         acquisitionDiagnostics:
           payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
-        downloadQueueItems:
-          (payload[typedActionPlan.downloadQueueItemsAlias] ?? []) as TitleOverviewSnapshot<
-            unknown,
-            unknown,
-            unknown,
-            unknown,
-            unknown
-          >["downloadQueueItems"],
-        completedDownloadQueueItems:
-          (payload[typedActionPlan.completedDownloadQueueItemsAlias] ?? []) as TitleOverviewSnapshot<
-            unknown,
-            unknown,
-            unknown,
-            unknown,
-            unknown
-          >["completedDownloadQueueItems"],
-        downloadFeedbackWarning,
-        titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewSnapshot<
+        titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleEvents"],
-        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewSnapshot<
+        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleReleaseBlocklist"],
-        subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewSnapshot<
+        subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
           unknown,
@@ -171,6 +175,20 @@ function applyReactiveRefreshActionResult(
           unknown
         >["subtitleDownloads"],
         hasDownloadClients: (payload[typedActionPlan.setupStatusAlias] as { hasDownloadClients?: boolean } | null | undefined)?.hasDownloadClients === true,
+      });
+      return;
+    }
+    case "titleOverviewDownloadFeedback": {
+      const typedActionPlan = actionPlan as Extract<
+        ReactiveRefreshQueryActionPlan,
+        { kind: "titleOverviewDownloadFeedback" }
+      >;
+      action.apply({
+        downloadQueueItems:
+          (payload[typedActionPlan.downloadQueueItemsAlias] ?? []) as TitleOverviewDownloadFeedbackSnapshot["downloadQueueItems"],
+        completedDownloadQueueItems:
+          (payload[typedActionPlan.completedDownloadQueueItemsAlias] ?? []) as TitleOverviewDownloadFeedbackSnapshot["completedDownloadQueueItems"],
+        downloadFeedbackWarning,
       });
       return;
     }
@@ -199,16 +217,19 @@ function reactiveRefreshActionAliases(
       return [actionPlan.titlesAlias];
     case "catalogTitle":
       return [actionPlan.titleAlias];
-    case "titleOverview":
-        return [
-          actionPlan.titleAlias,
-          actionPlan.downloadQueueItemsAlias,
-          actionPlan.completedDownloadQueueItemsAlias,
-          actionPlan.titleAcquisitionDiagnosticsAlias,
-          actionPlan.titleEventsAlias,
-          actionPlan.titleReleaseBlocklistAlias,
+    case "titleOverviewNative":
+      return [
+        actionPlan.titleAlias,
+        actionPlan.titleAcquisitionDiagnosticsAlias,
+        actionPlan.titleEventsAlias,
+        actionPlan.titleReleaseBlocklistAlias,
         actionPlan.subtitleDownloadsAlias,
         actionPlan.setupStatusAlias,
+      ];
+    case "titleOverviewDownloadFeedback":
+      return [
+        actionPlan.downloadQueueItemsAlias,
+        actionPlan.completedDownloadQueueItemsAlias,
       ];
     case "importHistory":
       return [actionPlan.importHistoryAlias];
@@ -280,6 +301,14 @@ function routeActionScopedErrors(
   };
 }
 
+function reactiveRefreshBatchGroup(
+  action: ReactiveRefreshAction,
+): ReactiveRefreshBatchGroup {
+  return action.kind === "titleOverviewDownloadFeedback"
+    ? "downloadFeedback"
+    : "default";
+}
+
 export function ReactiveRefreshProvider({
   children,
 }: {
@@ -291,18 +320,10 @@ export function ReactiveRefreshProvider({
   const flushInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
 
-  const flushPendingActions = useCallback(async () => {
-    if (flushInFlightRef.current) {
-      return;
-    }
-
-    const queuedActions = Array.from(pendingActionsRef.current.values());
-    pendingActionsRef.current.clear();
+  const flushPendingActionGroup = useCallback(async (queuedActions: ReactiveRefreshAction[]) => {
     if (queuedActions.length === 0) {
       return;
     }
-
-    flushInFlightRef.current = true;
 
     try {
       const queryPlan = buildReactiveRefreshQuery(
@@ -324,7 +345,7 @@ export function ReactiveRefreshProvider({
       );
       const failedActionKeys = new Set<string>();
       const actionErrorsByKey = new Map<string, CombinedError>();
-      const titleOverviewWarningsByKey = new Map<string, string>();
+      const titleOverviewDownloadFeedbackWarningsByKey = new Map<string, string>();
 
       if (error) {
         if (error.networkError || !isRecord(data)) {
@@ -338,13 +359,13 @@ export function ReactiveRefreshProvider({
 
         routedErrors.actionErrorsByKey.forEach((actionError, actionKey) => {
           const actionPlan = actionPlansByKey.get(actionKey);
-          if (actionPlan?.kind === "titleOverview") {
+          if (actionPlan?.kind === "titleOverviewDownloadFeedback") {
             const warning = extractDownloadFeedbackWarning(actionError.graphQLErrors, [
               actionPlan.downloadQueueItemsAlias,
               actionPlan.completedDownloadQueueItemsAlias,
             ]);
             if (warning) {
-              titleOverviewWarningsByKey.set(actionKey, warning);
+              titleOverviewDownloadFeedbackWarningsByKey.set(actionKey, warning);
               return;
             }
           }
@@ -367,7 +388,7 @@ export function ReactiveRefreshProvider({
           action,
           actionPlan,
           payload,
-          titleOverviewWarningsByKey.get(actionPlan.key) ?? null,
+          titleOverviewDownloadFeedbackWarningsByKey.get(actionPlan.key) ?? null,
         );
       });
 
@@ -378,6 +399,39 @@ export function ReactiveRefreshProvider({
       queuedActions.forEach((action) => {
         action.onError?.(error);
       });
+    }
+  }, [client]);
+
+  const flushPendingActions = useCallback(async () => {
+    if (flushInFlightRef.current) {
+      return;
+    }
+
+    const queuedActions = Array.from(pendingActionsRef.current.values());
+    pendingActionsRef.current.clear();
+    if (queuedActions.length === 0) {
+      return;
+    }
+
+    flushInFlightRef.current = true;
+
+    try {
+      const groupedActions = new Map<ReactiveRefreshBatchGroup, ReactiveRefreshAction[]>();
+      queuedActions.forEach((action) => {
+        const batchGroup = reactiveRefreshBatchGroup(action);
+        const existingGroup = groupedActions.get(batchGroup);
+        if (existingGroup) {
+          existingGroup.push(action);
+          return;
+        }
+        groupedActions.set(batchGroup, [action]);
+      });
+
+      await Promise.all(
+        Array.from(groupedActions.values()).map((actionGroup) =>
+          flushPendingActionGroup(actionGroup)
+        ),
+      );
     } finally {
       flushInFlightRef.current = false;
       if (pendingActionsRef.current.size > 0 && !flushTimerRef.current) {
@@ -387,7 +441,7 @@ export function ReactiveRefreshProvider({
         }, REACTIVE_REFRESH_DEBOUNCE_MS);
       }
     }
-  }, [client]);
+  }, [flushPendingActionGroup]);
 
   const queuePendingAction = useCallback(
     (action: ReactiveRefreshAction) => {
@@ -436,14 +490,14 @@ export function ReactiveRefreshProvider({
           kind: "catalogTitle",
         });
       },
-      queueTitleOverviewRefresh<
+        queueTitleOverviewNativeRefresh<
         TTitle = unknown,
         TDiagnostics = unknown,
         TEvent = unknown,
         TBlocklist = unknown,
         TSubtitle = unknown,
       >(
-        options: QueueTitleOverviewRefreshOptions<
+          options: QueueTitleOverviewNativeRefreshOptions<
           TTitle,
           TDiagnostics,
           TEvent,
@@ -453,9 +507,18 @@ export function ReactiveRefreshProvider({
       ) {
         queuePendingAction({
           ...options,
-          key: `titleOverview:${options.titleId}:${options.blocklistLimit}`,
-          kind: "titleOverview",
-        } as TitleOverviewAction);
+            key: `titleOverviewNative:${options.titleId}:${options.blocklistLimit}`,
+            kind: "titleOverviewNative",
+          } as TitleOverviewNativeAction);
+        },
+        queueTitleOverviewDownloadFeedbackRefresh(
+          options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
+        ) {
+          queuePendingAction({
+            ...options,
+            key: `titleOverviewDownloadFeedback:${options.titleId}`,
+            kind: "titleOverviewDownloadFeedback",
+          } as TitleOverviewDownloadFeedbackAction);
       },
       queueImportHistoryRefresh(options: QueueImportHistoryRefreshOptions) {
         queuePendingAction({
