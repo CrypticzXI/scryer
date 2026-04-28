@@ -14,6 +14,8 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
 quick-xml = { workspace = true }
+libsqlite3-sys = { version = "0.30.1", default-features = false, features = ["bundled"] }
+unicode-normalization = "0.1"
 zstd = "0.13"
 flate2 = "1"
 async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
@@ -46,3 +48,6 @@ keyring = { workspace = true }
 scryer-rules = { path = "../scryer-rules" }
 tempfile = "3"
 wiremock = { workspace = true }
+
+[build-dependencies]
+cc = "1.1"

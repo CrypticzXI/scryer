@@ -137,12 +137,13 @@ pub use catalog::title_images::start_background_poster_loop;
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate, IndexerRoutingEntry,
-    IndexerRoutingPlan, InsertMediaFileInput, MediaAnalysisOutcome, MediaFileAnalysis,
-    NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueuedReleaseSelection,
-    ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope, SubtitleGenerationInput,
-    SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
-    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
+    DownloadSourceIdentity, DownloadSubmission, EpisodeUpdate, ImportArtifact, IndexerConfigUpdate,
+    IndexerRoutingEntry, IndexerRoutingPlan, InsertMediaFileInput, MediaAnalysisOutcome,
+    MediaFileAnalysis, NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef, SubmissionScope,
+    SubtitleGenerationInput, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult,
+    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
+    WantedItemsQuery,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,

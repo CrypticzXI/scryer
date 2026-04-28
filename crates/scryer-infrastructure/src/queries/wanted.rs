@@ -2,7 +2,7 @@ use chrono::Utc;
 use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem};
 use scryer_domain::MediaFacet;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Executor, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
     if item.collection_id.is_some() {
@@ -532,7 +532,14 @@ pub(crate) async fn list_wanted_items_query(
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<WantedItem>> {
-    let mut sql = String::from(
+    let search_plan =
+        title_search.and_then(|search| super::title_search::build_title_search_plan(None, search));
+    let mut builder = QueryBuilder::<Sqlite>::new("");
+    if let Some(plan) = search_plan.as_ref() {
+        super::title_search::push_ranked_title_matches_cte(&mut builder, plan);
+    }
+
+    builder.push(
         "SELECT w.id, w.title_id, t.name AS title_name, w.episode_id, w.collection_id,
                 e.season_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status,
@@ -576,40 +583,39 @@ pub(crate) async fn list_wanted_items_query(
              ORDER BY rd.created_at DESC
              LIMIT 1
          )
-         WHERE 1=1",
+         ",
     );
-    let mut binds: Vec<String> = Vec::new();
+
+    if search_plan.is_some() {
+        builder.push("JOIN ranked_title_matches rtm ON rtm.title_id = w.title_id ");
+    }
+
+    builder.push("WHERE 1=1");
 
     if let Some(s) = status {
-        sql.push_str(" AND w.status = ?");
-        binds.push(s.to_string());
+        builder.push(" AND w.status = ");
+        builder.push_bind(s.to_string());
     }
     if let Some(mt) = media_type {
-        sql.push_str(" AND w.media_type = ?");
-        binds.push(mt.to_string());
+        builder.push(" AND w.media_type = ");
+        builder.push_bind(mt.to_string());
     }
     if let Some(tid) = title_id {
-        sql.push_str(" AND w.title_id = ?");
-        binds.push(tid.to_string());
-    }
-    if let Some(title_search) = title_search {
-        sql.push_str(" AND t.name LIKE ? COLLATE NOCASE");
-        binds.push(format!("%{title_search}%"));
+        builder.push(" AND w.title_id = ");
+        builder.push_bind(tid.to_string());
     }
     if let Some(code) = latest_decision_code {
-        sql.push_str(" AND latest_decision.decision_code = ?");
-        binds.push(code.to_string());
+        builder.push(" AND latest_decision.decision_code = ");
+        builder.push_bind(code.to_string());
     }
 
-    sql.push_str(" ORDER BY w.updated_at DESC LIMIT ? OFFSET ?");
+    builder.push(" ORDER BY w.updated_at DESC LIMIT ");
+    builder.push_bind(limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(offset);
 
-    let mut query = sqlx::query(&sql);
-    for b in &binds {
-        query = query.bind(b);
-    }
-    query = query.bind(limit).bind(offset);
-
-    let rows: Vec<SqliteRow> = query
+    let rows: Vec<SqliteRow> = builder
+        .build()
         .fetch_all(pool)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -629,7 +635,14 @@ pub(crate) async fn count_wanted_items_query(
     title_search: Option<&str>,
     latest_decision_code: Option<&str>,
 ) -> AppResult<i64> {
-    let mut sql = String::from(
+    let search_plan =
+        title_search.and_then(|search| super::title_search::build_title_search_plan(None, search));
+    let mut builder = QueryBuilder::<Sqlite>::new("");
+    if let Some(plan) = search_plan.as_ref() {
+        super::title_search::push_ranked_title_matches_cte(&mut builder, plan);
+    }
+
+    builder.push(
         "SELECT COUNT(*) as cnt
          FROM wanted_items w
          LEFT JOIN titles t ON t.id = w.title_id
@@ -640,37 +653,34 @@ pub(crate) async fn count_wanted_items_query(
              ORDER BY rd.created_at DESC
              LIMIT 1
          )
-         WHERE 1=1",
+         ",
     );
-    let mut binds: Vec<String> = Vec::new();
+
+    if search_plan.is_some() {
+        builder.push("JOIN ranked_title_matches rtm ON rtm.title_id = w.title_id ");
+    }
+
+    builder.push("WHERE 1=1");
 
     if let Some(s) = status {
-        sql.push_str(" AND w.status = ?");
-        binds.push(s.to_string());
+        builder.push(" AND w.status = ");
+        builder.push_bind(s.to_string());
     }
     if let Some(mt) = media_type {
-        sql.push_str(" AND w.media_type = ?");
-        binds.push(mt.to_string());
+        builder.push(" AND w.media_type = ");
+        builder.push_bind(mt.to_string());
     }
     if let Some(tid) = title_id {
-        sql.push_str(" AND w.title_id = ?");
-        binds.push(tid.to_string());
-    }
-    if let Some(title_search) = title_search {
-        sql.push_str(" AND t.name LIKE ? COLLATE NOCASE");
-        binds.push(format!("%{title_search}%"));
+        builder.push(" AND w.title_id = ");
+        builder.push_bind(tid.to_string());
     }
     if let Some(code) = latest_decision_code {
-        sql.push_str(" AND latest_decision.decision_code = ?");
-        binds.push(code.to_string());
+        builder.push(" AND latest_decision.decision_code = ");
+        builder.push_bind(code.to_string());
     }
 
-    let mut query = sqlx::query(&sql);
-    for b in &binds {
-        query = query.bind(b);
-    }
-
-    let row: SqliteRow = query
+    let row: SqliteRow = builder
+        .build()
         .fetch_one(pool)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;

@@ -165,20 +165,6 @@ function sameIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boole
   return true;
 }
 
-function deriveVisibleCatalogTitles(
-  titles: TitleRecord[],
-  titleFilter: string,
-): TitleRecord[] {
-  const normalizedFilter = titleFilter.trim().toLowerCase();
-  if (!normalizedFilter) {
-    return titles;
-  }
-
-  return titles.filter((title) =>
-    title.name.toLowerCase().includes(normalizedFilter),
-  );
-}
-
 function batchItemAlias(index: number): string {
   return `item${index}`;
 }
@@ -396,6 +382,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   >(null);
   const [bulkDeletePreviewsByTitleId, setBulkDeletePreviewsByTitleId] =
     React.useState<Record<string, DeletePreview>>({});
+  const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
+  const activeCatalogQueryRef = React.useRef("");
+  const catalogTitleRequestSeqRef = React.useRef(0);
 
   const {
     titleNameForQueue,
@@ -449,14 +438,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     titleDeletePreviewVariables,
     titleToDelete !== null && deleteFilesOnDisk,
   );
-  const visibleTitles = React.useMemo(
-    () => deriveVisibleCatalogTitles(monitoredTitles, titleFilter),
-    [monitoredTitles, titleFilter],
-  );
+  const visibleTitles = monitoredTitles;
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles) {
+      setDebouncedTitleFilter("");
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setDebouncedTitleFilter(titleFilter.trim());
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [shouldLoadCatalogTitles, titleFilter]);
+
+  React.useEffect(() => {
+    activeCatalogQueryRef.current = debouncedTitleFilter;
+  }, [debouncedTitleFilter]);
 
   React.useEffect(() => {
     if (isMobile) {
@@ -693,16 +698,25 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [activeFacet, client, refreshRuleSets, ruleSets, setGlobalStatus, t],
   );
   const reloadTitles = React.useCallback(
-    async (): Promise<TitleRecord[] | null> => {
+    async (queryOverride?: string): Promise<TitleRecord[] | null> => {
       setTitleLoading(true);
       setTitleStatus(t("title.loading"));
+      const query = (queryOverride ?? activeCatalogQueryRef.current).trim();
+      const requestSeq = ++catalogTitleRequestSeqRef.current;
 
       try {
         const { data, error } = await client
-          .query(titlesQuery, { facet: activeFacet }, { requestPolicy: "network-only" })
+          .query(
+            titlesQuery,
+            { facet: activeFacet, query: query || null },
+            { requestPolicy: "network-only" },
+          )
           .toPromise();
         if (error) {
           throw error;
+        }
+        if (requestSeq !== catalogTitleRequestSeqRef.current) {
+          return null;
         }
 
         const nextTitles = (data?.titles ?? []) as TitleRecord[];
@@ -712,20 +726,25 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setTitleStatus(t("title.statusTemplate", { count: nextTitles.length }));
         return nextTitles;
       } catch (error) {
+        if (requestSeq !== catalogTitleRequestSeqRef.current) {
+          return null;
+        }
         setTitleStatus(
           error instanceof Error ? error.message : t("status.failedToLoad"),
         );
         return null;
       } finally {
-        setTitleLoading(false);
+        if (requestSeq === catalogTitleRequestSeqRef.current) {
+          setTitleLoading(false);
+        }
       }
     },
     [activeFacet, client, setMonitoredTitles, setTitleLoading, setTitleStatus, t],
   );
 
   const refreshTitles = React.useCallback(async () => {
-    await reloadTitles();
-  }, [reloadTitles]);
+    await reloadTitles(titleFilter);
+  }, [reloadTitles, titleFilter]);
 
   const applyRefreshedTitleRecord = React.useCallback(
     (titleId: string, title: TitleRecord | null) => {
@@ -1701,7 +1720,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const isRoutingSection = contentSettingsSection === "routing";
 
     if (shouldLoadCatalogTitles) {
-      void refreshTitles();
+      void reloadTitles(debouncedTitleFilter);
     }
     if (isRoutingSection) {
       let cancelled = false;
@@ -1755,7 +1774,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     hydrateIndexerRouting,
     isMediaView,
     refreshRuleSets,
-    refreshTitles,
+    debouncedTitleFilter,
+    reloadTitles,
     setGlobalStatus,
     shouldLoadCatalogTitles,
     t,

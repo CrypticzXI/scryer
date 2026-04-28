@@ -11,7 +11,7 @@ use scryer_domain::{
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{AppResult, AppUseCase, DownloadSubmission, SubmissionScope};
+use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, SubmissionScope};
 
 // ── TrackedDownload ──────────────────────────────────────────────────────────
 
@@ -240,9 +240,11 @@ impl TrackedDownloadService {
             .workflow
             .download_submissions
             .update_tracked_state(
-                Some(td.client_id.as_str()),
-                &td.client_type,
-                &td.client_item.download_client_item_id,
+                &DownloadSourceIdentity::new(
+                    Some(td.client_id.as_str()),
+                    &td.client_type,
+                    &td.client_item.download_client_item_id,
+                ),
                 state.as_str(),
             )
             .await
@@ -266,11 +268,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(
+            .find_by_client_item_id(&DownloadSourceIdentity::new(
                 Some(td.client_id.as_str()),
                 &td.client_type,
                 &td.client_item.download_client_item_id,
-            )
+            ))
             .await
             .ok()
             .flatten();
@@ -360,11 +362,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .download_submissions
-            .get_tracked_state(
+            .get_tracked_state(&DownloadSourceIdentity::new(
                 Some(td.client_id.as_str()),
                 &td.client_type,
                 &td.client_item.download_client_item_id,
-            )
+            ))
             .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
             && state.is_terminal()
@@ -388,9 +390,11 @@ impl TrackedDownloadService {
                 .workflow
                 .download_submissions
                 .update_tracked_state(
-                    Some(td.client_id.as_str()),
-                    &td.client_type,
-                    &td.client_item.download_client_item_id,
+                    &DownloadSourceIdentity::new(
+                        Some(td.client_id.as_str()),
+                        &td.client_type,
+                        &td.client_item.download_client_item_id,
+                    ),
                     TrackedDownloadState::Imported.as_str(),
                 )
                 .await;
@@ -705,9 +709,9 @@ mod tests {
     };
     use crate::{
         AppError, AppResult, AppServices, AppUseCase, CreateTitleOutcome, DomainEventRepository,
-        DownloadClient, DownloadClientAddRequest, DownloadGrabResult, DownloadSubmissionRepository,
-        FacetRegistry, ImportRepository, IndexerConfigRepository, JwtAuthConfig,
-        PendingTitleHydration, TitleMetadataUpdate, TitleRepository,
+        DownloadClient, DownloadClientAddRequest, DownloadGrabResult, DownloadSourceIdentity,
+        DownloadSubmissionRepository, FacetRegistry, ImportRepository, IndexerConfigRepository,
+        JwtAuthConfig, PendingTitleHydration, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -735,16 +739,14 @@ mod tests {
 
         async fn find_by_client_item_id(
             &self,
-            _: Option<&str>,
-            _: &str,
-            _: &str,
+            _: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
             Ok(self.submission.clone())
         }
 
         async fn list_for_client_items(
             &self,
-            _: &[(Option<String>, String, String)],
+            _: &[DownloadSourceIdentity],
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
             Ok(self.submission.clone().into_iter().collect())
         }
@@ -765,20 +767,13 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_by_client_item_id(
-            &self,
-            _: Option<&str>,
-            _: Option<&str>,
-            _: &str,
-        ) -> AppResult<()> {
+        async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
             Ok(())
         }
 
         async fn update_tracked_state(
             &self,
-            _: Option<&str>,
-            _: &str,
-            _: &str,
+            _: &DownloadSourceIdentity,
             tracked_state: &str,
         ) -> AppResult<()> {
             self.tracked_state_updates
@@ -788,12 +783,7 @@ mod tests {
             Ok(())
         }
 
-        async fn get_tracked_state(
-            &self,
-            _: Option<&str>,
-            _: &str,
-            _: &str,
-        ) -> AppResult<Option<String>> {
+        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
             Ok(self.tracked_state.clone())
         }
     }
@@ -803,7 +793,18 @@ mod tests {
     #[derive(Default)]
     struct TestImportRepo {
         import_record: Option<ImportRecord>,
+        import_records: Vec<ImportRecord>,
         status_updates: Arc<Mutex<Vec<TestImportStatusUpdate>>>,
+    }
+
+    impl TestImportRepo {
+        fn stored_imports(&self) -> Vec<ImportRecord> {
+            if !self.import_records.is_empty() {
+                return self.import_records.clone();
+            }
+
+            self.import_record.clone().into_iter().collect()
+        }
     }
 
     #[derive(Default)]
@@ -908,7 +909,7 @@ mod tests {
             _: &str,
             _: &str,
         ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.import_record.clone())
+            Ok(self.stored_imports().into_iter().next())
         }
 
         async fn get_import_by_source_ref_and_type(
@@ -917,7 +918,7 @@ mod tests {
             _: &str,
             _: ImportType,
         ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.import_record.clone())
+            Ok(self.stored_imports().into_iter().next())
         }
 
         async fn update_import_status(
@@ -960,11 +961,11 @@ mod tests {
             &self,
             _: &[(String, String)],
         ) -> AppResult<Vec<ImportRecord>> {
-            Ok(self.import_record.clone().into_iter().collect())
+            Ok(self.stored_imports())
         }
 
         async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
-            Ok(self.import_record.as_ref().is_some_and(|record| {
+            Ok(self.stored_imports().iter().any(|record| {
                 matches!(
                     record.status,
                     ImportStatus::Completed | ImportStatus::Skipped
@@ -1643,16 +1644,14 @@ mod tests {
 
             async fn find_by_client_item_id(
                 &self,
-                _: Option<&str>,
-                _: &str,
-                _: &str,
+                _: &DownloadSourceIdentity,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
                 Ok(None)
             }
 
             async fn list_for_client_items(
                 &self,
-                _: &[(Option<String>, String, String)],
+                _: &[DownloadSourceIdentity],
             ) -> AppResult<Vec<crate::DownloadSubmission>> {
                 Ok(vec![])
             }
@@ -1673,20 +1672,13 @@ mod tests {
                 Ok(())
             }
 
-            async fn delete_by_client_item_id(
-                &self,
-                _: Option<&str>,
-                _: Option<&str>,
-                _: &str,
-            ) -> AppResult<()> {
+            async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
                 Ok(())
             }
 
             async fn update_tracked_state(
                 &self,
-                _: Option<&str>,
-                _: &str,
-                _: &str,
+                _: &DownloadSourceIdentity,
                 _: &str,
             ) -> AppResult<()> {
                 Err(AppError::Repository("boom".into()))
@@ -1694,9 +1686,7 @@ mod tests {
 
             async fn get_tracked_state(
                 &self,
-                _: Option<&str>,
-                _: &str,
-                _: &str,
+                _: &DownloadSourceIdentity,
             ) -> AppResult<Option<String>> {
                 Ok(None)
             }
@@ -2351,6 +2341,178 @@ mod tests {
                 .1
                 .as_deref()
                 .is_some_and(|json| json.contains("source_job_failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_manual_import_reuses_only_matching_client_request() {
+        let payload_other = crate::ManualImportRequestPayload {
+            requested_by_user_id: Some("user-1".to_string()),
+            title_id: Some("title-1".to_string()),
+            download_client_item_id: "job-shared".to_string(),
+            client_id: Some("client-2".to_string()),
+            client_type: "weaver".to_string(),
+            files: Vec::new(),
+            requested_at: Utc::now().to_rfc3339(),
+        };
+        let payload_match = crate::ManualImportRequestPayload {
+            client_id: Some("client-1".to_string()),
+            ..payload_other.clone()
+        };
+        let imports = Arc::new(TestImportRepo {
+            import_records: vec![
+                ImportRecord {
+                    id: "import-other".to_string(),
+                    source_system: "weaver".to_string(),
+                    source_ref: "job-shared".to_string(),
+                    import_type: ImportType::ManualImport,
+                    status: ImportStatus::Pending,
+                    payload_json: serde_json::to_string(&payload_other)
+                        .expect("serialize other payload"),
+                    result_json: None,
+                    started_at: None,
+                    finished_at: None,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+                ImportRecord {
+                    id: "import-match".to_string(),
+                    source_system: "weaver".to_string(),
+                    source_ref: "job-shared".to_string(),
+                    import_type: ImportType::ManualImport,
+                    status: ImportStatus::Pending,
+                    payload_json: serde_json::to_string(&payload_match)
+                        .expect("serialize matching payload"),
+                    result_json: None,
+                    started_at: None,
+                    finished_at: None,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                },
+            ],
+            ..Default::default()
+        });
+        let download_client = Arc::new(TestDownloadClient {
+            recent_activity: Arc::new(Mutex::new(vec![DownloadQueueItem {
+                client_id: "client-1".to_string(),
+                client_name: "weaver".to_string(),
+                client_type: "weaver".to_string(),
+                download_client_item_id: "job-shared".to_string(),
+                state: DownloadQueueState::Completed,
+                ..build_client_item()
+            }])),
+            ..Default::default()
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            Arc::new(NullTitleRepository),
+            download_client,
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            imports,
+        );
+
+        let import_id = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-shared".to_string(),
+                None,
+            )
+            .await
+            .expect("manual import should reuse matching request");
+
+        assert_eq!(import_id, "import-match");
+    }
+
+    #[tokio::test]
+    async fn failed_source_invalidates_only_matching_client_request() {
+        let payload_other = crate::ManualImportRequestPayload {
+            requested_by_user_id: Some("user-1".to_string()),
+            title_id: Some("title-1".to_string()),
+            download_client_item_id: "job-shared".to_string(),
+            client_id: Some("client-2".to_string()),
+            client_type: "weaver".to_string(),
+            files: Vec::new(),
+            requested_at: Utc::now().to_rfc3339(),
+        };
+        let payload_match = crate::ManualImportRequestPayload {
+            client_id: Some("client-1".to_string()),
+            ..payload_other.clone()
+        };
+        let imports = Arc::new(TestImportRepo {
+            import_records: vec![
+                ImportRecord {
+                    id: "import-other".to_string(),
+                    source_system: "weaver".to_string(),
+                    source_ref: "job-shared".to_string(),
+                    import_type: ImportType::ManualImport,
+                    status: ImportStatus::Pending,
+                    payload_json: serde_json::to_string(&payload_other)
+                        .expect("serialize other payload"),
+                    result_json: None,
+                    started_at: None,
+                    finished_at: None,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+                ImportRecord {
+                    id: "import-match".to_string(),
+                    source_system: "weaver".to_string(),
+                    source_ref: "job-shared".to_string(),
+                    import_type: ImportType::ManualImport,
+                    status: ImportStatus::Pending,
+                    payload_json: serde_json::to_string(&payload_match)
+                        .expect("serialize matching payload"),
+                    result_json: None,
+                    started_at: None,
+                    finished_at: None,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                },
+            ],
+            ..Default::default()
+        });
+        let app = build_app(
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            imports.clone(),
+        );
+        let tracked = TrackedDownload {
+            id: "client-1:job-shared".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "weaver".to_string(),
+            client_item: DownloadQueueItem {
+                client_id: "client-1".to_string(),
+                client_name: "weaver".to_string(),
+                client_type: "weaver".to_string(),
+                download_client_item_id: "job-shared".to_string(),
+                ..build_client_item()
+            },
+            state: TrackedDownloadState::FailedPending,
+            status: TrackedDownloadStatus::Error,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+        };
+
+        crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;
+
+        let updates = imports.status_updates.lock().await;
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, ImportStatus::Failed);
+        assert!(
+            updates[0]
+                .1
+                .as_deref()
+                .is_some_and(|json| json.contains("\"import_id\":\"import-match\""))
         );
     }
 }

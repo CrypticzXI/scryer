@@ -940,6 +940,8 @@ pub struct ImportFileResult {
 #[serde(rename_all = "snake_case")]
 pub enum TitleHistoryEventType {
     Grabbed,
+    DownloadFailed,
+    Blocklisted,
     DownloadCompleted,
     Imported,
     ImportFailed,
@@ -954,6 +956,8 @@ impl TitleHistoryEventType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Grabbed => "grabbed",
+            Self::DownloadFailed => "download_failed",
+            Self::Blocklisted => "blocklisted",
             Self::DownloadCompleted => "download_completed",
             Self::Imported => "imported",
             Self::ImportFailed => "import_failed",
@@ -968,6 +972,8 @@ impl TitleHistoryEventType {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "grabbed" => Some(Self::Grabbed),
+            "download_failed" => Some(Self::DownloadFailed),
+            "blocklisted" => Some(Self::Blocklisted),
             "download_completed" => Some(Self::DownloadCompleted),
             "imported" => Some(Self::Imported),
             "import_failed" => Some(Self::ImportFailed),
@@ -982,6 +988,8 @@ impl TitleHistoryEventType {
 
     pub const ALL: &[Self] = &[
         Self::Grabbed,
+        Self::DownloadFailed,
+        Self::Blocklisted,
         Self::DownloadCompleted,
         Self::Imported,
         Self::ImportFailed,
@@ -1036,6 +1044,10 @@ pub struct TitleHistoryRecord {
     pub source_title: Option<String>,
     pub quality: Option<String>,
     pub download_id: Option<String>,
+    pub client_id: Option<String>,
+    pub client_name: Option<String>,
+    pub failure_reason: Option<String>,
+    pub blocklist_reason: Option<String>,
     pub data_json: Option<String>,
     pub occurred_at: String,
     pub created_at: String,
@@ -1139,6 +1151,7 @@ pub enum DomainEventType {
     MetadataHydrationUpdated,
     ReleaseGrabbed,
     DownloadFailed,
+    ReleaseBlocklisted,
     ImportCompleted,
     ImportRejected,
     MediaFileImported,
@@ -1181,6 +1194,7 @@ impl DomainEventType {
             Self::MetadataHydrationUpdated => "metadata_hydration_updated",
             Self::ReleaseGrabbed => "release_grabbed",
             Self::DownloadFailed => "download_failed",
+            Self::ReleaseBlocklisted => "release_blocklisted",
             Self::ImportCompleted => "import_completed",
             Self::ImportRejected => "import_rejected",
             Self::MediaFileImported => "media_file_imported",
@@ -1223,6 +1237,7 @@ impl DomainEventType {
             "metadata_hydration_updated" => Some(Self::MetadataHydrationUpdated),
             "release_grabbed" => Some(Self::ReleaseGrabbed),
             "download_failed" => Some(Self::DownloadFailed),
+            "release_blocklisted" => Some(Self::ReleaseBlocklisted),
             "import_completed" => Some(Self::ImportCompleted),
             "import_rejected" => Some(Self::ImportRejected),
             "media_file_imported" => Some(Self::MediaFileImported),
@@ -1375,10 +1390,54 @@ pub struct ReleaseGrabbedEventData {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadFailedEventData {
+    #[serde(default)]
     pub title: Option<TitleContextSnapshot>,
+    #[serde(default)]
     pub source_title: Option<String>,
+    #[serde(default)]
     pub source_hint: Option<String>,
-    pub error_message: Option<String>,
+    #[serde(default)]
+    pub download_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub client_type: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default, alias = "error_message")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
+    #[serde(default)]
+    pub collection_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseBlocklistedEventData {
+    #[serde(default)]
+    pub title: Option<TitleContextSnapshot>,
+    #[serde(default)]
+    pub source_title: Option<String>,
+    #[serde(default)]
+    pub source_hint: Option<String>,
+    #[serde(default)]
+    pub download_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub client_type: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
+    #[serde(default)]
+    pub collection_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1716,6 +1775,7 @@ pub enum DomainEventPayload {
     MetadataHydrationUpdated(MetadataHydrationUpdatedEventData),
     ReleaseGrabbed(ReleaseGrabbedEventData),
     DownloadFailed(DownloadFailedEventData),
+    ReleaseBlocklisted(ReleaseBlocklistedEventData),
     ImportCompleted(ImportCompletedEventData),
     ImportRejected(ImportRejectedEventData),
     MediaFileImported(MediaFileImportedEventData),
@@ -1758,6 +1818,7 @@ impl DomainEventPayload {
             Self::MetadataHydrationUpdated(_) => DomainEventType::MetadataHydrationUpdated,
             Self::ReleaseGrabbed(_) => DomainEventType::ReleaseGrabbed,
             Self::DownloadFailed(_) => DomainEventType::DownloadFailed,
+            Self::ReleaseBlocklisted(_) => DomainEventType::ReleaseBlocklisted,
             Self::ImportCompleted(_) => DomainEventType::ImportCompleted,
             Self::ImportRejected(_) => DomainEventType::ImportRejected,
             Self::MediaFileImported(_) => DomainEventType::MediaFileImported,

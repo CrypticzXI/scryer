@@ -1,6 +1,6 @@
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, ImportArtifact, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, WantedCompleteTransition,
+    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
@@ -18,8 +18,8 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
     DownloadQueueState, Entitlement, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRejectedEventData, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet,
-    User, is_video_file,
+    ImportRecord, ImportRejectedEventData, ImportResult, ImportSkipReason, ImportStatus,
+    ImportType, MediaFacet, User, is_video_file,
 };
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -366,11 +366,11 @@ pub async fn try_import_completed_downloads(
                 .services
                 .workflow
                 .download_submissions
-                .find_by_client_item_id(
+                .find_by_client_item_id(&DownloadSourceIdentity::new(
                     Some(completed.client_id.as_str()),
                     &completed.client_type,
                     &completed.download_client_item_id,
-                )
+                ))
                 .await
             {
                 Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
@@ -4022,23 +4022,101 @@ pub(crate) fn manual_import_source_failed_result_json(
     )
 }
 
+pub(crate) fn manual_import_request_matches_source(
+    payload: &ManualImportRequestPayload,
+    client_id: Option<&str>,
+    client_type: Option<&str>,
+    download_client_item_id: &str,
+) -> bool {
+    if payload.download_client_item_id != download_client_item_id {
+        return false;
+    }
+
+    let requested_client_id = client_id.map(str::trim).filter(|value| !value.is_empty());
+    let payload_client_id = payload
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if requested_client_id != payload_client_id {
+        return false;
+    }
+
+    let requested_client_type = client_type.map(str::trim).filter(|value| !value.is_empty());
+    requested_client_type
+        .is_none_or(|client_type| payload.client_type.eq_ignore_ascii_case(client_type))
+}
+
+pub(crate) async fn find_active_manual_import_for_source(
+    app: &AppUseCase,
+    client_id: Option<&str>,
+    client_type: &str,
+    download_client_item_id: &str,
+) -> AppResult<Option<ImportRecord>> {
+    let normalized_client_type = client_type.trim().to_lowercase();
+    let source_ref = download_client_item_id.trim();
+    if normalized_client_type.is_empty() || source_ref.is_empty() {
+        return Ok(None);
+    }
+
+    let records = app
+        .services
+        .workflow
+        .imports
+        .list_imports_for_sources(&[(normalized_client_type.clone(), source_ref.to_string())])
+        .await?;
+
+    Ok(records.into_iter().find(|record| {
+        record.import_type == ImportType::ManualImport
+            && record.status.is_active()
+            && serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json)
+                .ok()
+                .is_some_and(|payload| {
+                    manual_import_request_matches_source(
+                        &payload,
+                        client_id,
+                        Some(normalized_client_type.as_str()),
+                        source_ref,
+                    )
+                })
+    }))
+}
+
+fn resolve_queued_manual_import_completed_source(
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+    source_resolution: crate::ManualImportSourceResolution,
+) -> Result<Option<CompletedDownload>, (ImportStatus, Option<String>)> {
+    match source_resolution {
+        crate::ManualImportSourceResolution::Eligible { completed } => Ok(completed),
+        crate::ManualImportSourceResolution::SourceFailed { message }
+        | crate::ManualImportSourceResolution::NotEligible { message } => {
+            if payload.files.is_empty() {
+                Err((
+                    ImportStatus::Failed,
+                    manual_import_source_failed_result_json(import_id, payload, message),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
 pub(crate) async fn fail_active_manual_import_for_source(
     app: &AppUseCase,
     tracked: &crate::tracked_downloads::TrackedDownload,
     failure_reason: &str,
 ) {
-    let record = match app
-        .services
-        .workflow
-        .imports
-        .get_import_by_source_ref_and_type(
-            &tracked.client_type,
-            &tracked.client_item.download_client_item_id,
-            ImportType::ManualImport,
-        )
-        .await
+    let record = match find_active_manual_import_for_source(
+        app,
+        Some(tracked.client_id.as_str()),
+        tracked.client_type.as_str(),
+        tracked.client_item.download_client_item_id.as_str(),
+    )
+    .await
     {
-        Ok(Some(record)) if record.status.is_active() => record,
+        Ok(Some(record)) => record,
         Ok(_) => return,
         Err(error) => {
             tracing::warn!(
@@ -4338,15 +4416,13 @@ pub async fn execute_queued_manual_import(
             &payload.download_client_item_id,
         )
         .await?;
-    let completed_source = match source_resolution {
-        crate::ManualImportSourceResolution::Eligible { completed } => completed,
-        crate::ManualImportSourceResolution::SourceFailed { message }
-        | crate::ManualImportSourceResolution::NotEligible { message } => {
-            return Ok((
-                ImportStatus::Failed,
-                manual_import_source_failed_result_json(import_id, payload, message),
-            ));
-        }
+    let completed_source = match resolve_queued_manual_import_completed_source(
+        import_id,
+        payload,
+        source_resolution,
+    ) {
+        Ok(completed) => completed,
+        Err(result) => return Ok(result),
     };
 
     if payload.files.is_empty() {

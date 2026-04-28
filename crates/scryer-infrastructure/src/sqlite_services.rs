@@ -1,9 +1,9 @@
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClientConfigUpdate,
-    DownloadQueueCommandRecord, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
-    IndexerConfigUpdate, QualityProfile, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate,
-    WorkflowOperationInfo,
+    DownloadQueueCommandRecord, DownloadSourceIdentity, EpisodeUpdate,
+    ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, QualityProfile,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
+    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
@@ -57,6 +57,8 @@ impl DbRuntime {
         path: impl AsRef<str>,
         migration_mode: MigrationMode,
     ) -> Result<Self, AppError> {
+        crate::spellfix::register_spellfix_auto_extension()?;
+
         let db_url = crate::sqlite_url_with_create(path.as_ref());
         let is_memory = db_url.contains(":memory:");
 
@@ -135,6 +137,9 @@ impl DbRuntime {
         crate::migrations::run_migrations(&pool, migration_mode)
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
+        if matches!(migration_mode, MigrationMode::Apply) {
+            crate::queries::title_search::seed_title_search_projection_if_empty(&pool).await?;
+        }
 
         let sender = spawn_db_command_worker(pool.clone());
 
@@ -1216,16 +1221,12 @@ impl DbRuntime {
 
     pub async fn delete_download_submission_by_client_item_id(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: Option<&str>,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::DeleteDownloadSubmissionByClientItemId {
-                download_client_id: download_client_id.map(str::to_string),
-                download_client_type: download_client_type.map(str::to_string),
-                download_client_item_id: download_client_item_id.to_string(),
+                identity: identity.clone(),
                 reply: reply_tx,
             })
             .await
@@ -1237,17 +1238,13 @@ impl DbRuntime {
 
     pub async fn update_tracked_state(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: &str,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
         tracked_state: &str,
     ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::UpdateTrackedState {
-                download_client_id: download_client_id.map(str::to_string),
-                download_client_type: download_client_type.to_string(),
-                download_client_item_id: download_client_item_id.to_string(),
+                identity: identity.clone(),
                 tracked_state: tracked_state.to_string(),
                 reply: reply_tx,
             })

@@ -18,6 +18,7 @@ pub mod queries;
 mod release_store;
 mod settings_store;
 pub mod smg_enrollment;
+mod spellfix;
 mod sqlite_services;
 mod staged_nzb_store;
 mod title_images;

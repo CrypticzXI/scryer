@@ -74,9 +74,9 @@ const es: LocaleDictionary = {
   "nav.system": "Sistema",
   "nav.group": "Navegación",
   "command.paletteTitle": "Ir a",
-  "command.paletteDescription": "Buscar vistas y secciones de ajustes",
-  "command.palettePlaceholder": "Escribe un nombre de página",
-  "command.paletteNoResults": "Sin destinos coincidentes",
+  "command.paletteDescription": "Buscar vistas, secciones de ajustes y títulos del catálogo",
+  "command.palettePlaceholder": "Escribe el nombre de una página o título",
+  "command.paletteNoResults": "Sin destinos ni títulos coincidentes",
   "command.paletteGroup": "Navegación",
   settings: "Ajustes",
   "settings.profile": "Perfil",
@@ -474,7 +474,8 @@ const es: LocaleDictionary = {
     "Se inició la rehidratación de metadatos. Los títulos se actualizarán en segundo plano.",
   "settings.tlsRestartNote":
     "Los cambios en TLS requieren reiniciar el servicio.",
-  "search.globalPlaceholder": "¡Busca algo genial! (presiona /)",
+  "search.globalPlaceholder":
+    "Encuentra lo próximo que quieres ver (presiona /)",
   "search.catalog": "Catálogo",
   "search.noCatalogMatches": "Aún no hay coincidencias en el catálogo.",
   "search.noMetadataMatches":

@@ -75,9 +75,9 @@ const de: LocaleDictionary = {
   "nav.group": "Navigation",
   "command.paletteTitle": "Gehe zu",
   "command.paletteDescription":
-    "Ansichten und Einstellungsbereiche durchsuchen",
-  "command.palettePlaceholder": "Seitenname eingeben",
-  "command.paletteNoResults": "Keine passenden Ziele",
+    "Ansichten, Einstellungsbereiche und Katalogtitel durchsuchen",
+  "command.palettePlaceholder": "Seiten- oder Titelname eingeben",
+  "command.paletteNoResults": "Keine passenden Ziele oder Titel",
   "command.paletteGroup": "Navigation",
   settings: "Einstellungen",
   "settings.profile": "Profil",
@@ -465,7 +465,8 @@ const de: LocaleDictionary = {
     "Metadaten-Rehydrierung gestartet. Die Titel werden im Hintergrund aktualisiert.",
   "settings.tlsRestartNote":
     "Änderungen an TLS-Einstellungen erfordern einen Neustart des Dienstes.",
-  "search.globalPlaceholder": "Nach etwas suchen! (drücke /)",
+  "search.globalPlaceholder":
+    "Finde, was du als Nächstes schauen willst (drücke /)",
   "search.catalog": "Katalog",
   "search.noCatalogMatches": "Noch keine Treffer im verwalteten Katalog.",
   "search.noMetadataMatches": "Noch keine Metadaten-Treffer in diesem Bereich.",

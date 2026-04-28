@@ -1180,7 +1180,11 @@ impl AppUseCase {
         self.services
             .workflow
             .download_submissions
-            .find_by_client_item_id(client_id, client_type, download_client_item_id)
+            .find_by_client_item_id(&DownloadSourceIdentity::new(
+                client_id,
+                client_type,
+                download_client_item_id,
+            ))
             .await
     }
 

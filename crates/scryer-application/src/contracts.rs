@@ -86,6 +86,43 @@ pub struct DownloadSubmission {
     pub scope: SubmissionScope,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DownloadSourceIdentity {
+    pub client_id: Option<String>,
+    pub client_type: String,
+    pub item_id: String,
+}
+
+impl DownloadSourceIdentity {
+    pub fn new(
+        client_id: Option<&str>,
+        client_type: impl AsRef<str>,
+        item_id: impl AsRef<str>,
+    ) -> Self {
+        let client_id = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Self {
+            client_id,
+            client_type: client_type.as_ref().trim().to_ascii_lowercase(),
+            item_id: item_id.as_ref().trim().to_string(),
+        }
+    }
+
+    pub fn from_submission(submission: &DownloadSubmission) -> Self {
+        Self::new(
+            submission.download_client_id.as_deref(),
+            &submission.download_client_type,
+            &submission.download_client_item_id,
+        )
+    }
+
+    pub fn has_client_id(&self) -> bool {
+        self.client_id.is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,

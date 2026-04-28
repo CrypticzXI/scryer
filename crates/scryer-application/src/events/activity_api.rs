@@ -63,6 +63,8 @@ where
 
 pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
     TitleHistoryEventType::Grabbed,
+    TitleHistoryEventType::DownloadFailed,
+    TitleHistoryEventType::Blocklisted,
     TitleHistoryEventType::Imported,
     TitleHistoryEventType::ImportFailed,
     TitleHistoryEventType::ImportSkipped,
@@ -76,6 +78,8 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::ReleaseGrabbed,
     DomainEventType::ImportCompleted,
     DomainEventType::ImportRejected,
+    DomainEventType::DownloadFailed,
+    DomainEventType::ReleaseBlocklisted,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
 ];

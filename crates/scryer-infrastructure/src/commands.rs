@@ -8,11 +8,12 @@ use crate::{
 };
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClientConfigUpdate,
-    DownloadQueueCommandRecord, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
-    IndexerConfigUpdate, InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis,
-    PendingRelease, PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ScopedExternalId, SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement,
-    TitleMetadataUpdate, WantedItem, WorkflowOperationInfo,
+    DownloadQueueCommandRecord, DownloadSourceIdentity, EpisodeUpdate,
+    ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, InsertMediaFileInput,
+    LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease, PendingReleaseStatus,
+    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
+    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
@@ -343,15 +344,11 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<()>>,
     },
     DeleteDownloadSubmissionByClientItemId {
-        download_client_id: Option<String>,
-        download_client_type: Option<String>,
-        download_client_item_id: String,
+        identity: DownloadSourceIdentity,
         reply: Sender<AppResult<()>>,
     },
     UpdateTrackedState {
-        download_client_id: Option<String>,
-        download_client_type: String,
-        download_client_item_id: String,
+        identity: DownloadSourceIdentity,
         tracked_state: String,
         reply: Sender<AppResult<()>>,
     },
@@ -1496,21 +1493,14 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::DeleteDownloadSubmissionByClientItemId {
-                    download_client_id,
-                    download_client_type,
-                    download_client_item_id,
-                    reply,
-                } => {
+                DbCommand::DeleteDownloadSubmissionByClientItemId { identity, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries(
                             "delete_download_submission_by_client_item_id",
                             || {
                                 crate::queries::workflow::delete_download_submission_by_client_item_id_query(
                                     &pool,
-                                    download_client_id.as_deref(),
-                                    download_client_type.as_deref(),
-                                    &download_client_item_id,
+                                    &identity,
                                 )
                             },
                         )
@@ -1518,9 +1508,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::UpdateTrackedState {
-                    download_client_id,
-                    download_client_type,
-                    download_client_item_id,
+                    identity,
                     tracked_state,
                     reply,
                 } => {
@@ -1528,9 +1516,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         run_with_sqlite_busy_retries("update_tracked_state", || {
                             crate::queries::workflow::update_tracked_state_query(
                                 &pool,
-                                download_client_id.as_deref(),
-                                &download_client_type,
-                                &download_client_item_id,
+                                &identity,
                                 &tracked_state,
                             )
                         })

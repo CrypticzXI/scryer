@@ -74,9 +74,9 @@ const ja: LocaleDictionary = {
   "nav.system": "システム",
   "nav.group": "ナビゲーション",
   "command.paletteTitle": "移動",
-  "command.paletteDescription": "ページと設定セクションを検索",
-  "command.palettePlaceholder": "ページ名を入力",
-  "command.paletteNoResults": "一致する項目がありません",
+  "command.paletteDescription": "ページ、設定、カタログタイトルを検索",
+  "command.palettePlaceholder": "ページ名またはタイトル名を入力",
+  "command.paletteNoResults": "一致する移動先またはタイトルがありません",
   "command.paletteGroup": "ナビゲーション",
   settings: "設定",
   "settings.profile": "プロファイル",
@@ -456,7 +456,7 @@ const ja: LocaleDictionary = {
   "settings.metadataRehydrationStarted":
     "メタデータのリハイドレーションが開始されました。タイトルはバックグラウンドで更新されます。",
   "settings.tlsRestartNote": "TLS設定の変更にはサービスの再起動が必要です。",
-  "search.globalPlaceholder": "何か素敵なものを検索！（/ キーで開く）",
+  "search.globalPlaceholder": "次に観る作品を見つける（/ キーで開く）",
   "search.catalog": "カタログ",
   "search.noCatalogMatches": "管理対象のカタログマッチはまだありません。",
   "search.noMetadataMatches":

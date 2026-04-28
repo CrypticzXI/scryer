@@ -1,5 +1,6 @@
 
 import * as React from "react";
+import { LayoutGrid, LayoutList } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,6 +65,24 @@ function formatQualityProfileFallback(value: string | null | undefined): string 
     return trimmed.toUpperCase();
   }
   return trimmed;
+}
+
+function CompactTableIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+      <path d="M2 6.5h12M2 10h12M6 2.5v11" />
+    </svg>
+  );
 }
 
 export function MediaContentView({
@@ -597,31 +616,28 @@ export function MediaContentView({
                       value="compact"
                       size="sm"
                       aria-label={t("title.viewModeCompact")}
+                      title={t("title.viewModeCompact")}
                       className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
                     >
-                      <span className="px-1 text-xs font-medium">
-                        {t("title.viewModeCompact")}
-                      </span>
+                      <CompactTableIcon />
                     </ToggleGroupItem>
                     <ToggleGroupItem
                       value="poster-table"
                       size="sm"
                       aria-label={t("title.viewModePosterTable")}
+                      title={t("title.viewModePosterTable")}
                       className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
                     >
-                      <span className="px-1 text-xs font-medium">
-                        {t("title.viewModePosterTable")}
-                      </span>
+                      <LayoutList className="h-4 w-4" />
                     </ToggleGroupItem>
                     <ToggleGroupItem
                       value="poster"
                       size="sm"
                       aria-label={t("title.viewModePoster")}
+                      title={t("title.viewModePoster")}
                       className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
                     >
-                      <span className="px-1 text-xs font-medium">
-                        {t("title.viewModePoster")}
-                      </span>
+                      <LayoutGrid className="h-4 w-4" />
                     </ToggleGroupItem>
                   </ToggleGroup>
                 ) : null}

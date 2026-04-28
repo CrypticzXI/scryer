@@ -74,9 +74,9 @@ const it: LocaleDictionary = {
   "nav.system": "Sistema",
   "nav.group": "Navigazione",
   "command.paletteTitle": "Vai a",
-  "command.paletteDescription": "Cerca viste e sezioni delle impostazioni",
-  "command.palettePlaceholder": "Digita il nome di una pagina",
-  "command.paletteNoResults": "Nessuna destinazione corrispondente",
+  "command.paletteDescription": "Cerca viste, impostazioni e titoli del catalogo",
+  "command.palettePlaceholder": "Digita il nome di una pagina o di un titolo",
+  "command.paletteNoResults": "Nessuna destinazione o titolo corrispondente",
   "command.paletteGroup": "Navigazione",
   settings: "Impostazioni",
   "settings.profile": "Profilo",
@@ -465,7 +465,7 @@ const it: LocaleDictionary = {
     "È iniziata la reidratazione dei metadati. I titoli verranno aggiornati in background.",
   "settings.tlsRestartNote":
     "Le modifiche alle impostazioni TLS richiedono un riavvio del servizio.",
-  "search.globalPlaceholder": "Cerca qualcosa di interessante! (premi /)",
+  "search.globalPlaceholder": "Trova cosa guardare dopo (premi /)",
   "search.catalog": "Catalogo",
   "search.noCatalogMatches": "Nessuna corrispondenza nel catalogo gestito.",
   "search.noMetadataMatches":

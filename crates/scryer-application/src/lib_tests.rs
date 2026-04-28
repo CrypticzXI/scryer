@@ -2496,45 +2496,121 @@ impl DownloadClientConfigRepository for MockDownloadClientConfigRepo {
     }
 }
 
+#[derive(Clone)]
+struct MockReleaseAttemptRecord {
+    title_id: Option<String>,
+    source_hint: Option<String>,
+    source_title: Option<String>,
+    outcome: ReleaseDownloadAttemptOutcome,
+    error_message: Option<String>,
+    source_password: Option<String>,
+    attempted_at: String,
+}
+
 #[derive(Default)]
-struct MockReleaseAttemptRepo;
+struct MockReleaseAttemptRepo {
+    attempts: Arc<Mutex<Vec<MockReleaseAttemptRecord>>>,
+}
 
 #[async_trait]
 impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
     async fn record_release_attempt(
         &self,
-        _title_id: Option<String>,
-        _source_hint: Option<String>,
-        _source_title: Option<String>,
-        _outcome: ReleaseDownloadAttemptOutcome,
-        _error_message: Option<String>,
-        _source_password: Option<String>,
+        title_id: Option<String>,
+        source_hint: Option<String>,
+        source_title: Option<String>,
+        outcome: ReleaseDownloadAttemptOutcome,
+        error_message: Option<String>,
+        source_password: Option<String>,
     ) -> AppResult<()> {
+        self.attempts.lock().await.push(MockReleaseAttemptRecord {
+            title_id,
+            source_hint,
+            source_title,
+            outcome,
+            error_message,
+            source_password,
+            attempted_at: Utc::now().to_rfc3339(),
+        });
         Ok(())
     }
 
     async fn list_failed_release_signatures(
         &self,
-        _limit: usize,
+        limit: usize,
     ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
-        Ok(vec![])
+        let mut attempts: Vec<_> = self
+            .attempts
+            .lock()
+            .await
+            .iter()
+            .filter(|attempt| attempt.outcome == ReleaseDownloadAttemptOutcome::Failed)
+            .cloned()
+            .collect();
+        attempts.sort_by(|left, right| right.attempted_at.cmp(&left.attempted_at));
+        attempts.truncate(limit);
+
+        Ok(attempts
+            .into_iter()
+            .map(|attempt| ReleaseDownloadFailureSignature {
+                source_hint: attempt.source_hint,
+                source_title: attempt.source_title,
+            })
+            .collect())
     }
 
     async fn list_failed_release_signatures_for_title(
         &self,
-        _title_id: &str,
-        _limit: usize,
+        title_id: &str,
+        limit: usize,
     ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
-        Ok(vec![])
+        let mut attempts: Vec<_> = self
+            .attempts
+            .lock()
+            .await
+            .iter()
+            .filter(|attempt| {
+                attempt.outcome == ReleaseDownloadAttemptOutcome::Failed
+                    && attempt.title_id.as_deref() == Some(title_id)
+            })
+            .cloned()
+            .collect();
+        attempts.sort_by(|left, right| right.attempted_at.cmp(&left.attempted_at));
+        attempts.truncate(limit);
+
+        Ok(attempts
+            .into_iter()
+            .map(|attempt| TitleReleaseBlocklistEntry {
+                source_hint: attempt.source_hint,
+                source_title: attempt.source_title,
+                error_message: attempt.error_message,
+                attempted_at: attempt.attempted_at,
+            })
+            .collect())
     }
 
     async fn get_latest_source_password(
         &self,
-        _title_id: Option<&str>,
-        _source_hint: Option<&str>,
-        _source_title: Option<&str>,
+        title_id: Option<&str>,
+        source_hint: Option<&str>,
+        source_title: Option<&str>,
     ) -> AppResult<Option<String>> {
-        Ok(None)
+        Ok(self
+            .attempts
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find(|attempt| {
+                title_id.is_none_or(|title_id| attempt.title_id.as_deref() == Some(title_id))
+                    && source_hint.is_none_or(|source_hint| {
+                        attempt.source_hint.as_deref() == Some(source_hint)
+                    })
+                    && source_title.is_none_or(|source_title| {
+                        attempt.source_title.as_deref() == Some(source_title)
+                    })
+            })
+            .and_then(|attempt| attempt.source_password.clone()))
     }
 }
 
@@ -2723,11 +2799,9 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
                     && normalized_title_search.as_ref().is_none_or(|title_search| {
-                        item.title_name
-                            .as_deref()
-                            .is_some_and(|title_name| {
-                                title_name.to_lowercase().contains(title_search)
-                            })
+                        item.title_name.as_deref().is_some_and(|title_name| {
+                            title_name.to_lowercase().contains(title_search)
+                        })
                     })
                     && latest_decision_code.is_none_or(|code| {
                         latest_decision
@@ -2766,11 +2840,9 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
                     && normalized_title_search.as_ref().is_none_or(|title_search| {
-                        item.title_name
-                            .as_deref()
-                            .is_some_and(|title_name| {
-                                title_name.to_lowercase().contains(title_search)
-                            })
+                        item.title_name.as_deref().is_some_and(|title_name| {
+                            title_name.to_lowercase().contains(title_search)
+                        })
                     })
                     && latest_decision_code.is_none_or(|code| {
                         latest_decision
@@ -2881,38 +2953,34 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn find_by_client_item_id(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: &str,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
             .iter()
             .find(|entry| {
-                (download_client_id.is_none()
-                    || entry.download_client_id.as_deref() == download_client_id)
-                    && entry.download_client_type == download_client_type
-                    && entry.download_client_item_id == download_client_item_id
+                entry.download_client_id.as_deref().unwrap_or("").trim()
+                    == identity.client_id.as_deref().unwrap_or("")
+                    && entry.download_client_type == identity.client_type.as_str()
+                    && entry.download_client_item_id == identity.item_id.as_str()
             })
             .cloned())
     }
 
     async fn list_for_client_items(
         &self,
-        client_items: &[(Option<String>, String, String)],
+        client_items: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
             .iter()
             .filter(|entry| {
-                client_items
-                    .iter()
-                    .any(|(client_id, client_type, item_id)| {
-                        (client_id.is_none()
-                            || entry.download_client_id.as_deref() == client_id.as_deref())
-                            && entry.download_client_type == *client_type
-                            && entry.download_client_item_id == *item_id
-                    })
+                client_items.iter().any(|identity| {
+                    entry.download_client_id.as_deref().unwrap_or("").trim()
+                        == identity.client_id.as_deref().unwrap_or("")
+                        && entry.download_client_type == identity.client_type.as_str()
+                        && entry.download_client_item_id == identity.item_id.as_str()
+                })
             })
             .cloned()
             .collect())
@@ -2958,36 +3026,21 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn delete_by_client_item_id(
-        &self,
-        download_client_id: Option<&str>,
-        _download_client_type: Option<&str>,
-        download_client_item_id: &str,
-    ) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
         self.store.lock().await.retain(|entry| {
-            entry.download_client_item_id != download_client_item_id
-                || (download_client_id.is_some()
-                    && entry.download_client_id.as_deref() != download_client_id)
+            entry.download_client_id.as_deref().unwrap_or("").trim()
+                != identity.client_id.as_deref().unwrap_or("")
+                || entry.download_client_type != identity.client_type.as_str()
+                || entry.download_client_item_id != identity.item_id.as_str()
         });
         Ok(())
     }
 
-    async fn update_tracked_state(
-        &self,
-        _: Option<&str>,
-        _: &str,
-        _: &str,
-        _: &str,
-    ) -> AppResult<()> {
+    async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
         Ok(())
     }
 
-    async fn get_tracked_state(
-        &self,
-        _: Option<&str>,
-        _: &str,
-        _: &str,
-    ) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
         Ok(None)
     }
 }
@@ -3417,7 +3470,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     let shows = Arc::new(MockShowRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
@@ -3467,7 +3520,7 @@ fn bootstrap_with_metadata_gateway_and_titles(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
@@ -3599,7 +3652,7 @@ fn bootstrap_with_cleanup_tracking_and_tracked_handle(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
@@ -3654,7 +3707,7 @@ fn bootstrap_with_cleanup_tracking_and_indexer(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
@@ -3706,7 +3759,7 @@ fn bootstrap_with_search_settings_and_indexer(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
 
@@ -4204,7 +4257,7 @@ fn bootstrap_with_cutoff_projection_state(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
@@ -4255,7 +4308,7 @@ fn bootstrap_with_delete_queue(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(MockSettingsRepo);
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let indexer_client = Arc::new(MockIndexerClient);
@@ -4378,7 +4431,7 @@ fn bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
-    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
@@ -9506,6 +9559,234 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
 }
 
 #[tokio::test]
+async fn tracked_download_failure_requeues_episode_items_after_failed_season_pack() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Season Pack Failure Recovery".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "7".to_string(),
+            label: Some("Season 7".to_string()),
+            ordered_path: None,
+            narrative_order: Some("7".to_string()),
+            first_episode_number: Some("23".to_string()),
+            last_episode_number: Some("24".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    let original_next_search_at = (Utc::now() + chrono::Duration::hours(12)).to_rfc3339();
+    let mut expected_wanted_ids = Vec::new();
+    for (episode_number, label) in [("23", "S07E23"), ("24", "S07E24")] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("7".to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let wanted = WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            episode_id: Some(episode.id.clone()),
+            collection_id: None,
+            season_number: Some("7".to_string()),
+            media_type: "episode".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(original_next_search_at.clone()),
+            last_search_at: Some((Utc::now() - chrono::Duration::minutes(30)).to_rfc3339()),
+            search_count: 1,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        expected_wanted_ids.push(wanted.id.clone());
+        wanted_items
+            .upsert_wanted_item(&wanted)
+            .await
+            .expect("seed episode wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "failed-season-pack".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Collection {
+                collection_id: season.id.clone(),
+            },
+        })
+        .await
+        .expect("record failed season pack submission");
+
+    let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        id: "nzbget:failed-season-pack".to_string(),
+        client_id: "primary".to_string(),
+        client_type: "nzbget".to_string(),
+        client_item: failed_history_item(
+            "failed-season-pack",
+            "Season.Pack.Failure.Recovery.S07.1080p.WEB-DL",
+        ),
+        state: scryer_domain::TrackedDownloadState::FailedPending,
+        status: scryer_domain::TrackedDownloadStatus::Error,
+        status_messages: Vec::new(),
+        title_id: Some(title.id.clone()),
+        facet: Some("anime".to_string()),
+        source_title: Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string()),
+        indexer: None,
+        added_at: None,
+        notified_manual_interaction: false,
+        match_type: scryer_domain::TitleMatchType::Submission,
+        is_trackable: true,
+        import_attempted: false,
+        path_missing_since: None,
+    };
+
+    crate::failed_download_handler::process_failed(&app, &mut tracked_download).await;
+
+    assert_eq!(
+        tracked_download.state,
+        scryer_domain::TrackedDownloadState::Failed
+    );
+
+    for wanted_id in expected_wanted_ids {
+        let wanted = wanted_items
+            .get_wanted_item_by_id(&wanted_id)
+            .await
+            .expect("get wanted item")
+            .expect("wanted item exists");
+        assert_eq!(wanted.status, WantedStatus::Wanted);
+        assert!(wanted.grabbed_release.is_none());
+        let next_search_at = wanted
+            .next_search_at
+            .as_deref()
+            .and_then(crate::quality_profile::parse_published_at)
+            .expect("next search should parse");
+        let original_next_search_at =
+            crate::quality_profile::parse_published_at(&original_next_search_at)
+                .expect("original next search should parse");
+        assert!(next_search_at < original_next_search_at);
+        assert!(next_search_at <= Utc::now());
+    }
+
+    let history = app
+        .list_title_history(
+            &user,
+            &TitleHistoryFilter {
+                event_types: Some(vec![
+                    TitleHistoryEventType::DownloadFailed,
+                    TitleHistoryEventType::Blocklisted,
+                ]),
+                title_ids: Some(vec![title.id.clone()]),
+                download_id: Some("failed-season-pack".to_string()),
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .expect("list title history");
+
+    assert_eq!(history.total_count, 4);
+    assert!(history.records.iter().any(|record| {
+        record.event_type == TitleHistoryEventType::DownloadFailed
+            && record.collection_id.as_deref() == Some(season.id.as_str())
+            && record.download_id.as_deref() == Some("failed-season-pack")
+            && record.client_id.as_deref() == Some("primary")
+            && record.client_name.as_deref() == Some("Primary")
+            && record
+                .failure_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("re-queuing season episodes"))
+    }));
+    assert!(history.records.iter().any(|record| {
+        record.event_type == TitleHistoryEventType::Blocklisted
+            && record.collection_id.as_deref() == Some(season.id.as_str())
+            && record.download_id.as_deref() == Some("failed-season-pack")
+            && record
+                .blocklist_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("download client failure"))
+    }));
+
+    assert!(
+        !download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| submission.download_client_item_id == "failed-season-pack")
+    );
+}
+
+#[tokio::test]
 async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -10014,6 +10295,142 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         searches
             .iter()
             .all(|search| search.season == Some(2) && search.episode == Some(1))
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episodes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Recent Failed Season Pack".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "7".to_string(),
+            label: Some("Season 7".to_string()),
+            ordered_path: None,
+            narrative_order: Some("7".to_string()),
+            first_episode_number: Some("23".to_string()),
+            last_episode_number: Some("24".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    for (episode_number, label) in [("23", "S07E23"), ("24", "S07E24")] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("7".to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                episode_id: Some(episode.id.clone()),
+                collection_id: None,
+                season_number: Some("7".to_string()),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(Utc::now().to_rfc3339()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed due episode wanted item");
+    }
+
+    app.services
+        .workflow
+        .release_attempts
+        .record_release_attempt(
+            Some(title.id.clone()),
+            None,
+            Some("Recent.Failed.Season.Pack.S07.1080p.WEB-DL".to_string()),
+            ReleaseDownloadAttemptOutcome::Failed,
+            Some("download client failure: corrupt archive".to_string()),
+            None,
+        )
+        .await
+        .expect("record failed season pack attempt");
+
+    app.run_acquisition_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(!searches.is_empty());
+    assert!(searches.iter().all(|search| search.season == Some(7)));
+    assert!(searches.iter().all(|search| search.episode.is_some()));
+    assert!(
+        !searches
+            .iter()
+            .any(|search| search.season == Some(7) && search.episode.is_none())
     );
 }
 

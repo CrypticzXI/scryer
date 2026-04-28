@@ -357,7 +357,6 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
-      setIgnoredOpen(true);
       await refreshAll();
       setGlobalStatus(
         t("pendingImports.ignoreSuccess", {
@@ -628,13 +627,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                 type="button"
                 className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
               >
-                <div className="space-y-1">
-                  <div className="text-base font-semibold text-foreground">
-                    {t("pendingImports.ignoredSection")}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {ignoredConnection.total}
-                  </div>
+                <div className="text-base font-semibold text-foreground">
+                  {t("pendingImports.ignoredSection")}
                 </div>
                 <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${ignoredOpen ? "rotate-180" : ""}`} />
               </button>

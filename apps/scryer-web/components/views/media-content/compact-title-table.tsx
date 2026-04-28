@@ -111,14 +111,14 @@ export function CompactTitleTable({
 
   const titleTableColGroup = (
     <colgroup>
-      <col style={{ width: "3rem" }} />
+      <col style={{ width: "2.5rem" }} />
       <col />
-      <col style={{ width: "6.5rem" }} />
-      <col style={{ width: "11rem" }} />
+      <col style={{ width: "5.5rem" }} />
+      <col style={{ width: "9rem" }} />
+      {!isMovieView ? <col style={{ width: "7rem" }} /> : null}
       {!isMovieView ? <col style={{ width: "8rem" }} /> : null}
-      {!isMovieView ? <col style={{ width: "9rem" }} /> : null}
-      {isMovieView ? <col style={{ width: "8rem" }} /> : null}
-      <col style={{ width: "13rem" }} />
+      {isMovieView ? <col style={{ width: "7rem" }} /> : null}
+      <col style={{ width: "10rem" }} />
     </colgroup>
   );
 
@@ -162,7 +162,7 @@ export function CompactTitleTable({
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
-    estimateSize: () => 56,
+    estimateSize: () => 48,
     overscan: 8,
   });
 
@@ -318,7 +318,7 @@ export function CompactTitleTable({
 
     return (
       <React.Fragment key={item.id}>
-        <TableRow data-ui="compact-title-table-row" className="h-14">
+        <TableRow data-ui="compact-title-table-row" className="h-12">
           <TableCell className="align-middle">
             <Checkbox
               checked={selectedTitleIds.has(item.id)}
@@ -327,30 +327,30 @@ export function CompactTitleTable({
               disabled={bulkActionBusy}
             />
           </TableCell>
-          <TableCell className="align-middle overflow-hidden py-2">
+          <TableCell className="align-middle overflow-hidden py-1.5">
             <button
               type="button"
               onClick={() => onOpenOverview(overviewTargetView, item)}
               data-ui="title-name"
-              className="block w-full overflow-hidden text-left text-sm font-semibold hover:text-foreground hover:underline"
+              className="block w-full overflow-hidden text-left text-[13px] font-medium hover:text-foreground hover:underline"
             >
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
           <TableCell className="text-center align-middle">
             <span
-              className="inline-flex h-5 w-5 shrink-0 items-center justify-center"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
               title={`${t("title.table.monitored")}: ${item.name}`}
               aria-label={`${t("title.table.monitored")}: ${item.name}`}
             >
               {item.monitored ? (
-                <Eye className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
               ) : (
-                <EyeOff className="h-4 w-4 text-rose-600 dark:text-rose-300" />
+                <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
               )}
             </span>
           </TableCell>
-          <TableCell className="align-middle whitespace-nowrap py-2 text-sm">
+          <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
             {qualityProfilesLoading
               ? null
               : resolveDisplayedQualityLabel(
@@ -361,7 +361,7 @@ export function CompactTitleTable({
                 )}
           </TableCell>
           {!isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-2 text-sm tabular-nums">
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px] tabular-nums">
               {formatEpisodeProgress(
                 item.episodesOwned,
                 item.episodesMonitored,
@@ -369,32 +369,33 @@ export function CompactTitleTable({
             </TableCell>
           ) : null}
           {!isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-2">
+            <TableCell className="align-middle whitespace-nowrap py-1.5">
               <StatusBadge status={item.contentStatus} t={t} />
             </TableCell>
           ) : null}
           {isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-2 text-sm">
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
               {bytesToReadable(item.sizeBytes)}
             </TableCell>
           ) : null}
-          <TableCell className="text-center align-middle py-2">
+          <TableCell className="text-center align-middle py-1.5">
             <div
               data-ui="row-actions"
-              className="inline-flex items-center justify-end gap-2"
+              className="inline-flex items-center justify-end gap-1"
             >
               <HoverCard openDelay={3000} closeDelay={75}>
                 <HoverCardTrigger asChild>
-                    <TitleTableActionButton
-                      tone="auto"
-                      label={t("label.search")}
-                      onClick={() => handleQueueExisting(item)}
-                      disabled={autoQueueLoading || bulkActionBusy}
-                    >
+                  <TitleTableActionButton
+                    tone="auto"
+                    label={t("label.search")}
+                    onClick={() => handleQueueExisting(item)}
+                    disabled={autoQueueLoading || bulkActionBusy}
+                    className="size-7 rounded-sm"
+                  >
                     {autoQueueLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
                     ) : (
-                      <Zap className="h-4 w-4" />
+                      <Zap className="h-3.5 w-3.5" />
                     )}
                   </TitleTableActionButton>
                 </HoverCardTrigger>
@@ -411,8 +412,9 @@ export function CompactTitleTable({
                     label={t("label.interactiveSearch")}
                     onClick={() => handleToggleInteractiveSearch(item)}
                     disabled={bulkActionBusy}
+                    className="size-7 rounded-sm"
                   >
-                    <Search className="h-4 w-4" />
+                    <Search className="h-3.5 w-3.5" />
                   </TitleTableActionButton>
                 </HoverCardTrigger>
                 <HoverCardContent>
@@ -431,13 +433,14 @@ export function CompactTitleTable({
                   )}
                   onClick={() => onToggleMonitored(item, !item.monitored)}
                   disabled={monitorToggleLoading || bulkActionBusy}
+                  className="size-7 rounded-sm"
                 >
                   {monitorToggleLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : item.monitored ? (
-                    <EyeOff className="h-4 w-4" />
+                    <EyeOff className="h-3.5 w-3.5" />
                   ) : (
-                    <Eye className="h-4 w-4" />
+                    <Eye className="h-3.5 w-3.5" />
                   )}
                 </TitleTableActionButton>
               ) : null}
@@ -446,11 +449,12 @@ export function CompactTitleTable({
                 label={t("label.delete")}
                 onClick={() => onDelete(item)}
                 disabled={deleteLoading || bulkActionBusy}
+                className="size-7 rounded-sm"
               >
                 {deleteLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 )}
               </TitleTableActionButton>
             </div>
@@ -517,7 +521,7 @@ export function CompactTitleTable({
   const titleTableHeader = (
     <TableHeader>
       <TableRow className="sticky top-0 z-10 bg-background">
-        <TableHead className="w-12 text-center">
+        <TableHead className="w-10 text-center">
           <Checkbox
             checked={selectAllState}
             onCheckedChange={(checked) => onToggleSelectAll(checked === true)}
@@ -569,58 +573,60 @@ export function CompactTitleTable({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-card-foreground">
-          {t("title.bulkSelectionCount", { count: selectedVisibleCount })}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void onBulkMonitor(true)}
-            disabled={selectedVisibleCount === 0 || bulkActionBusy}
-          >
-            {t("title.monitorAction")}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void onBulkMonitor(false)}
-            disabled={selectedVisibleCount === 0 || bulkActionBusy}
-          >
-            {t("title.unmonitorAction")}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={onBulkEdit}
-            disabled={selectedVisibleCount === 0 || bulkActionBusy}
-          >
-            {t("label.edit")}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={onBulkDelete}
-            disabled={selectedVisibleCount === 0 || bulkActionBusy}
-          >
-            {t("label.delete")}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={onClearSelection}
-            disabled={selectedVisibleCount === 0 || bulkActionBusy}
-          >
-            {t("label.clear")}
-          </Button>
+      {selectedVisibleCount > 0 ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-card-foreground">
+            {t("title.bulkSelectionCount", { count: selectedVisibleCount })}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void onBulkMonitor(true)}
+              disabled={bulkActionBusy}
+            >
+              {t("title.monitorAction")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void onBulkMonitor(false)}
+              disabled={bulkActionBusy}
+            >
+              {t("title.unmonitorAction")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onBulkEdit}
+              disabled={bulkActionBusy}
+            >
+              {t("label.edit")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onBulkDelete}
+              disabled={bulkActionBusy}
+            >
+              {t("label.delete")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={onClearSelection}
+              disabled={bulkActionBusy}
+            >
+              {t("label.clear")}
+            </Button>
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div
         ref={titleTableScrollRef}

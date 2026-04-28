@@ -75,9 +75,9 @@ const fr: LocaleDictionary = {
   "nav.group": "Navigation",
   "command.paletteTitle": "Aller à",
   "command.paletteDescription":
-    "Rechercher les vues et les sections de paramètres",
-  "command.palettePlaceholder": "Saisissez un nom de page",
-  "command.paletteNoResults": "Aucune destination correspondante",
+    "Rechercher les vues, les paramètres et les titres du catalogue",
+  "command.palettePlaceholder": "Saisissez un nom de page ou de titre",
+  "command.paletteNoResults": "Aucune destination ni aucun titre correspondant",
   "command.paletteGroup": "Navigation",
   settings: "Paramètres",
   "settings.profile": "Profil",
@@ -473,7 +473,8 @@ const fr: LocaleDictionary = {
     "La réhydratation des métadonnées a commencé. Les titres seront mis à jour en arrière-plan.",
   "settings.tlsRestartNote":
     "Les modifications des paramètres TLS nécessitent un redémarrage du service.",
-  "search.globalPlaceholder": "Rechercher quelque chose ! (appuyez sur /)",
+  "search.globalPlaceholder":
+    "Trouvez quoi regarder ensuite (appuyez sur /)",
   "search.catalog": "Catalogue",
   "search.noCatalogMatches": "Aucune correspondance dans le catalogue géré.",
   "search.noMetadataMatches":

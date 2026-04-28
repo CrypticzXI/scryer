@@ -1,4 +1,5 @@
 use super::*;
+use crate::ManualImportSourceResolution;
 use crate::import_title_resolution::find_monitored_movie_title_from_release;
 use crate::missing_required_audio_languages;
 use crate::null_repositories::NullSettingsRepository;
@@ -97,6 +98,18 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
     }
 }
 
+fn test_manual_import_payload(files: Vec<ManualImportFileMapping>) -> ManualImportRequestPayload {
+    ManualImportRequestPayload {
+        requested_by_user_id: Some("user-1".to_string()),
+        title_id: Some("title-1".to_string()),
+        download_client_item_id: "job-1".to_string(),
+        client_id: Some("client-1".to_string()),
+        client_type: "weaver".to_string(),
+        files,
+        requested_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 // ── has_scryer_origin ─────────────────────────────────────────────────────────
 
 #[test]
@@ -153,6 +166,40 @@ fn extract_parameter_first_match() {
         ("key".to_string(), "second".to_string()),
     ];
     assert_eq!(extract_parameter(&params, "key"), Some("first".to_string()));
+}
+
+#[test]
+fn queued_mapped_manual_import_allows_missing_source() {
+    let payload = test_manual_import_payload(vec![ManualImportFileMapping {
+        file_path: "/downloads/episode.mkv".to_string(),
+        episode_id: "ep-1".to_string(),
+        quality: None,
+    }]);
+
+    let result = resolve_queued_manual_import_completed_source(
+        "import-1",
+        &payload,
+        ManualImportSourceResolution::NotEligible {
+            message: "download no longer available".to_string(),
+        },
+    );
+
+    assert!(matches!(result, Ok(None)));
+}
+
+#[test]
+fn queued_unmapped_manual_import_fails_when_source_is_missing() {
+    let payload = test_manual_import_payload(Vec::new());
+
+    let result = resolve_queued_manual_import_completed_source(
+        "import-1",
+        &payload,
+        ManualImportSourceResolution::SourceFailed {
+            message: "download no longer available".to_string(),
+        },
+    );
+
+    assert!(matches!(result, Err((ImportStatus::Failed, Some(_)))));
 }
 
 // ── normalize_imdb_id ─────────────────────────────────────────────────────────

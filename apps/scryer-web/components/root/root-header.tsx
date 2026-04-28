@@ -328,7 +328,10 @@ export const RootHeader = React.memo(function RootHeader({
         data-slot="root-header"
         className="relative sticky top-0 z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur"
       >
-        <RouteCommandPalette config={routeCommandPalette} />
+        <RouteCommandPalette
+          config={routeCommandPalette}
+          onOpenOverview={onOpenOverview}
+        />
         <div className="mx-auto flex w-full max-w-[1480px] items-center gap-3 px-3 py-3 pr-14 sm:gap-4 sm:pr-3">
           <div
             className="shrink-0"

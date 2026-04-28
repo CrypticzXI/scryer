@@ -75,9 +75,9 @@ const pt_BR: LocaleDictionary = {
   "nav.group": "Navegação",
   "command.paletteTitle": "Ir para",
   "command.paletteDescription":
-    "Pesquisar visualizações e seções de configurações",
-  "command.palettePlaceholder": "Digite o nome de uma página",
-  "command.paletteNoResults": "Nenhum destino encontrado",
+    "Pesquisar visualizações, configurações e títulos do catálogo",
+  "command.palettePlaceholder": "Digite o nome de uma página ou título",
+  "command.paletteNoResults": "Nenhum destino ou título encontrado",
   "command.paletteGroup": "Navegação",
   settings: "Configurações",
   "settings.profile": "Perfil",
@@ -468,7 +468,8 @@ const pt_BR: LocaleDictionary = {
     "A reidratação de metadados foi iniciada. Os títulos serão atualizados em segundo plano.",
   "settings.tlsRestartNote":
     "Alterações nas configurações TLS requerem reinicialização do serviço.",
-  "search.globalPlaceholder": "Pesquise algo incrível! (pressione /)",
+  "search.globalPlaceholder":
+    "Encontre o que assistir a seguir (pressione /)",
   "search.catalog": "Catálogo",
   "search.noCatalogMatches": "Nenhuma correspondência no catálogo ainda.",
   "search.noMetadataMatches":

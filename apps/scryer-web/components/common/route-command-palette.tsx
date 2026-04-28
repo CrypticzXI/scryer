@@ -8,7 +8,15 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Loader2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
+import { sectionLabelForFacet, viewFromFacet } from "@/lib/facets/helpers";
+import { FACET_REGISTRY } from "@/lib/facets/registry";
+import { titlesQuery } from "@/lib/graphql/queries";
+import { useTranslate } from "@/lib/context/translate-context";
+import type { Facet, TitleRecord } from "@/lib/types";
+import { useClient } from "urql";
 
 export type RouteCommandItem = {
   id: string;
@@ -30,7 +38,15 @@ export type RouteCommandPaletteConfig = {
 
 type RouteCommandPaletteProps = {
   config?: RouteCommandPaletteConfig;
+  onOpenOverview?: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
+
+const CATALOG_COMMAND_MIN_QUERY_LENGTH = 2;
+const CATALOG_COMMAND_RESULT_LIMIT = 8;
+
+function catalogFacetFromString(facet: string): Facet {
+  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
+}
 
 function isTextInput(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -47,14 +63,32 @@ function isTextInput(target: EventTarget | null): boolean {
 
 export function RouteCommandPalette({
   config,
+  onOpenOverview,
 }: RouteCommandPaletteProps) {
   const [open, setOpen] = React.useState(false);
+  const [searchValue, setSearchValue] = React.useState("");
+  const [catalogResults, setCatalogResults] = React.useState<TitleRecord[]>([]);
+  const [catalogLoading, setCatalogLoading] = React.useState(false);
   const lastShiftPressAt = React.useRef(0);
+  const catalogRequestSeqRef = React.useRef(0);
+  const client = useClient();
+  const t = useTranslate();
 
   const handleCommandNavigate = React.useCallback((callback: () => void) => {
     setOpen(false);
     callback();
   }, []);
+
+  const handleCatalogTitleSelect = React.useCallback(
+    (title: TitleRecord) => {
+      setOpen(false);
+      onOpenOverview?.(viewFromFacet(catalogFacetFromString(title.facet)), {
+        id: title.id,
+        slug: title.slug ?? null,
+      });
+    },
+    [onOpenOverview],
+  );
 
   React.useEffect(() => {
     if (!config || config.items.length === 0) {
@@ -93,6 +127,62 @@ export function RouteCommandPalette({
     };
   }, [config]);
 
+  React.useEffect(() => {
+    if (open) {
+      return;
+    }
+
+    setSearchValue("");
+    setCatalogResults([]);
+    setCatalogLoading(false);
+    catalogRequestSeqRef.current += 1;
+  }, [open]);
+
+  React.useEffect(() => {
+    const query = searchValue.trim();
+    if (!open || !onOpenOverview || query.length < CATALOG_COMMAND_MIN_QUERY_LENGTH) {
+      setCatalogResults([]);
+      setCatalogLoading(false);
+      return;
+    }
+
+    const requestSeq = ++catalogRequestSeqRef.current;
+    setCatalogLoading(true);
+    const timer = window.setTimeout(() => {
+      void client
+        .query(titlesQuery, { facet: null, query }, { requestPolicy: "network-only" })
+        .toPromise()
+        .then(({ data, error }) => {
+          if (requestSeq !== catalogRequestSeqRef.current) {
+            return;
+          }
+          if (error) {
+            throw error;
+          }
+          setCatalogResults(
+            ((data?.titles ?? []) as TitleRecord[]).slice(
+              0,
+              CATALOG_COMMAND_RESULT_LIMIT,
+            ),
+          );
+        })
+        .catch(() => {
+          if (requestSeq === catalogRequestSeqRef.current) {
+            setCatalogResults([]);
+          }
+        })
+        .finally(() => {
+          if (requestSeq === catalogRequestSeqRef.current) {
+            setCatalogLoading(false);
+          }
+        });
+    }, 150);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [client, onOpenOverview, open, searchValue]);
+
   if (!config || config.items.length === 0) {
     return null;
   }
@@ -105,7 +195,11 @@ export function RouteCommandPalette({
       description={config.description}
       showCloseButton={false}
     >
-      <CommandInput placeholder={config.placeholder} />
+      <CommandInput
+        value={searchValue}
+        onValueChange={setSearchValue}
+        placeholder={config.placeholder}
+      />
       <CommandList>
         <CommandEmpty>{config.noResultsText}</CommandEmpty>
         <CommandGroup heading={config.groupLabel}>
@@ -124,6 +218,47 @@ export function RouteCommandPalette({
             </CommandItem>
           ))}
         </CommandGroup>
+        {onOpenOverview ? (
+          <CommandGroup heading={t("search.catalog")}>
+            {catalogLoading ? (
+              <CommandItem disabled value={`catalog-loading ${searchValue}`}>
+                <div className="flex flex-1 items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{t("label.loading")}</span>
+                </div>
+              </CommandItem>
+            ) : null}
+            {catalogResults.map((title) => {
+              const facet = catalogFacetFromString(title.facet);
+              const registryEntry = FACET_REGISTRY.find((item) => item.id === facet);
+              const Icon = registryEntry?.icon;
+              const year = title.year ? ` • ${title.year}` : "";
+              return (
+                <CommandItem
+                  key={`catalog-title-${title.id}`}
+                  value={`catalog-title-${title.id} ${title.name} ${searchValue}`}
+                  keywords={[
+                    searchValue,
+                    title.name,
+                    title.slug ?? "",
+                    title.sortTitle ?? "",
+                    facet,
+                  ]}
+                  onSelect={() => handleCatalogTitleSelect(title)}
+                >
+                  <div className="flex flex-1 items-center gap-2">
+                    {Icon ? <Icon className="h-4 w-4" /> : null}
+                    <span className="truncate">{title.name}</span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {sectionLabelForFacet(t, facet)}
+                      {year}
+                    </span>
+                  </div>
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        ) : null}
       </CommandList>
     </CommandDialog>
   );

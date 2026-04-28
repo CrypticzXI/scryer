@@ -81,9 +81,9 @@ const en: LocaleDictionary = {
   "nav.group": "Navigation",
 
   "command.paletteTitle": "Go to",
-  "command.paletteDescription": "Search views and settings sections",
-  "command.palettePlaceholder": "Type a page name",
-  "command.paletteNoResults": "No matching destinations",
+  "command.paletteDescription": "Search views, settings sections, and catalog titles",
+  "command.palettePlaceholder": "Type a page or title name",
+  "command.paletteNoResults": "No matching destinations or titles",
   "command.paletteGroup": "Navigation",
 
   settings: "Settings",
@@ -459,7 +459,7 @@ const en: LocaleDictionary = {
   "settings.tlsRestartNote":
     "Changes to TLS settings require a service restart.",
 
-  "search.globalPlaceholder": "Search for something great! (press /)",
+  "search.globalPlaceholder": "Find your next watch (press /)",
   "search.catalog": "Catalog",
   "search.noCatalogMatches": "No managed catalog matches yet.",
   "search.noMetadataMatches": "No metadata matches in this section yet.",

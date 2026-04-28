@@ -235,6 +235,10 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     sourceTitle
     quality
     downloadId
+    clientId
+    clientName
+    failureReason
+    blocklistReason
     dataJson
     occurredAt
     createdAt`;
@@ -1905,6 +1909,10 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       sourceTitle
       quality
       downloadId
+      clientId
+      clientName
+      failureReason
+      blocklistReason
       dataJson
       occurredAt
       createdAt

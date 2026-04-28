@@ -17,6 +17,7 @@ pub mod settings;
 pub mod subtitle;
 pub mod subtitle_provider;
 pub mod title;
+pub mod title_search;
 pub mod user;
 pub mod wanted;
 pub mod workflow;

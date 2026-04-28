@@ -632,13 +632,13 @@ pub async fn enrich_download_queue_items_from_submissions(
     let client_items = items
         .iter()
         .map(|item| {
-            (
-                Some(item.client_id.clone()).filter(|value| !value.trim().is_empty()),
-                item.client_type.clone(),
-                item.download_client_item_id.clone(),
+            DownloadSourceIdentity::new(
+                Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
+                &item.client_type,
+                &item.download_client_item_id,
             )
         })
-        .filter(|(_, client_type, item_id)| !client_type.is_empty() && !item_id.is_empty())
+        .filter(|identity| !identity.client_type.is_empty() && !identity.item_id.is_empty())
         .collect::<Vec<_>>();
 
     if client_items.is_empty() {
@@ -1774,7 +1774,11 @@ impl AppUseCase {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(client_id, client_type, download_client_item_id)
+            .find_by_client_item_id(&DownloadSourceIdentity::new(
+                client_id,
+                client_type,
+                download_client_item_id,
+            ))
             .await?;
         Ok(submission.map(|submission| submission.scope))
     }
@@ -1962,17 +1966,13 @@ impl AppUseCase {
             }
         }
 
-        if let Some(existing) = self
-            .services
-            .workflow
-            .imports
-            .get_import_by_source_ref_and_type(
-                &normalized_client_type,
-                &source_ref,
-                ImportType::ManualImport,
-            )
-            .await?
-            && existing.status.is_active()
+        if let Some(existing) = crate::import_workflow::find_active_manual_import_for_source(
+            self,
+            client_id.as_deref(),
+            normalized_client_type.as_str(),
+            &source_ref,
+        )
+        .await?
         {
             return Ok(existing.id);
         }

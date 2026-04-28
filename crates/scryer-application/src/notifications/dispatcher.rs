@@ -311,7 +311,7 @@ fn build_download_failed_notification(data: &DownloadFailedEventData) -> BuiltNo
         event_type: NotificationEventType::Download,
         title: format!("Download failed: {title}"),
         body: data
-            .error_message
+            .reason
             .clone()
             .unwrap_or_else(|| "Download failed.".to_string()),
         metadata: data
@@ -660,7 +660,14 @@ mod tests {
                     title: Some(title_context("Broken Download", MediaFacet::Movie)),
                     source_title: Some("Broken.Download.2024".to_string()),
                     source_hint: Some("manual".to_string()),
-                    error_message: Some("archive corrupt".to_string()),
+                    download_id: None,
+                    client_id: None,
+                    client_name: None,
+                    client_type: None,
+                    quality: None,
+                    reason: Some("archive corrupt".to_string()),
+                    episode_ids: Vec::new(),
+                    collection_id: None,
                 }),
             },
             DomainEvent {

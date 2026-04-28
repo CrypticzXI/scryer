@@ -13,9 +13,10 @@ use scryer_application::{
     start_background_download_delete_poller,
 };
 use scryer_domain::{
-    Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds, Episode,
-    EpisodeType, ExternalId, Id, ImportCompletedEventData, MediaFacet, MediaPathUpdate,
-    MediaUpdateType, NewDomainEvent, Title, TitleContextSnapshot,
+    Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
+    DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id, ImportCompletedEventData,
+    MediaFacet, MediaPathUpdate, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData,
+    Title, TitleContextSnapshot,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteCatalogStore, SqliteLibraryStateStore,
@@ -1258,7 +1259,7 @@ async fn series_monitoring_summary(
         .expect("episode");
     let wanted_count = ctx
         .library_state
-        .count_wanted_items(None, None, Some(title_id), None)
+        .count_wanted_items(None, None, Some(title_id), None, None)
         .await
         .expect("count wanted items");
 
@@ -7148,6 +7149,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
             status: None,
             media_type: None,
             title_id: Some(hydrated_title.id.clone()),
+            title_search: None,
             latest_decision_code: None,
             limit: 10,
             offset: 0,
@@ -8204,6 +8206,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
             status: None,
             media_type: None,
             title_id: Some(hydrated_title.id.clone()),
+            title_search: None,
             latest_decision_code: None,
             limit: 10,
             offset: 0,
@@ -8444,7 +8447,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 
     assert!(
         ctx.db
-            .list_wanted_items(None, None, Some(&id), None, 10, 0)
+            .list_wanted_items(None, None, Some(&id), None, None, 10, 0)
             .await
             .expect("wanted items")
             .is_empty()
@@ -9374,6 +9377,195 @@ async fn graphql_title_events_rejects_unsupported_event_type_filters() {
     assert!(message.contains("unsupported title history event type `download_ignored`"));
     assert!(message.contains("imported"));
     assert!(message.contains("rematched"));
+}
+
+#[tokio::test]
+async fn graphql_title_history_includes_download_failed_and_blocklisted_events() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Download Outcome History Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .catalog
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode = ctx
+        .catalog
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("download-outcome-episode-1".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    let title_context = TitleContextSnapshot {
+        title_name: title.name.clone(),
+        facet: title.facet,
+        external_ids: DomainExternalIds::default(),
+        poster_url: title.poster_url.clone(),
+        year: title.year,
+    };
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_user_id: None,
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::DownloadFailed(DownloadFailedEventData {
+                title: Some(title_context.clone()),
+                source_title: Some("Fixture.S01.1080p.WEB-DL".to_string()),
+                source_hint: Some("https://indexer.example/release".to_string()),
+                download_id: Some("job-123".to_string()),
+                client_id: Some("client-1".to_string()),
+                client_name: Some("Primary".to_string()),
+                client_type: Some("nzbget".to_string()),
+                quality: Some("1080P".to_string()),
+                reason: Some(
+                    "download failed for 'Fixture.S01.1080p.WEB-DL': CORRUPT ARCHIVE".to_string(),
+                ),
+                episode_ids: vec![episode.id.clone()],
+                collection_id: Some(collection.id.clone()),
+            }),
+        })
+        .await
+        .expect("append download failed event");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_user_id: None,
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ReleaseBlocklisted(ReleaseBlocklistedEventData {
+                title: Some(title_context),
+                source_title: Some("Fixture.S01.1080p.WEB-DL".to_string()),
+                source_hint: Some("https://indexer.example/release".to_string()),
+                download_id: Some("job-123".to_string()),
+                client_id: Some("client-1".to_string()),
+                client_name: Some("Primary".to_string()),
+                client_type: Some("nzbget".to_string()),
+                quality: Some("1080P".to_string()),
+                reason: Some("download client failure: CORRUPT ARCHIVE".to_string()),
+                episode_ids: vec![episode.id.clone()],
+                collection_id: Some(collection.id.clone()),
+            }),
+        })
+        .await
+        .expect("append release blocklisted event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: String!) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: ["download_failed", "blocklisted"], limit: 10 }) {
+            totalCount
+            records {
+              eventType
+              sourceTitle
+              downloadId
+              clientId
+              clientName
+              failureReason
+              blocklistReason
+              episodeId
+              collectionId
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 2);
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("title history records array");
+
+    let download_failed = records
+        .iter()
+        .find(|record| record["eventType"] == "download_failed")
+        .expect("download_failed record");
+    assert_eq!(download_failed["sourceTitle"], "Fixture.S01.1080p.WEB-DL");
+    assert_eq!(download_failed["downloadId"], "job-123");
+    assert_eq!(download_failed["clientId"], "client-1");
+    assert_eq!(download_failed["clientName"], "Primary");
+    assert_eq!(download_failed["episodeId"], episode.id);
+    assert_eq!(download_failed["collectionId"], collection.id);
+    assert!(
+        download_failed["failureReason"]
+            .as_str()
+            .is_some_and(|value| value.contains("CORRUPT ARCHIVE"))
+    );
+
+    let blocklisted = records
+        .iter()
+        .find(|record| record["eventType"] == "blocklisted")
+        .expect("blocklisted record");
+    assert_eq!(blocklisted["downloadId"], "job-123");
+    assert_eq!(blocklisted["clientId"], "client-1");
+    assert_eq!(blocklisted["clientName"], "Primary");
+    assert_eq!(blocklisted["episodeId"], episode.id);
+    assert_eq!(blocklisted["collectionId"], collection.id);
+    assert_eq!(
+        blocklisted["blocklistReason"],
+        "download client failure: CORRUPT ARCHIVE"
+    );
 }
 
 #[tokio::test]

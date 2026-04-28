@@ -51,6 +51,12 @@ async fn list_titles_query_with_mode(
     query: Option<String>,
     mode: TitleReadMode,
 ) -> AppResult<Vec<Title>> {
+    if matches!(mode, TitleReadMode::Presentation)
+        && let Some(search) = query.as_deref()
+    {
+        return list_titles_via_title_search_query(pool, facet, search, mode).await;
+    }
+
     let mut sql = format!("SELECT {} FROM titles", TITLE_COLUMNS);
 
     let mut where_clauses = Vec::new();
@@ -87,6 +93,40 @@ async fn list_titles_query_with_mode(
         out.push(row_to_title(&row, mode, &base_path)?);
     }
     Ok(out)
+}
+
+async fn list_titles_via_title_search_query(
+    pool: &SqlitePool,
+    facet: Option<MediaFacet>,
+    query: &str,
+    mode: TitleReadMode,
+) -> AppResult<Vec<Title>> {
+    let Some(search_plan) = super::title_search::build_title_search_plan(facet, query) else {
+        return Ok(Vec::new());
+    };
+
+    let mut builder = QueryBuilder::<Sqlite>::new("");
+    super::title_search::push_ranked_title_matches_cte(&mut builder, &search_plan);
+    builder.push(format!(
+        "SELECT {} FROM ranked_title_matches
+         JOIN titles ON titles.id = ranked_title_matches.title_id
+         ORDER BY ranked_title_matches.rank ASC, LOWER(titles.name) ASC, titles.id ASC",
+        TITLE_COLUMNS
+    ));
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let base_path = normalized_base_path_from_env();
+    let mut titles = Vec::with_capacity(rows.len());
+    for row in rows {
+        titles.push(row_to_title(&row, mode, &base_path)?);
+    }
+
+    Ok(titles)
 }
 
 pub(crate) async fn clear_metadata_language_for_all_query(pool: &SqlitePool) -> AppResult<u64> {
@@ -2085,6 +2125,7 @@ pub(crate) async fn create_or_get_existing_title_query(
     }
 
     insert_title_row_tx(&mut tx, title).await?;
+    super::title_search::replace_title_search_projection_tx(&mut tx, title).await?;
 
     match replace_title_external_ids_projection_tx(
         &mut tx,
@@ -2143,6 +2184,7 @@ pub(crate) async fn create_or_get_existing_title_query(
 pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppResult<Title> {
     let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
     insert_title_row_tx(&mut tx, title).await?;
+    super::title_search::replace_title_search_projection_tx(&mut tx, title).await?;
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
@@ -2367,6 +2409,7 @@ pub(crate) async fn update_title_metadata_query(
     let title = get_title_by_id_tx(&mut tx, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    super::title_search::replace_title_search_projection_tx(&mut tx, &title).await?;
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
@@ -2449,6 +2492,7 @@ pub(crate) async fn replace_title_match_state_query(
     let title = get_title_by_id_tx(&mut tx, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    super::title_search::replace_title_search_projection_tx(&mut tx, &title).await?;
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
@@ -2610,6 +2654,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
     let title = get_title_by_id_tx(&mut tx, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+    super::title_search::replace_title_search_projection_tx(&mut tx, &title).await?;
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
@@ -2624,9 +2669,12 @@ pub(crate) async fn update_title_hydrated_metadata_query(
 }
 
 pub(crate) async fn delete_title_query(pool: &SqlitePool, id: &str) -> AppResult<()> {
+    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
+    super::title_search::delete_title_search_projection_tx(&mut tx, id).await?;
+
     let result = sqlx::query("DELETE FROM titles WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -2634,6 +2682,7 @@ pub(crate) async fn delete_title_query(pool: &SqlitePool, id: &str) -> AppResult
         return Err(AppError::NotFound(format!("title {}", id)));
     }
 
+    tx.commit().await.map_err(repository_error_from_sqlx)?;
     Ok(())
 }
 

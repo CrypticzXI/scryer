@@ -7,6 +7,10 @@ export type TitleHistoryEvent = {
   sourceTitle: string | null;
   quality: string | null;
   downloadId: string | null;
+  clientId: string | null;
+  clientName: string | null;
+  failureReason: string | null;
+  blocklistReason: string | null;
   dataJson: string | null;
   occurredAt: string;
   createdAt: string;

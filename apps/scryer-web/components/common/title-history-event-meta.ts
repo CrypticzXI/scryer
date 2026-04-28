@@ -1,5 +1,7 @@
 import {
+  AlertTriangle,
   ArrowDownToLine,
+  Ban,
   FileEdit,
   HardDrive,
   RefreshCcw,
@@ -11,6 +13,8 @@ import type { LucideIcon } from "lucide-react";
 
 export const TITLE_HISTORY_FILTERS = [
   "grabbed",
+  "download_failed",
+  "blocklisted",
   "imported",
   "import_failed",
   "import_skipped",
@@ -34,6 +38,18 @@ const eventMeta: Record<string, EventMeta> = {
     label: "Grabbed",
     badgeClassName: "border-sky-500/40 bg-sky-500/10 text-sky-200",
     filterLabelKey: "history.grabbed",
+  },
+  download_failed: {
+    icon: AlertTriangle,
+    iconClassName: "text-rose-400",
+    label: "Download Failed",
+    badgeClassName: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+  },
+  blocklisted: {
+    icon: Ban,
+    iconClassName: "text-amber-400",
+    label: "Blocklisted",
+    badgeClassName: "border-amber-500/40 bg-amber-500/10 text-amber-200",
   },
   imported: {
     icon: HardDrive,

@@ -8,9 +8,13 @@ import type { TitleHistoryEvent } from "@/lib/types";
 import { HistoryEventIcon, getEventTypeLabel } from "./history-event-icon";
 
 const friendlyKeys: Record<string, string> = {
+  client_id: "Client ID",
+  client_name: "Client Name",
+  client_type: "Client Type",
   indexer: "Indexer",
   download_client: "Download Client",
   download_client_name: "Client Name",
+  download_id: "Download ID",
   download_url: "Download URL",
   nzb_info_url: "NZB Info",
   release_group: "Release Group",
@@ -27,7 +31,16 @@ const friendlyKeys: Record<string, string> = {
   release_type: "Release Type",
   source_system: "Source System",
   error_message: "Error",
+  blocklist_reason: "Blocklist Reason",
 };
+
+const structuredDataKeys = new Set([
+  "download_id",
+  "client_id",
+  "client_name",
+  "reason",
+  "blocklist_reason",
+]);
 
 function formatKey(key: string): string {
   return friendlyKeys[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -56,7 +69,21 @@ function parseDataJson(raw: string | null): Record<string, unknown> | null {
 
 export function HistoryEventDetailHover({ event }: { event: TitleHistoryEvent }) {
   const data = parseDataJson(event.dataJson);
-  const hasDetail = data && Object.keys(data).length > 0;
+  const structuredDetails = [
+    event.downloadId
+      ? { key: "download_id", value: event.downloadId }
+      : null,
+    event.clientId ? { key: "client_id", value: event.clientId } : null,
+    event.clientName ? { key: "client_name", value: event.clientName } : null,
+    event.failureReason ? { key: "reason", value: event.failureReason } : null,
+    event.blocklistReason
+      ? { key: "blocklist_reason", value: event.blocklistReason }
+      : null,
+  ].filter((entry): entry is { key: string; value: string } => entry !== null);
+  const rawDetails = Object.entries(data ?? {}).filter(
+    ([key]) => !structuredDataKeys.has(key),
+  );
+  const hasDetail = structuredDetails.length > 0 || rawDetails.length > 0;
 
   if (!hasDetail) return null;
 
@@ -77,7 +104,13 @@ export function HistoryEventDetailHover({ event }: { event: TitleHistoryEvent })
           <span className="text-xs font-medium">{getEventTypeLabel(event.eventType)}</span>
         </div>
         <div className="space-y-1.5">
-          {Object.entries(data).map(([key, value]) => (
+          {structuredDetails.map(({ key, value }) => (
+            <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+              <span className="text-muted-foreground whitespace-nowrap">{formatKey(key)}</span>
+              <span className="break-all text-foreground">{formatValue(value)}</span>
+            </div>
+          ))}
+          {rawDetails.map(([key, value]) => (
             <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
               <span className="text-muted-foreground whitespace-nowrap">{formatKey(key)}</span>
               <span className="break-all text-foreground">{formatValue(value)}</span>

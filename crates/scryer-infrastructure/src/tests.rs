@@ -2,12 +2,12 @@ use super::*;
 use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
-    DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate, ImportRepository,
-    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingImportStatus, ReleaseAttemptRepository,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository,
-    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
+    ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
+    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
+    ShowRepository, SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
     TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
     WantedStatus,
@@ -16,9 +16,10 @@ use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
     Entitlement, Episode, ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet,
     NotificationChannelConfig, NotificationEventType, NotificationSubscription,
-    SubtitleProviderConfig, Title,
+    SubtitleProviderConfig, TaggedAlias, Title,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
@@ -83,10 +84,10 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
 #[test]
 fn download_submission_lookup_chunks_and_deduplicates_client_items() {
     let mut client_items = (0..805)
-        .map(|idx| (None, "weaver".to_string(), format!("job-{idx}")))
+        .map(|idx| DownloadSourceIdentity::new(None, "weaver", format!("job-{idx}")))
         .collect::<Vec<_>>();
-    client_items.push((None, "weaver".to_string(), "job-12".to_string()));
-    client_items.push((None, "weaver".to_string(), "job-400".to_string()));
+    client_items.push(DownloadSourceIdentity::new(None, "weaver", "job-12"));
+    client_items.push(DownloadSourceIdentity::new(None, "weaver", "job-400"));
 
     let chunks = crate::queries::workflow::chunk_download_submission_client_items(&client_items);
 
@@ -96,13 +97,13 @@ fn download_submission_lookup_chunks_and_deduplicates_client_items() {
     assert_eq!(chunks[2].len(), 5);
     assert_eq!(
         chunks[0][12],
-        (None, "weaver".to_string(), "job-12".to_string())
+        DownloadSourceIdentity::new(None, "weaver", "job-12")
     );
     assert_eq!(
         chunks
             .iter()
             .flat_map(|chunk| chunk.iter())
-            .filter(|(_, client_type, item_id)| client_type == "weaver" && item_id == "job-12")
+            .filter(|identity| identity.client_type == "weaver" && identity.item_id == "job-12")
             .count(),
         1
     );
@@ -138,10 +139,10 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     }
 
     let mut lookup = (0..805)
-        .map(|idx| (None, "weaver".to_string(), format!("job-{idx}")))
+        .map(|idx| DownloadSourceIdentity::new(None, "weaver", format!("job-{idx}")))
         .collect::<Vec<_>>();
-    lookup.push((None, "weaver".to_string(), "job-12".to_string()));
-    lookup.push((None, "weaver".to_string(), "job-400".to_string()));
+    lookup.push(DownloadSourceIdentity::new(None, "weaver", "job-12"));
+    lookup.push(DownloadSourceIdentity::new(None, "weaver", "job-400"));
 
     let records = workflow
         .list_for_client_items(&lookup)
@@ -152,6 +153,53 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     assert!(records.iter().any(|record| {
         record.download_client_type == "weaver" && record.download_client_item_id == "job-804"
     }));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_identity_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = SqliteWorkflowStore::new(&services);
+
+    workflow
+        .record_submission(DownloadSubmission {
+            title_id: "legacy-title".to_string(),
+            facet: "movie".to_string(),
+            download_client_id: None,
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "shared-job".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Legacy Release".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("legacy submission should persist");
+
+    let exact_client_lookup = workflow
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            Some("client-a"),
+            "weaver",
+            "shared-job",
+        ))
+        .await
+        .expect("exact client lookup should succeed");
+    assert!(exact_client_lookup.is_none());
+
+    let legacy_lookup = workflow
+        .find_by_client_item_id(&DownloadSourceIdentity::new(None, "weaver", "shared-job"))
+        .await
+        .expect("legacy lookup should succeed")
+        .expect("legacy row should still be discoverable by a legacy identity");
+    assert_eq!(legacy_lookup.title_id, "legacy-title");
 
     let _ = std::fs::remove_file(db);
 }
@@ -186,7 +234,11 @@ async fn record_download_submission_persists_episode_set_scope() {
         .expect("record submission should succeed");
 
     let record = workflow
-        .find_by_client_item_id(Some("client-a"), "weaver", "job-range")
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            Some("client-a"),
+            "weaver",
+            "job-range",
+        ))
         .await
         .expect("lookup should succeed")
         .expect("submission should exist");
@@ -3134,7 +3186,163 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
 }
 
 #[tokio::test]
-async fn list_wanted_items_filters_on_title_name_contains_case_insensitive() {
+async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
+    let (services, db) = temp_services("scryer_catalog_title_search").await;
+    let catalog = catalog_store(&services);
+
+    let mut direct_title = make_test_title("title-search-direct", None);
+    direct_title.name = "Schoolhouse Rock! Earth".to_string();
+    direct_title.slug = Some("schoolhouse-rock-earth".to_string());
+    direct_title.aliases = vec!["School House Rock".to_string()];
+    direct_title.tagged_aliases = vec![TaggedAlias {
+        name: "Schoolhouse Planet Earth".to_string(),
+        language: "eng".to_string(),
+    }];
+    TitleRepository::create(&catalog, direct_title.clone())
+        .await
+        .expect("direct title should insert");
+
+    let mut typo_title = make_test_title("title-search-typo", None);
+    typo_title.name = "Schoolhouze Rock Earth".to_string();
+    TitleRepository::create(&catalog, typo_title.clone())
+        .await
+        .expect("typo title should insert");
+
+    let alias_hits = TitleRepository::list(&catalog, None, Some("school house rock".to_string()))
+        .await
+        .expect("alias search should load");
+    assert_eq!(
+        alias_hits.first().map(|title| title.id.as_str()),
+        Some(direct_title.id.as_str())
+    );
+
+    let slug_hits =
+        TitleRepository::list(&catalog, None, Some("schoolhouse rock earth".to_string()))
+            .await
+            .expect("slug search should load");
+    assert_eq!(
+        slug_hits.first().map(|title| title.id.as_str()),
+        Some(direct_title.id.as_str())
+    );
+
+    let typo_hits =
+        TitleRepository::list(&catalog, None, Some("scholhouse rock earth".to_string()))
+            .await
+            .expect("typo search should load");
+    assert_eq!(
+        typo_hits.first().map(|title| title.id.as_str()),
+        Some(direct_title.id.as_str())
+    );
+    assert!(typo_hits.iter().any(|title| title.id == typo_title.id));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
+    let (services, db) = temp_services("scryer_catalog_title_search_short_typo").await;
+    let catalog = catalog_store(&services);
+
+    let mut aoashi = make_test_title("title-search-aoashi", None);
+    aoashi.name = "Aoashi".to_string();
+    aoashi.facet = MediaFacet::Anime;
+    TitleRepository::create(&catalog, aoashi.clone())
+        .await
+        .expect("close typo target should insert");
+
+    let mut ranma = make_test_title("title-search-ranma", None);
+    ranma.name = "Ranma 1/2 (2024)".to_string();
+    ranma.facet = MediaFacet::Anime;
+    TitleRepository::create(&catalog, ranma.clone())
+        .await
+        .expect("loose neighbor should insert");
+
+    let mut blue_box = make_test_title("title-search-blue-box", None);
+    blue_box.name = "Blue Box".to_string();
+    blue_box.facet = MediaFacet::Anime;
+    TitleRepository::create(&catalog, blue_box.clone())
+        .await
+        .expect("loose neighbor should insert");
+
+    let mut her_blue_sky = make_test_title("title-search-her-blue-sky", None);
+    her_blue_sky.name = "Her Blue Sky".to_string();
+    TitleRepository::create(&catalog, her_blue_sky.clone())
+        .await
+        .expect("movie loose neighbor should insert");
+
+    let hits = TitleRepository::list(&catalog, None, Some("aashi".to_string()))
+        .await
+        .expect("short typo search should load");
+    let hit_ids = hits
+        .into_iter()
+        .map(|title| title.id)
+        .collect::<HashSet<_>>();
+
+    assert!(hit_ids.contains(&aoashi.id));
+    assert!(!hit_ids.contains(&ranma.id));
+    assert!(!hit_ids.contains(&blue_box.id));
+    assert!(!hit_ids.contains(&her_blue_sky.id));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_search_projection_refreshes_after_hydrated_metadata_update_and_delete() {
+    let (services, db) = temp_services("scryer_title_search_projection_refresh").await;
+    let catalog = catalog_store(&services);
+
+    let mut title = make_test_title("title-projection-refresh", None);
+    title.name = "Example Show".to_string();
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let missing_hits = TitleRepository::list(&catalog, None, Some("earth defenders".to_string()))
+        .await
+        .expect("pre-update search should load");
+    assert!(missing_hits.is_empty());
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            slug: Some("earth-defenders".to_string()),
+            aliases: vec!["Earth's Defenders".to_string()],
+            tagged_aliases: vec![TaggedAlias {
+                name: "Earth Defenders".to_string(),
+                language: "eng".to_string(),
+            }],
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("hydrated metadata should update");
+
+    let alias_hits = TitleRepository::list(&catalog, None, Some("earth defenders".to_string()))
+        .await
+        .expect("alias search should load");
+    assert_eq!(
+        alias_hits
+            .first()
+            .map(|match_title| match_title.id.as_str()),
+        Some(title.id.as_str())
+    );
+
+    TitleRepository::delete(&catalog, &title.id)
+        .await
+        .expect("title should delete");
+
+    let deleted_hits = TitleRepository::list(&catalog, None, Some("earth defenders".to_string()))
+        .await
+        .expect("post-delete search should load");
+    assert!(deleted_hits.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_wanted_items_filters_with_fuzzy_title_search() {
     let (services, db) = temp_services("scryer_wanted_title_search").await;
     let workflow = library_state_store(&services);
     let catalog = catalog_store(&services);
@@ -3142,6 +3350,7 @@ async fn list_wanted_items_filters_on_title_name_contains_case_insensitive() {
 
     let mut title = make_test_title("title-search-match", None);
     title.name = "Schoolhouse Rock! Earth".to_string();
+    title.aliases = vec!["School House Rock".to_string()];
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("matching title should insert");
@@ -3189,11 +3398,11 @@ async fn list_wanted_items_filters_on_title_name_contains_case_insensitive() {
         .expect("other wanted item should insert");
 
     let items = workflow
-        .list_wanted_items(None, None, None, Some("earth"), None, 50, 0)
+        .list_wanted_items(None, None, None, Some("scholhouse erth"), None, 50, 0)
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(None, None, None, Some("earth"), None)
+        .count_wanted_items(None, None, None, Some("scholhouse erth"), None)
         .await
         .expect("filtered wanted count should load");
 
@@ -3668,13 +3877,19 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let workflow_store = SqliteWorkflowStore::new(&services);
 
     workflow_store
-        .update_tracked_state(None, "weaver", "job-123", "failed")
+        .update_tracked_state(
+            &DownloadSourceIdentity::new(None, "weaver", "job-123"),
+            "failed",
+        )
         .await
         .expect("tracked state upsert should succeed without a preexisting submission row");
 
-    let tracked_state = get_tracked_state_query(services.pool(), None, "weaver", "job-123")
-        .await
-        .expect("tracked state query should succeed");
+    let tracked_state = get_tracked_state_query(
+        services.pool(),
+        &DownloadSourceIdentity::new(None, "weaver", "job-123"),
+    )
+    .await
+    .expect("tracked state query should succeed");
     assert_eq!(tracked_state.as_deref(), Some("failed"));
 
     let row = sqlx::query(

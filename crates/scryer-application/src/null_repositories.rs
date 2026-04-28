@@ -17,13 +17,14 @@ use scryer_domain::BlocklistEntry;
 
 use crate::{
     AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadQueueCommandRecord,
-    DownloadQueueCommandRepository, DownloadSubmission, DownloadSubmissionRepository,
-    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
-    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    NewBlocklistEntry, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
+    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
+    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
+    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
+    LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, NewBlocklistEntry,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
+    PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
     PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
     StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
     TitleImageKind, TitleImageProcessor, TitleImageReplacement, TitleImageRepository,
@@ -853,15 +854,13 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     }
     async fn find_by_client_item_id(
         &self,
-        _: Option<&str>,
-        _: &str,
-        _: &str,
+        _: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(None)
     }
     async fn list_for_client_items(
         &self,
-        _: &[(Option<String>, String, String)],
+        _: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
     }
@@ -878,29 +877,13 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     async fn delete_for_title(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_by_client_item_id(
-        &self,
-        _: Option<&str>,
-        _: Option<&str>,
-        _: &str,
-    ) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
         Ok(())
     }
-    async fn update_tracked_state(
-        &self,
-        _: Option<&str>,
-        _: &str,
-        _: &str,
-        _: &str,
-    ) -> AppResult<()> {
+    async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn get_tracked_state(
-        &self,
-        _: Option<&str>,
-        _: &str,
-        _: &str,
-    ) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
         Ok(None)
     }
 }

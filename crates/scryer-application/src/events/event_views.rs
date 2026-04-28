@@ -93,6 +93,19 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
                 })
                 .unwrap_or_else(|| "Download failed.".to_string()),
         ),
+        DomainEventPayload::ReleaseBlocklisted(data) => (
+            ActivityKind::AcquisitionCandidateRejected,
+            ActivitySeverity::Warning,
+            data.source_title
+                .as_ref()
+                .map(|source_title| format!("Blocklisted '{}'.", source_title))
+                .or_else(|| {
+                    data.title
+                        .as_ref()
+                        .map(|title| format!("Blocklisted a release for '{}'.", title.title_name))
+                })
+                .unwrap_or_else(|| "Blocklisted a release.".to_string()),
+        ),
         DomainEventPayload::ImportCompleted(data) => (
             if data.title.facet == MediaFacet::Movie {
                 ActivityKind::MovieDownloaded
@@ -247,18 +260,55 @@ pub(crate) fn title_history_records_from_domain_event(
         return Vec::new();
     };
 
-    let (event_type, source_title, quality, download_id) = match &event.payload {
+    let (
+        event_type,
+        source_title,
+        quality,
+        download_id,
+        client_id,
+        client_name,
+        failure_reason,
+        blocklist_reason,
+    ) = match &event.payload {
         DomainEventPayload::ReleaseGrabbed(data) => (
             TitleHistoryEventType::Grabbed,
             data.source_title.clone(),
             None,
             data.download_id.clone(),
+            None,
+            None,
+            None,
+            None,
+        ),
+        DomainEventPayload::DownloadFailed(data) => (
+            TitleHistoryEventType::DownloadFailed,
+            data.source_title.clone(),
+            data.quality.clone(),
+            data.download_id.clone(),
+            data.client_id.clone(),
+            data.client_name.clone(),
+            data.reason.clone(),
+            None,
+        ),
+        DomainEventPayload::ReleaseBlocklisted(data) => (
+            TitleHistoryEventType::Blocklisted,
+            data.source_title.clone(),
+            data.quality.clone(),
+            data.download_id.clone(),
+            data.client_id.clone(),
+            data.client_name.clone(),
+            None,
+            data.reason.clone(),
         ),
         DomainEventPayload::ImportCompleted(data) => (
             TitleHistoryEventType::Imported,
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
         ),
@@ -271,12 +321,20 @@ pub(crate) fn title_history_records_from_domain_event(
             data.source_path.clone(),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         ),
         DomainEventPayload::MediaFileDeleted(data) => (
             TitleHistoryEventType::FileDeleted,
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
         ),
@@ -287,10 +345,21 @@ pub(crate) fn title_history_records_from_domain_event(
                 .flatten(),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         ),
-        DomainEventPayload::TitleRematched(_) => {
-            (TitleHistoryEventType::Rematched, None, None, None)
-        }
+        DomainEventPayload::TitleRematched(_) => (
+            TitleHistoryEventType::Rematched,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
         DomainEventPayload::TitleUpdated(_) => {
             return Vec::new();
         }
@@ -302,16 +371,21 @@ pub(crate) fn title_history_records_from_domain_event(
         _ => serde_json::to_string(&event.payload).ok(),
     };
     let episode_ids = event_episode_ids(event);
+    let collection_id = event_collection_id(event);
     if episode_ids.is_empty() {
         return vec![TitleHistoryRecord {
             id: event.event_id.clone(),
             title_id,
             episode_id: None,
-            collection_id: None,
+            collection_id,
             event_type,
             source_title,
             quality,
             download_id,
+            client_id,
+            client_name,
+            failure_reason,
+            blocklist_reason,
             data_json,
             occurred_at: event.occurred_at.to_rfc3339(),
             created_at: event.occurred_at.to_rfc3339(),
@@ -324,11 +398,15 @@ pub(crate) fn title_history_records_from_domain_event(
             id: event.event_id.clone(),
             title_id: title_id.clone(),
             episode_id: Some(episode_id),
-            collection_id: None,
+            collection_id: collection_id.clone(),
             event_type,
             source_title: source_title.clone(),
             quality: quality.clone(),
             download_id: download_id.clone(),
+            client_id: client_id.clone(),
+            client_name: client_name.clone(),
+            failure_reason: failure_reason.clone(),
+            blocklist_reason: blocklist_reason.clone(),
             data_json: data_json.clone(),
             occurred_at: event.occurred_at.to_rfc3339(),
             created_at: event.occurred_at.to_rfc3339(),
@@ -344,6 +422,7 @@ pub(crate) fn history_event_from_domain_event(event: &DomainEvent) -> Option<His
         DomainEventPayload::TitleRematched(_) => EventType::TitleUpdated,
         DomainEventPayload::MediaFileUpgraded(_) => EventType::FileUpgraded,
         DomainEventPayload::DownloadFailed(_)
+        | DomainEventPayload::ReleaseBlocklisted(_)
         | DomainEventPayload::ImportRejected(_)
         | DomainEventPayload::SubtitleSearchFailed(_) => EventType::Error,
         _ => EventType::ActionCompleted,
@@ -418,6 +497,8 @@ fn event_episode_ids(event: &DomainEvent) -> Vec<String> {
     let mut ids = Vec::new();
     let iter = match &event.payload {
         DomainEventPayload::ReleaseGrabbed(data) => data.episode_ids.iter(),
+        DomainEventPayload::DownloadFailed(data) => data.episode_ids.iter(),
+        DomainEventPayload::ReleaseBlocklisted(data) => data.episode_ids.iter(),
         DomainEventPayload::ImportCompleted(data) => data.episode_ids.iter(),
         DomainEventPayload::ImportRejected(data) => data.episode_ids.iter(),
         DomainEventPayload::MediaFileRenamed(data) => data.episode_ids.iter(),
@@ -431,6 +512,14 @@ fn event_episode_ids(event: &DomainEvent) -> Vec<String> {
         }
     }
     ids
+}
+
+fn event_collection_id(event: &DomainEvent) -> Option<String> {
+    match &event.payload {
+        DomainEventPayload::DownloadFailed(data) => data.collection_id.clone(),
+        DomainEventPayload::ReleaseBlocklisted(data) => data.collection_id.clone(),
+        _ => None,
+    }
 }
 
 fn configuration_changed_message(

@@ -21,6 +21,7 @@ pub(crate) const fn retention_class_for_domain_event_type(
         | DomainEventType::MetadataHydrationUpdated
         | DomainEventType::ReleaseGrabbed
         | DomainEventType::DownloadFailed
+        | DomainEventType::ReleaseBlocklisted
         | DomainEventType::ImportCompleted
         | DomainEventType::ImportRejected
         | DomainEventType::MediaFileImported

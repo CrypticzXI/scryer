@@ -379,14 +379,12 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn find_by_client_item_id(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: &str,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>>;
 
     async fn list_for_client_items(
         &self,
-        client_items: &[(Option<String>, String, String)],
+        client_items: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
@@ -398,26 +396,17 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
 
-    async fn delete_by_client_item_id(
-        &self,
-        download_client_id: Option<&str>,
-        download_client_type: Option<&str>,
-        download_client_item_id: &str,
-    ) -> AppResult<()>;
+    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()>;
 
     async fn update_tracked_state(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: &str,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
         tracked_state: &str,
     ) -> AppResult<()>;
 
     async fn get_tracked_state(
         &self,
-        download_client_id: Option<&str>,
-        download_client_type: &str,
-        download_client_item_id: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<String>>;
 }
 
