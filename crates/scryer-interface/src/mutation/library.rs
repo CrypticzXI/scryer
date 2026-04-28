@@ -96,6 +96,25 @@ impl LibraryMutations {
         Ok(from_resolve_pending_import_result(result))
     }
 
+    async fn bind_pending_import(
+        &self,
+        ctx: &Context<'_>,
+        input: BindPendingImportInput,
+    ) -> GqlResult<ResolvePendingImportPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .bind_title_bound_pending_import(
+                &actor,
+                &input.pending_import_id,
+                input.collection_id.as_deref(),
+                &input.episode_ids,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_resolve_pending_import_result(result))
+    }
+
     async fn ignore_pending_import(
         &self,
         ctx: &Context<'_>,

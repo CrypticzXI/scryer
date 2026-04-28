@@ -39,6 +39,7 @@ fn build_library_scan_unmatched_item_id(facet: &MediaFacet, item_path: &str) -> 
 
 fn build_library_scan_unmatched_item(
     facet: &MediaFacet,
+    title_id: Option<&str>,
     session_id: &str,
     library_path: &str,
     item_path: String,
@@ -56,6 +57,7 @@ fn build_library_scan_unmatched_item(
         id: build_library_scan_unmatched_item_id(facet, &item_path),
         facet: facet.clone(),
         status: PendingImportStatus::Pending,
+        title_id: title_id.map(str::to_string),
         scan_session_id: session_id.to_string(),
         scan_root: normalize_library_scan_root(library_path),
         item_path,
@@ -71,6 +73,10 @@ fn build_library_scan_unmatched_item(
 }
 
 fn series_unmatched_display_name(candidate: &PreparedSeriesLibraryScanCandidate) -> String {
+    if let Some(file) = candidate.source_file.as_ref() {
+        return file.display_name.clone();
+    }
+
     candidate
         .folder_name
         .as_deref()
@@ -121,6 +127,7 @@ pub(crate) fn build_movie_unmatched_scan_item(
     let record = build_movie_unmatched_scan_record(candidate, batch_search_results);
     build_library_scan_unmatched_item(
         facet,
+        None,
         session_id,
         library_path,
         record.path,
@@ -153,15 +160,42 @@ pub(crate) fn build_series_unmatched_scan_item(
 
     build_library_scan_unmatched_item(
         facet,
+        None,
         session_id,
         library_path,
-        candidate.folder_path.to_string_lossy().to_string(),
+        candidate.item_path().to_string(),
         series_unmatched_display_name(candidate),
         candidate.query.clone(),
         candidate.year_hint,
         reason_code,
         error_message,
         search_attempts,
+    )
+}
+
+pub(crate) fn build_title_bound_unmatched_scan_item(
+    facet: &MediaFacet,
+    title_id: &str,
+    session_id: Option<&str>,
+    title_scan_root: &str,
+    item_path: &str,
+    display_name: &str,
+    query: &str,
+    year_hint: Option<u32>,
+    reason_code: &str,
+) -> LibraryScanUnmatchedItem {
+    build_library_scan_unmatched_item(
+        facet,
+        Some(title_id),
+        session_id.unwrap_or_default(),
+        title_scan_root,
+        item_path.to_string(),
+        display_name.to_string(),
+        query.to_string(),
+        year_hint,
+        reason_code,
+        None,
+        Vec::new(),
     )
 }
 

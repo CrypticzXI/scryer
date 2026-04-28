@@ -1,15 +1,15 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FileSourceSignature {
-    pub(super) scheme: String,
-    pub(super) value: String,
+pub(crate) struct FileSourceSignature {
+    pub(crate) scheme: String,
+    pub(crate) value: String,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct FileSourceSnapshot {
-    pub(super) size_bytes: i64,
-    pub(super) signature: Option<FileSourceSignature>,
+pub(crate) struct FileSourceSnapshot {
+    pub(crate) size_bytes: i64,
+    pub(crate) signature: Option<FileSourceSignature>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -21,16 +21,16 @@ pub(super) struct TitleEpisodeLookup {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct PlannedTitleScanFile {
-    pub(super) file: LibraryFile,
-    pub(super) parsed: crate::ParsedReleaseMetadata,
-    pub(super) target_episodes: Vec<Episode>,
-    pub(super) snapshot: FileSourceSnapshot,
-    pub(super) record: PlannedTitleScanRecord,
+pub(crate) struct PlannedTitleScanFile {
+    pub(crate) file: LibraryFile,
+    pub(crate) parsed: crate::ParsedReleaseMetadata,
+    pub(crate) target_episodes: Vec<Episode>,
+    pub(crate) snapshot: FileSourceSnapshot,
+    pub(crate) record: PlannedTitleScanRecord,
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum PlannedTitleScanRecord {
+pub(crate) enum PlannedTitleScanRecord {
     Existing {
         file_id: String,
         should_skip_analysis: bool,
@@ -39,14 +39,14 @@ pub(super) enum PlannedTitleScanRecord {
     New,
 }
 
-pub(super) fn file_source_signature_from_metadata(
+pub(crate) fn file_source_signature_from_metadata(
     metadata: &std::fs::Metadata,
 ) -> Option<FileSourceSignature> {
     source_signature_from_std_metadata(metadata)
         .map(|(scheme, value)| FileSourceSignature { scheme, value })
 }
 
-pub(super) fn file_source_snapshot_from_library_file(
+pub(crate) fn file_source_snapshot_from_library_file(
     file: &LibraryFile,
 ) -> Option<FileSourceSnapshot> {
     let size_bytes = file.size_bytes?;

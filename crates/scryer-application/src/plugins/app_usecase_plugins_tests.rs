@@ -1240,7 +1240,6 @@ async fn seed_uses_provider_builtin_inventory() {
             "NZBGeek Indexer",
             Some("https://api.nzbgeek.info"),
         )
-        .with_builtin_provider("dognzb", "DogNZB Indexer", Some("https://api.dognzb.cr"))
         .with_builtin_provider("newznab", "Newznab Indexer", None)
         .with_builtin_provider(
             "animetosho",
@@ -1253,14 +1252,13 @@ async fn seed_uses_provider_builtin_inventory() {
     h.app.seed_builtin_plugins().await.unwrap();
 
     let seeded = h.plugin_repo.seeded.lock().await;
-    assert_eq!(seeded.len(), 6);
+    assert_eq!(seeded.len(), 5);
 
     let ids: Vec<&str> = seeded
         .iter()
         .map(|(id, _, _, _, _, _)| id.as_str())
         .collect();
     assert!(ids.contains(&"nzbgeek"));
-    assert!(ids.contains(&"dognzb"));
     assert!(ids.contains(&"newznab"));
     assert!(ids.contains(&"animetosho"));
     assert!(ids.contains(&"torznab"));

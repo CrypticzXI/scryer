@@ -1,6 +1,6 @@
 use super::*;
 
-/// In-process guard table for request-signature download dedupe.
+/// In-process guard table for download-submission dedupe and scope ownership.
 ///
 /// Scryer is intentionally single-instance, so the database lookup remains the
 /// authoritative duplicate check while this table serializes same-process races.
@@ -10,13 +10,7 @@ pub struct DownloadSubmissionGuardTable {
 }
 
 impl DownloadSubmissionGuardTable {
-    pub async fn acquire(
-        &self,
-        title_id: &str,
-        request_signature: Option<&str>,
-    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        let signature = request_signature?;
-        let key = format!("{title_id}:{signature}");
+    async fn acquire_key(&self, key: String) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.locks.lock().await;
             locks.retain(|_, lock| lock.strong_count() > 0);
@@ -29,7 +23,25 @@ impl DownloadSubmissionGuardTable {
             }
         };
 
-        Some(lock.lock_owned().await)
+        lock.lock_owned().await
+    }
+
+    pub async fn acquire(
+        &self,
+        title_id: &str,
+        request_signature: Option<&str>,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let signature = request_signature?;
+        let key = format!("{title_id}:{signature}");
+        Some(self.acquire_key(key).await)
+    }
+
+    pub async fn acquire_scope(
+        &self,
+        title_id: &str,
+        _scope: &SubmissionScope,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.acquire_key(format!("{title_id}:scope")).await
     }
 }
 

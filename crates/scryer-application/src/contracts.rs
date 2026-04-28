@@ -126,6 +126,7 @@ impl DownloadSourceIdentity {
 #[derive(Clone, Debug)]
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,
+    pub covered_wanted_item_ids: Vec<String>,
     pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: String,
@@ -269,6 +270,57 @@ pub struct QueuedReleaseSelection {
     pub source_hint: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmissionConflictPolicy {
+    Abort,
+    Skip,
+    ReplaceEarly,
+}
+
+impl SubmissionConflictPolicy {
+    pub fn from_replace_flag(replace_in_progress: bool) -> Self {
+        if replace_in_progress {
+            Self::ReplaceEarly
+        } else {
+            Self::Abort
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmissionScopeConflict {
+    pub title_id: String,
+    pub title_name: String,
+    pub download_client_id: Option<String>,
+    pub download_client_type: String,
+    pub download_client_item_id: String,
+    pub source_title: Option<String>,
+    pub source_kind: Option<DownloadSourceKind>,
+    pub scope: SubmissionScope,
+    pub state: Option<DownloadQueueState>,
+    pub replaceable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedDownloadResult {
+    pub job_id: String,
+    pub queued_release: QueuedReleaseSelection,
+    pub reused_existing: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueDownloadOutcome {
+    Queued(QueuedDownloadResult),
+    Conflict(SubmissionScopeConflict),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WantedSearchOutcome {
+    pub queued_count: usize,
+    pub skipped_in_progress_count: usize,
+    pub conflict: Option<SubmissionScopeConflict>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

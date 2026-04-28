@@ -566,12 +566,20 @@ impl AppUseCase {
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
+                let covered_wanted_item_ids = self
+                    .covered_wanted_item_ids_for_submission_scope(
+                        &title.id,
+                        &submission_scope,
+                        &wanted.id,
+                    )
+                    .await?;
 
                 self.services
                     .workflow
                     .acquisition_state
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: wanted.id.clone(),
+                        covered_wanted_item_ids,
                         search_count: wanted.search_count,
                         current_score: wanted.current_score,
                         grabbed_release: grabbed_json,

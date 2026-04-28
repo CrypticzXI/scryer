@@ -39,12 +39,17 @@ import {
 } from "@/lib/title-overview-loader";
 import { MovieOverviewView } from "@/components/views/movie-overview-view";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import {
+  assertNoReplaceConflict,
+  retryWithReplaceOnConflict,
+} from "@/lib/utils/download-conflicts";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
@@ -213,6 +218,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { confirmReplaceConflict, replaceConflictDialog } =
+    useDownloadConflictConfirmation();
   const [title, setTitle] = React.useState<TitleDetail | null>(null);
   const [collections, setCollections] = React.useState<TitleCollection[]>([]);
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
@@ -571,12 +578,21 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       }
       setSearchMonitoredLoading(true);
       try {
-        const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
-          input: { titleId: title.id },
-        }).toPromise();
-        if (error) throw error;
+        const payload = await retryWithReplaceOnConflict(
+          { titleId: title.id },
+          async (input) => {
+            const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
+              input,
+            }).toPromise();
+            if (error) throw error;
+            return data?.triggerTitleWantedSearch;
+          },
+          "A download is already in progress for this title.",
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, "A download is already in progress for this title.");
 
-        const queued = data?.triggerTitleWantedSearch ?? 0;
+        const queued = payload?.queuedCount ?? 0;
         setGlobalStatus(
           queued > 0
             ? t("status.searchMonitoredQueued", { count: queued })
@@ -589,7 +605,15 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         setSearchMonitoredLoading(false);
       }
     },
-    [title, hasDownloadClients, client, refreshTitleDetail, setGlobalStatus, t],
+    [
+      title,
+      hasDownloadClients,
+      client,
+      confirmReplaceConflict,
+      refreshTitleDetail,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const handlePauseWanted = React.useCallback(
@@ -649,14 +673,24 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         return;
       }
       try {
-        const { error } = await client.mutation(queueExistingMutation, {
-          input: {
-            titleId: title.id,
-            scope: releaseQueueScopeInput(release, { title: true }),
-            candidateToken: release.candidateToken,
+        const input = {
+          titleId: title.id,
+          scope: releaseQueueScopeInput(release, { title: true }),
+          candidateToken: release.candidateToken,
+        };
+        const payload = await retryWithReplaceOnConflict(
+          input,
+          async (nextInput) => {
+            const { data, error } = await client.mutation(queueExistingMutation, {
+              input: nextInput,
+            }).toPromise();
+            if (error) throw error;
+            return data?.queueExistingTitleDownload;
           },
-        }).toPromise();
-        if (error) throw error;
+          "A download is already in progress for this title.",
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, "A download is already in progress for this title.");
         const queuedMessage = t("status.queueSuccess", { name: release.title });
         setGlobalStatus(queuedMessage);
         await refreshTitleDetail();
@@ -664,7 +698,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         setGlobalStatus(err instanceof Error ? err.message : t("status.apiError"));
       }
     },
-    [title, client, t, setGlobalStatus, refreshTitleDetail],
+    [title, client, confirmReplaceConflict, t, setGlobalStatus, refreshTitleDetail],
   );
 
   const handleRefreshAndScan = React.useCallback(async () => {
@@ -1032,6 +1066,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
           onTypedConfirmationChange={setMediaFileDeleteTypedConfirmation}
         />
       </ConfirmDialog>
+      {replaceConflictDialog}
     </>
   );
 });

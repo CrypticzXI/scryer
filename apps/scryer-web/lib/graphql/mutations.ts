@@ -230,6 +230,25 @@ export const resolvePendingImportMutation = `mutation ResolvePendingImport($inpu
   }
 }`;
 
+export const bindPendingImportMutation = `mutation BindPendingImport($input: BindPendingImportInput!) {
+  bindPendingImport(input: $input) {
+    created
+    libraryScan {
+      scanned
+      matched
+      imported
+      skipped
+      unmatched
+    }
+    title {
+      id
+      name
+      facet
+      monitored
+    }
+  }
+}`;
+
 export const ignorePendingImportMutation = `mutation IgnorePendingImport($input: IgnorePendingImportInput!) {
   ignorePendingImport(input: $input) {
     id
@@ -480,11 +499,29 @@ export const updateServiceSettingsMutation = `mutation UpdateServiceSettings($in
 
 export const queueExistingMutation = `mutation QueueExisting($input: QueueDownloadInput!) {
   queueExistingTitleDownload(input: $input) {
+    status
     jobId
     titleId
     titleName
     sourceTitle
     sourceKind
+    conflict {
+      titleId
+      titleName
+      downloadClientId
+      downloadClientType
+      downloadClientItemId
+      sourceTitle
+      sourceKind
+      state
+      replaceable
+      scope {
+        kind
+        episodeId
+        episodeIds
+        collectionId
+      }
+    }
   }
 }`;
 
@@ -494,11 +531,29 @@ export const triggerTitleMismatchRecoverySearchMutation = `mutation TriggerTitle
 
 export const queueBestReleaseMutation = `mutation QueueBestRelease($input: QueueBestReleaseInput!) {
   queueBestRelease(input: $input) {
+    status
     jobId
     titleId
     titleName
     sourceTitle
     sourceKind
+    conflict {
+      titleId
+      titleName
+      downloadClientId
+      downloadClientType
+      downloadClientItemId
+      sourceTitle
+      sourceKind
+      state
+      replaceable
+      scope {
+        kind
+        episodeId
+        episodeIds
+        collectionId
+      }
+    }
   }
 }`;
 
@@ -734,16 +789,40 @@ export const fixTitleMatchMutation = `mutation FixTitleMatch($input: FixTitleMat
   }
 }`;
 
-export const triggerWantedSearchMutation = `mutation TriggerWantedSearch($input: WantedItemIdInput!) {
-  triggerWantedSearch(input: $input)
+const wantedSearchPayloadSelection = `
+    queuedCount
+    skippedInProgressCount
+    conflict {
+      titleId
+      titleName
+      downloadClientId
+      downloadClientType
+      downloadClientItemId
+      sourceTitle
+      sourceKind
+      state
+      replaceable
+      scope {
+        kind
+        episodeId
+        episodeIds
+        collectionId
+      }
+    }`;
+
+export const triggerWantedSearchMutation = `mutation TriggerWantedSearch($input: TriggerWantedSearchInput!) {
+  triggerWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+  }
 }`;
 
-export const triggerTitleWantedSearchMutation = `mutation TriggerTitleWantedSearch($input: TitleIdInput!) {
-  triggerTitleWantedSearch(input: $input)
+export const triggerTitleWantedSearchMutation = `mutation TriggerTitleWantedSearch($input: TriggerTitleWantedSearchInput!) {
+  triggerTitleWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+  }
 }`;
 
-export const triggerSeasonWantedSearchMutation = `mutation TriggerSeasonWantedSearch($input: SeasonSearchInput!) {
-  triggerSeasonWantedSearch(input: $input)
+export const triggerSeasonWantedSearchMutation = `mutation TriggerSeasonWantedSearch($input: TriggerSeasonWantedSearchInput!) {
+  triggerSeasonWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+  }
 }`;
 
 export const pauseWantedItemMutation = `mutation PauseWantedItem($input: WantedItemIdInput!) {

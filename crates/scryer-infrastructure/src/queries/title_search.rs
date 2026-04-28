@@ -26,7 +26,7 @@ const DIRECT_EXACT_BASE_RANK: i64 = 0;
 const DIRECT_PREFIX_BASE_RANK: i64 = 1_000;
 const DIRECT_CONTAINS_BASE_RANK: i64 = 2_000;
 const TYPO_BASE_RANK: i64 = 3_000;
-const TYPO_TOP_LIMIT: i64 = 20;
+const TYPO_TOP_LIMIT: i64 = 50;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TitleSearchPlan {
@@ -172,6 +172,24 @@ fn max_typo_length_delta(query_char_count: usize) -> i64 {
         0..=5 => 1,
         6..=10 => 2,
         _ => 3,
+    }
+}
+
+fn typo_scope(query_char_count: usize) -> i64 {
+    match query_char_count {
+        0..=8 => 3,
+        _ => 2,
+    }
+}
+
+fn spellfix_rank_for_weight(weight: i64) -> i64 {
+    match weight {
+        TERM_WEIGHT_NAME => 10_000,
+        TERM_WEIGHT_ALIAS => 5_000,
+        TERM_WEIGHT_TAGGED_ALIAS => 4_000,
+        TERM_WEIGHT_SORT_TITLE => 2_000,
+        TERM_WEIGHT_SLUG => 1_000,
+        _ => 1,
     }
 }
 
@@ -323,6 +341,8 @@ fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleS
             builder.push_bind(query_token.clone());
             builder.push(" AND spellfix.top = ");
             builder.push_bind(TYPO_TOP_LIMIT);
+            builder.push(" AND spellfix.scope = ");
+            builder.push_bind(typo_scope(query_token.chars().count()));
             builder.push(" AND spellfix.distance <= ");
             builder.push_bind(max_typo_distance(query_token.chars().count()));
             builder.push(" AND ABS(length(terms.normalized_term) - ");
@@ -528,7 +548,7 @@ async fn replace_title_search_projection_source_tx(
         )
         .bind(term_id)
         .bind(&term.normalized_term)
-        .bind(1_i64)
+        .bind(spellfix_rank_for_weight(term.weight))
         .bind(langid)
         .execute(&mut **tx)
         .await

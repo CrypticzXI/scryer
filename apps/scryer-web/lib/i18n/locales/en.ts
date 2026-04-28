@@ -1581,6 +1581,8 @@ const en: LocaleDictionary = {
   "status.indexerUpdated": "Indexer updated.",
   "status.searchMonitoredQueued":
     "Queued {{count}} monitored item(s) for background search.",
+  "status.searchSkippedInProgress":
+    "{{count}} skipped because a download is already in progress.",
   "status.mismatchRecoveryQueued":
     "Queued {{count}} mismatch recovery item(s).",
   "status.searchMonitoredEmpty":

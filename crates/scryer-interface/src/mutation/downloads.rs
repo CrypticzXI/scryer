@@ -1,5 +1,7 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
-use scryer_application::AppUseCase;
+use scryer_application::{
+    AppUseCase, QueueDownloadOutcome, SubmissionConflictPolicy, SubmissionScopeConflict,
+};
 use scryer_domain::User;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -46,6 +48,25 @@ fn download_queue_action_payload(parts: DownloadQueueActionParts) -> DownloadQue
     }
 }
 
+pub(crate) fn queue_download_conflict_payload(
+    conflict: SubmissionScopeConflict,
+) -> QueueDownloadConflictPayload {
+    QueueDownloadConflictPayload {
+        title_id: conflict.title_id,
+        title_name: conflict.title_name,
+        download_client_id: conflict.download_client_id,
+        download_client_type: conflict.download_client_type,
+        download_client_item_id: conflict.download_client_item_id,
+        source_title: conflict.source_title,
+        source_kind: conflict
+            .source_kind
+            .map(DownloadSourceKindValue::from_application),
+        scope: crate::mappers::from_submission_scope(conflict.scope),
+        state: conflict.state.map(DownloadQueueStateValue::from_domain),
+        replaceable: conflict.replaceable,
+    }
+}
+
 #[Object]
 impl DownloadMutations {
     async fn queue_existing_title_download(
@@ -59,13 +80,15 @@ impl DownloadMutations {
             title_id,
             candidate_token,
             scope,
+            replace_in_progress,
         } = input;
-        let (job_id, queued_release) = app
+        let outcome = app
             .queue_existing_title_download_from_candidate_token(
                 &actor,
                 &title_id,
                 &candidate_token,
                 scope.into_application(),
+                SubmissionConflictPolicy::from_replace_flag(replace_in_progress.unwrap_or(false)),
             )
             .await
             .map_err(to_gql_error)?;
@@ -75,14 +98,28 @@ impl DownloadMutations {
             .map_err(to_gql_error)?
             .ok_or_else(|| Error::new(format!("title not found: {}", title_id)))?;
 
-        Ok(QueueDownloadPayload {
-            job_id,
-            title_id: title.id,
-            title_name: title.name,
-            source_title: queued_release.source_title,
-            source_kind: queued_release
-                .source_kind
-                .map(DownloadSourceKindValue::from_application),
+        Ok(match outcome {
+            QueueDownloadOutcome::Queued(queued) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Queued,
+                job_id: Some(queued.job_id),
+                title_id: title.id,
+                title_name: title.name,
+                source_title: queued.queued_release.source_title,
+                source_kind: queued
+                    .queued_release
+                    .source_kind
+                    .map(DownloadSourceKindValue::from_application),
+                conflict: None,
+            },
+            QueueDownloadOutcome::Conflict(conflict) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Conflict,
+                job_id: None,
+                title_id: title.id,
+                title_name: title.name,
+                source_title: None,
+                source_kind: None,
+                conflict: Some(queue_download_conflict_payload(conflict)),
+            },
         })
     }
 
@@ -98,17 +135,40 @@ impl DownloadMutations {
             .await
             .map_err(to_gql_error)?
             .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;
-        let job_id = app
-            .queue_best_release(&actor, &input.title_id, input.scope.into_application())
+        let outcome = app
+            .queue_best_release(
+                &actor,
+                &input.title_id,
+                input.scope.into_application(),
+                SubmissionConflictPolicy::from_replace_flag(
+                    input.replace_in_progress.unwrap_or(false),
+                ),
+            )
             .await
             .map_err(to_gql_error)?;
 
-        Ok(QueueDownloadPayload {
-            job_id,
-            title_id: title.id,
-            title_name: title.name,
-            source_title: None,
-            source_kind: None,
+        Ok(match outcome {
+            QueueDownloadOutcome::Queued(queued) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Queued,
+                job_id: Some(queued.job_id),
+                title_id: title.id,
+                title_name: title.name,
+                source_title: queued.queued_release.source_title,
+                source_kind: queued
+                    .queued_release
+                    .source_kind
+                    .map(DownloadSourceKindValue::from_application),
+                conflict: None,
+            },
+            QueueDownloadOutcome::Conflict(conflict) => QueueDownloadPayload {
+                status: QueueDownloadResultStatusValue::Conflict,
+                job_id: None,
+                title_id: title.id,
+                title_name: title.name,
+                source_title: None,
+                source_kind: None,
+                conflict: Some(queue_download_conflict_payload(conflict)),
+            },
         })
     }
 

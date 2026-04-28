@@ -1,4 +1,5 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
+use scryer_application::{SubmissionConflictPolicy, WantedSearchOutcome};
 use scryer_domain::Entitlement;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -7,23 +8,38 @@ use crate::types::*;
 #[derive(Default)]
 pub(crate) struct WantedMutations;
 
+fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearchPayload {
+    WantedSearchPayload {
+        queued_count: outcome.queued_count as i32,
+        skipped_in_progress_count: outcome.skipped_in_progress_count as i32,
+        conflict: outcome
+            .conflict
+            .map(super::downloads::queue_download_conflict_payload),
+    }
+}
+
 #[Object]
 impl WantedMutations {
     async fn trigger_title_wanted_search(
         &self,
         ctx: &Context<'_>,
-        input: TitleIdInput,
-    ) -> GqlResult<i32> {
+        input: TriggerTitleWantedSearchInput,
+    ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
         let queued = app
-            .trigger_title_wanted_search(&input.title_id)
+            .trigger_title_wanted_search(
+                &input.title_id,
+                SubmissionConflictPolicy::from_replace_flag(
+                    input.replace_in_progress.unwrap_or(false),
+                ),
+            )
             .await
             .map_err(to_gql_error)?;
-        Ok(queued as i32)
+        Ok(wanted_search_payload(queued))
     }
 
     async fn trigger_title_mismatch_recovery_search(
@@ -46,8 +62,8 @@ impl WantedMutations {
     async fn trigger_season_wanted_search(
         &self,
         ctx: &Context<'_>,
-        input: SeasonSearchInput,
-    ) -> GqlResult<i32> {
+        input: TriggerSeasonWantedSearchInput,
+    ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&Entitlement::ManageConfig) {
@@ -57,23 +73,29 @@ impl WantedMutations {
             .trigger_season_wanted_search(&input.title_id, input.season_number as u32)
             .await
             .map_err(to_gql_error)?;
-        Ok(queued as i32)
+        Ok(wanted_search_payload(queued))
     }
 
     async fn trigger_wanted_search(
         &self,
         ctx: &Context<'_>,
-        input: WantedItemIdInput,
-    ) -> GqlResult<bool> {
+        input: TriggerWantedSearchInput,
+    ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        app.trigger_wanted_item_search(&input.wanted_item_id)
+        let outcome = app
+            .trigger_wanted_item_search(
+                &input.wanted_item_id,
+                SubmissionConflictPolicy::from_replace_flag(
+                    input.replace_in_progress.unwrap_or(false),
+                ),
+            )
             .await
             .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(wanted_search_payload(outcome))
     }
 
     async fn pause_wanted_item(

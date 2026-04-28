@@ -1727,6 +1727,7 @@ export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue
       id
       facet
       status
+      titleId
       displayName
       path
       folderPath
@@ -1739,6 +1740,37 @@ export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue
         topResults
         summary
       }
+    }
+  }
+}`;
+
+export const pendingImportBindingPreviewQuery = `query PendingImportBindingPreview($pendingImportId: String!) {
+  pendingImportBindingPreview(pendingImportId: $pendingImportId) {
+    title {
+      id
+      name
+      facet
+      monitored
+    }
+    file {
+      filePath
+      fileName
+      sizeBytes
+      parsedSeason
+      parsedEpisodes
+      parsedAbsoluteNumbers
+      suggestedEpisodeIds
+    }
+    availableEpisodes {
+      id
+      titleId
+      collectionId
+      episodeType
+      episodeNumber
+      seasonNumber
+      episodeLabel
+      title
+      monitored
     }
   }
 }`;

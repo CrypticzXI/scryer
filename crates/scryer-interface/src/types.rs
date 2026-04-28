@@ -1914,6 +1914,7 @@ pub struct PendingImportItemPayload {
     pub id: String,
     pub facet: MediaFacetValue,
     pub status: PendingImportStatusValue,
+    pub title_id: Option<String>,
     pub display_name: String,
     pub path: String,
     pub folder_path: Option<String>,
@@ -1933,6 +1934,31 @@ pub struct PendingImportConnectionPayload {
 pub struct ResolvePendingImportInput {
     pub pending_import_id: String,
     pub tvdb_id: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingImportBindingFilePreviewPayload {
+    pub file_path: String,
+    pub file_name: String,
+    pub size_bytes: String,
+    pub parsed_season: Option<i32>,
+    pub parsed_episodes: Vec<i32>,
+    pub parsed_absolute_numbers: Vec<i32>,
+    pub suggested_episode_ids: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingImportBindingPreviewPayload {
+    pub title: TitlePayload,
+    pub file: PendingImportBindingFilePreviewPayload,
+    pub available_episodes: Vec<EpisodePayload>,
+}
+
+#[derive(InputObject)]
+pub struct BindPendingImportInput {
+    pub pending_import_id: String,
+    pub collection_id: Option<String>,
+    pub episode_ids: Vec<String>,
 }
 
 #[derive(InputObject)]
@@ -2284,21 +2310,71 @@ pub struct QueueDownloadInput {
     pub title_id: String,
     pub candidate_token: String,
     pub scope: QueueDownloadScopeInput,
+    pub replace_in_progress: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct QueueBestReleaseInput {
     pub title_id: String,
     pub scope: QueueDownloadScopeInput,
+    pub replace_in_progress: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct TriggerWantedSearchInput {
+    pub wanted_item_id: String,
+    pub replace_in_progress: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct TriggerTitleWantedSearchInput {
+    pub title_id: String,
+    pub replace_in_progress: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct TriggerSeasonWantedSearchInput {
+    pub title_id: String,
+    pub season_number: i32,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum QueueDownloadResultStatusValue {
+    Queued,
+    Conflict,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct QueueDownloadConflictPayload {
+    pub title_id: String,
+    pub title_name: String,
+    pub download_client_id: Option<String>,
+    pub download_client_type: String,
+    pub download_client_item_id: String,
+    pub source_title: Option<String>,
+    pub source_kind: Option<DownloadSourceKindValue>,
+    pub scope: QueueDownloadScopePayload,
+    pub state: Option<DownloadQueueStateValue>,
+    pub replaceable: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct QueueDownloadPayload {
-    pub job_id: String,
+    pub status: QueueDownloadResultStatusValue,
+    pub job_id: Option<String>,
     pub title_id: String,
     pub title_name: String,
     pub source_title: Option<String>,
     pub source_kind: Option<DownloadSourceKindValue>,
+    pub conflict: Option<QueueDownloadConflictPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct WantedSearchPayload {
+    pub queued_count: i32,
+    pub skipped_in_progress_count: i32,
+    pub conflict: Option<QueueDownloadConflictPayload>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]

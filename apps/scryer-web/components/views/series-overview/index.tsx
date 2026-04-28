@@ -7,10 +7,15 @@ import { useClient } from "urql";
 import type { Release } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { searchForEpisodeQuery } from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
+import {
+  assertNoReplaceConflict,
+  retryWithReplaceOnConflict,
+} from "@/lib/utils/download-conflicts";
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
@@ -198,6 +203,8 @@ export function SeriesOverviewView({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { confirmReplaceConflict, replaceConflictDialog } =
+    useDownloadConflictConfirmation();
   const backLabel = title?.facet === "anime" ? t("nav.anime") : t("nav.series");
   const sortedCollections = React.useMemo(
     () => sortDbCollections(collections),
@@ -360,15 +367,25 @@ export function SeriesOverviewView({
         return Promise.resolve();
       }
 
-      return client.mutation(queueExistingMutation, {
-        input: {
-          titleId: title.id,
-          scope: releaseQueueScopeInput(release, { episode: episode.id }),
-          candidateToken: release.candidateToken,
-        },
-      }).toPromise()
-        .then(async ({ error: mutationError }) => {
+      const input = {
+        titleId: title.id,
+        scope: releaseQueueScopeInput(release, { episode: episode.id }),
+        candidateToken: release.candidateToken,
+      };
+      return retryWithReplaceOnConflict(
+        input,
+        async (nextInput) => {
+          const { data, error: mutationError } = await client.mutation(queueExistingMutation, {
+            input: nextInput,
+          }).toPromise();
           if (mutationError) throw mutationError;
+          return data?.queueExistingTitleDownload;
+        },
+        "A download is already in progress for this episode.",
+        confirmReplaceConflict,
+      )
+        .then(async (payload) => {
+          assertNoReplaceConflict(payload, "A download is already in progress for this episode.");
           const queuedMessage = t("status.queuedLatest", { name: title.name });
           setGlobalStatus(queuedMessage);
           await onTitleChanged?.();
@@ -377,7 +394,7 @@ export function SeriesOverviewView({
           setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
         });
     },
-    [onTitleChanged, client, setGlobalStatus, t, title],
+    [onTitleChanged, client, confirmReplaceConflict, setGlobalStatus, t, title],
   );
 
   const handleAutoSearchEpisode = React.useCallback(
@@ -461,7 +478,8 @@ export function SeriesOverviewView({
   const overviewBackdropUrl = title.backgroundUrl ?? title.bannerUrl;
 
   return (
-    <div className="space-y-4">
+    <>
+      <div className="space-y-4">
       <OverviewBackLink
         label={t("title.backToFacet", { facet: backLabel })}
         onClick={() => onBackToList?.()}
@@ -778,6 +796,8 @@ export function SeriesOverviewView({
           titleName={title.name}
         />
       ) : null}
-    </div>
+      {replaceConflictDialog}
+      </div>
+    </>
   );
 }

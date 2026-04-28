@@ -3287,6 +3287,45 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
 }
 
 #[tokio::test]
+async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
+    let (services, db) = temp_services("scryer_catalog_title_search_frieren_typo").await;
+    let catalog = catalog_store(&services);
+
+    let mut frieren = make_test_title("title-search-frieren", None);
+    frieren.name = "Frieren: Beyond Journey's End".to_string();
+    frieren.facet = MediaFacet::Anime;
+    frieren.aliases = vec!["Sousou no Frieren".to_string()];
+    TitleRepository::create(&catalog, frieren.clone())
+        .await
+        .expect("frieren should insert");
+
+    let mut friend = make_test_title("title-search-friend", None);
+    friend.name = "Friend".to_string();
+    TitleRepository::create(&catalog, friend.clone())
+        .await
+        .expect("friend should insert");
+
+    let mut firefly = make_test_title("title-search-firefly", None);
+    firefly.name = "Firefly".to_string();
+    TitleRepository::create(&catalog, firefly.clone())
+        .await
+        .expect("firefly should insert");
+
+    let hits = TitleRepository::list(&catalog, None, Some("friefen".to_string()))
+        .await
+        .expect("frieren typo search should load");
+
+    assert_eq!(
+        hits.first().map(|title| title.id.as_str()),
+        Some(frieren.id.as_str())
+    );
+    assert!(!hits.iter().any(|title| title.id == friend.id));
+    assert!(!hits.iter().any(|title| title.id == firefly.id));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_search_projection_refreshes_after_hydrated_metadata_update_and_delete() {
     let (services, db) = temp_services("scryer_title_search_projection_refresh").await;
     let catalog = catalog_store(&services);

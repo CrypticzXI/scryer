@@ -18,11 +18,13 @@ fn queued_download_payload(
     source_kind: Option<scryer_application::DownloadSourceKind>,
 ) -> QueueDownloadPayload {
     QueueDownloadPayload {
-        job_id,
+        status: QueueDownloadResultStatusValue::Queued,
+        job_id: Some(job_id),
         title_id: title.id.clone(),
         title_name: title.name.clone(),
         source_title,
         source_kind: source_kind.map(DownloadSourceKindValue::from_application),
+        conflict: None,
     }
 }
 

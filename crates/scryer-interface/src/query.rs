@@ -730,6 +730,46 @@ impl QueryRoot {
         Ok(from_pending_import_connection(connection))
     }
 
+    async fn pending_import_binding_preview(
+        &self,
+        ctx: &Context<'_>,
+        pending_import_id: String,
+    ) -> GqlResult<PendingImportBindingPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let preview = app
+            .preview_title_bound_pending_import(&actor, &pending_import_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(PendingImportBindingPreviewPayload {
+            title: from_title(preview.title),
+            file: PendingImportBindingFilePreviewPayload {
+                file_path: preview.file.file_path,
+                file_name: preview.file.file_name,
+                size_bytes: preview.file.size_bytes.to_string(),
+                parsed_season: preview.file.parsed_season.map(|value| value as i32),
+                parsed_episodes: preview
+                    .file
+                    .parsed_episodes
+                    .into_iter()
+                    .map(|value| value as i32)
+                    .collect(),
+                parsed_absolute_numbers: preview
+                    .file
+                    .parsed_absolute_numbers
+                    .into_iter()
+                    .map(|value| value as i32)
+                    .collect(),
+                suggested_episode_ids: preview.file.suggested_episode_ids,
+            },
+            available_episodes: preview
+                .available_episodes
+                .into_iter()
+                .map(from_episode)
+                .collect(),
+        })
+    }
+
     async fn jobs(&self, ctx: &Context<'_>) -> GqlResult<Vec<JobDefinitionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

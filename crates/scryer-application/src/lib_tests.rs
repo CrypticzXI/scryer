@@ -2893,17 +2893,28 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
             .record_submission(commit.download_submission.clone())
             .await?;
 
-        self.wanted_items
-            .update_wanted_item_status(
-                &commit.wanted_item_id,
-                WantedStatus::Grabbed.as_str(),
-                None,
-                commit.last_search_at.as_deref(),
-                commit.search_count,
-                commit.current_score,
-                Some(&commit.grabbed_release),
-            )
-            .await?;
+        let mut covered_wanted_item_ids = commit.covered_wanted_item_ids.clone();
+        if !covered_wanted_item_ids
+            .iter()
+            .any(|id| id == &commit.wanted_item_id)
+        {
+            covered_wanted_item_ids.push(commit.wanted_item_id.clone());
+        }
+        covered_wanted_item_ids.sort();
+        covered_wanted_item_ids.dedup();
+        for wanted_item_id in &covered_wanted_item_ids {
+            self.wanted_items
+                .update_wanted_item_status(
+                    wanted_item_id,
+                    WantedStatus::Grabbed.as_str(),
+                    None,
+                    commit.last_search_at.as_deref(),
+                    commit.search_count,
+                    commit.current_score,
+                    Some(&commit.grabbed_release),
+                )
+                .await?;
+        }
 
         if let Some(pending_release_id) = commit.grabbed_pending_release_id.as_deref() {
             self.pending_releases
@@ -2917,7 +2928,9 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
 
         let mut store = self.pending_releases.store.lock().await;
         for release in store.iter_mut() {
-            let is_sibling = release.wanted_item_id == commit.wanted_item_id
+            let is_sibling = covered_wanted_item_ids
+                .iter()
+                .any(|wanted_item_id| wanted_item_id == &release.wanted_item_id)
                 && commit
                     .grabbed_pending_release_id
                     .as_deref()
@@ -6890,15 +6903,34 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
             &title.id,
             queued_release.clone(),
             SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
         )
         .await
         .expect("first queue should succeed");
+    let QueueDownloadOutcome::Queued(first) = first else {
+        panic!("first queue should not conflict");
+    };
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        &first.job_id,
+        DownloadQueueState::Queued,
+        0,
+    )];
     let second = app
-        .queue_existing_title_download(&user, &title.id, queued_release, SubmissionScope::Title)
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            queued_release,
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
         .await
         .expect("second queue should reuse submission");
+    let QueueDownloadOutcome::Queued(second) = second else {
+        panic!("second queue should not conflict");
+    };
 
-    assert_eq!(second, first);
+    assert_eq!(second.job_id, first.job_id);
+    assert!(second.reused_existing);
 
     let submissions = download_submissions.store.lock().await.clone();
     let expected_signature = normalize_release_selection_signature(
@@ -6916,6 +6948,545 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
             .await
             .as_slice(),
         &["Existing Queue".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_ignores_stale_matching_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Stale Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let queued_release = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/releases/stale-queue.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Stale.Queue.2026.1080p.WEB-DL".to_string()),
+    };
+
+    app.queue_existing_title_download(
+        &user,
+        &title.id,
+        queued_release.clone(),
+        SubmissionScope::Title,
+        SubmissionConflictPolicy::Abort,
+    )
+    .await
+    .expect("first queue should succeed");
+    download_client.queue_items.lock().await.clear();
+
+    let second = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            queued_release,
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect("stale signature should not be reused");
+    let QueueDownloadOutcome::Queued(second) = second else {
+        panic!("stale signature should queue again");
+    };
+
+    assert!(!second.reused_existing);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Stale Queue".to_string(), "Stale Queue".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_reports_scope_conflict() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Blocked Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "existing-job".to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Blocked.Queue.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record submission");
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "existing-job",
+        DownloadQueueState::Downloading,
+        0,
+    )];
+
+    let outcome = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/replacement.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Blocked.Queue.Replacement.2026.1080p.WEB-DL".to_string()),
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect("conflict should be returned as outcome");
+
+    let QueueDownloadOutcome::Conflict(conflict) = outcome else {
+        panic!("queue should conflict");
+    };
+    assert_eq!(conflict.download_client_item_id, "existing-job");
+    assert!(conflict.replaceable);
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_replace_early_deletes_old_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Replace Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "old-job".to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Replace.Queue.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record submission");
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "old-job",
+        DownloadQueueState::Queued,
+        0,
+    )];
+
+    let outcome = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/new.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Replace.Queue.New.2026.1080p.WEB-DL".to_string()),
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::ReplaceEarly,
+        )
+        .await
+        .expect("replacement should succeed");
+
+    let QueueDownloadOutcome::Queued(outcome) = outcome else {
+        panic!("replacement should queue");
+    };
+    assert_eq!(outcome.job_id, format!("job-for-{}", title.id));
+    assert_eq!(
+        download_client.deleted_items.lock().await.as_slice(),
+        &[("old-job".to_string(), false)]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].download_client_item_id, outcome.job_id);
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Replace All Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    for job_id in ["old-job-a", "old-job-b"] {
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: title.id.clone(),
+                facet: "movie".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: job_id.to_string(),
+                source_hint: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(format!("Replace.All.Queue.{job_id}.2026.1080p.WEB-DL")),
+                request_signature: None,
+                scope: SubmissionScope::Title,
+            })
+            .await
+            .expect("record submission");
+    }
+    *download_client.queue_items.lock().await = vec![
+        queue_history_fixture_item("old-job-a", DownloadQueueState::Queued, 0),
+        queue_history_fixture_item("old-job-b", DownloadQueueState::Downloading, 0),
+    ];
+
+    let outcome = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/new-all.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Replace.All.Queue.New.2026.1080p.WEB-DL".to_string()),
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::ReplaceEarly,
+        )
+        .await
+        .expect("replacement should succeed");
+
+    let QueueDownloadOutcome::Queued(outcome) = outcome else {
+        panic!("replacement should queue");
+    };
+    let mut deleted_items = download_client.deleted_items.lock().await.clone();
+    deleted_items.sort();
+    assert_eq!(
+        deleted_items,
+        vec![
+            ("old-job-a".to_string(), false),
+            ("old-job-b".to_string(), false),
+        ]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].download_client_item_id, outcome.job_id);
+}
+
+#[tokio::test]
+async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_releases() {
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let repo = TrackingAcquisitionStateRepo {
+        download_submissions,
+        pending_releases: pending_releases.clone(),
+        wanted_items: wanted_items.clone(),
+    };
+    let now = Utc::now().to_rfc3339();
+    let title_id = "covered-title";
+    let wanted_a = WantedItem {
+        id: "wanted-a".to_string(),
+        title_id: title_id.to_string(),
+        title_name: Some("Covered Title".to_string()),
+        episode_id: Some("episode-a".to_string()),
+        collection_id: Some("season-1".to_string()),
+        season_number: Some("1".to_string()),
+        media_type: "series".to_string(),
+        search_phase: "initial".to_string(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 1,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    let wanted_b = WantedItem {
+        id: "wanted-b".to_string(),
+        episode_id: Some("episode-b".to_string()),
+        ..wanted_a.clone()
+    };
+    let wanted_c = WantedItem {
+        id: "wanted-c".to_string(),
+        episode_id: Some("episode-c".to_string()),
+        ..wanted_a.clone()
+    };
+    for wanted in [&wanted_a, &wanted_b, &wanted_c] {
+        wanted_items
+            .upsert_wanted_item(wanted)
+            .await
+            .expect("seed wanted item");
+    }
+
+    for (id, wanted_item_id, status) in [
+        ("pending-grabbed", "wanted-a", PendingReleaseStatus::Waiting),
+        (
+            "pending-a-sibling",
+            "wanted-a",
+            PendingReleaseStatus::Waiting,
+        ),
+        (
+            "pending-b-waiting",
+            "wanted-b",
+            PendingReleaseStatus::Waiting,
+        ),
+        (
+            "pending-b-standby",
+            "wanted-b",
+            PendingReleaseStatus::Standby,
+        ),
+        (
+            "pending-c-uncovered",
+            "wanted-c",
+            PendingReleaseStatus::Waiting,
+        ),
+    ] {
+        pending_releases
+            .insert_pending_release(&PendingRelease {
+                id: id.to_string(),
+                wanted_item_id: wanted_item_id.to_string(),
+                title_id: title_id.to_string(),
+                release_title: format!("{id}.1080p.WEB-DL"),
+                release_url: Some(format!("https://example.invalid/{id}.nzb")),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                release_size_bytes: Some(1_000),
+                release_score: 100,
+                scoring_log_json: None,
+                indexer_source: Some("test-indexer".to_string()),
+                release_guid: Some(format!("guid-{id}")),
+                added_at: now.clone(),
+                delay_until: now.clone(),
+                status,
+                grabbed_at: None,
+                source_password: None,
+                published_at: Some(now.clone()),
+                info_hash: None,
+            })
+            .await
+            .expect("seed pending release");
+    }
+
+    repo.commit_successful_grab(&SuccessfulGrabCommit {
+        wanted_item_id: wanted_a.id.clone(),
+        covered_wanted_item_ids: vec![wanted_b.id.clone()],
+        search_count: 2,
+        current_score: Some(100),
+        grabbed_release: "{\"title\":\"Covered.Release.1080p.WEB-DL\"}".to_string(),
+        last_search_at: Some(now.clone()),
+        download_submission: DownloadSubmission {
+            title_id: title_id.to_string(),
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "job-covered".to_string(),
+            source_hint: Some("https://example.invalid/grabbed.nzb".to_string()),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Covered.Release.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::EpisodeSet {
+                episode_ids: vec!["episode-a".to_string(), "episode-b".to_string()],
+            },
+        },
+        grabbed_pending_release_id: Some("pending-grabbed".to_string()),
+        grabbed_at: Some(now),
+    })
+    .await
+    .expect("commit successful grab");
+
+    let wanted_store = wanted_items.store.lock().await.clone();
+    let status_for = |id: &str| {
+        wanted_store
+            .iter()
+            .find(|wanted| wanted.id == id)
+            .map(|wanted| wanted.status)
+            .expect("wanted item exists")
+    };
+    assert_eq!(status_for("wanted-a"), WantedStatus::Grabbed);
+    assert_eq!(status_for("wanted-b"), WantedStatus::Grabbed);
+    assert_eq!(status_for("wanted-c"), WantedStatus::Wanted);
+
+    let pending_store = pending_releases.store.lock().await.clone();
+    let pending_status_for = |id: &str| {
+        pending_store
+            .iter()
+            .find(|release| release.id == id)
+            .map(|release| release.status)
+            .expect("pending release exists")
+    };
+    assert_eq!(
+        pending_status_for("pending-grabbed"),
+        PendingReleaseStatus::Grabbed
+    );
+    assert_eq!(
+        pending_status_for("pending-a-sibling"),
+        PendingReleaseStatus::Superseded
+    );
+    assert_eq!(
+        pending_status_for("pending-b-waiting"),
+        PendingReleaseStatus::Superseded
+    );
+    assert_eq!(
+        pending_status_for("pending-b-standby"),
+        PendingReleaseStatus::Superseded
+    );
+    assert_eq!(
+        pending_status_for("pending-c-uncovered"),
+        PendingReleaseStatus::Waiting
+    );
+}
+
+#[tokio::test]
+async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Blocked Wanted Movie".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "movie-job".to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Blocked.Wanted.Movie.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record submission");
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "movie-job",
+        DownloadQueueState::Downloading,
+        0,
+    )];
+
+    let outcome = app
+        .trigger_title_wanted_search(&title.id, SubmissionConflictPolicy::Abort)
+        .await
+        .expect("wanted search should return conflict");
+
+    assert_eq!(outcome.queued_count, 0);
+    assert_eq!(outcome.skipped_in_progress_count, 0);
+    assert_eq!(
+        outcome
+            .conflict
+            .as_ref()
+            .map(|conflict| conflict.download_client_item_id.as_str()),
+        Some("movie-job")
+    );
+    assert!(
+        app.services
+            .workflow
+            .wanted_items
+            .list_wanted_items(None, None, Some(&title.id), None, None, 100, 0)
+            .await
+            .expect("list wanted items")
+            .is_empty()
     );
 }
 
@@ -6983,18 +7554,22 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         .await
         .expect("issue candidate token");
 
-    let (job_id, queued_release) = app
+    let outcome = app
         .queue_existing_title_download_from_candidate_token(
             &authenticated_user,
             &title.id,
             &candidate_token,
             SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
         )
         .await
         .expect("queue existing title download from candidate token");
+    let QueueDownloadOutcome::Queued(outcome) = outcome else {
+        panic!("token queue should not conflict");
+    };
 
-    assert_eq!(job_id, format!("job-for-{}", title.id));
-    assert_eq!(queued_release, selection);
+    assert_eq!(outcome.job_id, format!("job-for-{}", title.id));
+    assert_eq!(outcome.queued_release, selection);
     assert_eq!(
         download_client
             .submitted_release_titles
@@ -7051,11 +7626,19 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
         .expect("create title");
 
     let job_id = app
-        .queue_best_release(&user, &title.id, SubmissionScope::Title)
+        .queue_best_release(
+            &user,
+            &title.id,
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
         .await
         .expect("queue best release");
+    let QueueDownloadOutcome::Queued(job_id) = job_id else {
+        panic!("best release should not conflict");
+    };
 
-    assert_eq!(job_id, format!("job-for-{}", title.id));
+    assert_eq!(job_id.job_id, format!("job-for-{}", title.id));
     assert_eq!(
         download_client
             .submitted_release_titles
@@ -7178,11 +7761,15 @@ async fn queue_best_release_supports_interstitial_movie_collection_scope() {
             SubmissionScope::Collection {
                 collection_id: collection.id.clone(),
             },
+            SubmissionConflictPolicy::Abort,
         )
         .await
         .expect("queue best release for collection");
+    let QueueDownloadOutcome::Queued(job_id) = job_id else {
+        panic!("best release should not conflict");
+    };
 
-    assert_eq!(job_id, format!("job-for-{}", title.id));
+    assert_eq!(job_id.job_id, format!("job-for-{}", title.id));
 
     let submissions = download_submissions.store.lock().await.clone();
     assert_eq!(submissions.len(), 1);

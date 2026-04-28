@@ -74,7 +74,6 @@ fn builtin_indexer_provider_types() -> Vec<String> {
         builtin_provider_types_from_bytes(
             &[
                 crate::builtins::NZBGEEK_WASM,
-                crate::builtins::DOGNZB_WASM,
                 crate::builtins::NEWZNAB_WASM,
                 crate::builtins::ANIMETOSHO_WASM,
                 crate::builtins::TORZNAB_WASM,
@@ -1024,7 +1023,6 @@ pub fn build_indexer_plugin_provider(
 
     for loaded in load_builtin_bytes_parallel(&[
         crate::builtins::NZBGEEK_WASM,
-        crate::builtins::DOGNZB_WASM,
         crate::builtins::NEWZNAB_WASM,
         crate::builtins::ANIMETOSHO_WASM,
         crate::builtins::TORZNAB_WASM,

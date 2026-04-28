@@ -38,6 +38,7 @@ fn row_to_library_scan_unmatched_item(row: &SqliteRow) -> AppResult<LibraryScanU
             .map_err(|err| AppError::Repository(err.to_string()))?,
         facet,
         status,
+        title_id: row.try_get("title_id").unwrap_or(None),
         scan_session_id: row
             .try_get("scan_session_id")
             .map_err(|err| AppError::Repository(err.to_string()))?,
@@ -77,11 +78,12 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
 
     sqlx::query(
         "INSERT INTO library_scan_unmatched_items
-         (id, facet, scan_session_id, scan_root, item_path, display_name, query,
+         (id, facet, title_id, scan_session_id, scan_root, item_path, display_name, query,
           year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             facet = excluded.facet,
+            title_id = excluded.title_id,
             scan_session_id = excluded.scan_session_id,
             scan_root = excluded.scan_root,
             item_path = excluded.item_path,
@@ -100,6 +102,7 @@ pub(crate) async fn upsert_library_scan_unmatched_item_query(
     )
     .bind(&item.id)
     .bind(item.facet.as_str())
+    .bind(&item.title_id)
     .bind(&item.scan_session_id)
     .bind(&item.scan_root)
     .bind(&item.item_path)
@@ -142,7 +145,7 @@ pub(crate) async fn get_library_scan_unmatched_item_query(
     id: &str,
 ) -> AppResult<Option<LibraryScanUnmatchedItem>> {
     let row = sqlx::query(
-        "SELECT id, facet, scan_session_id, scan_root, item_path, display_name, query,
+        "SELECT id, facet, title_id, scan_session_id, scan_root, item_path, display_name, query,
                 year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at
          FROM library_scan_unmatched_items
          WHERE id = ?",
@@ -166,7 +169,7 @@ pub(crate) async fn list_library_scan_unmatched_items_query(
     offset: i64,
 ) -> AppResult<Vec<LibraryScanUnmatchedItem>> {
     let mut sql = String::from(
-        "SELECT id, facet, scan_session_id, scan_root, item_path, display_name, query,
+        "SELECT id, facet, title_id, scan_session_id, scan_root, item_path, display_name, query,
                 year_hint, reason_code, error_message, search_attempts_json, status, created_at, updated_at
          FROM library_scan_unmatched_items
          WHERE 1=1",

@@ -1,4 +1,5 @@
 use super::*;
+use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
 
 fn hydration_source_for_scan_mode(
     mode: LibraryScanMode,
@@ -605,6 +606,61 @@ impl AppUseCase {
         Ok(self.walk_library_title(actor, request).await?.summary)
     }
 
+    pub(crate) async fn scan_title_library_with_discovered_files(
+        &self,
+        actor: &User,
+        title: Title,
+        discovered_files: Vec<LibraryFile>,
+    ) -> AppResult<LibraryScanSummary> {
+        require(actor, &Entitlement::ManageTitle)?;
+
+        let facet_plan = match title.facet {
+            MediaFacet::Movie => {
+                LibraryScanTitleFacetPlan::Movie(LibraryScanMovieCleanupContext::default())
+            }
+            MediaFacet::Series | MediaFacet::Anime => LibraryScanTitleFacetPlan::Episodic,
+        };
+        let mut request = LibraryScanTitleWalkRequest {
+            work: LibraryScanTitleWork {
+                title,
+                facet_plan,
+                discovered_files: Some(discovered_files),
+                mode: LibraryScanTitleWalkMode::OneOff,
+                created_in_scan: false,
+            },
+            session_id: None,
+            cancel_token: None,
+        };
+
+        let metadata_language = self.metadata_language().await;
+        if title_requires_scan_hydration(self, &request.work.title, &metadata_language).await? {
+            let title_id = request.work.title.id.clone();
+            let mut hydration_outcome = self
+                .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+                    title: request.work.title.clone(),
+                    requested_tvdb_id: None,
+                    sync_wanted_after_completion: false,
+                    source: crate::catalog_workflow::HydrationSource::Interactive,
+                }])
+                .await?;
+            request.work.title = hydration_outcome
+                .hydrated_titles
+                .remove(&title_id)
+                .ok_or_else(|| {
+                    AppError::Repository(
+                        hydration_outcome
+                            .failed_titles
+                            .remove(&title_id)
+                            .unwrap_or_else(|| {
+                                "title metadata hydration failed before title scan".to_string()
+                            }),
+                    )
+                })?;
+        }
+
+        Ok(self.walk_library_title(actor, request).await?.summary)
+    }
+
     pub(crate) async fn walk_library_title(
         &self,
         actor: &User,
@@ -721,6 +777,7 @@ impl AppUseCase {
         let started_at = Instant::now();
         let session_coordinator =
             session_id.map(|value| LibraryScanCoordinator::new(self.clone(), value.to_string()));
+        let scoped_discovered_files = pre_scanned_files.is_some();
         let pre_scanned_file_count = pre_scanned_files.as_ref().map(Vec::len);
         let scan_mode = mode.as_file_finalize_mode();
 
@@ -756,7 +813,7 @@ impl AppUseCase {
         let mut analyze_elapsed = Duration::ZERO;
         let mut db_elapsed = Duration::ZERO;
 
-        if tokio::fs::metadata(&title_dir).await.is_err() {
+        if !scoped_discovered_files && tokio::fs::metadata(&title_dir).await.is_err() {
             tokio::fs::create_dir_all(&title_dir).await.map_err(|err| {
                 AppError::Repository(format!(
                     "failed to recreate title directory {}: {err}",
@@ -843,6 +900,7 @@ impl AppUseCase {
 
         let mut summary = LibraryScanSummary::default();
         let mut layout_summary = TitleScanLayoutSummary::default();
+        let mut seen_paths = HashSet::new();
         let analysis_limit = self.runtime.library.library_scan_analysis_limit.clone();
         let mut pending_progress = TitleScanProgressDelta::default();
         let mut unchanged_file_skips = 0usize;
@@ -860,6 +918,9 @@ impl AppUseCase {
             for file in files {
                 if library_scan_cancel_requested(cancel_token.as_ref()) {
                     break;
+                }
+                if !file.path.trim().is_empty() {
+                    seen_paths.insert(file.path.clone());
                 }
                 remaining_existing_paths.remove(&file.path);
                 summary.scanned += 1;
@@ -884,6 +945,27 @@ impl AppUseCase {
                         ep
                     }
                     _ => {
+                        let unmatched_item = build_title_bound_unmatched_scan_item(
+                            &title.facet,
+                            &title.id,
+                            session_id,
+                            &title_dir_str,
+                            &file.path,
+                            &file.display_name,
+                            &title.name,
+                            title.year.map(|value| value as u32),
+                            "episode_identity_missing",
+                        );
+                        if let Err(error) =
+                            persist_library_scan_unmatched_item(self, &unmatched_item).await
+                        {
+                            warn!(
+                                error = %error,
+                                title_id = %title.id,
+                                file_path = %file.path,
+                                "failed to persist unmatched title scan item"
+                            );
+                        }
                         summary.unmatched += 1;
                         pending_progress.absorb(TitleScanProgressDelta::completed(1));
                         flush_title_scan_progress_batch(self, session_id, &mut pending_progress)
@@ -897,6 +979,27 @@ impl AppUseCase {
                     resolve_target_episodes_from_lookup(ep_meta, &season_str, &episode_lookup);
 
                 if target_episodes.is_empty() {
+                    let unmatched_item = build_title_bound_unmatched_scan_item(
+                        &title.facet,
+                        &title.id,
+                        session_id,
+                        &title_dir_str,
+                        &file.path,
+                        &file.display_name,
+                        &title.name,
+                        title.year.map(|value| value as u32),
+                        "episode_lookup_failed",
+                    );
+                    if let Err(error) =
+                        persist_library_scan_unmatched_item(self, &unmatched_item).await
+                    {
+                        warn!(
+                            error = %error,
+                            title_id = %title.id,
+                            file_path = %file.path,
+                            "failed to persist unmatched title scan item"
+                        );
+                    }
                     summary.unmatched += 1;
                     pending_progress.absorb(TitleScanProgressDelta::completed(1));
                     flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
@@ -1001,6 +1104,7 @@ impl AppUseCase {
 
                 if !should_analyze {
                     unchanged_file_skips += 1;
+                    let file_path = plan.file.path.clone();
                     let outcome = finalize_title_scan_file(
                         self,
                         &title,
@@ -1012,6 +1116,17 @@ impl AppUseCase {
                         &mut db_elapsed,
                     )
                     .await;
+                    if outcome.progress.failed == 0
+                        && let Err(error) =
+                            clear_library_scan_unmatched_item(self, &title.facet, &file_path).await
+                    {
+                        warn!(
+                            error = %error,
+                            title_id = %title.id,
+                            file_path = %file_path,
+                            "failed to clear unmatched title scan item"
+                        );
+                    }
                     pending_progress.absorb(outcome.progress);
                     title_updated_in_batch |= outcome.title_updated;
                     flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
@@ -1095,6 +1210,17 @@ impl AppUseCase {
                     &mut db_elapsed,
                 )
                 .await;
+                if outcome.progress.failed == 0
+                    && let Err(error) =
+                        clear_library_scan_unmatched_item(self, &title.facet, &file_path).await
+                {
+                    warn!(
+                        error = %error,
+                        title_id = %title.id,
+                        file_path = %file_path,
+                        "failed to clear unmatched title scan item"
+                    );
+                }
                 pending_progress.absorb(outcome.progress);
                 title_updated_in_batch |= outcome.title_updated;
                 flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
@@ -1118,7 +1244,9 @@ impl AppUseCase {
 
         flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
 
-        if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        if !library_scan_cancel_requested(cancel_token.as_ref()) && !scoped_discovered_files {
+            reconcile_library_scan_unmatched_items(self, &title.facet, &title_dir_str, &seen_paths)
+                .await?;
             let mut title_updated_after_scan = false;
             for stale_path in remaining_existing_paths {
                 let Some(record) = existing_records_by_path.get(&stale_path).cloned() else {

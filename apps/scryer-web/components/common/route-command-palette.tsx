@@ -10,12 +10,14 @@ import {
 } from "@/components/ui/command";
 import { Loader2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { sectionLabelForFacet, viewFromFacet } from "@/lib/facets/helpers";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import { titlesQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Facet, TitleRecord } from "@/lib/types";
+import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useClient } from "urql";
 
 export type RouteCommandItem = {
@@ -187,6 +189,73 @@ export function RouteCommandPalette({
     return null;
   }
 
+  const showCatalogBeforeNavigation =
+    Boolean(onOpenOverview) &&
+    searchValue.trim().length >= CATALOG_COMMAND_MIN_QUERY_LENGTH &&
+    (catalogLoading || catalogResults.length > 0);
+
+  const catalogCommandGroup = onOpenOverview ? (
+    <CommandGroup heading={t("search.catalog")}>
+      {catalogLoading ? (
+        <CommandItem disabled value={`catalog-loading ${searchValue}`}>
+          <div className="flex flex-1 items-center gap-2 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        </CommandItem>
+      ) : null}
+      {catalogResults.map((title) => {
+        const facet = catalogFacetFromString(title.facet);
+        const registryEntry = FACET_REGISTRY.find((item) => item.id === facet);
+        const Icon = registryEntry?.icon;
+        const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
+        const hasPoster = Boolean(posterUrl || title.posterSourceUrl);
+        const year = title.year ? ` • ${title.year}` : "";
+        return (
+          <CommandItem
+            key={`catalog-title-${title.id}`}
+            value={`catalog-title-${title.id} ${title.name} ${searchValue}`}
+            keywords={[
+              searchValue,
+              title.name,
+              title.slug ?? "",
+              title.sortTitle ?? "",
+              facet,
+            ]}
+            onSelect={() => handleCatalogTitleSelect(title)}
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="h-10 w-7 flex-none overflow-hidden rounded-sm border border-border bg-muted">
+                {hasPoster ? (
+                  <TitlePosterSlot
+                    src={posterUrl}
+                    sourceSrc={title.posterSourceUrl}
+                    metadataFetchedAt={title.metadataFetchedAt}
+                    createdAt={title.createdAt}
+                    alt={t("media.posterAlt", { name: title.name })}
+                    className="h-full w-full object-cover"
+                    placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                    emptyLabel=""
+                    loading="lazy"
+                  />
+                ) : Icon ? (
+                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                    <Icon className="h-3.5 w-3.5" />
+                  </div>
+                ) : null}
+              </div>
+              <span className="truncate">{title.name}</span>
+              <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                {sectionLabelForFacet(t, facet)}
+                {year}
+              </span>
+            </div>
+          </CommandItem>
+        );
+      })}
+    </CommandGroup>
+  ) : null;
+
   return (
     <CommandDialog
       open={open}
@@ -202,6 +271,7 @@ export function RouteCommandPalette({
       />
       <CommandList>
         <CommandEmpty>{config.noResultsText}</CommandEmpty>
+        {showCatalogBeforeNavigation ? catalogCommandGroup : null}
         <CommandGroup heading={config.groupLabel}>
           {config.items.map((item) => (
             <CommandItem
@@ -218,47 +288,7 @@ export function RouteCommandPalette({
             </CommandItem>
           ))}
         </CommandGroup>
-        {onOpenOverview ? (
-          <CommandGroup heading={t("search.catalog")}>
-            {catalogLoading ? (
-              <CommandItem disabled value={`catalog-loading ${searchValue}`}>
-                <div className="flex flex-1 items-center gap-2 text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>{t("label.loading")}</span>
-                </div>
-              </CommandItem>
-            ) : null}
-            {catalogResults.map((title) => {
-              const facet = catalogFacetFromString(title.facet);
-              const registryEntry = FACET_REGISTRY.find((item) => item.id === facet);
-              const Icon = registryEntry?.icon;
-              const year = title.year ? ` • ${title.year}` : "";
-              return (
-                <CommandItem
-                  key={`catalog-title-${title.id}`}
-                  value={`catalog-title-${title.id} ${title.name} ${searchValue}`}
-                  keywords={[
-                    searchValue,
-                    title.name,
-                    title.slug ?? "",
-                    title.sortTitle ?? "",
-                    facet,
-                  ]}
-                  onSelect={() => handleCatalogTitleSelect(title)}
-                >
-                  <div className="flex flex-1 items-center gap-2">
-                    {Icon ? <Icon className="h-4 w-4" /> : null}
-                    <span className="truncate">{title.name}</span>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {sectionLabelForFacet(t, facet)}
-                      {year}
-                    </span>
-                  </div>
-                </CommandItem>
-              );
-            })}
-          </CommandGroup>
-        ) : null}
+        {!showCatalogBeforeNavigation ? catalogCommandGroup : null}
       </CommandList>
     </CommandDialog>
   );

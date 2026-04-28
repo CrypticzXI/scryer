@@ -21,6 +21,7 @@ flate2 = "1"
 async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "query", "rustls", "gzip", "brotli", "zstd", "deflate", "stream"] }
 p256 = { workspace = true }
+ml-dsa = "0.1.0-rc.9"
 rcgen = "0.14"
 ring = { workspace = true }
 tracing = { workspace = true }

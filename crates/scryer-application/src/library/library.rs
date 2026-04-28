@@ -71,13 +71,17 @@ use scan_refresh::{
     background_refresh_movies, background_refresh_series,
     maybe_probe_existing_series_title_for_background_refresh,
 };
-use scan_title_files::{
-    FileSourceSnapshot, PlannedTitleScanFile, PlannedTitleScanRecord, TitleScanLayoutSummary,
-    build_title_episode_lookup, classify_title_scan_layout, file_source_signature_from_metadata,
-    file_source_snapshot_from_library_file, merge_title_scan_option_tags,
-    resolve_target_episodes_from_lookup, title_media_file_matches_snapshot,
+pub(crate) use scan_title_files::{
+    FileSourceSnapshot, PlannedTitleScanFile, PlannedTitleScanRecord,
+    file_source_signature_from_metadata, file_source_snapshot_from_library_file,
 };
-use scan_title_finalize::{finalize_movie_scan_file, finalize_title_scan_file};
+use scan_title_files::{
+    TitleScanLayoutSummary, build_title_episode_lookup, classify_title_scan_layout,
+    merge_title_scan_option_tags, resolve_target_episodes_from_lookup,
+    title_media_file_matches_snapshot,
+};
+use scan_title_finalize::finalize_movie_scan_file;
+pub(crate) use scan_title_finalize::finalize_title_scan_file;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryScanTitleWalkMode {
@@ -213,7 +217,7 @@ impl TitleScanProgressDelta {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct TitleScanFinalizeOutcome {
+pub(crate) struct TitleScanFinalizeOutcome {
     progress: TitleScanProgressDelta,
     title_updated: bool,
 }

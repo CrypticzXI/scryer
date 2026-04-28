@@ -624,7 +624,7 @@ pub(super) async fn process_series_full_scan_candidate(
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
-    let item_path = candidate.folder_path.to_string_lossy().trim().to_string();
+    let item_path = candidate.item_path().trim().to_string();
     let folder_name = match candidate.folder_name.as_deref() {
         Some(name) => name.to_string(),
         None => {
@@ -641,16 +641,28 @@ pub(super) async fn process_series_full_scan_candidate(
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
     ) {
-        merge_series_title_work_for_index(
-            app,
-            workset,
-            existing_titles,
-            index,
-            &candidate.folder_path,
-            LibraryScanTitleWalkMode::Full,
-            false,
-        )
-        .await;
+        if let Some(file) = candidate.source_file.as_ref() {
+            merge_library_scan_title_work(
+                workset,
+                episodic_title_work(
+                    existing_titles[index].clone(),
+                    vec![file.clone()],
+                    LibraryScanTitleWalkMode::Full,
+                    false,
+                ),
+            );
+        } else {
+            merge_series_title_work_for_index(
+                app,
+                workset,
+                existing_titles,
+                index,
+                &candidate.folder_path,
+                LibraryScanTitleWalkMode::Full,
+                false,
+            )
+            .await;
+        }
         summary.matched += 1;
         clear_library_scan_unmatched_item(app, facet, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
@@ -836,14 +848,10 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<()> {
+    let item_path = candidate.item_path().trim().to_string();
     let Some(folder_name) = candidate.folder_name.as_deref() else {
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(
-            app,
-            facet,
-            candidate.folder_path.to_string_lossy().as_ref(),
-        )
-        .await?;
+        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     };
@@ -877,23 +885,47 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
     ) {
-        merge_series_title_work_for_index(
-            app,
-            workset,
-            existing_titles,
-            index,
-            &candidate.folder_path,
-            LibraryScanTitleWalkMode::Full,
-            false,
-        )
-        .await;
+        if let Some(file) = candidate.source_file.as_ref() {
+            merge_library_scan_title_work(
+                workset,
+                episodic_title_work(
+                    existing_titles[index].clone(),
+                    vec![file.clone()],
+                    LibraryScanTitleWalkMode::Full,
+                    false,
+                ),
+            );
+        } else {
+            merge_series_title_work_for_index(
+                app,
+                workset,
+                existing_titles,
+                index,
+                &candidate.folder_path,
+                LibraryScanTitleWalkMode::Full,
+                false,
+            )
+            .await;
+        }
         summary.matched += 1;
-        clear_library_scan_unmatched_item(
-            app,
+        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+        coordinator.mark_title_match_completed(1).await;
+        return Ok(());
+    }
+
+    if candidate.source_file.is_some() {
+        let unmatched_item = build_series_unmatched_scan_item(
             facet,
-            candidate.folder_path.to_string_lossy().as_ref(),
-        )
-        .await?;
+            session_id,
+            library_path,
+            &candidate,
+            batch_search_results,
+            Some("title_not_in_catalog"),
+            None,
+        );
+        persist_library_scan_unmatched_item(app, &unmatched_item).await?;
+        unmatched_items.push(unmatched_item);
+        summary.unmatched += 1;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     }
@@ -923,12 +955,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
                 summary.imported += 1;
             }
             summary.matched += 1;
-            clear_library_scan_unmatched_item(
-                app,
-                facet,
-                candidate.folder_path.to_string_lossy().as_ref(),
-            )
-            .await?;
+            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
         }
         Err(error) => {

@@ -455,6 +455,7 @@ pub struct PendingImportItem {
     pub id: String,
     pub facet: scryer_domain::MediaFacet,
     pub status: PendingImportStatus,
+    pub title_id: Option<String>,
     pub display_name: String,
     pub path: String,
     pub folder_path: Option<String>,
@@ -468,6 +469,24 @@ pub struct PendingImportItem {
 pub struct PendingImportConnection {
     pub total: i64,
     pub items: Vec<PendingImportItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingImportBindingFilePreview {
+    pub file_path: String,
+    pub file_name: String,
+    pub size_bytes: i64,
+    pub parsed_season: Option<u32>,
+    pub parsed_episodes: Vec<u32>,
+    pub parsed_absolute_numbers: Vec<u32>,
+    pub suggested_episode_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingImportBindingPreview {
+    pub title: scryer_domain::Title,
+    pub file: PendingImportBindingFilePreview,
+    pub available_episodes: Vec<scryer_domain::Episode>,
 }
 
 #[derive(Clone, Debug)]
@@ -569,6 +588,7 @@ pub struct LibraryScanUnmatchedItem {
     pub id: String,
     pub facet: scryer_domain::MediaFacet,
     pub status: PendingImportStatus,
+    pub title_id: Option<String>,
     pub scan_session_id: String,
     pub scan_root: String,
     pub item_path: String,

@@ -6,15 +6,26 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { TitlePoster } from "@/components/title-poster";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import type { ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetForView } from "@/lib/facets/registry";
-import { ignorePendingImportMutation, resolvePendingImportMutation } from "@/lib/graphql/mutations";
-import { pendingImportsQuery, searchMetadataQuery } from "@/lib/graphql/queries";
+import {
+  bindPendingImportMutation,
+  ignorePendingImportMutation,
+  resolvePendingImportMutation,
+} from "@/lib/graphql/mutations";
+import {
+  pendingImportBindingPreviewQuery,
+  pendingImportsQuery,
+  searchMetadataQuery,
+} from "@/lib/graphql/queries";
 import type {
+  PendingImportBindingEpisode,
+  PendingImportBindingPreview,
   PendingImportConnection,
   PendingImportItem,
   PendingImportStatus,
@@ -58,6 +69,49 @@ function summarizePendingImport(item: PendingImportItem): string {
   return parts.join(" • ");
 }
 
+function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string {
+  if (episode.episodeLabel?.trim()) {
+    return episode.episodeLabel.trim();
+  }
+
+  const season = episode.seasonNumber?.trim();
+  const episodeNumber = episode.episodeNumber?.trim();
+  if (season && episodeNumber) {
+    return `S${season.padStart(2, "0")}E${episodeNumber.padStart(2, "0")}`;
+  }
+  if (episodeNumber) {
+    return `Episode ${episodeNumber}`;
+  }
+  return episode.title?.trim() || episode.id;
+}
+
+function groupBindingEpisodes(episodes: PendingImportBindingEpisode[]) {
+  const groups = new Map<string, PendingImportBindingEpisode[]>();
+  for (const episode of episodes) {
+    const key = episode.seasonNumber?.trim() || "specials";
+    const group = groups.get(key);
+    if (group) {
+      group.push(episode);
+    } else {
+      groups.set(key, [episode]);
+    }
+  }
+
+  for (const group of groups.values()) {
+    group.sort((left, right) => {
+      const leftNumber = Number.parseInt(left.episodeNumber?.replace(/\D/g, "") || "0", 10);
+      const rightNumber = Number.parseInt(right.episodeNumber?.replace(/\D/g, "") || "0", 10);
+      return leftNumber - rightNumber;
+    });
+  }
+
+  return Array.from(groups.entries()).sort(([left], [right]) => {
+    if (left === "specials") return 1;
+    if (right === "specials") return -1;
+    return Number.parseInt(left, 10) - Number.parseInt(right, 10);
+  });
+}
+
 export const PendingImportsContainer = React.memo(function PendingImportsContainer({
   view,
 }: PendingImportsContainerProps) {
@@ -88,6 +142,10 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [searchQuery, setSearchQuery] = React.useState("");
   const [searchResults, setSearchResults] = React.useState<MetadataSearchResult[]>([]);
   const [searching, setSearching] = React.useState(false);
+  const [bindingPreview, setBindingPreview] = React.useState<PendingImportBindingPreview | null>(null);
+  const [bindingLoading, setBindingLoading] = React.useState(false);
+  const [bindingError, setBindingError] = React.useState<string | null>(null);
+  const [selectedEpisodeIds, setSelectedEpisodeIds] = React.useState<string[]>([]);
   const [resolvingItemId, setResolvingItemId] = React.useState<string | null>(null);
   const [ignoringItemId, setIgnoringItemId] = React.useState<string | null>(null);
   const [ignoreTargetItem, setIgnoreTargetItem] = React.useState<PendingImportItem | null>(null);
@@ -97,6 +155,10 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setSearchQuery("");
     setSearchResults([]);
     setSearching(false);
+    setBindingPreview(null);
+    setBindingLoading(false);
+    setBindingError(null);
+    setSelectedEpisodeIds([]);
     setIgnoreTargetItem(null);
   }, []);
 
@@ -288,11 +350,38 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   }, [activeItemRef, clearActiveItem, ignoredConnection.items, pendingConnection.items]);
 
   const handleOpenSearch = React.useCallback((item: PendingImportItem) => {
-    const seedQuery = item.query.trim() || item.displayName.trim();
     setActiveItemRef({ id: item.id, status: item.status });
-    setSearchQuery(seedQuery);
     setSearchResults([]);
-  }, []);
+    setBindingPreview(null);
+    setBindingError(null);
+    setSelectedEpisodeIds([]);
+
+    if (item.titleId) {
+      setSearchQuery("");
+      setBindingLoading(true);
+      void client
+        .query(pendingImportBindingPreviewQuery, {
+          pendingImportId: item.id,
+        })
+        .toPromise()
+        .then(({ data, error }) => {
+          if (error) throw error;
+          const preview = data?.pendingImportBindingPreview as PendingImportBindingPreview | undefined;
+          setBindingPreview(preview ?? null);
+          setSelectedEpisodeIds(preview?.file.suggestedEpisodeIds ?? []);
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : "Failed to load binding preview";
+          setBindingError(message);
+          setGlobalStatus(message);
+        })
+        .finally(() => setBindingLoading(false));
+      return;
+    }
+
+    const seedQuery = item.query.trim() || item.displayName.trim();
+    setSearchQuery(seedQuery);
+  }, [client, setGlobalStatus]);
 
   const handleRequestIgnore = React.useCallback((item: PendingImportItem) => {
     if (item.status !== "pending") {
@@ -338,6 +427,45 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     }
   }, [activeItem, clearActiveItem, client, refreshAll, setGlobalStatus, t]);
 
+  const handleBind = React.useCallback(async () => {
+    if (!activeItem) {
+      return;
+    }
+    if (selectedEpisodeIds.length === 0) {
+      setGlobalStatus("Select at least one episode.");
+      return;
+    }
+
+    setResolvingItemId(activeItem.id);
+    try {
+      const { data, error: mutationError } = await client
+        .mutation(bindPendingImportMutation, {
+          input: {
+            pendingImportId: activeItem.id,
+            episodeIds: selectedEpisodeIds,
+          },
+        })
+        .toPromise();
+      if (mutationError) {
+        throw mutationError;
+      }
+
+      const result = data?.bindPendingImport as ResolvePendingImportResult | undefined;
+      window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+      await refreshAll();
+      setGlobalStatus(
+        t("pendingImports.resolveSuccess", {
+          name: result?.title?.name?.trim() || activeItem.displayName,
+        }),
+      );
+      clearActiveItem();
+    } catch (err) {
+      setGlobalStatus(err instanceof Error ? err.message : "Failed to bind pending import.");
+    } finally {
+      setResolvingItemId(null);
+    }
+  }, [activeItem, clearActiveItem, client, refreshAll, selectedEpisodeIds, setGlobalStatus, t]);
+
   const handleIgnore = React.useCallback(async () => {
     if (!ignoreTargetItem || ignoreTargetItem.status !== "pending") {
       return;
@@ -375,6 +503,20 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       setIgnoringItemId(null);
     }
   }, [activeItemRef, clearActiveItem, client, ignoreTargetItem, refreshAll, setGlobalStatus, t]);
+
+  const toggleEpisodeSelection = React.useCallback((episodeId: string, checked: boolean) => {
+    setSelectedEpisodeIds((current) => {
+      if (checked) {
+        return current.includes(episodeId) ? current : [...current, episodeId];
+      }
+      return current.filter((value) => value !== episodeId);
+    });
+  }, []);
+
+  const bindingGroups = React.useMemo(
+    () => groupBindingEpisodes(bindingPreview?.availableEpisodes ?? []),
+    [bindingPreview],
+  );
 
   const renderPagination = React.useCallback((
     status: PendingImportStatus,
@@ -430,7 +572,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           : false;
         const isResolving = resolvingItemId === item.id;
         const isIgnoring = ignoringItemId === item.id;
-        const isBusy = isResolving || isIgnoring;
+        const isBusy = isResolving || isIgnoring || (isActive && bindingLoading);
 
         return (
           <Card key={item.id} className="border-border/80 bg-card/60">
@@ -448,8 +590,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                     onClick={() => handleOpenSearch(item)}
                     disabled={isBusy}
                   >
-                    <Search className="mr-2 h-4 w-4" />
-                    {t("pendingImports.searchAction")}
+                    {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
+                    {item.titleId ? "Bind Episodes" : t("pendingImports.searchAction")}
                   </Button>
                   {item.status === "pending" ? (
                     <Button
@@ -476,69 +618,202 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                   <span className="break-all text-muted-foreground">{item.folderPath}</span>
                 </div>
               ) : null}
+              {item.titleId ? (
+                <div>
+                  <span className="font-medium text-foreground">Known title:</span>{" "}
+                  <span className="break-all text-muted-foreground">{item.titleId}</span>
+                </div>
+              ) : null}
               {isActive ? (
                 <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
-                  <Input
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder={t("pendingImports.searchPlaceholder")}
-                    disabled={isBusy}
-                  />
-
-                  {searching ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {t("pendingImports.searching")}
-                    </div>
-                  ) : null}
-
-                  {!searching && searchQuery.trim() && searchResults.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">
-                      {t("pendingImports.noSearchResults")}
-                    </div>
-                  ) : null}
-
-                  <div className="space-y-3">
-                    {searchResults.map((result) => (
-                      <div
-                        key={`${item.id}-${result.tvdbId}`}
-                        className="flex gap-3 rounded-lg border border-border bg-card/40 p-3"
-                      >
-                        <div className="h-24 w-16 flex-none overflow-hidden rounded-md border border-border bg-muted">
-                          {result.posterUrl ? (
-                            <TitlePoster src={result.posterUrl} alt={result.name} />
-                          ) : null}
+                  {item.titleId ? (
+                    <>
+                      {bindingLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading episode bindings...
                         </div>
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-medium text-foreground">{result.name}</span>
-                            {result.year ? (
-                              <span className="text-xs text-muted-foreground">{result.year}</span>
-                            ) : null}
-                            <span className="text-xs text-muted-foreground">TVDB {result.tvdbId}</span>
+                      ) : null}
+                      {bindingError ? (
+                        <div className="text-sm text-destructive">{bindingError}</div>
+                      ) : null}
+                      {bindingPreview ? (
+                        <div className="space-y-4">
+                          <div className="space-y-1">
+                            <div className="text-sm font-medium text-foreground">
+                              {bindingPreview.title.name}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {bindingPreview.file.fileName}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Parsed hints:
+                              {bindingPreview.file.parsedSeason != null
+                                ? ` season ${bindingPreview.file.parsedSeason}`
+                                : ""}
+                              {bindingPreview.file.parsedEpisodes.length > 0
+                                ? ` • episodes ${bindingPreview.file.parsedEpisodes.join(", ")}`
+                                : ""}
+                              {bindingPreview.file.parsedAbsoluteNumbers.length > 0
+                                ? ` • absolute ${bindingPreview.file.parsedAbsoluteNumbers.join(", ")}`
+                                : ""}
+                            </div>
                           </div>
-                          {result.status ? (
-                            <div className="text-xs text-muted-foreground">{result.status}</div>
-                          ) : null}
-                          {result.overview ? (
-                            <p className="line-clamp-3 text-sm text-muted-foreground">
-                              {result.overview}
-                            </p>
-                          ) : null}
+
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={isBusy}
+                              onClick={() =>
+                                setSelectedEpisodeIds(bindingPreview.file.suggestedEpisodeIds)
+                              }
+                            >
+                              Use Suggested
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={isBusy}
+                              onClick={() => setSelectedEpisodeIds([])}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+
+                          <div className="space-y-4">
+                            {bindingGroups.map(([seasonKey, episodes]) => (
+                              <div key={seasonKey} className="space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-medium text-foreground">
+                                    {seasonKey === "specials" ? "Specials" : `Season ${seasonKey}`}
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={isBusy}
+                                    onClick={() =>
+                                      setSelectedEpisodeIds((current) => {
+                                        const next = new Set(current);
+                                        for (const episode of episodes) {
+                                          next.add(episode.id);
+                                        }
+                                        return Array.from(next);
+                                      })
+                                    }
+                                  >
+                                    Select Season
+                                  </Button>
+                                </div>
+                                <div className="space-y-2 rounded-md border border-border/70 p-3">
+                                  {episodes.map((episode) => (
+                                    <label
+                                      key={episode.id}
+                                      className="flex items-start gap-3 text-sm text-foreground"
+                                    >
+                                      <Checkbox
+                                        checked={selectedEpisodeIds.includes(episode.id)}
+                                        onCheckedChange={(checked) =>
+                                          toggleEpisodeSelection(episode.id, Boolean(checked))
+                                        }
+                                        disabled={isBusy}
+                                      />
+                                      <span className="min-w-0">
+                                        {formatBindingEpisodeLabel(episode)}
+                                        {!episode.monitored ? (
+                                          <span className="ml-2 text-xs text-muted-foreground">
+                                            unmonitored
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              disabled={isBusy || selectedEpisodeIds.length === 0}
+                              onClick={() => void handleBind()}
+                            >
+                              {isResolving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                              Bind Selected Episodes
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex flex-none items-start">
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => void handleResolve(String(result.tvdbId))}
-                            disabled={isBusy}
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <Input
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder={t("pendingImports.searchPlaceholder")}
+                        disabled={isBusy}
+                      />
+
+                      {searching ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {t("pendingImports.searching")}
+                        </div>
+                      ) : null}
+
+                      {!searching && searchQuery.trim() && searchResults.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">
+                          {t("pendingImports.noSearchResults")}
+                        </div>
+                      ) : null}
+
+                      <div className="space-y-3">
+                        {searchResults.map((result) => (
+                          <div
+                            key={`${item.id}-${result.tvdbId}`}
+                            className="flex gap-3 rounded-lg border border-border bg-card/40 p-3"
                           >
-                            {t("pendingImports.match")}
-                          </Button>
-                        </div>
+                            <div className="h-24 w-16 flex-none overflow-hidden rounded-md border border-border bg-muted">
+                              {result.posterUrl ? (
+                                <TitlePoster src={result.posterUrl} alt={result.name} />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium text-foreground">{result.name}</span>
+                                {result.year ? (
+                                  <span className="text-xs text-muted-foreground">{result.year}</span>
+                                ) : null}
+                                <span className="text-xs text-muted-foreground">TVDB {result.tvdbId}</span>
+                              </div>
+                              {result.status ? (
+                                <div className="text-xs text-muted-foreground">{result.status}</div>
+                              ) : null}
+                              {result.overview ? (
+                                <p className="line-clamp-3 text-sm text-muted-foreground">
+                                  {result.overview}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex flex-none items-start">
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => void handleResolve(String(result.tvdbId))}
+                                disabled={isBusy}
+                              >
+                                {t("pendingImports.match")}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    </>
+                  )}
 
                   <div className="flex justify-end">
                     <Button
@@ -559,7 +834,12 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     </div>
   ), [
     activeItemRef,
+    bindingError,
+    bindingGroups,
+    bindingLoading,
+    bindingPreview,
     clearActiveItem,
+    handleBind,
     handleOpenSearch,
     handleRequestIgnore,
     handleResolve,
@@ -568,7 +848,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     searchQuery,
     searchResults,
     searching,
+    selectedEpisodeIds,
     t,
+    toggleEpisodeSelection,
   ]);
 
   return (

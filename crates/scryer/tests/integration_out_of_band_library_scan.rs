@@ -1,0 +1,458 @@
+#![recursion_limit = "256"]
+
+mod common;
+
+use std::path::{Path, PathBuf};
+
+use common::TestContext;
+use scryer_application::{
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    PendingImportStatus, ShowRepository, TitleRepository,
+};
+use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User};
+use scryer_infrastructure::SettingDefinitionSeed;
+
+fn admin() -> User {
+    User::new_admin("admin")
+}
+
+async fn seed_media_path_settings(ctx: &TestContext) {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "series.path".into(),
+                data_type: "string".into(),
+                default_value_json: "\"/data/series\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "anime.path".into(),
+                data_type: "string".into(),
+                default_value_json: "\"/data/anime\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("seed media path setting definitions");
+}
+
+async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
+    ctx.settings_store
+        .upsert_setting_value(
+            "media",
+            key_name,
+            None,
+            serde_json::to_string(value).expect("serialize setting value"),
+            "integration_test",
+            None,
+        )
+        .await
+        .expect("upsert media path setting");
+}
+
+async fn seed_series_title(
+    ctx: &TestContext,
+    id: &str,
+    name: &str,
+    facet: MediaFacet,
+    media_root: &Path,
+    folder_path: Option<&Path>,
+    tvdb_id: Option<&str>,
+) -> Title {
+    let title = Title {
+        id: id.to_string(),
+        name: name.to_string(),
+        facet,
+        monitored: true,
+        tags: vec![format!(
+            "scryer:root-folder:{}",
+            media_root.to_string_lossy()
+        )],
+        external_ids: tvdb_id
+            .map(|value| {
+                vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: value.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        banner_url: None,
+        banner_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        folder_path: folder_path.map(|path| path.to_string_lossy().to_string()),
+    };
+    ctx.catalog.create(title.clone()).await.expect("seed title");
+    title
+}
+
+async fn seed_collection(ctx: &TestContext, title: &Title, index: u32) -> Collection {
+    let collection = Collection {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_type: scryer_domain::CollectionType::Season,
+        collection_index: index.to_string(),
+        label: Some(format!("Season {index}")),
+        ordered_path: None,
+        narrative_order: None,
+        first_episode_number: Some("1".to_string()),
+        last_episode_number: Some("99".to_string()),
+        interstitial_movie: None,
+        specials_movies: vec![],
+        interstitial_season_episode: None,
+        monitored: true,
+        created_at: chrono::Utc::now(),
+    };
+    ctx.catalog
+        .create_collection(collection.clone())
+        .await
+        .expect("create collection");
+    collection
+}
+
+async fn seed_episode(
+    ctx: &TestContext,
+    title: &Title,
+    collection: &Collection,
+    episode_number: u32,
+) -> Episode {
+    let episode = Episode {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_id: Some(collection.id.clone()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some(episode_number.to_string()),
+        season_number: Some(collection.collection_index.clone()),
+        episode_label: Some(format!(
+            "S{:02}E{:02}",
+            collection.collection_index.parse::<u32>().unwrap_or(1),
+            episode_number
+        )),
+        title: Some(format!("Episode {episode_number}")),
+        air_date: None,
+        duration_seconds: Some(1440),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        monitored: true,
+        created_at: chrono::Utc::now(),
+    };
+    ctx.catalog
+        .create_episode(episode.clone())
+        .await
+        .expect("create episode");
+    episode
+}
+
+fn write_fake_media_file(path: &Path) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create parent directory");
+    }
+    std::fs::write(path, b"not a real video").expect("write fake media file");
+}
+
+#[tokio::test]
+async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_bind() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title_dir = media_root.path().join("Known Show");
+    std::fs::create_dir_all(&title_dir).expect("create title directory");
+    let title = seed_series_title(
+        &ctx,
+        "title-known",
+        "Known Show",
+        MediaFacet::Series,
+        media_root.path(),
+        Some(&title_dir),
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let first_episode = seed_episode(&ctx, &title, &season, 1).await;
+    let _second_episode = seed_episode(&ctx, &title, &season, 2).await;
+
+    let unmanaged_file = title_dir.join("Known Show - bonus feature.mkv");
+    write_fake_media_file(&unmanaged_file);
+
+    let actor = admin();
+    let summary = ctx
+        .app
+        .scan_title_library(&actor, &title.id)
+        .await
+        .expect("scan title library");
+    assert_eq!(summary.unmatched, 1);
+
+    let pending = ctx
+        .app
+        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .await
+        .expect("list pending imports");
+    assert_eq!(pending.total, 1);
+    assert_eq!(pending.items.len(), 1);
+
+    let item = &pending.items[0];
+    assert_eq!(item.title_id.as_deref(), Some(title.id.as_str()));
+    assert_eq!(PathBuf::from(&item.path), unmanaged_file);
+
+    let preview = ctx
+        .app
+        .preview_title_bound_pending_import(&actor, &item.id)
+        .await
+        .expect("preview title-bound pending import");
+    assert_eq!(preview.title.id, title.id);
+    assert!(preview.file.suggested_episode_ids.is_empty());
+    assert_eq!(preview.available_episodes.len(), 2);
+
+    let bind_result = ctx
+        .app
+        .bind_title_bound_pending_import(
+            &actor,
+            &item.id,
+            None,
+            std::slice::from_ref(&first_episode.id),
+        )
+        .await
+        .expect("bind title-bound pending import");
+    assert_eq!(bind_result.created, false);
+
+    let pending_after = ctx
+        .app
+        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .await
+        .expect("list pending imports after bind");
+    assert_eq!(pending_after.total, 0);
+
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list title media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].episode_id.as_deref(), Some(first_episode.id.as_str()));
+    assert_eq!(PathBuf::from(&media_files[0].file_path), unmanaged_file);
+}
+
+#[tokio::test]
+async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title_dir = media_root.path().join("Removal Show");
+    std::fs::create_dir_all(&title_dir).expect("create title directory");
+    let title = seed_series_title(
+        &ctx,
+        "title-removal",
+        "Removal Show",
+        MediaFacet::Series,
+        media_root.path(),
+        Some(&title_dir),
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let _first_episode = seed_episode(&ctx, &title, &season, 1).await;
+
+    let unmanaged_file = title_dir.join("Removal Show - notes.mkv");
+    write_fake_media_file(&unmanaged_file);
+
+    let actor = admin();
+    ctx.app
+        .scan_title_library(&actor, &title.id)
+        .await
+        .expect("initial title scan");
+
+    let pending_before = ctx
+        .app
+        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .await
+        .expect("list pending imports before delete");
+    assert_eq!(pending_before.total, 1);
+
+    std::fs::remove_file(&unmanaged_file).expect("remove unmanaged file");
+
+    ctx.app
+        .scan_title_library(&actor, &title.id)
+        .await
+        .expect("rescan title after delete");
+
+    let pending_after = ctx
+        .app
+        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .await
+        .expect("list pending imports after delete");
+    assert_eq!(pending_after.total, 0);
+}
+
+#[tokio::test]
+async fn loose_root_series_file_imports_into_existing_title_without_rewriting_folder_path() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title = seed_series_title(
+        &ctx,
+        "title-loose",
+        "Loose Show",
+        MediaFacet::Series,
+        media_root.path(),
+        None,
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let first_episode = seed_episode(&ctx, &title, &season, 1).await;
+
+    let loose_file = media_root.path().join("Loose.Show.S01E01.mkv");
+    write_fake_media_file(&loose_file);
+
+    let actor = admin();
+    let summary = ctx
+        .app
+        .scan_library(&actor, MediaFacet::Series)
+        .await
+        .expect("full library scan");
+    assert_eq!(summary.unmatched, 0);
+
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list title media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].episode_id.as_deref(), Some(first_episode.id.as_str()));
+    assert_eq!(PathBuf::from(&media_files[0].file_path), loose_file);
+
+    let refreshed_title = ctx
+        .catalog
+        .get_by_id(&title.id)
+        .await
+        .expect("load refreshed title")
+        .expect("title should exist");
+    assert_eq!(refreshed_title.folder_path, None);
+}
+
+#[tokio::test]
+async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title_dir = media_root.path().join("Existing Folder Show");
+    std::fs::create_dir_all(&title_dir).expect("create title directory");
+    let title = seed_series_title(
+        &ctx,
+        "title-existing-folder",
+        "Existing Folder Show",
+        MediaFacet::Series,
+        media_root.path(),
+        Some(&title_dir),
+        Some("123456"),
+    )
+    .await;
+    let missing_file = media_root.path().join("Existing.Folder.Show.S01E01.mkv");
+    let now = chrono::Utc::now().to_rfc3339();
+    let pending_item = LibraryScanUnmatchedItem {
+        id: Id::new().0,
+        facet: MediaFacet::Series,
+        status: PendingImportStatus::Pending,
+        title_id: None,
+        scan_session_id: "test-session".to_string(),
+        scan_root: media_root.path().to_string_lossy().to_string(),
+        item_path: missing_file.to_string_lossy().to_string(),
+        display_name: "Existing.Folder.Show.S01E01".to_string(),
+        query: "Existing Folder Show".to_string(),
+        year_hint: None,
+        reason_code: "test_missing_loose_file".to_string(),
+        error_message: None,
+        search_attempts: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let pending_id = ctx
+        .library_state
+        .upsert_library_scan_unmatched_item(&pending_item)
+        .await
+        .expect("insert unmatched item");
+
+    let actor = admin();
+    let result = ctx
+        .app
+        .resolve_pending_import(&actor, &pending_id, "123456")
+        .await;
+    assert!(result.is_err(), "missing source file should not resolve");
+
+    let refreshed_title = ctx
+        .catalog
+        .get_by_id(&title.id)
+        .await
+        .expect("load refreshed title")
+        .expect("title should exist");
+    assert_eq!(
+        refreshed_title.folder_path.as_deref(),
+        Some(title_dir.to_string_lossy().as_ref())
+    );
+}

@@ -10,6 +10,7 @@ use crate::acquisition_release_search::{
     ReleaseAutoDecisionCode, annotate_auto_decision, interstitial_movie_search_title,
     serialize_decision_explanation,
 };
+use crate::contracts::{SubmissionConflictPolicy, SubmissionScopeConflict, WantedSearchOutcome};
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
@@ -1081,7 +1082,7 @@ fn submission_is_active_or_completed(
     )
 }
 
-fn submission_blocks_wanted_item(
+pub(crate) fn submission_blocks_wanted_item(
     submission: &DownloadSubmission,
     item: &WantedItem,
     episode_collection_id: Option<&str>,
@@ -2682,12 +2683,20 @@ async fn process_single_wanted_item(
                 } else {
                     direct_download_submission_scope_for_wanted_item(item, episode.as_ref())
                 };
+                let covered_wanted_item_ids = app
+                    .covered_wanted_item_ids_for_submission_scope(
+                        &title.id,
+                        &submission_scope,
+                        &item.id,
+                    )
+                    .await?;
 
                 app.services
                     .workflow
                     .acquisition_state
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: item.id.clone(),
+                        covered_wanted_item_ids,
                         search_count: item.search_count + 1,
                         current_score: item.current_score,
                         grabbed_release: grabbed_json,
@@ -3183,7 +3192,11 @@ impl AppUseCase {
         Ok(vec![])
     }
 
-    pub async fn trigger_title_wanted_search(&self, title_id: &str) -> AppResult<usize> {
+    pub async fn trigger_title_wanted_search(
+        &self,
+        title_id: &str,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<WantedSearchOutcome> {
         let title = self
             .services
             .catalog
@@ -3193,24 +3206,25 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
 
         let now = Utc::now();
-        let queued = if let Some(handler) = self.facet_registry.get(&title.facet) {
+        let outcome = if let Some(handler) = self.facet_registry.get(&title.facet) {
             if handler.has_episodes() {
                 self.queue_monitored_series_items_for_search(&title, &now)
                     .await?
             } else if title.monitored {
-                self.queue_monitored_movie_for_search(&title, &now).await?
+                self.queue_monitored_movie_for_search(&title, &now, conflict_policy)
+                    .await?
             } else {
-                0
+                WantedSearchOutcome::default()
             }
         } else {
-            0
+            WantedSearchOutcome::default()
         };
 
-        if queued > 0 {
+        if outcome.queued_count > 0 {
             self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
-        Ok(queued)
+        Ok(outcome)
     }
 
     async fn wanted_item_is_mismatch_recovery_candidate(
@@ -3378,7 +3392,14 @@ impl AppUseCase {
         &self,
         title_id: &str,
         season_number: u32,
-    ) -> AppResult<usize> {
+    ) -> AppResult<WantedSearchOutcome> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
         let season_str = season_number.to_string();
         let items = self
             .services
@@ -3396,33 +3417,33 @@ impl AppUseCase {
             .await?;
 
         let now = Utc::now();
-        let mut queued = 0usize;
+        let next_search_at = now.to_rfc3339();
+        let mut outcome = WantedSearchOutcome::default();
         for item in &items {
             if item.season_number.as_deref() == Some(season_str.as_str()) {
-                self.services
-                    .workflow
-                    .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id.clone(),
-                        next_search_at: Some(now.to_rfc3339()),
-                        last_search_at: item.last_search_at.clone(),
-                        search_count: item.search_count,
-                        current_score: item.current_score,
-                        grabbed_release: item.grabbed_release.clone(),
-                    })
+                let scheduled = self
+                    .schedule_wanted_item_search_if_unblocked(&title, item, &next_search_at)
                     .await?;
-                queued += 1;
+                outcome.queued_count += scheduled.queued_count;
+                outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
+                if outcome.conflict.is_none() {
+                    outcome.conflict = scheduled.conflict;
+                }
             }
         }
 
-        if queued > 0 {
+        if outcome.queued_count > 0 {
             self.runtime.acquisition.acquisition_wake.notify_one();
         }
 
-        Ok(queued)
+        Ok(outcome)
     }
 
-    pub async fn trigger_wanted_item_search(&self, wanted_item_id: &str) -> AppResult<()> {
+    pub async fn trigger_wanted_item_search(
+        &self,
+        wanted_item_id: &str,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<WantedSearchOutcome> {
         let item = self
             .services
             .workflow
@@ -3430,6 +3451,20 @@ impl AppUseCase {
             .get_wanted_item_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&item.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+
+        if let Some(outcome) = self
+            .handle_wanted_item_conflict(&title, &item, conflict_policy)
+            .await?
+        {
+            return Ok(outcome);
+        }
 
         let now = Utc::now();
         self.services
@@ -3445,7 +3480,11 @@ impl AppUseCase {
             })
             .await?;
         self.runtime.acquisition.acquisition_wake.notify_one();
-        Ok(())
+        Ok(WantedSearchOutcome {
+            queued_count: 1,
+            skipped_in_progress_count: 0,
+            conflict: None,
+        })
     }
 
     pub async fn pause_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
@@ -3534,11 +3573,245 @@ impl AppUseCase {
 }
 
 impl AppUseCase {
+    async fn wanted_item_submission_scope(&self, item: &WantedItem) -> AppResult<SubmissionScope> {
+        let episode = if let Some(episode_id) = item.episode_id.as_deref() {
+            self.services
+                .catalog
+                .shows
+                .get_episode_by_id(episode_id)
+                .await?
+        } else {
+            None
+        };
+        Ok(direct_download_submission_scope_for_wanted_item(
+            item,
+            episode.as_ref(),
+        ))
+    }
+
+    async fn wanted_item_blocking_submissions(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+    ) -> AppResult<Vec<SubmissionScopeConflict>> {
+        let scope = self.wanted_item_submission_scope(item).await?;
+        self.find_blocking_download_submissions(title, &scope).await
+    }
+
+    async fn handle_wanted_item_conflict(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<Option<WantedSearchOutcome>> {
+        let conflicts = self.wanted_item_blocking_submissions(title, item).await?;
+        if conflicts.is_empty() {
+            return Ok(None);
+        }
+
+        match conflict_policy {
+            SubmissionConflictPolicy::ReplaceEarly
+                if conflicts.iter().all(|conflict| conflict.replaceable) =>
+            {
+                self.replace_blocking_download_submissions(&conflicts)
+                    .await?;
+                Ok(None)
+            }
+            SubmissionConflictPolicy::ReplaceEarly | SubmissionConflictPolicy::Abort => {
+                let conflict = conflicts
+                    .iter()
+                    .find(|conflict| !conflict.replaceable)
+                    .cloned()
+                    .unwrap_or_else(|| conflicts[0].clone());
+                Ok(Some(WantedSearchOutcome {
+                    queued_count: 0,
+                    skipped_in_progress_count: 0,
+                    conflict: Some(conflict),
+                }))
+            }
+            SubmissionConflictPolicy::Skip => Ok(Some(WantedSearchOutcome {
+                queued_count: 0,
+                skipped_in_progress_count: 1,
+                conflict: Some(conflicts[0].clone()),
+            })),
+        }
+    }
+
+    pub(crate) async fn covered_wanted_item_ids_for_submission_scope(
+        &self,
+        title_id: &str,
+        scope: &SubmissionScope,
+        fallback_wanted_item_id: &str,
+    ) -> AppResult<Vec<String>> {
+        let items = self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(None, None, Some(title_id), None, None, 1000, 0)
+            .await?;
+        if items.is_empty() {
+            return Ok(if fallback_wanted_item_id.is_empty() {
+                Vec::new()
+            } else {
+                vec![fallback_wanted_item_id.to_string()]
+            });
+        }
+
+        let episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(title_id)
+            .await?;
+        let fake_submission = DownloadSubmission {
+            title_id: title_id.to_string(),
+            facet: String::new(),
+            download_client_id: None,
+            download_client_type: String::new(),
+            download_client_item_id: String::new(),
+            source_hint: None,
+            source_kind: None,
+            source_title: None,
+            request_signature: None,
+            scope: scope.clone(),
+        };
+
+        let mut covered = items
+            .iter()
+            .filter(|item| {
+                let episode_collection_id = item.episode_id.as_ref().and_then(|episode_id| {
+                    episodes
+                        .iter()
+                        .find(|episode| &episode.id == episode_id)
+                        .and_then(|episode| episode.collection_id.as_deref())
+                });
+                item.id == fallback_wanted_item_id
+                    || submission_blocks_wanted_item(&fake_submission, item, episode_collection_id)
+            })
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        covered.sort();
+        covered.dedup();
+        if covered.is_empty() && !fallback_wanted_item_id.is_empty() {
+            covered.push(fallback_wanted_item_id.to_string());
+        }
+        Ok(covered)
+    }
+
+    pub(crate) async fn reset_wanted_items_for_submission_scope(
+        &self,
+        title_id: &str,
+        scope: &SubmissionScope,
+    ) -> AppResult<()> {
+        let wanted_item_ids = self
+            .covered_wanted_item_ids_for_submission_scope(title_id, scope, "")
+            .await?;
+        for wanted_item_id in wanted_item_ids {
+            if let Some(item) = self
+                .services
+                .workflow
+                .wanted_items
+                .get_wanted_item_by_id(&wanted_item_id)
+                .await?
+            {
+                self.services
+                    .workflow
+                    .wanted_items
+                    .schedule_wanted_item_search(&WantedSearchTransition {
+                        id: item.id,
+                        next_search_at: None,
+                        last_search_at: None,
+                        search_count: 0,
+                        current_score: None,
+                        grabbed_release: None,
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn schedule_wanted_item_search_if_unblocked(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+        next_search_at: &str,
+    ) -> AppResult<WantedSearchOutcome> {
+        self.schedule_wanted_item_search_with_policy(
+            title,
+            item,
+            next_search_at,
+            SubmissionConflictPolicy::Skip,
+        )
+        .await
+    }
+
+    async fn schedule_wanted_item_search_with_policy(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+        next_search_at: &str,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<WantedSearchOutcome> {
+        if let Some(outcome) = self
+            .handle_wanted_item_conflict(title, item, conflict_policy)
+            .await?
+        {
+            return Ok(outcome);
+        }
+
+        self.services
+            .workflow
+            .wanted_items
+            .schedule_wanted_item_search(&WantedSearchTransition {
+                id: item.id.clone(),
+                next_search_at: Some(next_search_at.to_string()),
+                last_search_at: item.last_search_at.clone(),
+                search_count: item.search_count,
+                current_score: item.current_score,
+                grabbed_release: item.grabbed_release.clone(),
+            })
+            .await?;
+
+        Ok(WantedSearchOutcome {
+            queued_count: 1,
+            skipped_in_progress_count: 0,
+            conflict: None,
+        })
+    }
+
+    async fn ensure_wanted_item_seeded_with_policy(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<WantedSearchOutcome> {
+        if let Some(outcome) = self
+            .handle_wanted_item_conflict(title, item, conflict_policy)
+            .await?
+        {
+            return Ok(outcome);
+        }
+
+        self.services
+            .workflow
+            .wanted_items
+            .ensure_wanted_item_seeded(item)
+            .await?;
+
+        Ok(WantedSearchOutcome {
+            queued_count: 1,
+            skipped_in_progress_count: 0,
+            conflict: None,
+        })
+    }
+
     async fn queue_monitored_movie_for_search(
         &self,
         title: &Title,
         now: &DateTime<Utc>,
-    ) -> AppResult<usize> {
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<WantedSearchOutcome> {
         let has_file = self
             .services
             .library
@@ -3549,7 +3822,7 @@ impl AppUseCase {
             .unwrap_or(false);
 
         if has_file {
-            return Ok(0);
+            return Ok(WantedSearchOutcome::default());
         }
 
         let next_search_at = now.to_rfc3339();
@@ -3561,22 +3834,17 @@ impl AppUseCase {
             .await?
         {
             if item.status == WantedStatus::Grabbed {
-                return Ok(0);
+                return Ok(WantedSearchOutcome::default());
             }
 
-            self.services
-                .workflow
-                .wanted_items
-                .schedule_wanted_item_search(&WantedSearchTransition {
-                    id: item.id.clone(),
-                    next_search_at: Some(next_search_at.clone()),
-                    last_search_at: item.last_search_at.clone(),
-                    search_count: item.search_count,
-                    current_score: item.current_score,
-                    grabbed_release: item.grabbed_release.clone(),
-                })
-                .await?;
-            return Ok(1);
+            return self
+                .schedule_wanted_item_search_with_policy(
+                    title,
+                    &item,
+                    &next_search_at,
+                    conflict_policy,
+                )
+                .await;
         }
 
         let baseline_date = title.first_aired.clone();
@@ -3603,19 +3871,15 @@ impl AppUseCase {
             updated_at: now.to_rfc3339(),
         };
 
-        self.services
-            .workflow
-            .wanted_items
-            .ensure_wanted_item_seeded(&item)
-            .await?;
-        Ok(1)
+        self.ensure_wanted_item_seeded_with_policy(title, &item, conflict_policy)
+            .await
     }
 
     async fn queue_monitored_series_items_for_search(
         &self,
         title: &Title,
         now: &DateTime<Utc>,
-    ) -> AppResult<usize> {
+    ) -> AppResult<WantedSearchOutcome> {
         let collections = self
             .services
             .catalog
@@ -3635,7 +3899,7 @@ impl AppUseCase {
             .filter_map(|file| file.episode_id.clone())
             .collect();
         let next_search_at = now.to_rfc3339();
-        let mut queued = 0usize;
+        let mut outcome = WantedSearchOutcome::default();
 
         for collection in &collections {
             if !collection.monitored {
@@ -3665,19 +3929,14 @@ impl AppUseCase {
                         continue;
                     }
 
-                    self.services
-                        .workflow
-                        .wanted_items
-                        .schedule_wanted_item_search(&WantedSearchTransition {
-                            id: item.id.clone(),
-                            next_search_at: Some(next_search_at.clone()),
-                            last_search_at: item.last_search_at.clone(),
-                            search_count: item.search_count,
-                            current_score: item.current_score,
-                            grabbed_release: item.grabbed_release.clone(),
-                        })
+                    let scheduled = self
+                        .schedule_wanted_item_search_if_unblocked(title, &item, &next_search_at)
                         .await?;
-                    queued += 1;
+                    outcome.queued_count += scheduled.queued_count;
+                    outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
+                    if outcome.conflict.is_none() {
+                        outcome.conflict = scheduled.conflict;
+                    }
                     continue;
                 }
 
@@ -3706,16 +3965,22 @@ impl AppUseCase {
                     updated_at: now.to_rfc3339(),
                 };
 
-                self.services
-                    .workflow
-                    .wanted_items
-                    .ensure_wanted_item_seeded(&item)
+                let scheduled = self
+                    .ensure_wanted_item_seeded_with_policy(
+                        title,
+                        &item,
+                        SubmissionConflictPolicy::Skip,
+                    )
                     .await?;
-                queued += 1;
+                outcome.queued_count += scheduled.queued_count;
+                outcome.skipped_in_progress_count += scheduled.skipped_in_progress_count;
+                if outcome.conflict.is_none() {
+                    outcome.conflict = scheduled.conflict;
+                }
             }
         }
 
-        Ok(queued)
+        Ok(outcome)
     }
 }
 

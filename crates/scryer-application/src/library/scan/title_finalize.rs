@@ -272,7 +272,7 @@ async fn ensure_movie_collection_for_file(
     }
 }
 
-pub(super) async fn finalize_title_scan_file(
+pub(crate) async fn finalize_title_scan_file(
     app: &AppUseCase,
     title: &Title,
     plan: PlannedTitleScanFile,

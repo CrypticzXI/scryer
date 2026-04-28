@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,6 +124,7 @@ pub(crate) type PreparedMovieLibraryScanEntryBatchReceiver =
 pub(crate) struct PreparedSeriesLibraryScanCandidate {
     pub(crate) folder_path: PathBuf,
     pub(crate) folder_name: Option<String>,
+    pub(crate) source_file: Option<LibraryFile>,
     pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
     pub(crate) query: String,
     pub(crate) year_hint: Option<u32>,
@@ -130,6 +132,16 @@ pub(crate) struct PreparedSeriesLibraryScanCandidate {
     pub(crate) title_match_candidates: Vec<String>,
     pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
+}
+
+impl PreparedSeriesLibraryScanCandidate {
+    pub(crate) fn item_path(&self) -> Cow<'_, str> {
+        if let Some(file) = self.source_file.as_ref() {
+            Cow::Borrowed(file.path.as_str())
+        } else {
+            self.folder_path.to_string_lossy()
+        }
+    }
 }
 
 pub(crate) async fn read_valid_movie_nfo_metadata(
@@ -797,6 +809,32 @@ pub(crate) async fn prepare_series_library_scan_candidates(
     Ok(prepared_results.into_iter().flatten().collect())
 }
 
+pub(crate) async fn prepare_series_library_scan_candidates_from_files(
+    files: &[LibraryFile],
+    library_path: &str,
+) -> AppResult<Vec<PreparedSeriesLibraryScanCandidate>> {
+    let mut prepare_set = tokio::task::JoinSet::new();
+
+    for (index, file) in files.iter().cloned().enumerate() {
+        let library_path = library_path.to_string();
+        prepare_set.spawn(async move {
+            Ok::<_, AppError>((
+                index,
+                prepare_series_library_scan_candidate_from_file(file, &library_path).await?,
+            ))
+        });
+    }
+
+    let mut prepared_results = vec![None; prepare_set.len()];
+    while let Some(result) = prepare_set.join_next().await {
+        let (index, candidate) =
+            result.map_err(|error| AppError::Repository(error.to_string()))??;
+        prepared_results[index] = Some(candidate);
+    }
+
+    Ok(prepared_results.into_iter().flatten().collect())
+}
+
 pub(crate) fn select_movie_metadata_from_batch_results(
     candidate: &PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
@@ -1279,6 +1317,7 @@ async fn prepare_series_library_scan_candidate(
         return Ok(PreparedSeriesLibraryScanCandidate {
             folder_path: folder,
             folder_name: None,
+            source_file: None,
             nfo_meta: None,
             query: String::new(),
             year_hint: None,
@@ -1324,7 +1363,46 @@ async fn prepare_series_library_scan_candidate(
     Ok(PreparedSeriesLibraryScanCandidate {
         folder_path: folder,
         folder_name,
+        source_file: None,
         nfo_meta,
+        query,
+        year_hint,
+        search_candidates,
+        title_match_candidates,
+        reduced_title_candidates,
+        metadata_lookup_attempted,
+    })
+}
+
+pub(crate) async fn prepare_series_library_scan_candidate_from_file(
+    file: LibraryFile,
+    library_path: &str,
+) -> AppResult<PreparedSeriesLibraryScanCandidate> {
+    let (raw_queries, year_hint) = extract_library_queries(&file.path, library_path);
+    let query = raw_queries
+        .first()
+        .cloned()
+        .unwrap_or_else(|| file.display_name.clone());
+    let metadata_lookup_attempted = !query.trim().is_empty();
+    let (search_candidates, title_match_candidates, reduced_title_candidates) =
+        if metadata_lookup_attempted {
+            let search_candidates = expand_search_candidates(&raw_queries);
+            let (title_match_candidates, reduced_title_candidates) =
+                build_title_match_candidates(&raw_queries, TitleMatchProfile::Series);
+            (
+                search_candidates,
+                title_match_candidates,
+                reduced_title_candidates,
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+
+    Ok(PreparedSeriesLibraryScanCandidate {
+        folder_path: PathBuf::from(&file.path),
+        folder_name: Some(file.display_name.clone()),
+        source_file: Some(file),
+        nfo_meta: None,
         query,
         year_hint,
         search_candidates,

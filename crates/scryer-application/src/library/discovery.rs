@@ -178,6 +178,44 @@ pub(crate) async fn list_child_directories(root: &Path) -> AppResult<Vec<PathBuf
         .collect())
 }
 
+pub(crate) async fn list_series_loose_root_files(root: &Path) -> AppResult<Vec<LibraryFile>> {
+    let mut entries = tokio::fs::read_dir(root).await.map_err(|error| {
+        AppError::Repository(format!("failed to read {}: {error}", root.display()))
+    })?;
+    let mut results = Vec::new();
+
+    while let Some(entry) = entries.next_entry().await.map_err(|error| {
+        AppError::Repository(format!("failed to read {}: {error}", root.display()))
+    })? {
+        let path = entry.path();
+        let file_type = entry.file_type().await.map_err(|error| {
+            AppError::Repository(format!("failed to inspect {}: {error}", path.display()))
+        })?;
+        if !file_type.is_file()
+            || should_skip_library_top_level_entry(&path, false)
+            || !is_allowed_video_path(&path)
+        {
+            continue;
+        }
+
+        results.push(LibraryFile {
+            path: path.to_string_lossy().to_string(),
+            display_name: path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        });
+    }
+
+    results.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(results)
+}
+
 pub(crate) async fn stream_child_directories_batched(
     root: &Path,
     batch_size: usize,

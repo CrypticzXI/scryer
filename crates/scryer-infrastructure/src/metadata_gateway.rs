@@ -274,9 +274,15 @@ pub struct SmgEnrollmentConfig {
 
 /// Signing materials for application-layer instance authentication.
 #[derive(Clone)]
-struct InstanceAuth {
-    private_key_pem: Arc<String>,
-    cert_der_b64: Arc<String>,
+enum InstanceAuth {
+    Legacy {
+        private_key_pem: Arc<String>,
+        cert_der_b64: Arc<String>,
+    },
+    Pq {
+        seed_b64: Arc<String>,
+        key_id: Arc<String>,
+    },
 }
 
 /// Tracks the state of mTLS enrollment to prevent rapid-fire retries on failure.
@@ -301,31 +307,84 @@ fn sha256_hex_bytes(data: &[u8]) -> String {
         })
 }
 
-/// Attach instance auth headers (X-Scryer-Cert, X-Scryer-Timestamp, X-Scryer-Signature)
-/// to a request builder. `body_bytes` is the raw body (POST) or query string (GET) to hash.
+/// Attach instance auth headers. Legacy certificate auth signs the historic
+/// `timestamp:hash` message, while PQ auth signs the full request target.
 fn apply_instance_auth_headers(
     req: reqwest::RequestBuilder,
     auth: &InstanceAuth,
+    method: &str,
+    url: &reqwest::Url,
+    legacy_hash_bytes: &[u8],
     body_bytes: &[u8],
 ) -> AppResult<reqwest::RequestBuilder> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| AppError::Repository(format!("system clock before UNIX_EPOCH: {e}")))?
         .as_secs() as i64;
-    let body_hash = sha256_hex_bytes(body_bytes);
-    let signature = smg_enrollment::sign_request(&auth.private_key_pem, timestamp, &body_hash)
-        .map_err(|e| AppError::Repository(format!("failed to sign request: {e}")))?;
-    debug!(
-        timestamp,
-        cert_b64_len = auth.cert_der_b64.len(),
-        sig_len = signature.len(),
-        body_hash,
-        "attaching X-Scryer-* instance auth headers"
-    );
-    Ok(req
-        .header("X-Scryer-Cert", &*auth.cert_der_b64)
-        .header("X-Scryer-Timestamp", timestamp.to_string())
-        .header("X-Scryer-Signature", signature))
+    match auth {
+        InstanceAuth::Legacy {
+            private_key_pem,
+            cert_der_b64,
+        } => {
+            let body_hash = sha256_hex_bytes(legacy_hash_bytes);
+            let signature = smg_enrollment::sign_request(private_key_pem, timestamp, &body_hash)
+                .map_err(|e| AppError::Repository(format!("failed to sign request: {e}")))?;
+            debug!(
+                timestamp,
+                cert_b64_len = cert_der_b64.len(),
+                sig_len = signature.len(),
+                body_hash,
+                "attaching legacy X-Scryer-* instance auth headers"
+            );
+            Ok(req
+                .header("X-Scryer-Cert", &**cert_der_b64)
+                .header("X-Scryer-Timestamp", timestamp.to_string())
+                .header("X-Scryer-Signature", signature))
+        }
+        InstanceAuth::Pq { seed_b64, key_id } => {
+            let body_hash = sha256_hex_bytes(body_bytes);
+            let host = canonical_request_host(url)?;
+            let path_and_query = canonical_request_path_and_query(url);
+            let signature = smg_enrollment::sign_pq_request(
+                seed_b64,
+                method,
+                &host,
+                &path_and_query,
+                timestamp,
+                &body_hash,
+            )
+            .map_err(|e| AppError::Repository(format!("failed to sign PQ request: {e}")))?;
+            debug!(
+                timestamp,
+                key_id = %key_id,
+                sig_len = signature.len(),
+                body_hash,
+                "attaching PQ X-Scryer-* instance auth headers"
+            );
+            Ok(req
+                .header("X-Scryer-Auth-Version", "pqsig-v1")
+                .header("X-Scryer-Key-Id", &**key_id)
+                .header("X-Scryer-Timestamp", timestamp.to_string())
+                .header("X-Scryer-Signature", signature))
+        }
+    }
+}
+
+fn canonical_request_host(url: &reqwest::Url) -> AppResult<String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::Repository("metadata gateway URL missing host".into()))?;
+    Ok(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+fn canonical_request_path_and_query(url: &reqwest::Url) -> String {
+    match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
 }
 
 /// Minimum interval between cert-rejection re-enrollment attempts.
@@ -512,6 +571,18 @@ impl MetadataGatewayClient {
             e
         })?;
 
+        if let (Some(seed_b64), Some(key_id)) =
+            (state.pq_seed_b64.as_ref(), state.pq_key_id.as_ref())
+        {
+            return Ok((
+                self.http.clone(),
+                InstanceAuth::Pq {
+                    seed_b64: Arc::new(seed_b64.clone()),
+                    key_id: Arc::new(key_id.clone()),
+                },
+            ));
+        }
+
         let identity = smg_enrollment::build_mtls_identity(&state)
             .map_err(smg_enrollment::EnrollmentError::Other)?;
         let ca_cert = smg_enrollment::build_ca_certificate(&state)
@@ -530,7 +601,7 @@ impl MetadataGatewayClient {
 
         Ok((
             client,
-            InstanceAuth {
+            InstanceAuth::Legacy {
                 private_key_pem: Arc::new(state.client_key_pem),
                 cert_der_b64: Arc::new(cert_der_b64),
             },
@@ -625,7 +696,14 @@ impl MetadataGatewayClient {
                         req = req.header(reqwest::header::IF_NONE_MATCH, etag);
                     }
                     if let Some(ref auth) = auth {
-                        req = apply_instance_auth_headers(req, auth, raw_query.as_bytes())?;
+                        req = apply_instance_auth_headers(
+                            req,
+                            auth,
+                            reqwest::Method::GET.as_str(),
+                            &url,
+                            raw_query.as_bytes(),
+                            &[],
+                        )?;
                     }
                     Ok(req)
                 },
@@ -750,11 +828,13 @@ impl MetadataGatewayClient {
 
         debug!(status = %status, body_len = raw_text.len(), "metadata gateway response");
 
-        // On 401 cert rejection, invalidate enrollment and retry once with fresh creds.
-        if status == reqwest::StatusCode::UNAUTHORIZED && raw_text.contains("certificate") {
+        // On instance-auth rejection, invalidate enrollment and retry once with fresh creds.
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && self.enrollment_config.registration_secret.is_some()
+        {
             if !self.invalidate_enrollment().await {
                 return Err(AppError::Repository(format!(
-                    "metadata gateway cert rejected ({status}), re-enrollment on cooldown: {raw_text}"
+                    "metadata gateway instance auth rejected ({status}), re-enrollment on cooldown: {raw_text}"
                 )));
             }
             info!("retrying metadata request after re-enrollment");
@@ -928,6 +1008,8 @@ impl MetadataGatewayClient {
         let (client, auth) = self.get_http_client().await?;
         let body_bytes = serde_json::to_vec(payload)
             .map_err(|e| AppError::Repository(format!("failed to serialize payload: {e}")))?;
+        let endpoint_url = reqwest::Url::parse(&self.endpoint)
+            .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
 
         let build_req = || -> AppResult<reqwest::RequestBuilder> {
             let mut req = client
@@ -935,7 +1017,14 @@ impl MetadataGatewayClient {
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone());
             if let Some(ref auth) = auth {
-                req = apply_instance_auth_headers(req, auth, &body_bytes)?;
+                req = apply_instance_auth_headers(
+                    req,
+                    auth,
+                    reqwest::Method::POST.as_str(),
+                    &endpoint_url,
+                    &body_bytes,
+                    &body_bytes,
+                )?;
             }
             Ok(req)
         };
@@ -965,13 +1054,22 @@ impl MetadataGatewayClient {
         let (client, auth) = self.get_http_client().await?;
         let body_bytes = serde_json::to_vec(payload)
             .map_err(|e| AppError::Repository(format!("failed to serialize payload: {e}")))?;
+        let endpoint_url = reqwest::Url::parse(&self.endpoint)
+            .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
         let build_req = || -> AppResult<reqwest::RequestBuilder> {
             let mut req = client
                 .post(&self.endpoint)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body_bytes.clone());
             if let Some(ref auth) = auth {
-                req = apply_instance_auth_headers(req, auth, &body_bytes)?;
+                req = apply_instance_auth_headers(
+                    req,
+                    auth,
+                    reqwest::Method::POST.as_str(),
+                    &endpoint_url,
+                    &body_bytes,
+                    &body_bytes,
+                )?;
             }
             Ok(req)
         };
@@ -985,11 +1083,13 @@ impl MetadataGatewayClient {
             .await
             .map_err(|e| AppError::Repository(format!("bulk metadata read body: {e}")))?;
 
-        // On 401 cert rejection, invalidate and retry with fresh creds.
-        if status == reqwest::StatusCode::UNAUTHORIZED && body.contains("certificate") {
+        // On instance-auth rejection, invalidate and retry with fresh creds.
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && self.enrollment_config.registration_secret.is_some()
+        {
             if !self.invalidate_enrollment().await {
                 return Err(AppError::Repository(format!(
-                    "bulk metadata cert rejected ({status}), re-enrollment on cooldown: {body}"
+                    "bulk metadata instance auth rejected ({status}), re-enrollment on cooldown: {body}"
                 )));
             }
             info!(
@@ -1003,7 +1103,14 @@ impl MetadataGatewayClient {
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(body_bytes.clone());
                 if let Some(ref auth2) = auth2 {
-                    req = apply_instance_auth_headers(req, auth2, &body_bytes)?;
+                    req = apply_instance_auth_headers(
+                        req,
+                        auth2,
+                        reqwest::Method::POST.as_str(),
+                        &endpoint_url,
+                        &body_bytes,
+                        &body_bytes,
+                    )?;
                 }
                 Ok(req)
             };

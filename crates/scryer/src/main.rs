@@ -22,8 +22,9 @@ use axum::routing::{get, post};
 use scryer_application::{
     AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    PluginInstallationRepository, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
-    TitleImageRepository, start_background_acquisition_poller, start_background_banner_loop,
+    NotificationPluginProvider, PluginInstallationRepository, SeriesFacetHandler,
+    SubtitlePluginProvider, TitleImageKind, TitleImageRepository,
+    start_background_acquisition_poller, start_background_banner_loop,
     start_background_download_delete_poller, start_background_fanart_loop,
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_poster_loop, start_background_subtitle_poller,
@@ -1246,72 +1247,125 @@ async fn load_runtime_plugin_state(
 async fn seed_builtin_plugin_installations(
     customization_store: &SqliteCustomizationStore,
 ) -> Result<(), String> {
-    customization_store
-        .seed_builtin(
-            "nzbgeek",
-            "NZBGeek Indexer",
-            "NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)",
-            "0.1.0",
-            "usenet_indexer",
-            "nzbgeek",
-        )
+    struct BuiltinPluginSeed {
+        name: String,
+        version: String,
+        plugin_type: String,
+        provider_type: String,
+    }
+
+    let mut builtins = Vec::new();
+
+    let indexer_provider = scryer_plugins::build_indexer_plugin_provider(&[], &[]);
+    for provider_type in indexer_provider.builtin_provider_types() {
+        let provider_key = provider_type.trim().to_ascii_lowercase();
+        let Some(name) = indexer_provider.plugin_name_for_provider(&provider_key) else {
+            continue;
+        };
+        let Some(version) = indexer_provider.plugin_version_for_provider(&provider_key) else {
+            continue;
+        };
+        let plugin_type = indexer_provider
+            .plugin_type_for_provider(&provider_key)
+            .unwrap_or_else(|| "indexer".to_string());
+        builtins.push(BuiltinPluginSeed {
+            name,
+            version,
+            plugin_type,
+            provider_type: provider_key,
+        });
+    }
+
+    let subtitle_provider = scryer_plugins::build_subtitle_plugin_provider(&[], &[]);
+    for provider_type in subtitle_provider.builtin_provider_types() {
+        let provider_key = provider_type.trim().to_ascii_lowercase();
+        let Some(name) = subtitle_provider.plugin_name_for_provider(&provider_key) else {
+            continue;
+        };
+        let Some(version) = subtitle_provider.plugin_version_for_provider(&provider_key) else {
+            continue;
+        };
+        builtins.push(BuiltinPluginSeed {
+            name,
+            version,
+            plugin_type: "subtitle_provider".to_string(),
+            provider_type: provider_key,
+        });
+    }
+
+    let download_client_provider = scryer_plugins::build_download_client_plugin_provider(&[], &[]);
+    for provider_type in download_client_provider.builtin_provider_types() {
+        let provider_key = provider_type.trim().to_ascii_lowercase();
+        let Some(name) = download_client_provider.plugin_name_for_provider(&provider_key) else {
+            continue;
+        };
+        let Some(version) = download_client_provider.plugin_version_for_provider(&provider_key)
+        else {
+            continue;
+        };
+        builtins.push(BuiltinPluginSeed {
+            name,
+            version,
+            plugin_type: "download_client".to_string(),
+            provider_type: provider_key,
+        });
+    }
+
+    let notification_provider = scryer_plugins::build_notification_plugin_provider(&[], &[]);
+    for provider_type in notification_provider.builtin_provider_types() {
+        let provider_key = provider_type.trim().to_ascii_lowercase();
+        let Some(name) = notification_provider.plugin_name_for_provider(&provider_key) else {
+            continue;
+        };
+        let Some(version) = notification_provider.plugin_version_for_provider(&provider_key) else {
+            continue;
+        };
+        builtins.push(BuiltinPluginSeed {
+            name,
+            version,
+            plugin_type: "notification".to_string(),
+            provider_type: provider_key,
+        });
+    }
+
+    let builtin_provider_types = builtins
+        .iter()
+        .map(|builtin| builtin.provider_type.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    for builtin in builtins {
+        customization_store
+            .seed_builtin(
+                &builtin.provider_type,
+                &builtin.name,
+                "",
+                &builtin.version,
+                &builtin.plugin_type,
+                &builtin.provider_type,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    let stale_builtin_plugin_ids = customization_store
+        .list_plugin_installations()
         .await
-        .map_err(|error| error.to_string())?;
-    customization_store
-        .seed_builtin(
-            "dognzb",
-            "DogNZB Indexer",
-            "DogNZB-specific Newznab indexer with rating, genre, and comment metadata",
-            "0.1.0",
-            "usenet_indexer",
-            "dognzb",
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    customization_store
-        .seed_builtin(
-            "newznab",
-            "Newznab Indexer",
-            "Generic Newznab protocol indexer for compatible services",
-            "0.1.0",
-            "usenet_indexer",
-            "newznab",
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    customization_store
-        .seed_builtin(
-            "opensubtitles",
-            "OpenSubtitles",
-            "OpenSubtitles subtitle provider with provider-managed auth, search, and download",
-            "0.1.0",
-            "subtitle_provider",
-            "opensubtitles",
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    customization_store
-        .seed_builtin(
-            "jimaku",
-            "Jimaku",
-            "Anime-focused Jimaku subtitle provider using AniList IDs and optional name fallback",
-            "0.1.0",
-            "subtitle_provider",
-            "jimaku",
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    customization_store
-        .seed_builtin(
-            "whisper",
-            "Whisper",
-            "OpenAI Whisper subtitle generator for staged audio transcription",
-            "0.1.0",
-            "subtitle_provider",
-            "whisper",
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|installation| {
+            installation.is_builtin
+                && !builtin_provider_types
+                    .contains(&installation.provider_type.trim().to_ascii_lowercase())
+        })
+        .map(|installation| installation.plugin_id)
+        .collect::<Vec<_>>();
+
+    for plugin_id in stale_builtin_plugin_ids {
+        customization_store
+            .delete_plugin_installation(&plugin_id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
 
     Ok(())
 }

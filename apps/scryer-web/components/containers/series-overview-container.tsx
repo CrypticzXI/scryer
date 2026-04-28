@@ -38,11 +38,16 @@ import { SeriesOverviewView } from "@/components/views/series-overview-view";
 import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
 import { FixTitleMatchDialog } from "@/components/dialogs/fix-title-match-dialog";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import {
+  assertNoReplaceConflict,
+  retryWithReplaceOnConflict,
+} from "@/lib/utils/download-conflicts";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
@@ -244,6 +249,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { confirmReplaceConflict, replaceConflictDialog } =
+    useDownloadConflictConfirmation();
   const [title, setTitle] = React.useState<TitleDetail | null>(null);
   const [collections, setCollections] = React.useState<TitleCollection[]>([]);
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
@@ -640,11 +647,16 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       }).toPromise();
       if (error) throw error;
 
-      const queued = data?.triggerTitleWantedSearch ?? 0;
-      setGlobalStatus(
+      const queued = data?.triggerTitleWantedSearch?.queuedCount ?? 0;
+      const skipped = data?.triggerTitleWantedSearch?.skippedInProgressCount ?? 0;
+      const baseStatus =
         queued > 0
           ? t("status.searchMonitoredQueued", { count: queued })
-          : t("status.searchMonitoredEmpty"),
+          : t("status.searchMonitoredEmpty");
+      setGlobalStatus(
+        skipped > 0
+          ? `${baseStatus} ${t("status.searchSkippedInProgress", { count: skipped })}`
+          : baseStatus,
       );
     } catch (error: unknown) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
@@ -830,36 +842,56 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       if (!title) return;
 
       try {
-        const { error } = await client.mutation(queueBestReleaseMutation, {
-          input: {
-            titleId: title.id,
-            scope: { episode: episode.id },
+        const input = {
+          titleId: title.id,
+          scope: { episode: episode.id },
+        };
+        const payload = await retryWithReplaceOnConflict(
+          input,
+          async (nextInput) => {
+            const { data, error } = await client.mutation(queueBestReleaseMutation, {
+              input: nextInput,
+            }).toPromise();
+            if (error) throw error;
+            return data?.queueBestRelease;
           },
-        }).toPromise();
-        if (error) throw error;
+          "A download is already in progress for this episode.",
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, "A download is already in progress for this episode.");
         setGlobalStatus(t("status.queuedLatest", { name: title.name }));
         await refreshTitleDetail();
       } catch (error: unknown) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       }
     },
-    [refreshTitleDetail, client, title, t, setGlobalStatus],
+    [refreshTitleDetail, client, confirmReplaceConflict, title, t, setGlobalStatus],
   );
 
   const handleAutoSearchInterstitialMovie = React.useCallback(
     async (collection: TitleCollection) => {
       if (!title || !collection.interstitialMovie) return;
-      const { error } = await client.mutation(queueBestReleaseMutation, {
-        input: {
-          titleId: title.id,
-          scope: { collection: collection.id },
+      const input = {
+        titleId: title.id,
+        scope: { collection: collection.id },
+      };
+      const payload = await retryWithReplaceOnConflict(
+        input,
+        async (nextInput) => {
+          const { data, error } = await client.mutation(queueBestReleaseMutation, {
+            input: nextInput,
+          }).toPromise();
+          if (error) throw error;
+          return data?.queueBestRelease;
         },
-      }).toPromise();
-      if (error) throw error;
+        "A download is already in progress for this collection.",
+        confirmReplaceConflict,
+      );
+      assertNoReplaceConflict(payload, "A download is already in progress for this collection.");
       setGlobalStatus(t("status.queuedLatest", { name: collection.interstitialMovie.name }));
       await refreshTitleDetail();
     },
-    [refreshTitleDetail, client, title, t, setGlobalStatus],
+    [refreshTitleDetail, client, confirmReplaceConflict, title, t, setGlobalStatus],
   );
 
   const [seasonSearchResultsByCollection] = React.useState<
@@ -877,16 +909,30 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
       setSeasonSearchLoadingByCollection((prev) => ({ ...prev, [collection.id]: true }));
       try {
-        await client
+        const { data, error } = await client
           .mutation(triggerSeasonWantedSearchMutation, {
             input: { titleId: title.id, seasonNumber: seasonNum },
           })
           .toPromise();
+        if (error) throw error;
+        const queued = data?.triggerSeasonWantedSearch?.queuedCount ?? 0;
+        const skipped = data?.triggerSeasonWantedSearch?.skippedInProgressCount ?? 0;
+        const baseStatus =
+          queued > 0
+            ? t("status.searchMonitoredQueued", { count: queued })
+            : t("status.searchMonitoredEmpty");
+        setGlobalStatus(
+          skipped > 0
+            ? `${baseStatus} ${t("status.searchSkippedInProgress", { count: skipped })}`
+            : baseStatus,
+        );
+      } catch (error: unknown) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
       } finally {
         setSeasonSearchLoadingByCollection((prev) => ({ ...prev, [collection.id]: false }));
       }
     },
-    [client, title],
+    [client, setGlobalStatus, t, title],
   );
 
   const handleQueueFromSeasonSearch = React.useCallback(
@@ -897,23 +943,31 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         return;
       }
       try {
-        const { error } = await client
-          .mutation(queueExistingMutation, {
-            input: {
-              titleId: title.id,
-              scope: releaseQueueScopeInput(release, { collection: collection.id }),
-              candidateToken: release.candidateToken,
-            },
-          })
-          .toPromise();
-        if (error) throw error;
+        const input = {
+          titleId: title.id,
+          scope: releaseQueueScopeInput(release, { collection: collection.id }),
+          candidateToken: release.candidateToken,
+        };
+        const payload = await retryWithReplaceOnConflict(
+          input,
+          async (nextInput) => {
+            const { data, error } = await client
+              .mutation(queueExistingMutation, { input: nextInput })
+              .toPromise();
+            if (error) throw error;
+            return data?.queueExistingTitleDownload;
+          },
+          "A download is already in progress for this collection.",
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, "A download is already in progress for this collection.");
         setGlobalStatus(t("status.queuedLatest", { name: title.name }));
         await refreshTitleDetail();
       } catch (error: unknown) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       }
     },
-    [client, title, refreshTitleDetail, setGlobalStatus, t],
+    [client, confirmReplaceConflict, title, refreshTitleDetail, setGlobalStatus, t],
   );
 
   const handleOpenManualImport = React.useCallback(
@@ -1074,6 +1128,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           onImportComplete={() => void handleManualImportComplete()}
         />
       )}
+      {replaceConflictDialog}
     </>
   );
 });

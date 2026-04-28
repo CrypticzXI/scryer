@@ -1,5 +1,7 @@
 use super::*;
+use crate::library_discovery::list_series_loose_root_files;
 use crate::library_scan_helpers::require_directory_library_path;
+use crate::library_scan_metadata::prepare_series_library_scan_candidates_from_files;
 
 async fn finalize_full_library_scan(
     app: &AppUseCase,
@@ -84,6 +86,105 @@ async fn process_ready_movie_candidate_batches(
         coordinator.publish_progress().await;
     }
 
+    Ok(())
+}
+
+async fn process_series_candidate_batch(
+    app: &AppUseCase,
+    actor: &User,
+    facet: &MediaFacet,
+    library_path: &str,
+    session_id: &str,
+    coordinator: &LibraryScanCoordinator,
+    prepared_candidates: Vec<PreparedSeriesLibraryScanCandidate>,
+    metadata_language: &str,
+    metadata_lookup_stats: &mut MetadataLookupBatchStats,
+    existing_titles: &mut Vec<Title>,
+    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    summary: &mut LibraryScanSummary,
+    unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
+    seen_paths: &mut HashSet<String>,
+    cancel_token: Option<&CancellationToken>,
+) -> AppResult<()> {
+    let mut unresolved_candidates = Vec::new();
+
+    for candidate in prepared_candidates {
+        if library_scan_cancel_requested(cancel_token) {
+            break;
+        }
+        summary.scanned += 1;
+        let item_path = candidate.item_path().trim().to_string();
+        if !item_path.is_empty() {
+            seen_paths.insert(item_path);
+        }
+
+        if let Some(candidate) = process_series_full_scan_candidate(
+            app,
+            actor,
+            facet,
+            library_path,
+            session_id,
+            coordinator,
+            candidate,
+            existing_titles,
+            existing_titles_by_name,
+            existing_titles_by_tvdb_id,
+            workset,
+            summary,
+            unmatched_items,
+        )
+        .await?
+        {
+            unresolved_candidates.push(candidate);
+        }
+    }
+
+    let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
+        app.services.library.metadata_gateway.clone(),
+        metadata_language,
+        coordinator,
+        unresolved_candidates,
+        metadata_lookup_stats,
+        build_series_metadata_batch_stats,
+        series_candidate_batch_search_keys,
+        "series metadata search chunk unexpectedly empty",
+        cancel_token,
+    )
+    .await?;
+
+    for ready_candidates in ready_candidate_batches {
+        if library_scan_cancel_requested(cancel_token) {
+            break;
+        }
+        for candidate in ready_candidates {
+            if library_scan_cancel_requested(cancel_token) {
+                break;
+            }
+            process_resolved_series_full_scan_candidate(
+                app,
+                actor,
+                facet,
+                library_path,
+                session_id,
+                coordinator,
+                candidate,
+                &batch_search_results,
+                workset,
+                existing_titles,
+                existing_titles_by_name,
+                existing_titles_by_tvdb_id,
+                summary,
+                unmatched_items,
+            )
+            .await?;
+        }
+
+        coordinator.publish_progress().await;
+    }
+
+    coordinator.publish_progress().await;
     Ok(())
 }
 
@@ -347,84 +448,57 @@ pub(super) async fn scan_library_series(
             continue;
         }
 
-        let prepared_candidates = prepare_series_library_scan_candidates(&folder_batch).await?;
-        let mut unresolved_candidates = Vec::new();
+        process_series_candidate_batch(
+            app,
+            actor,
+            facet,
+            library_path,
+            session_id,
+            &coordinator,
+            prepare_series_library_scan_candidates(&folder_batch).await?,
+            &metadata_language,
+            &mut metadata_lookup_stats,
+            &mut existing_titles,
+            &mut existing_titles_by_name,
+            &mut existing_titles_by_tvdb_id,
+            &mut workset,
+            &mut summary,
+            &mut unmatched_items,
+            &mut seen_paths,
+            cancel_token.as_ref(),
+        )
+        .await?;
+    }
 
-        for candidate in prepared_candidates {
-            if library_scan_cancel_requested(cancel_token.as_ref()) {
-                break;
-            }
-            summary.scanned += 1;
-            let item_path = candidate.folder_path.to_string_lossy().trim().to_string();
-            if !item_path.is_empty() {
-                seen_paths.insert(item_path);
-            }
-
-            if let Some(candidate) = process_series_full_scan_candidate(
+    if !library_scan_cancel_requested(cancel_token.as_ref()) {
+        let loose_root_files = list_series_loose_root_files(root).await?;
+        if !loose_root_files.is_empty() {
+            coordinator
+                .register_discovery_batch(loose_root_files.len(), false)
+                .await;
+            coordinator.publish_progress().await;
+            process_series_candidate_batch(
                 app,
                 actor,
                 facet,
                 library_path,
                 session_id,
                 &coordinator,
-                candidate,
+                prepare_series_library_scan_candidates_from_files(&loose_root_files, library_path)
+                    .await?,
+                &metadata_language,
+                &mut metadata_lookup_stats,
                 &mut existing_titles,
                 &mut existing_titles_by_name,
                 &mut existing_titles_by_tvdb_id,
                 &mut workset,
                 &mut summary,
                 &mut unmatched_items,
+                &mut seen_paths,
+                cancel_token.as_ref(),
             )
-            .await?
-            {
-                unresolved_candidates.push(candidate);
-            }
+            .await?;
         }
-
-        let (ready_candidate_batches, batch_search_results) = resolve_full_scan_metadata_batches(
-            app.services.library.metadata_gateway.clone(),
-            &metadata_language,
-            &coordinator,
-            unresolved_candidates,
-            &mut metadata_lookup_stats,
-            build_series_metadata_batch_stats,
-            series_candidate_batch_search_keys,
-            "series metadata search chunk unexpectedly empty",
-            cancel_token.as_ref(),
-        )
-        .await?;
-
-        for ready_candidates in ready_candidate_batches {
-            if library_scan_cancel_requested(cancel_token.as_ref()) {
-                break;
-            }
-            for candidate in ready_candidates {
-                if library_scan_cancel_requested(cancel_token.as_ref()) {
-                    break;
-                }
-                process_resolved_series_full_scan_candidate(
-                    app,
-                    actor,
-                    facet,
-                    library_path,
-                    session_id,
-                    &coordinator,
-                    candidate,
-                    &batch_search_results,
-                    &mut workset,
-                    &mut existing_titles,
-                    &mut existing_titles_by_name,
-                    &mut existing_titles_by_tvdb_id,
-                    &mut summary,
-                    &mut unmatched_items,
-                )
-                .await?;
-            }
-
-            coordinator.publish_progress().await;
-        }
-
-        coordinator.publish_progress().await;
     }
 
     if !library_scan_cancel_requested(cancel_token.as_ref()) {

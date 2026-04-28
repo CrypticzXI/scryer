@@ -28,6 +28,11 @@ import type {
 } from "@/lib/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
+import {
+  assertNoReplaceConflict,
+  retryWithReplaceOnConflict,
+} from "@/lib/utils/download-conflicts";
 
 type WantedContainerProps = {
   wantedSection: WantedSection;
@@ -39,6 +44,8 @@ export const WantedContainer = memo(function WantedContainer({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { confirmReplaceConflict, replaceConflictDialog } =
+    useDownloadConflictConfirmation();
 
   // --- Wanted items state ---
   const [items, setItems] = useState<WantedItem[]>([]);
@@ -227,15 +234,25 @@ export const WantedContainer = memo(function WantedContainer({
 
   const triggerSearch = useCallback(
     async (id: string) => {
-      const { error } = await executeTriggerSearch({ input: { wantedItemId: id } });
-      if (error) {
-        setGlobalStatus(error.message);
-      } else {
+      try {
+        const payload = await retryWithReplaceOnConflict(
+          { wantedItemId: id },
+          async (input) => {
+            const { data, error } = await executeTriggerSearch({ input });
+            if (error) throw error;
+            return data?.triggerWantedSearch;
+          },
+          "A download is already in progress for this wanted item.",
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, "A download is already in progress for this wanted item.");
         setGlobalStatus(t("wanted.searchTriggered"));
         void refreshItems();
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       }
     },
-    [executeTriggerSearch, refreshItems, setGlobalStatus, t],
+    [executeTriggerSearch, confirmReplaceConflict, refreshItems, setGlobalStatus, t],
   );
 
   const pauseItem = useCallback(
@@ -294,27 +311,40 @@ export const WantedContainer = memo(function WantedContainer({
   // --- Cutoff search actions ---
 
   const searchAndQueueTitle = useCallback(
-    async (cutoffItem: CutoffUnmetItem) => {
-      const { error: queueError } = await client
-        .mutation(queueBestReleaseMutation, {
-          input: {
-            titleId: cutoffItem.id,
-            scope: { title: true },
-          },
-        })
-        .toPromise();
-
-      if (queueError) throw queueError;
+    async (
+      cutoffItem: CutoffUnmetItem,
+      options: { allowReplaceConfirmation?: boolean } = {},
+    ) => {
+      const input = {
+        titleId: cutoffItem.id,
+        scope: { title: true },
+      };
+      const submit = async (nextInput: typeof input & { replaceInProgress?: boolean }) => {
+        const { data, error } = await client
+          .mutation(queueBestReleaseMutation, { input: nextInput })
+          .toPromise();
+        if (error) throw error;
+        return data?.queueBestRelease;
+      };
+      const payload = options.allowReplaceConfirmation
+        ? await retryWithReplaceOnConflict(
+            input,
+            submit,
+            "A download is already in progress for this title.",
+            confirmReplaceConflict,
+          )
+        : await submit(input);
+      assertNoReplaceConflict(payload, "A download is already in progress for this title.");
       setGlobalStatus(t("cutoff.searchTriggered", { name: cutoffItem.name }));
     },
-    [client, t, setGlobalStatus],
+    [client, confirmReplaceConflict, t, setGlobalStatus],
   );
 
   const cutoffTriggerSearch = useCallback(
     async (item: CutoffUnmetItem) => {
       setCutoffSearchingId(item.id);
       try {
-        await searchAndQueueTitle(item);
+        await searchAndQueueTitle(item, { allowReplaceConfirmation: true });
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       } finally {
@@ -323,7 +353,6 @@ export const WantedContainer = memo(function WantedContainer({
     },
     [searchAndQueueTitle, setGlobalStatus, t],
   );
-
   const cutoffBulkSearch = useCallback(() => {
     bulkCancelRef.current = false;
     setBulkSearching(true);
@@ -357,7 +386,8 @@ export const WantedContainer = memo(function WantedContainer({
   }, []);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <>
+      <div className="flex h-full min-h-0 flex-col">
       <WantedView
         section={wantedSection}
         wantedState={{
@@ -406,6 +436,8 @@ export const WantedContainer = memo(function WantedContainer({
           dismiss: dismissPending,
         }}
       />
-    </div>
+      </div>
+      {replaceConflictDialog}
+    </>
   );
 });

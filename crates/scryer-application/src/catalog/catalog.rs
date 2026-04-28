@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition::acquisition::submission_blocks_wanted_item;
 use crate::catalog_helpers::{
     DownloadClientRoutingEntry, anime_mapping_identity_keys, anime_movie_after_season,
     anime_movie_identity_keys, anime_movie_release_sort_key, build_rematched_external_ids,
@@ -6,6 +7,9 @@ use crate::catalog_helpers::{
     is_logical_specials_collection, parse_download_client_routing_entry,
     parse_download_client_routing_map, release_is_recent_for_queue_priority,
     strip_derived_match_tags,
+};
+use crate::contracts::{
+    QueueDownloadOutcome, QueuedDownloadResult, SubmissionConflictPolicy, SubmissionScopeConflict,
 };
 use crate::domain_events::{deleted_media_update, new_title_domain_event, title_context_snapshot};
 use scryer_domain::{
@@ -79,6 +83,233 @@ fn unique_episode_match(
         episodes_by_number
             .get(&key)
             .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()))
+    })
+}
+
+fn wanted_item_candidates_for_submission_scope(
+    title_id: &str,
+    scope: &SubmissionScope,
+    episodes: &[Episode],
+) -> Vec<(WantedItem, Option<String>)> {
+    match scope {
+        SubmissionScope::Orphan => Vec::new(),
+        SubmissionScope::Title => vec![(
+            WantedItem {
+                id: String::new(),
+                title_id: title_id.to_string(),
+                title_name: None,
+                episode_id: None,
+                collection_id: None,
+                season_number: None,
+                media_type: "movie".to_string(),
+                search_phase: String::new(),
+                next_search_at: None,
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: None,
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            None,
+        )],
+        SubmissionScope::Episode { episode_id } => {
+            let candidate = episodes
+                .iter()
+                .find(|episode| episode.id == *episode_id)
+                .map(|episode| {
+                    (
+                        wanted_item_candidate_for_episode(title_id, episode),
+                        episode.collection_id.clone(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        wanted_item_candidate_for_episode_id(title_id, episode_id, None, None),
+                        None,
+                    )
+                });
+            vec![candidate]
+        }
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids
+            .iter()
+            .map(|episode_id| {
+                episodes
+                    .iter()
+                    .find(|episode| episode.id == *episode_id)
+                    .map(|episode| {
+                        (
+                            wanted_item_candidate_for_episode(title_id, episode),
+                            episode.collection_id.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            wanted_item_candidate_for_episode_id(title_id, episode_id, None, None),
+                            None,
+                        )
+                    })
+            })
+            .collect(),
+        SubmissionScope::Collection { collection_id } => {
+            let mut candidates = episodes
+                .iter()
+                .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
+                .map(|episode| {
+                    (
+                        wanted_item_candidate_for_episode(title_id, episode),
+                        episode.collection_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            candidates.push((
+                WantedItem {
+                    id: String::new(),
+                    title_id: title_id.to_string(),
+                    title_name: None,
+                    episode_id: None,
+                    collection_id: Some(collection_id.clone()),
+                    season_number: None,
+                    media_type: "interstitial_movie".to_string(),
+                    search_phase: String::new(),
+                    next_search_at: None,
+                    last_search_at: None,
+                    search_count: 0,
+                    baseline_date: None,
+                    status: WantedStatus::Wanted,
+                    grabbed_release: None,
+                    current_score: None,
+                    latest_release_decision: None,
+                    mismatch_recovery_eligible: false,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                Some(collection_id.clone()),
+            ));
+            candidates
+        }
+    }
+}
+
+fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> WantedItem {
+    wanted_item_candidate_for_episode_id(
+        title_id,
+        &episode.id,
+        episode.collection_id.clone(),
+        episode.season_number.clone(),
+    )
+}
+
+fn wanted_item_candidate_for_episode_id(
+    title_id: &str,
+    episode_id: &str,
+    collection_id: Option<String>,
+    season_number: Option<String>,
+) -> WantedItem {
+    WantedItem {
+        id: String::new(),
+        title_id: title_id.to_string(),
+        title_name: None,
+        episode_id: Some(episode_id.to_string()),
+        collection_id,
+        season_number,
+        media_type: "episode".to_string(),
+        search_phase: String::new(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
+    DownloadSubmission {
+        title_id: title_id.to_string(),
+        facet: String::new(),
+        download_client_id: None,
+        download_client_type: String::new(),
+        download_client_item_id: String::new(),
+        source_hint: None,
+        source_kind: None,
+        source_title: None,
+        request_signature: None,
+        scope: scope.clone(),
+    }
+}
+
+fn submission_scopes_overlap(
+    title_id: &str,
+    existing: &SubmissionScope,
+    requested: &SubmissionScope,
+    episodes: &[Episode],
+) -> bool {
+    let existing_submission = submission_for_scope(title_id, existing);
+    if wanted_item_candidates_for_submission_scope(title_id, requested, episodes)
+        .iter()
+        .any(|(item, collection_id)| {
+            submission_blocks_wanted_item(&existing_submission, item, collection_id.as_deref())
+        })
+    {
+        return true;
+    }
+
+    let requested_submission = submission_for_scope(title_id, requested);
+    wanted_item_candidates_for_submission_scope(title_id, existing, episodes)
+        .iter()
+        .any(|(item, collection_id)| {
+            submission_blocks_wanted_item(&requested_submission, item, collection_id.as_deref())
+        })
+}
+
+fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
+    matches!(
+        state,
+        DownloadQueueState::Queued
+            | DownloadQueueState::Downloading
+            | DownloadQueueState::Paused
+            | DownloadQueueState::Verifying
+            | DownloadQueueState::Repairing
+            | DownloadQueueState::Extracting
+            | DownloadQueueState::ImportPending
+    )
+}
+
+fn queue_state_is_replaceable(state: DownloadQueueState) -> bool {
+    matches!(
+        state,
+        DownloadQueueState::Queued | DownloadQueueState::Downloading | DownloadQueueState::Paused
+    )
+}
+
+fn queue_item_matches_submission(
+    item: &DownloadQueueItem,
+    submission: &DownloadSubmission,
+) -> bool {
+    item.download_client_item_id == submission.download_client_item_id
+        && submission
+            .download_client_id
+            .as_deref()
+            .map(|client_id| client_id == item.client_id)
+            .unwrap_or(true)
+}
+
+fn blocking_queue_item_for_submission<'a>(
+    queue: &'a [DownloadQueueItem],
+    submission: &DownloadSubmission,
+) -> Option<&'a DownloadQueueItem> {
+    queue.iter().find(|item| {
+        queue_item_matches_submission(item, submission) && queue_state_blocks_submission(item.state)
     })
 }
 
@@ -777,6 +1008,136 @@ impl AppUseCase {
             .download_submission_guards
             .acquire(title_id, request_signature)
             .await
+    }
+
+    async fn lock_download_submission_scope(
+        &self,
+        title_id: &str,
+        scope: &SubmissionScope,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.runtime
+            .acquisition
+            .download_submission_guards
+            .acquire_scope(title_id, scope)
+            .await
+    }
+
+    pub(crate) async fn find_blocking_download_submissions(
+        &self,
+        title: &Title,
+        scope: &SubmissionScope,
+    ) -> AppResult<Vec<SubmissionScopeConflict>> {
+        let submissions = self
+            .services
+            .workflow
+            .download_submissions
+            .list_for_title(&title.id)
+            .await?;
+        if submissions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let queue = self
+            .services
+            .integrations
+            .download_client
+            .list_queue()
+            .await?;
+        if queue.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+
+        let mut conflicts = Vec::new();
+        for submission in submissions {
+            if !submission_scopes_overlap(&title.id, &submission.scope, scope, &episodes) {
+                continue;
+            }
+
+            let Some(queue_item) = blocking_queue_item_for_submission(&queue, &submission) else {
+                continue;
+            };
+
+            conflicts.push(SubmissionScopeConflict {
+                title_id: title.id.clone(),
+                title_name: title.name.clone(),
+                download_client_id: submission.download_client_id.clone(),
+                download_client_type: submission.download_client_type.clone(),
+                download_client_item_id: submission.download_client_item_id.clone(),
+                source_title: submission.source_title.clone(),
+                source_kind: submission.source_kind,
+                scope: submission.scope,
+                state: Some(queue_item.state),
+                replaceable: queue_state_is_replaceable(queue_item.state),
+            });
+        }
+
+        Ok(conflicts)
+    }
+
+    pub(crate) async fn replace_blocking_download_submission(
+        &self,
+        conflict: &SubmissionScopeConflict,
+    ) -> AppResult<()> {
+        if !conflict.replaceable {
+            return Err(AppError::Validation(
+                "the existing download is no longer safe to replace".into(),
+            ));
+        }
+
+        if let Some(client_id) = conflict.download_client_id.as_deref() {
+            self.services
+                .integrations
+                .download_client
+                .delete_queue_item_for_client_id(
+                    client_id,
+                    &conflict.download_client_item_id,
+                    false,
+                )
+                .await?;
+        } else {
+            self.services
+                .integrations
+                .download_client
+                .delete_queue_item_for_client(
+                    &conflict.download_client_type,
+                    &conflict.download_client_item_id,
+                    false,
+                )
+                .await?;
+        }
+
+        self.services
+            .workflow
+            .download_submissions
+            .delete_by_client_item_id(&DownloadSourceIdentity::new(
+                conflict.download_client_id.as_deref(),
+                &conflict.download_client_type,
+                &conflict.download_client_item_id,
+            ))
+            .await?;
+        self.reset_wanted_items_for_submission_scope(&conflict.title_id, &conflict.scope)
+            .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn replace_blocking_download_submissions(
+        &self,
+        conflicts: &[SubmissionScopeConflict],
+    ) -> AppResult<()> {
+        for conflict in conflicts {
+            self.replace_blocking_download_submission(conflict).await?;
+        }
+
+        Ok(())
     }
 
     async fn complete_title_hydration(&self, title: &Title, options: HydrationCompletionOptions) {
@@ -1879,7 +2240,8 @@ impl AppUseCase {
         title: &Title,
         queued_release: QueuedReleaseSelection,
         scope: SubmissionScope,
-    ) -> AppResult<(String, bool)> {
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
         let QueuedReleaseSelection {
             source_hint,
             source_kind,
@@ -1893,6 +2255,68 @@ impl AppUseCase {
             source_kind,
         );
         let source_password: Option<String> = None;
+        let scope_guard = self.lock_download_submission_scope(&title.id, &scope).await;
+        let dedupe_guard = self
+            .lock_download_submission_signature(&title.id, request_signature.as_deref())
+            .await;
+
+        if let Some(signature) = request_signature.as_deref()
+            && let Some(existing) = self
+                .services
+                .workflow
+                .download_submissions
+                .find_by_title_and_request_signature(&title.id, signature)
+                .await?
+        {
+            let queue = self
+                .services
+                .integrations
+                .download_client
+                .list_queue()
+                .await?;
+            if blocking_queue_item_for_submission(&queue, &existing).is_some() {
+                drop(dedupe_guard);
+                drop(scope_guard);
+                return Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
+                    job_id: existing.download_client_item_id,
+                    queued_release: QueuedReleaseSelection {
+                        source_hint,
+                        source_kind,
+                        source_title,
+                    },
+                    reused_existing: true,
+                }));
+            }
+        }
+
+        let conflicts = self
+            .find_blocking_download_submissions(title, &scope)
+            .await?;
+        if !conflicts.is_empty() {
+            match conflict_policy {
+                SubmissionConflictPolicy::Abort | SubmissionConflictPolicy::Skip => {
+                    drop(dedupe_guard);
+                    drop(scope_guard);
+                    return Ok(QueueDownloadOutcome::Conflict(conflicts[0].clone()));
+                }
+                SubmissionConflictPolicy::ReplaceEarly
+                    if conflicts.iter().all(|conflict| conflict.replaceable) =>
+                {
+                    self.replace_blocking_download_submissions(&conflicts)
+                        .await?;
+                }
+                SubmissionConflictPolicy::ReplaceEarly => {
+                    let conflict = conflicts
+                        .into_iter()
+                        .find(|conflict| !conflict.replaceable)
+                        .expect("non-empty conflicts should contain a non-replaceable item");
+                    drop(dedupe_guard);
+                    drop(scope_guard);
+                    return Ok(QueueDownloadOutcome::Conflict(conflict));
+                }
+            }
+        }
+
         let _ = self
             .services
             .workflow
@@ -1906,21 +2330,6 @@ impl AppUseCase {
                 source_password.clone(),
             )
             .await;
-
-        let dedupe_guard = self
-            .lock_download_submission_signature(&title.id, request_signature.as_deref())
-            .await;
-        if let Some(signature) = request_signature.as_deref()
-            && let Some(existing) = self
-                .services
-                .workflow
-                .download_submissions
-                .find_by_title_and_request_signature(&title.id, signature)
-                .await?
-        {
-            drop(dedupe_guard);
-            return Ok((existing.download_client_item_id, true));
-        }
 
         let category = self.derive_download_category(&title.facet).await;
         let is_recent = self.is_recent_for_queue_priority(
@@ -2012,11 +2421,13 @@ impl AppUseCase {
                     )
                     .await;
                 drop(dedupe_guard);
+                drop(scope_guard);
                 return Err(error);
             }
         };
 
         drop(dedupe_guard);
+        drop(scope_guard);
 
         self.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
@@ -2031,7 +2442,15 @@ impl AppUseCase {
         ))
         .await?;
 
-        Ok((grab.job_id, false))
+        Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
+            job_id: grab.job_id,
+            queued_release: QueuedReleaseSelection {
+                source_hint: source_hint_for_attempt,
+                source_kind,
+                source_title: source_title_for_attempt,
+            },
+            reused_existing: false,
+        }))
     }
 
     pub async fn add_title_and_queue_download_with_outcome(
@@ -2042,16 +2461,27 @@ impl AppUseCase {
     ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
         let add_outcome = self.add_title_with_outcome(actor, request).await?;
         let title = add_outcome.title.clone();
-        let (download_job_id, reused_queued_download) = self
-            .queue_manual_release_for_title(actor, &title, queued_release, SubmissionScope::Title)
+        let queued = self
+            .queue_manual_release_for_title(
+                actor,
+                &title,
+                queued_release,
+                SubmissionScope::Title,
+                SubmissionConflictPolicy::Abort,
+            )
             .await?;
+        let QueueDownloadOutcome::Queued(queued) = queued else {
+            return Err(AppError::Validation(
+                "a download is already queued for this title".into(),
+            ));
+        };
 
         Ok(AddTitleAndQueueDownloadOutcome {
             title,
             metadata_hydration_state: add_outcome.metadata_hydration_state,
             reused_existing_title: add_outcome.reused_existing_title,
-            download_job_id,
-            reused_queued_download,
+            download_job_id: queued.job_id,
+            reused_queued_download: queued.reused_existing,
         })
     }
 
@@ -2073,7 +2503,8 @@ impl AppUseCase {
         title_id: &str,
         queued_release: QueuedReleaseSelection,
         scope: SubmissionScope,
-    ) -> AppResult<String> {
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
         require(actor, &Entitlement::TriggerActions)?;
 
         let title = self
@@ -2083,10 +2514,8 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
-        let (job_id, _reused_queued_download) = self
-            .queue_manual_release_for_title(actor, &title, queued_release, scope)
-            .await?;
-        Ok(job_id)
+        self.queue_manual_release_for_title(actor, &title, queued_release, scope, conflict_policy)
+            .await
     }
 
     pub async fn queue_existing_title_download_from_candidate_token(
@@ -2095,15 +2524,28 @@ impl AppUseCase {
         title_id: &str,
         candidate_token: &str,
         scope: SubmissionScope,
-    ) -> AppResult<(String, QueuedReleaseSelection)> {
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
-        let job_id = self
-            .queue_existing_title_download(actor, title_id, queued_release.clone(), signed_scope)
+        let outcome = self
+            .queue_existing_title_download(
+                actor,
+                title_id,
+                queued_release.clone(),
+                signed_scope,
+                conflict_policy,
+            )
             .await?;
         let _ = scope;
-        Ok((job_id, queued_release))
+        Ok(match outcome {
+            QueueDownloadOutcome::Queued(mut queued) => {
+                queued.queued_release = queued_release;
+                QueueDownloadOutcome::Queued(queued)
+            }
+            QueueDownloadOutcome::Conflict(conflict) => QueueDownloadOutcome::Conflict(conflict),
+        })
     }
 
     pub async fn queue_best_release(
@@ -2111,7 +2553,8 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
         scope: SubmissionScope,
-    ) -> AppResult<String> {
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
         require(actor, &Entitlement::TriggerActions)?;
 
         let title = self
@@ -2220,6 +2663,7 @@ impl AppUseCase {
                 source_title: Some(best.title.clone()),
             },
             queue_scope,
+            conflict_policy,
         )
         .await
     }

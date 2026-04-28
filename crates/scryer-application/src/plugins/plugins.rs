@@ -317,6 +317,13 @@ impl AppUseCase {
             }
         }
 
+        let builtin_provider_types = provider_types_to_set(
+            builtins
+                .iter()
+                .map(|builtin| builtin.provider_type.clone())
+                .collect(),
+        );
+
         for builtin in builtins {
             repo.seed_builtin(
                 &builtin.provider_type,
@@ -327,6 +334,22 @@ impl AppUseCase {
                 &builtin.provider_type,
             )
             .await?;
+        }
+
+        let stale_builtin_plugin_ids = repo
+            .list_plugin_installations()
+            .await?
+            .into_iter()
+            .filter(|installation| {
+                installation.is_builtin
+                    && !builtin_provider_types
+                        .contains(&normalize_provider_key(&installation.provider_type))
+            })
+            .map(|installation| installation.plugin_id)
+            .collect::<Vec<_>>();
+
+        for plugin_id in stale_builtin_plugin_ids {
+            repo.delete_plugin_installation(&plugin_id).await?;
         }
 
         Ok(())
@@ -673,13 +696,23 @@ impl AppUseCase {
                 _ => false,
             }
         };
+        let effective_installations = installations
+            .iter()
+            .filter(|installation| {
+                !installation.is_builtin
+                    || is_builtin_plugin(&installation.plugin_type, &installation.provider_type)
+            })
+            .collect::<Vec<_>>();
 
         // Build merged list
         let mut result = Vec::new();
 
         // Start with registry entries, annotated with installation state
         for entry in &registry_entries {
-            let inst = installations.iter().find(|i| i.plugin_id == entry.id);
+            let inst = effective_installations
+                .iter()
+                .copied()
+                .find(|installation| installation.plugin_id == entry.id);
             let is_compatible = registry_entry_is_host_compatible(entry);
             if inst.is_none() && !is_compatible {
                 continue;
@@ -734,7 +767,7 @@ impl AppUseCase {
         }
 
         // Add any installed plugins not in the registry (e.g. manually installed)
-        for inst in &installations {
+        for inst in effective_installations {
             if !result.iter().any(|r| r.id == inst.plugin_id) {
                 let builtin = is_builtin_plugin(&inst.plugin_type, &inst.provider_type);
                 result.push(RegistryPlugin {

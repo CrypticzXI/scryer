@@ -1477,23 +1477,35 @@ pub(crate) async fn commit_successful_grab_query(
 
     record_download_submission_tx(&mut tx, &commit.download_submission).await?;
 
-    sqlx::query(
-        "UPDATE wanted_items
-         SET status = ?, next_search_at = ?, last_search_at = ?,
-             search_count = ?, current_score = ?, grabbed_release = ?, updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(WantedStatus::Grabbed.as_str())
-    .bind(Option::<String>::None)
-    .bind(commit.last_search_at.as_deref())
-    .bind(commit.search_count)
-    .bind(commit.current_score)
-    .bind(&commit.grabbed_release)
-    .bind(&now)
-    .bind(&commit.wanted_item_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    let mut covered_wanted_item_ids = commit.covered_wanted_item_ids.clone();
+    if !covered_wanted_item_ids
+        .iter()
+        .any(|id| id == &commit.wanted_item_id)
+    {
+        covered_wanted_item_ids.push(commit.wanted_item_id.clone());
+    }
+    covered_wanted_item_ids.sort();
+    covered_wanted_item_ids.dedup();
+
+    for wanted_item_id in &covered_wanted_item_ids {
+        sqlx::query(
+            "UPDATE wanted_items
+             SET status = ?, next_search_at = ?, last_search_at = ?,
+                 search_count = ?, current_score = ?, grabbed_release = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(WantedStatus::Grabbed.as_str())
+        .bind(Option::<String>::None)
+        .bind(commit.last_search_at.as_deref())
+        .bind(commit.search_count)
+        .bind(commit.current_score)
+        .bind(&commit.grabbed_release)
+        .bind(&now)
+        .bind(wanted_item_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
 
     if let Some(pending_release_id) = commit.grabbed_pending_release_id.as_deref() {
         sqlx::query(
@@ -1509,12 +1521,14 @@ pub(crate) async fn commit_successful_grab_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
     }
 
-    supersede_pending_release_siblings_tx(
-        &mut tx,
-        &commit.wanted_item_id,
-        commit.grabbed_pending_release_id.as_deref(),
-    )
-    .await?;
+    for wanted_item_id in &covered_wanted_item_ids {
+        supersede_pending_release_siblings_tx(
+            &mut tx,
+            wanted_item_id,
+            commit.grabbed_pending_release_id.as_deref(),
+        )
+        .await?;
+    }
 
     tx.commit()
         .await

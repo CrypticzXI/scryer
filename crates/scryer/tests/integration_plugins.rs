@@ -167,15 +167,13 @@ async fn seed_builtins_creates_installations() {
     let installations = ctx.customization.list_plugin_installations().await.unwrap();
     assert_eq!(
         installations.len(),
-        4,
-        "should have nzbgeek + dognzb + newznab + jimaku"
+        2,
+        "should have nzbgeek + newznab"
     );
 
     let ids: Vec<&str> = installations.iter().map(|i| i.plugin_id.as_str()).collect();
     assert!(ids.contains(&"nzbgeek"));
-    assert!(ids.contains(&"dognzb"));
     assert!(ids.contains(&"newznab"));
-    assert!(ids.contains(&"jimaku"));
 
     for inst in &installations {
         assert!(inst.is_builtin);
@@ -192,9 +190,51 @@ async fn seed_builtins_idempotent() {
     let installations = ctx.customization.list_plugin_installations().await.unwrap();
     assert_eq!(
         installations.len(),
-        4,
+        2,
         "should not duplicate on second seed"
     );
+}
+
+#[tokio::test]
+async fn seed_builtins_prunes_removed_builtin_installations() {
+    let ctx = TestContext::new().await;
+    ctx.customization
+        .seed_builtin(
+            "opensubtitles",
+            "OpenSubtitles",
+            "",
+            "0.1.0",
+            "subtitle_provider",
+            "opensubtitles",
+        )
+        .await
+        .unwrap();
+    ctx.customization
+        .seed_builtin(
+            "whisper",
+            "Whisper",
+            "",
+            "0.1.0",
+            "subtitle_provider",
+            "whisper",
+        )
+        .await
+        .unwrap();
+
+    ctx.app.seed_builtin_plugins().await.unwrap();
+
+    let installations = ctx.customization.list_plugin_installations().await.unwrap();
+    let ids: Vec<&str> = installations.iter().map(|i| i.plugin_id.as_str()).collect();
+    assert_eq!(
+        installations.len(),
+        2,
+        "should retain only current built-ins"
+    );
+    assert!(!ids.contains(&"opensubtitles"));
+    assert!(!ids.contains(&"whisper"));
+    assert!(!ids.contains(&"dognzb"));
+    assert!(ids.contains(&"nzbgeek"));
+    assert!(ids.contains(&"newznab"));
 }
 
 // ── list_available_plugins ───────────────────────────────────────────────────

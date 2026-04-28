@@ -17,6 +17,7 @@ export type PendingImportItem = {
   id: string;
   facet: "movie" | "series" | "anime";
   status: PendingImportStatus;
+  titleId?: string | null;
   displayName: string;
   path: string;
   folderPath?: string | null;
@@ -29,6 +30,37 @@ export type PendingImportItem = {
 export type PendingImportConnection = {
   total: number;
   items: PendingImportItem[];
+};
+
+export type PendingImportBindingEpisode = {
+  id: string;
+  titleId: string;
+  collectionId?: string | null;
+  episodeType: string;
+  episodeNumber?: string | null;
+  seasonNumber?: string | null;
+  episodeLabel?: string | null;
+  title?: string | null;
+  monitored: boolean;
+};
+
+export type PendingImportBindingPreview = {
+  title: {
+    id: string;
+    name: string;
+    facet: string;
+    monitored: boolean;
+  };
+  file: {
+    filePath: string;
+    fileName: string;
+    sizeBytes: string;
+    parsedSeason?: number | null;
+    parsedEpisodes: number[];
+    parsedAbsoluteNumbers: number[];
+    suggestedEpisodeIds: string[];
+  };
+  availableEpisodes: PendingImportBindingEpisode[];
 };
 
 export type ResolvePendingImportResult = {
