@@ -836,11 +836,19 @@ struct ManualImportCleanupTitleRepo {
 
 #[async_trait]
 impl TitleRepository for ManualImportCleanupTitleRepo {
-    async fn list(&self, facet: Option<MediaFacet>, query: Option<String>) -> AppResult<Vec<Title>> {
+    async fn list(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
         let titles = self.titles.lock().await.clone();
         Ok(titles
             .into_iter()
-            .filter(|title| facet.as_ref().is_none_or(|expected| &title.facet == expected))
+            .filter(|title| {
+                facet
+                    .as_ref()
+                    .is_none_or(|expected| &title.facet == expected)
+            })
             .filter(|title| {
                 query.as_ref().is_none_or(|needle| {
                     title
@@ -1071,13 +1079,8 @@ async fn maybe_remove_completed_manual_import_download_deletes_history_for_colle
     let dir = tempfile::tempdir().expect("tempdir");
     let completed = test_completed_download("Bluey.S01.Complete.1080p.WEB-DL", dir.path());
 
-    maybe_remove_completed_manual_import_download(
-        &app,
-        Some(&completed),
-        Some("series-1"),
-        true,
-    )
-    .await;
+    maybe_remove_completed_manual_import_download(&app, Some(&completed), Some("series-1"), true)
+        .await;
 
     assert_eq!(
         *download_client.deleted_items.lock().await,
@@ -1097,13 +1100,8 @@ async fn maybe_remove_completed_manual_import_download_deletes_history_for_episo
     let mut completed = test_completed_download("Frieren.S01E03-E04.1080p.WEB-DL", dir.path());
     completed.download_client_item_id = "job-episode-set".to_string();
 
-    maybe_remove_completed_manual_import_download(
-        &app,
-        Some(&completed),
-        Some("anime-1"),
-        true,
-    )
-    .await;
+    maybe_remove_completed_manual_import_download(&app, Some(&completed), Some("anime-1"), true)
+        .await;
 
     assert_eq!(
         *download_client.deleted_items.lock().await,

@@ -32,6 +32,7 @@ pub async fn execute_upgrade_for_test(
         source_path,
         dest_path,
         &prepared,
+        prepared.parsed.quality.as_deref(),
         final_score,
         old_score,
         target_episode_ids,

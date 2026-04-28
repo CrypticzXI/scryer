@@ -653,6 +653,15 @@ async fn bootstrap_application(
     if let Err(e) = app_use_case.reconcile_indexer_configs().await {
         tracing::warn!(error = %e, "failed to reconcile indexer configs on startup");
     }
+    if let Err(error) = seed_indexer_configs_from_env(&app_use_case).await {
+        tracing::warn!(error = %error, "failed to seed indexer configs from environment");
+    }
+    if let Err(e) = app_use_case
+        .ensure_indexer_routing_entries_for_existing_indexers()
+        .await
+    {
+        tracing::warn!(error = %e, "failed to ensure indexer routing on startup");
+    }
     if let Err(e) = app_use_case.normalize_routing_settings().await {
         tracing::warn!(error = %e, "failed to normalize routing settings on startup");
     }
@@ -735,10 +744,6 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     app_use_case.wake_title_image_loops();
-
-    if let Err(error) = seed_indexer_configs_from_env(&app_use_case).await {
-        tracing::warn!(error = %error, "failed to seed indexer configs from environment");
-    }
 
     if auth_mode.used_legacy_dev_auto_login {
         tracing::warn!(

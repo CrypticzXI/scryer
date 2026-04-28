@@ -17,9 +17,24 @@ pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
 pub const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
+pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
+pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
+pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
+
+pub(crate) fn default_indexer_routing_categories_for_scope(scope_id: &str) -> Vec<String> {
+    match scope_id {
+        "movie" => INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES,
+        "series" => INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES,
+        "anime" => INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES,
+        _ => &[],
+    }
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
+}
 
 pub const MOVIES_PATH_KEY: &str = "movies.path";
 pub const SERIES_PATH_KEY: &str = "series.path";

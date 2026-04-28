@@ -15,6 +15,8 @@ use crate::{
     SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
+use super::keys::default_indexer_routing_categories_for_scope;
+
 const ACQUISITION_ENABLED_KEY: &str = "acquisition.enabled";
 const ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY: &str = "acquisition.upgrade_cooldown_hours";
 const ACQUISITION_SAME_TIER_MIN_DELTA_KEY: &str = "acquisition.same_tier_min_delta";
@@ -289,10 +291,10 @@ fn default_download_client_routing_entry_json(priority: i64) -> serde_json::Valu
     })
 }
 
-fn default_indexer_routing_entry_json(priority: i64) -> serde_json::Value {
+fn default_indexer_routing_entry_json(scope_id: &str, priority: i64) -> serde_json::Value {
     serde_json::json!({
         "enabled": true,
-        "categories": Vec::<String>::new(),
+        "categories": default_indexer_routing_categories_for_scope(scope_id),
         "priority": priority,
     })
 }
@@ -352,6 +354,7 @@ fn normalize_download_client_routing_entry_in_place(
 /// Fill in any fields missing from a stored indexer routing entry with
 /// canonical defaults. Returns `true` if the entry was modified.
 fn normalize_indexer_routing_entry_in_place(
+    scope_id: &str,
     entry: &mut serde_json::Map<String, serde_json::Value>,
     fallback_priority: i64,
 ) -> bool {
@@ -363,7 +366,7 @@ fn normalize_indexer_routing_entry_in_place(
     if !entry.contains_key("categories") {
         entry.insert(
             "categories".to_string(),
-            serde_json::Value::Array(Vec::new()),
+            serde_json::json!(default_indexer_routing_categories_for_scope(scope_id)),
         );
         changed = true;
     }
@@ -2544,6 +2547,27 @@ impl AppUseCase {
     ) -> AppResult<()> {
         require(actor, &Entitlement::ManageConfig)?;
 
+        self.ensure_indexer_routing_entry_for_indexer_internal(
+            indexer_id,
+            "admin_graphql",
+            Some(actor.id.clone()),
+        )
+        .await
+    }
+
+    async fn ensure_indexer_routing_entry_for_indexer_internal(
+        &self,
+        indexer_id: &str,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let indexer_id = indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Err(AppError::Validation(
+                "indexer routing entry requires indexer_id".to_string(),
+            ));
+        }
+
         for scope_id in ["movie", "series", "anime"] {
             let current = self
                 .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
@@ -2560,7 +2584,7 @@ impl AppUseCase {
             let next_priority = next_routing_priority(&payload);
             payload.insert(
                 indexer_id.to_string(),
-                default_indexer_routing_entry_json(next_priority),
+                default_indexer_routing_entry_json(scope_id, next_priority),
             );
 
             self.services
@@ -2571,12 +2595,30 @@ impl AppUseCase {
                     INDEXER_ROUTING_SETTINGS_KEY,
                     Some(scope_id.to_string()),
                     serde_json::Value::Object(payload).to_string(),
-                    "admin_graphql",
-                    Some(actor.id.clone()),
+                    source,
+                    updated_by_user_id.clone(),
                 )
                 .await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn ensure_indexer_routing_entries_for_existing_indexers(&self) -> AppResult<()> {
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?;
+        for config in configs {
+            self.ensure_indexer_routing_entry_for_indexer_internal(
+                &config.id,
+                "startup_reconcile",
+                None,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -2712,7 +2754,7 @@ impl AppUseCase {
                 let next_priority = next_routing_priority(&payload);
                 for (_, value) in payload.iter_mut() {
                     if let Some(entry) = value.as_object_mut()
-                        && normalize_indexer_routing_entry_in_place(entry, next_priority)
+                        && normalize_indexer_routing_entry_in_place(scope_id, entry, next_priority)
                     {
                         changed = true;
                     }

@@ -304,6 +304,39 @@ fn pad_file_past_series_sample_threshold(path: &Path) {
         .expect("extend fixture beyond sample threshold");
 }
 
+async fn seed_second_series_episode(
+    ctx: &TestContext,
+    title: &Title,
+    collection_id: &str,
+) -> Episode {
+    let episode = Episode {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_id: Some(collection_id.to_string()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("2".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E02".to_string()),
+        title: Some("Episode 2".to_string()),
+        air_date: None,
+        duration_seconds: Some(1440),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        monitored: true,
+        created_at: chrono::Utc::now(),
+    };
+    ctx.catalog
+        .create_episode(episode.clone())
+        .await
+        .expect("create second episode");
+    episode
+}
+
 // ---------------------------------------------------------------------------
 // Deduplication
 // ---------------------------------------------------------------------------
@@ -721,6 +754,167 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
     assert_eq!(
         updated_wanted.status,
         scryer_application::WantedStatus::Wanted
+    );
+}
+
+#[tokio::test]
+async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-manual-series-success",
+        "Manual Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode = seed_series_episode(&ctx, &title).await;
+    let completed = scryer_completed(
+        "dl-manual-series-success",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        &title.id,
+        Some(&completed),
+        vec![scryer_application::ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().to_string(),
+            episode_id: episode.id.clone(),
+            quality: Some("1080P".to_string()),
+        }],
+    )
+    .await
+    .expect("execute manual import");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "manual import should succeed");
+
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    let imported = &media_files[0];
+    assert_eq!(imported.episode_id.as_deref(), Some(episode.id.as_str()));
+    assert_eq!(imported.scan_status, "scanned");
+    assert!(imported.acquisition_score.is_some());
+    assert!(imported.duration_seconds.is_some());
+    assert!(imported.video_codec.is_some());
+}
+
+#[tokio::test]
+async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-manual-series-broader-incumbent",
+        "Manual Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode1 = seed_series_episode(&ctx, &title).await;
+    let episode2 = seed_second_series_episode(
+        &ctx,
+        &title,
+        episode1.collection_id.as_deref().expect("collection id"),
+    )
+    .await;
+    let existing_file_id = ctx
+        .library_state
+        .insert_media_file(&scryer_application::InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: dest_root
+                .path()
+                .join("Manual Show")
+                .join("Season 01")
+                .join("Manual Show - S01E01-E02.mkv")
+                .to_string_lossy()
+                .to_string(),
+            size_bytes: 52 * 1024 * 1024,
+            quality_label: Some("1080P".to_string()),
+            acquisition_score: Some(500),
+            ..Default::default()
+        })
+        .await
+        .expect("insert incumbent pack");
+    ctx.library_state
+        .link_file_to_episode(&existing_file_id, &episode1.id)
+        .await
+        .expect("link incumbent episode 1");
+    ctx.library_state
+        .link_file_to_episode(&existing_file_id, &episode2.id)
+        .await
+        .expect("link incumbent episode 2");
+
+    let completed = scryer_completed(
+        "dl-manual-series-broader-incumbent",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        &title.id,
+        Some(&completed),
+        vec![scryer_application::ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().to_string(),
+            episode_id: episode1.id.clone(),
+            quality: Some("1080P".to_string()),
+        }],
+    )
+    .await
+    .expect("execute manual import");
+
+    assert_eq!(results.len(), 1);
+    assert!(
+        !results[0].success,
+        "manual import should reject narrower replacement"
+    );
+    assert!(
+        results[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("broader episode set"))
+    );
+
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    let media_file_ids = media_files
+        .iter()
+        .map(|media_file| media_file.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        media_file_ids,
+        std::collections::BTreeSet::from([existing_file_id.as_str()]),
+        "rejected manual import should not add a new file"
     );
 }
 

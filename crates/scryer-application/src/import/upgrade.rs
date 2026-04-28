@@ -40,6 +40,7 @@ pub(crate) async fn execute_upgrade(
     source_path: &std::path::Path,
     dest_path: &std::path::Path,
     prepared: &crate::post_download_gate::PreparedImportCandidate,
+    stored_quality_label: Option<&str>,
     final_score: i32,
     old_score: i32,
     target_episode_ids: &[String],
@@ -115,11 +116,15 @@ pub(crate) async fn execute_upgrade(
         title_id: title.id.clone(),
         file_path: dest_path.to_string_lossy().to_string(),
         size_bytes: file_result.size_bytes as i64,
-        quality_label: prepared.parsed.quality.clone(),
+        quality_label: stored_quality_label
+            .map(str::to_string)
+            .or_else(|| prepared.parsed.quality.clone()),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
         source_type: prepared.parsed.source.clone(),
-        resolution: prepared.parsed.quality.clone(),
+        resolution: stored_quality_label
+            .map(str::to_string)
+            .or_else(|| prepared.parsed.quality.clone()),
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),

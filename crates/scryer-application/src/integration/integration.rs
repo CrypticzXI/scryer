@@ -995,11 +995,15 @@ impl AppUseCase {
             updated_at: Utc::now(),
         };
 
-        self.services
+        let created = self
+            .services
             .integrations
             .indexer_configs
             .create(config)
-            .await
+            .await?;
+        self.ensure_indexer_routing_entry_for_indexer(actor, &created.id)
+            .await?;
+        Ok(created)
     }
 
     pub async fn update_indexer_config(

@@ -3670,7 +3670,11 @@ async fn ensure_indexer_routing_entry_for_indexer_writes_full_default_entry() {
         .await
         .expect("ensure indexer routing entry");
 
-    for scope_id in ["movie", "series", "anime"] {
+    for (scope_id, expected_categories) in [
+        ("movie", serde_json::json!(["2000"])),
+        ("series", serde_json::json!(["5000"])),
+        ("anime", serde_json::json!(["5070"])),
+    ] {
         let raw = settings
             .get_scoped_value(
                 SETTINGS_SCOPE_SYSTEM,
@@ -3686,9 +3690,135 @@ async fn ensure_indexer_routing_entry_for_indexer_writes_full_default_entry() {
             .and_then(|v| v.as_object())
             .unwrap_or_else(|| panic!("expected indexer-1 entry for scope {scope_id}"));
         assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
-        assert_eq!(entry.get("categories"), Some(&serde_json::json!([])));
+        assert_eq!(entry.get("categories"), Some(&expected_categories));
         assert!(entry.contains_key("priority"));
     }
+}
+
+#[tokio::test]
+async fn create_indexer_config_writes_default_routing_entries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, actor) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+
+    let created = app
+        .create_indexer_config(
+            &actor,
+            NewIndexerConfig {
+                name: "NZBGeek".to_string(),
+                provider_type: "nzbgeek".to_string(),
+                base_url: "https://api.nzbgeek.info".to_string(),
+                api_key_encrypted: Some("0123456789abcdef".to_string()),
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                config_json: None,
+            },
+        )
+        .await
+        .expect("create indexer config");
+
+    let raw = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "series",
+        )
+        .await
+        .expect("series indexer routing JSON present");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("routing JSON parses");
+    let entry = parsed
+        .get(&created.id)
+        .and_then(|value| value.as_object())
+        .expect("created indexer routing entry");
+    assert_eq!(entry.get("enabled"), Some(&serde_json::json!(true)));
+    assert_eq!(entry.get("categories"), Some(&serde_json::json!(["5000"])));
+    assert!(entry.contains_key("priority"));
+}
+
+#[tokio::test]
+async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_rows() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+
+    app.services
+        .integrations
+        .indexer_configs
+        .create(IndexerConfig {
+            id: "existing-indexer".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info".to_string(),
+            api_key_encrypted: Some("0123456789abcdef".to_string()),
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .expect("seed existing indexer config");
+
+    app.ensure_indexer_routing_entries_for_existing_indexers()
+        .await
+        .expect("ensure existing indexer routing");
+
+    let raw = settings
+        .get_scoped_value(SETTINGS_SCOPE_SYSTEM, INDEXER_ROUTING_SETTINGS_KEY, "anime")
+        .await
+        .expect("anime indexer routing JSON present");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("routing JSON parses");
+    let entry = parsed
+        .get("existing-indexer")
+        .and_then(|value| value.as_object())
+        .expect("existing indexer routing entry");
+    assert_eq!(entry.get("categories"), Some(&serde_json::json!(["5070"])));
+}
+
+#[tokio::test]
+async fn normalize_routing_settings_backfills_missing_indexer_categories_from_scope() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "anime",
+            &serde_json::json!({
+                "indexer-1": {
+                    "enabled": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+
+    app.normalize_routing_settings()
+        .await
+        .expect("normalize indexer routing");
+
+    let raw = settings
+        .get_scoped_value(SETTINGS_SCOPE_SYSTEM, INDEXER_ROUTING_SETTINGS_KEY, "anime")
+        .await
+        .expect("indexer routing JSON present after normalize");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("routing JSON parses");
+    let entry = parsed
+        .get("indexer-1")
+        .and_then(|value| value.as_object())
+        .expect("indexer-1 entry");
+    assert_eq!(entry.get("categories"), Some(&serde_json::json!(["5070"])));
+    assert!(entry.contains_key("priority"));
 }
 
 #[tokio::test]

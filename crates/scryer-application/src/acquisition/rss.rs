@@ -6,6 +6,7 @@ use crate::acquisition_release_search::{
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
+use crate::settings::keys::default_indexer_routing_categories_for_scope;
 use chrono::{DateTime, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
 use std::collections::{HashMap, HashSet};
@@ -13,6 +14,14 @@ use tracing::{info, warn};
 
 const RSS_SYNC_MAX_GUIDS: usize = 2000;
 const RSS_TITLE_CONTEXT_CANDIDATE_LIMIT: usize = 8;
+
+fn rss_categories_for_routing_entry(scope_id: &str, entry: &IndexerRoutingEntry) -> Vec<String> {
+    if entry.categories.is_empty() {
+        default_indexer_routing_categories_for_scope(scope_id)
+    } else {
+        entry.categories.clone()
+    }
+}
 
 /// Normalize a title string for fuzzy matching: lowercase, strip non-alphanumeric,
 /// collapse whitespace.
@@ -267,8 +276,8 @@ impl AppUseCase {
                 if let Some(plan) = self.resolve_indexer_routing(Some(scope)).await {
                     for entry in plan.entries.values() {
                         if entry.enabled {
-                            for cat in &entry.categories {
-                                cats.insert(cat.clone());
+                            for cat in rss_categories_for_routing_entry(scope, entry) {
+                                cats.insert(cat);
                             }
                         }
                     }
@@ -1219,6 +1228,42 @@ mod tests {
         let mut t = make_title(id, name, None);
         t.monitored = false;
         t
+    }
+
+    #[test]
+    fn rss_categories_expand_empty_routing_entries_to_scope_defaults() {
+        let entry = IndexerRoutingEntry {
+            enabled: true,
+            categories: vec![],
+            priority: 0,
+        };
+
+        assert_eq!(
+            rss_categories_for_routing_entry("movie", &entry),
+            vec!["2000"]
+        );
+        assert_eq!(
+            rss_categories_for_routing_entry("series", &entry),
+            vec!["5000"]
+        );
+        assert_eq!(
+            rss_categories_for_routing_entry("anime", &entry),
+            vec!["5070"]
+        );
+    }
+
+    #[test]
+    fn rss_categories_preserve_explicit_routing_categories() {
+        let entry = IndexerRoutingEntry {
+            enabled: true,
+            categories: vec!["5040".to_string()],
+            priority: 0,
+        };
+
+        assert_eq!(
+            rss_categories_for_routing_entry("series", &entry),
+            vec!["5040"]
+        );
     }
 
     // ── normalize_for_matching ──────────────────────────────────────

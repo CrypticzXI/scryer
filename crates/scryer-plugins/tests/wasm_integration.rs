@@ -1,5 +1,9 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use scryer_application::IndexerPluginProvider;
@@ -221,6 +225,112 @@ fn dognzb_hides_generic_newznab_config_fields() {
         !field_keys.contains(&"additional_params"),
         "DogNZB should not expose additional_params"
     );
+}
+
+#[test]
+fn newznab_family_builtins_include_rss_search_path() {
+    for (name, wasm_bytes) in [
+        ("nzbgeek", scryer_plugins::builtins::NZBGEEK_WASM),
+        ("dognzb", scryer_plugins::builtins::DOGNZB_WASM),
+        ("newznab", scryer_plugins::builtins::NEWZNAB_WASM),
+        ("torznab", scryer_plugins::builtins::TORZNAB_WASM),
+    ] {
+        assert!(
+            bytes_contain(wasm_bytes, b"rss_search: fetching recent releases"),
+            "{name} builtin WASM is missing the RSS search path"
+        );
+    }
+}
+
+#[tokio::test]
+async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
+    let (base_url, request_rx) = spawn_newznab_response_server();
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+
+    let mut config = test_config("nzbgeek");
+    config.base_url = base_url;
+    config.api_key_encrypted = Some("test-key".to_string());
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let response = client
+        .search(
+            String::new(),
+            std::collections::HashMap::new(),
+            None,
+            Some("series".to_string()),
+            Some(vec!["5000".to_string()]),
+            None,
+            scryer_application::SearchMode::Auto,
+            None,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(
+        response.results[0].title,
+        "Example.Show.S01E01.1080p.WEB-DL"
+    );
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("mock Newznab server should receive a request");
+    assert!(request.contains("GET /api?"), "request was {request}");
+    assert!(request.contains("t=tvsearch"), "request was {request}");
+    assert!(request.contains("cat=5000"), "request was {request}");
+    assert!(
+        !request.contains("q="),
+        "RSS request should not include q=: {request}"
+    );
+}
+
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buffer = [0_u8; 8192];
+                    let bytes_read = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                    let _ = request_tx.send(request);
+
+                    let body = r#"{"channel":{"item":[{"title":"Example.Show.S01E01.1080p.WEB-DL","guid":"guid-1","link":"http://example.test/info","enclosure":{"@attributes":{"url":"http://example.test/download.nzb","length":"12345","type":"application/x-nzb"}},"attr":[{"@attributes":{"name":"grabs","value":"4"}}]}]}}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    (format!("http://{address}"), request_rx)
 }
 
 // ── DynamicPluginProvider tests ──────────────────────────────────────────────
