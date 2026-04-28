@@ -165,11 +165,7 @@ async fn seed_builtins_creates_installations() {
     ctx.app.seed_builtin_plugins().await.unwrap();
 
     let installations = ctx.customization.list_plugin_installations().await.unwrap();
-    assert_eq!(
-        installations.len(),
-        2,
-        "should have nzbgeek + newznab"
-    );
+    assert_eq!(installations.len(), 2, "should have nzbgeek + newznab");
 
     let ids: Vec<&str> = installations.iter().map(|i| i.plugin_id.as_str()).collect();
     assert!(ids.contains(&"nzbgeek"));

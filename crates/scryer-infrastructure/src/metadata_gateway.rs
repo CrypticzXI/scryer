@@ -280,8 +280,10 @@ enum InstanceAuth {
         cert_der_b64: Arc<String>,
     },
     Pq {
+        instance_id: Arc<String>,
         seed_b64: Arc<String>,
         key_id: Arc<String>,
+        enrollment_generation: Option<i64>,
     },
 }
 
@@ -341,7 +343,9 @@ fn apply_instance_auth_headers(
                 .header("X-Scryer-Timestamp", timestamp.to_string())
                 .header("X-Scryer-Signature", signature))
         }
-        InstanceAuth::Pq { seed_b64, key_id } => {
+        InstanceAuth::Pq {
+            seed_b64, key_id, ..
+        } => {
             let body_hash = sha256_hex_bytes(body_bytes);
             let host = canonical_request_host(url)?;
             let path_and_query = canonical_request_path_and_query(url);
@@ -405,6 +409,7 @@ pub struct MetadataGatewayClient {
     db: crate::SqliteServices,
     mtls_state: tokio::sync::RwLock<MtlsState>,
     last_reenrollment: tokio::sync::Mutex<Option<Instant>>,
+    pq_rotation: tokio::sync::Mutex<()>,
     rate_limit_until: tokio::sync::Mutex<Option<Instant>>,
     version_incompatible: tokio::sync::Mutex<Option<smg_enrollment::VersionIncompatible>>,
     search_hash: String,
@@ -464,6 +469,7 @@ impl MetadataGatewayClient {
             registration_url,
             enrollment_config,
             last_reenrollment: tokio::sync::Mutex::new(None),
+            pq_rotation: tokio::sync::Mutex::new(()),
             rate_limit_until: tokio::sync::Mutex::new(None),
             version_incompatible: tokio::sync::Mutex::new(None),
             db,
@@ -577,8 +583,10 @@ impl MetadataGatewayClient {
             return Ok((
                 self.http.clone(),
                 InstanceAuth::Pq {
+                    instance_id: Arc::new(state.instance_id.clone()),
                     seed_b64: Arc::new(seed_b64.clone()),
                     key_id: Arc::new(key_id.clone()),
+                    enrollment_generation: state.pq_enrollment_generation,
                 },
             ));
         }
@@ -713,6 +721,8 @@ impl MetadataGatewayClient {
 
         match get_result {
             Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
+                self.reconcile_pq_enrollment_generation(auth.as_ref(), resp.headers())
+                    .await;
                 // 304: serve from our local cache
                 let body = self
                     .apq_cache
@@ -729,6 +739,8 @@ impl MetadataGatewayClient {
                     .ok_or_else(|| AppError::Repository("APQ cache: empty data".into()))
             }
             Ok(resp) if resp.status().is_success() => {
+                self.reconcile_pq_enrollment_generation(auth.as_ref(), resp.headers())
+                    .await;
                 let etag = resp
                     .headers()
                     .get(reqwest::header::ETAG)
@@ -1004,6 +1016,87 @@ impl MetadataGatewayClient {
         }
     }
 
+    async fn reconcile_pq_enrollment_generation(
+        &self,
+        auth: Option<&InstanceAuth>,
+        headers: &reqwest::header::HeaderMap,
+    ) {
+        let Some(InstanceAuth::Pq {
+            instance_id,
+            seed_b64,
+            key_id,
+            enrollment_generation,
+        }) = auth
+        else {
+            return;
+        };
+
+        let Some(server_generation) = headers
+            .get("X-SMG-Enrollment-Generation")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+        else {
+            return;
+        };
+
+        let local_generation = enrollment_generation.unwrap_or(0);
+        if server_generation <= local_generation {
+            return;
+        }
+
+        let _rotation_guard = self.pq_rotation.lock().await;
+
+        if enrollment_generation.is_none() && server_generation == 1 {
+            if let Err(error) =
+                smg_enrollment::persist_pq_enrollment_generation(&self.db, server_generation).await
+            {
+                warn!(
+                    error = %error,
+                    server_generation,
+                    key_id = %key_id,
+                    "failed to persist initial SMG PQ enrollment generation"
+                );
+                return;
+            }
+            let mut state = self.mtls_state.write().await;
+            *state = MtlsState::NotAttempted;
+            return;
+        }
+
+        match smg_enrollment::rotate_pq_enrollment(
+            &self.db,
+            instance_id,
+            seed_b64,
+            key_id,
+            &self.registration_url,
+            self.enrollment_config.ca_cert.as_deref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                info!(
+                    instance_id = %instance_id,
+                    key_id = %key_id,
+                    old_generation = local_generation,
+                    new_generation = server_generation,
+                    "rotated SMG PQ enrollment after generation advance"
+                );
+                let mut state = self.mtls_state.write().await;
+                *state = MtlsState::NotAttempted;
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    instance_id = %instance_id,
+                    key_id = %key_id,
+                    old_generation = local_generation,
+                    new_generation = server_generation,
+                    "failed to rotate SMG PQ enrollment after generation advance"
+                );
+            }
+        }
+    }
+
     async fn send_with_retry(&self, payload: &serde_json::Value) -> AppResult<reqwest::Response> {
         let (client, auth) = self.get_http_client().await?;
         let body_bytes = serde_json::to_vec(payload)
@@ -1029,8 +1122,12 @@ impl MetadataGatewayClient {
             Ok(req)
         };
 
-        self.send_request_with_retry(build_req, "metadata gateway request")
-            .await
+        let response = self
+            .send_request_with_retry(build_req, "metadata gateway request")
+            .await?;
+        self.reconcile_pq_enrollment_generation(auth.as_ref(), response.headers())
+            .await;
+        Ok(response)
     }
 
     /// POST a batched GraphQL query directly and return the `data` field as raw JSON.
@@ -1076,6 +1173,8 @@ impl MetadataGatewayClient {
         let resp = self
             .send_request_with_retry(build_req, request_label)
             .await?;
+        self.reconcile_pq_enrollment_generation(auth.as_ref(), resp.headers())
+            .await;
 
         let status = resp.status();
         let body = resp

@@ -389,6 +389,38 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             default_value_json: "null",
             is_sensitive: false,
         },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "smg.pq_seed",
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: true,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "smg.pq_public_key",
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "smg.pq_key_id",
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "smg.pq_enrollment_generation",
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
         // Anime settings
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,

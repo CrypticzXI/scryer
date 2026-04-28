@@ -226,7 +226,13 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
 
     let pending = ctx
         .app
-        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
         .await
         .expect("list pending imports");
     assert_eq!(pending.total, 1);
@@ -259,7 +265,13 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
 
     let pending_after = ctx
         .app
-        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
         .await
         .expect("list pending imports after bind");
     assert_eq!(pending_after.total, 0);
@@ -270,7 +282,10 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         .await
         .expect("list title media files");
     assert_eq!(media_files.len(), 1);
-    assert_eq!(media_files[0].episode_id.as_deref(), Some(first_episode.id.as_str()));
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(first_episode.id.as_str())
+    );
     assert_eq!(PathBuf::from(&media_files[0].file_path), unmanaged_file);
 }
 
@@ -313,7 +328,13 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
 
     let pending_before = ctx
         .app
-        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
         .await
         .expect("list pending imports before delete");
     assert_eq!(pending_before.total, 1);
@@ -327,7 +348,13 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
 
     let pending_after = ctx
         .app
-        .pending_imports(&actor, MediaFacet::Series, PendingImportStatus::Pending, 20, 0)
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
         .await
         .expect("list pending imports after delete");
     assert_eq!(pending_after.total, 0);
@@ -376,7 +403,10 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
         .await
         .expect("list title media files");
     assert_eq!(media_files.len(), 1);
-    assert_eq!(media_files[0].episode_id.as_deref(), Some(first_episode.id.as_str()));
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(first_episode.id.as_str())
+    );
     assert_eq!(PathBuf::from(&media_files[0].file_path), loose_file);
 
     let refreshed_title = ctx

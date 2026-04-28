@@ -69,6 +69,7 @@ pub struct EnrollmentState {
     pub pq_seed_b64: Option<String>,
     pub pq_public_key_b64: Option<String>,
     pub pq_key_id: Option<String>,
+    pub pq_enrollment_generation: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +90,7 @@ struct PqChallengeResponse {
 #[derive(Deserialize)]
 struct PqRegisterResponse {
     key_id: String,
+    enrollment_generation: i64,
     #[serde(default)]
     opensubtitles_api_key: Option<String>,
 }
@@ -122,6 +124,7 @@ pub async fn clear_enrollment_cache(db: &crate::SqliteServices) -> Result<(), St
         "smg.pq_seed",
         "smg.pq_public_key",
         "smg.pq_key_id",
+        "smg.pq_enrollment_generation",
     ] {
         persist_setting(db, key, "").await?;
     }
@@ -147,6 +150,9 @@ pub async fn ensure_enrolled(
     let pq_key_id = load_setting(db, "smg.pq_key_id")
         .await
         .map_err(EnrollmentError::Other)?;
+    let pq_enrollment_generation = load_pq_enrollment_generation(db)
+        .await
+        .map_err(EnrollmentError::Other)?;
 
     if let (Some(pq_seed), Some(pq_public_key), Some(pq_key_id)) =
         (pq_seed, pq_public_key, pq_key_id)
@@ -164,6 +170,7 @@ pub async fn ensure_enrolled(
             pq_seed_b64: Some(pq_seed),
             pq_public_key_b64: Some(pq_public_key),
             pq_key_id: Some(pq_key_id),
+            pq_enrollment_generation,
         });
     }
 
@@ -228,6 +235,7 @@ pub async fn ensure_enrolled(
                 pq_seed_b64: None,
                 pq_public_key_b64: None,
                 pq_key_id: None,
+                pq_enrollment_generation: None,
             });
         }
         info!(days_remaining, "SMG cert expiring soon, re-enrolling");
@@ -320,15 +328,15 @@ async fn enroll_pq_with_smg(
         ));
     }
 
-    persist_setting(db, "smg.pq_seed", &pq_key.seed_b64)
-        .await
-        .map_err(EnrollmentError::Other)?;
-    persist_setting(db, "smg.pq_public_key", &pq_key.public_key_b64)
-        .await
-        .map_err(EnrollmentError::Other)?;
-    persist_setting(db, "smg.pq_key_id", &pq_key.key_id)
-        .await
-        .map_err(EnrollmentError::Other)?;
+    persist_pq_enrollment_state(
+        db,
+        &pq_key.seed_b64,
+        &pq_key.public_key_b64,
+        &pq_key.key_id,
+        reg.enrollment_generation,
+    )
+    .await
+    .map_err(EnrollmentError::Other)?;
 
     if let Some(os_key) = &reg.opensubtitles_api_key
         && !os_key.is_empty()
@@ -354,6 +362,7 @@ async fn enroll_pq_with_smg(
         pq_seed_b64: Some(pq_key.seed_b64),
         pq_public_key_b64: Some(pq_key.public_key_b64),
         pq_key_id: Some(pq_key.key_id),
+        pq_enrollment_generation: Some(reg.enrollment_generation),
     })
 }
 
@@ -504,6 +513,129 @@ async fn enroll_with_smg(
         pq_seed_b64: None,
         pq_public_key_b64: None,
         pq_key_id: None,
+        pq_enrollment_generation: None,
+    })
+}
+
+pub async fn rotate_pq_enrollment(
+    db: &crate::SqliteServices,
+    instance_id: &str,
+    current_seed_b64: &str,
+    current_key_id: &str,
+    registration_url: &str,
+    ca_cert_override: Option<&str>,
+) -> Result<EnrollmentState, EnrollmentError> {
+    let challenge_url =
+        derive_registration_endpoint(registration_url, "/api/register-rotate-challenge")?;
+    let rotate_url = derive_registration_endpoint(registration_url, "/api/register-rotate")?;
+    let http = enrollment_http_client(ca_cert_override)?;
+
+    let challenge_response = send_authenticated_pq_registration_request(
+        &http,
+        &challenge_url,
+        current_seed_b64,
+        current_key_id,
+        &serde_json::json!({
+            "client_family": PQ_CLIENT_FAMILY,
+            "instance_id": instance_id,
+            "version": env!("CARGO_PKG_VERSION"),
+        }),
+    )
+    .await?;
+
+    if !challenge_response.status().is_success() {
+        return Err(
+            registration_response_error(challenge_response, "SMG PQ rotation challenge").await,
+        );
+    }
+
+    let challenge: PqChallengeResponse = challenge_response.json().await.map_err(|e| {
+        EnrollmentError::Other(format!(
+            "failed to parse SMG PQ rotation challenge response: {e}"
+        ))
+    })?;
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(challenge.nonce.as_bytes())
+        .map_err(|e| EnrollmentError::Other(format!("invalid PQ rotation challenge nonce: {e}")))?;
+    let next_key = generate_pq_keypair()?;
+    let proof_message = pq_registration_proof_message(
+        "rotate",
+        &challenge.challenge_id,
+        &nonce,
+        PQ_CLIENT_FAMILY,
+        instance_id,
+        &next_key.key_id,
+        &next_key.public_key_b64,
+    );
+    let proof_signature =
+        sign_pq_seed(&next_key.seed_b64, &proof_message).map_err(EnrollmentError::Other)?;
+
+    let response = send_authenticated_pq_registration_request(
+        &http,
+        &rotate_url,
+        current_seed_b64,
+        current_key_id,
+        &serde_json::json!({
+            "challenge_id": challenge.challenge_id,
+            "client_family": PQ_CLIENT_FAMILY,
+            "instance_id": instance_id,
+            "version": env!("CARGO_PKG_VERSION"),
+            "public_key": next_key.public_key_b64,
+            "key_id": next_key.key_id,
+            "proof_signature": proof_signature,
+        }),
+    )
+    .await?;
+
+    if !response.status().is_success() {
+        return Err(registration_response_error(response, "SMG PQ rotation").await);
+    }
+
+    let reg: PqRegisterResponse = response.json().await.map_err(|e| {
+        EnrollmentError::Other(format!("failed to parse SMG PQ rotation response: {e}"))
+    })?;
+    if reg.key_id != next_key.key_id {
+        return Err(EnrollmentError::Other(
+            "SMG PQ rotation returned mismatched key_id".to_string(),
+        ));
+    }
+
+    persist_pq_enrollment_state(
+        db,
+        &next_key.seed_b64,
+        &next_key.public_key_b64,
+        &next_key.key_id,
+        reg.enrollment_generation,
+    )
+    .await
+    .map_err(EnrollmentError::Other)?;
+
+    if let Some(os_key) = &reg.opensubtitles_api_key
+        && !os_key.is_empty()
+    {
+        persist_setting(db, "subtitles.opensubtitles_api_key", os_key)
+            .await
+            .map_err(EnrollmentError::Other)?;
+    }
+
+    info!(
+        instance_id,
+        old_key_id = current_key_id,
+        new_key_id = next_key.key_id,
+        enrollment_generation = reg.enrollment_generation,
+        "rotated SMG PQ request-signing key"
+    );
+
+    Ok(EnrollmentState {
+        instance_id: instance_id.to_string(),
+        client_key_pem: String::new(),
+        client_cert_pem: String::new(),
+        ca_cert_pem: String::new(),
+        expires_at: DateTime::<Utc>::MAX_UTC,
+        pq_seed_b64: Some(next_key.seed_b64),
+        pq_public_key_b64: Some(next_key.public_key_b64),
+        pq_key_id: Some(next_key.key_id),
+        pq_enrollment_generation: Some(reg.enrollment_generation),
     })
 }
 
@@ -559,6 +691,45 @@ fn enrollment_http_client(
     builder.build().map_err(|e| {
         EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
     })
+}
+
+async fn send_authenticated_pq_registration_request(
+    http: &reqwest::Client,
+    url: &str,
+    current_seed_b64: &str,
+    current_key_id: &str,
+    payload: &serde_json::Value,
+) -> Result<reqwest::Response, EnrollmentError> {
+    let endpoint_url = reqwest::Url::parse(url)
+        .map_err(|e| EnrollmentError::Other(format!("invalid registration URL: {e}")))?;
+    let body_bytes = serde_json::to_vec(payload)
+        .map_err(|e| EnrollmentError::Other(format!("failed to serialize PQ payload: {e}")))?;
+    let host = canonical_request_host(&endpoint_url)?;
+    let path_and_query = canonical_request_path_and_query(&endpoint_url);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| EnrollmentError::Other(format!("system clock before UNIX_EPOCH: {e}")))?
+        .as_secs() as i64;
+    let signature = sign_pq_request(
+        current_seed_b64,
+        reqwest::Method::POST.as_str(),
+        &host,
+        &path_and_query,
+        timestamp,
+        &sha256_hex_bytes(&body_bytes),
+    )
+    .map_err(EnrollmentError::Other)?;
+
+    http.post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("X-Scryer-Auth-Version", "pqsig-v1")
+        .header("X-Scryer-Key-Id", current_key_id)
+        .header("X-Scryer-Timestamp", timestamp.to_string())
+        .header("X-Scryer-Signature", signature)
+        .body(body_bytes)
+        .send()
+        .await
+        .map_err(|e| EnrollmentError::Other(format!("SMG PQ authenticated request failed: {e}")))
 }
 
 async fn registration_response_error(
@@ -723,6 +894,23 @@ pub fn sign_pq_request(
     sign_pq_seed(seed_b64, &message)
 }
 
+fn canonical_request_host(url: &reqwest::Url) -> Result<String, EnrollmentError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| EnrollmentError::Other("registration URL missing host".to_string()))?;
+    Ok(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+fn canonical_request_path_and_query(url: &reqwest::Url) -> String {
+    match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
 fn sign_pq_seed(seed_b64: &str, message: &[u8]) -> Result<String, String> {
     use ml_dsa::signature::Signer;
 
@@ -784,6 +972,37 @@ async fn load_setting(db: &crate::SqliteServices, key: &str) -> Result<Option<St
         .as_ref()
         .and_then(|r| r.value_json.as_deref())
         .and_then(parse_string_json))
+}
+
+pub async fn load_pq_enrollment_generation(
+    db: &crate::SqliteServices,
+) -> Result<Option<i64>, String> {
+    let Some(raw) = load_setting(db, "smg.pq_enrollment_generation").await? else {
+        return Ok(None);
+    };
+    raw.parse::<i64>()
+        .map(Some)
+        .map_err(|e| format!("invalid smg.pq_enrollment_generation value: {e}"))
+}
+
+pub async fn persist_pq_enrollment_generation(
+    db: &crate::SqliteServices,
+    generation: i64,
+) -> Result<(), String> {
+    persist_setting(db, "smg.pq_enrollment_generation", &generation.to_string()).await
+}
+
+async fn persist_pq_enrollment_state(
+    db: &crate::SqliteServices,
+    seed_b64: &str,
+    public_key_b64: &str,
+    key_id: &str,
+    enrollment_generation: i64,
+) -> Result<(), String> {
+    persist_setting(db, "smg.pq_seed", seed_b64).await?;
+    persist_setting(db, "smg.pq_public_key", public_key_b64).await?;
+    persist_setting(db, "smg.pq_key_id", key_id).await?;
+    persist_pq_enrollment_generation(db, enrollment_generation).await
 }
 
 async fn persist_setting(db: &crate::SqliteServices, key: &str, value: &str) -> Result<(), String> {
