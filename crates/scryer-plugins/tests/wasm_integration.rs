@@ -283,7 +283,7 @@ async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
     assert!(request.contains("t=tvsearch"), "request was {request}");
     assert!(request.contains("cat=5000"), "request was {request}");
     assert!(
-        !request.contains("q="),
+        !request.contains("&q=") && !request.contains("?q="),
         "RSS request should not include q=: {request}"
     );
 }
@@ -305,6 +305,10 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
         loop {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
                     let mut buffer = [0_u8; 8192];
                     let bytes_read = stream.read(&mut buffer).unwrap_or(0);
                     let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();

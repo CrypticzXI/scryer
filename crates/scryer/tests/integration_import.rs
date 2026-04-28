@@ -309,15 +309,24 @@ async fn seed_second_series_episode(
     title: &Title,
     collection_id: &str,
 ) -> Episode {
+    seed_series_episode_in_collection(ctx, title, collection_id, 2).await
+}
+
+async fn seed_series_episode_in_collection(
+    ctx: &TestContext,
+    title: &Title,
+    collection_id: &str,
+    episode_number: u32,
+) -> Episode {
     let episode = Episode {
         id: Id::new().0,
         title_id: title.id.clone(),
         collection_id: Some(collection_id.to_string()),
         episode_type: scryer_domain::EpisodeType::Standard,
-        episode_number: Some("2".to_string()),
+        episode_number: Some(episode_number.to_string()),
         season_number: Some("1".to_string()),
-        episode_label: Some("S01E02".to_string()),
-        title: Some("Episode 2".to_string()),
+        episode_label: Some(format!("S01E{episode_number:02}")),
+        title: Some(format!("Episode {episode_number}")),
         air_date: None,
         duration_seconds: Some(1440),
         has_multi_audio: false,
@@ -333,7 +342,7 @@ async fn seed_second_series_episode(
     ctx.catalog
         .create_episode(episode.clone())
         .await
-        .expect("create second episode");
+        .expect("create seeded episode");
     episode
 }
 

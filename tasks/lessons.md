@@ -50,6 +50,8 @@
 - **Pass an explicit normalized facet through the plugin search contract.** Plugins should get `movie` / `series` / `anime` directly instead of reverse-engineering semantics from category strings or host-side ID heuristics.
 - **Pass IDs through the host/plugin boundary as a filtered map, not fixed `imdb_id` / `tvdb_id` / `anidb_id` slots.** The host may filter to supported IDs for a strategy, but provider-specific query shaping from those IDs belongs inside the plugin.
 - **When the user asks for logging via `RUST_LOG`, do not add plugin config fields or descriptor changes.** Prefer existing runtime log filtering and keep observability changes out of the plugin contract unless the user explicitly asks for new config surface.
+- **Never treat stored `api_key_encrypted` values as plaintext during live indexer probes.** Use the app path or decrypt inside a non-printing throwaway probe, and only report counts/status so secrets stay out of logs.
+- **When debugging built-in plugin behavior, verify the embedded WASM artifact, not just plugin source.** Scryer ships `include_bytes!` built-ins, so stale WASM can diverge from `scryer-plugins` Rust code even when the source already contains the expected behavior.
 
 ## urql / Frontend Caching
 - `cacheExchange` was removed from all urql clients — the network layer handles caching naturally.

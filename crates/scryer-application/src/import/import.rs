@@ -2201,6 +2201,7 @@ enum EpisodeImportOutcome {
     Rejected {
         rejection: crate::post_download_gate::ImportedFileRejection,
         finalize_before_import: bool,
+        reason_code: Option<String>,
     },
 }
 
@@ -2528,6 +2529,7 @@ async fn import_single_episode_file(
         EpisodeImportOutcome::Rejected {
             rejection,
             finalize_before_import,
+            reason_code,
         } => {
             if *finalize_before_import {
                 crate::post_download_gate::reject_source_file_before_import(
@@ -2550,7 +2552,9 @@ async fn import_single_episode_file(
                 source_video,
                 "episode",
                 "rejected",
-                rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
+                reason_code
+                    .as_deref()
+                    .or_else(|| rejection.skip_reason.as_ref().map(ImportSkipReason::as_str)),
                 None,
                 &target_episodes,
             )
@@ -2619,9 +2623,37 @@ async fn execute_resolved_episode_import(
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,
                 finalize_before_import: true,
+                reason_code: None,
             });
         }
     };
+
+    if let Err(issue) = super::coverage_validation::validate_broad_episode_coverage(
+        title,
+        &prepared.parsed,
+        target_episodes,
+        prepared.accepted.as_ref(),
+    ) {
+        tracing::info!(
+            code = issue.code,
+            expected_runtime_minutes = issue.expected_runtime_minutes,
+            actual_runtime_minutes = issue.actual_runtime_minutes,
+            covered_episode_count = issue.covered_episode_count,
+            real_runtime_coverage_count = issue.real_runtime_coverage_count,
+            file = %source_video.display(),
+            "rejecting implausible episode coverage during import"
+        );
+        return Ok(EpisodeImportOutcome::Rejected {
+            rejection: crate::post_download_gate::ImportedFileRejection {
+                message: issue.message,
+                recycle_reason: super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE,
+                skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                blocking_rule_codes: Vec::new(),
+            },
+            finalize_before_import: true,
+            reason_code: Some(super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string()),
+        });
+    }
 
     let ext = source_video
         .extension()
@@ -2686,6 +2718,7 @@ async fn execute_resolved_episode_import(
                 return Ok(EpisodeImportOutcome::Rejected {
                     rejection,
                     finalize_before_import: true,
+                    reason_code: None,
                 });
             }
         };
@@ -2737,6 +2770,7 @@ async fn execute_resolved_episode_import(
                 return Ok(EpisodeImportOutcome::Rejected {
                     rejection,
                     finalize_before_import: false,
+                    reason_code: None,
                 });
             }
             Err(err) => {
