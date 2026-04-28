@@ -527,6 +527,7 @@ pub(crate) async fn list_wanted_items_query(
     status: Option<&str>,
     media_type: Option<&str>,
     title_id: Option<&str>,
+    title_search: Option<&str>,
     latest_decision_code: Option<&str>,
     limit: i64,
     offset: i64,
@@ -591,6 +592,10 @@ pub(crate) async fn list_wanted_items_query(
         sql.push_str(" AND w.title_id = ?");
         binds.push(tid.to_string());
     }
+    if let Some(title_search) = title_search {
+        sql.push_str(" AND t.name LIKE ? COLLATE NOCASE");
+        binds.push(format!("%{title_search}%"));
+    }
     if let Some(code) = latest_decision_code {
         sql.push_str(" AND latest_decision.decision_code = ?");
         binds.push(code.to_string());
@@ -621,11 +626,13 @@ pub(crate) async fn count_wanted_items_query(
     status: Option<&str>,
     media_type: Option<&str>,
     title_id: Option<&str>,
+    title_search: Option<&str>,
     latest_decision_code: Option<&str>,
 ) -> AppResult<i64> {
     let mut sql = String::from(
         "SELECT COUNT(*) as cnt
          FROM wanted_items w
+         LEFT JOIN titles t ON t.id = w.title_id
          LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
              SELECT rd.id
              FROM release_decisions rd
@@ -648,6 +655,10 @@ pub(crate) async fn count_wanted_items_query(
     if let Some(tid) = title_id {
         sql.push_str(" AND w.title_id = ?");
         binds.push(tid.to_string());
+    }
+    if let Some(title_search) = title_search {
+        sql.push_str(" AND t.name LIKE ? COLLATE NOCASE");
+        binds.push(format!("%{title_search}%"));
     }
     if let Some(code) = latest_decision_code {
         sql.push_str(" AND latest_decision.decision_code = ?");

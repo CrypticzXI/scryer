@@ -643,7 +643,7 @@ const zh_CN: LocaleDictionary = {
   "queue.manualImport": "手动导入",
   "queue.manualImporting": "正在加入队列…",
   "queue.manualImportQueued": "手动导入已加入队列。",
-  "queue.manualImportFailed": "手动导入加入队列失败。",
+  "queue.manualImportFailed": "手动导入失败。",
   "queue.removeFailed": "移除失败",
   "queue.manualImportTooltip": "手动导入可用于需要关注的队列项。",
   "queue.releaseTitle": "发布资源",

@@ -154,6 +154,7 @@ pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, Activit
 pub use events::activity_api::{
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
+pub(crate) use import_workflow::fail_active_manual_import_for_source;
 pub use import_workflow::{
     ManualImportExecutionResult, ManualImportFileMapping, ManualImportFilePreview,
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
@@ -161,6 +162,7 @@ pub use import_workflow::{
     retry_failed_import, start_background_manual_import_poller, try_import_completed_downloads,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
+pub(crate) use integration::integration::ManualImportSourceResolution;
 pub use jobs::jobs::start_background_library_refresh_loop;
 pub use library::rename::{
     LibraryRenamer, NullLibraryRenamer, RenameApplyItemResult, RenameApplyResult,

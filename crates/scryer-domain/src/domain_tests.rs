@@ -295,6 +295,14 @@ fn import_error_code_round_trips() {
         Some(ImportErrorCode::EpisodeLookupFailed)
     );
     assert_eq!(
+        ImportErrorCode::SourceJobFailed.as_str(),
+        "source_job_failed"
+    );
+    assert_eq!(
+        ImportErrorCode::parse("source_job_failed"),
+        Some(ImportErrorCode::SourceJobFailed)
+    );
+    assert_eq!(
         ImportErrorCode::parse("policy_mismatch"),
         Some(ImportErrorCode::PolicyMismatch)
     );

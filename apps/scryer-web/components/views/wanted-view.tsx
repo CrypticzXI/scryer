@@ -1,9 +1,10 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -65,6 +66,8 @@ type WantedViewState = {
   setMediaTypeFilter: (v: WantedMediaType | undefined) => void;
   latestDecisionCodeFilter: string | undefined;
   setLatestDecisionCodeFilter: (v: string | undefined) => void;
+  titleFilterInput: string;
+  setTitleFilterInput: (v: string) => void;
   offset: number;
   setOffset: (v: number) => void;
   limit: number;
@@ -89,6 +92,11 @@ const LATEST_DECISION_OPTIONS = [
   "pending_delay",
   "already_active",
 ];
+
+type ReleaseDecisionExplanationEntry = {
+  code: string;
+  delta: number;
+};
 
 function formatWantedMediaType(mediaType: WantedMediaType, t: Translate) {
   const key: Record<WantedMediaType, string> = {
@@ -227,6 +235,38 @@ function formatBytes(bytes: number | null) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function parseDecisionExplanation(
+  explanationJson: string | null,
+): ReleaseDecisionExplanationEntry[] {
+  if (!explanationJson) return [];
+
+  try {
+    const parsed = JSON.parse(explanationJson);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.flatMap((entry) => {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        typeof entry.code !== "string" ||
+        entry.code.trim().length === 0 ||
+        typeof entry.delta !== "number" ||
+        !Number.isFinite(entry.delta)
+      ) {
+        return [];
+      }
+
+      return [{ code: entry.code, delta: entry.delta }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function formatSignedDelta(delta: number) {
+  return delta > 0 ? `+${delta}` : `${delta}`;
+}
+
 type PendingViewState = {
   items: PendingReleaseItem[];
   loading: boolean;
@@ -269,6 +309,8 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
     setMediaTypeFilter,
     latestDecisionCodeFilter,
     setLatestDecisionCodeFilter,
+    titleFilterInput,
+    setTitleFilterInput,
     offset,
     setOffset,
     limit,
@@ -283,10 +325,27 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
     resetItem,
     triggerMismatchRecovery,
   } = state;
+  const [expandedDecisionIds, setExpandedDecisionIds] = useState<Set<string>>(new Set());
 
   const hasPrev = offset > 0;
   const hasNext = offset + limit < total;
   const shouldScrollDesktopTable = !isMobile;
+
+  useEffect(() => {
+    setExpandedDecisionIds(new Set());
+  }, [expandedItemId, decisions]);
+
+  const toggleDecisionScoring = (decisionId: string) => {
+    setExpandedDecisionIds((current) => {
+      const next = new Set(current);
+      if (next.has(decisionId)) {
+        next.delete(decisionId);
+      } else {
+        next.add(decisionId);
+      }
+      return next;
+    });
+  };
 
   return (
     <Card className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col" : undefined}>
@@ -307,6 +366,14 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
       </CardHeader>
       <CardContent className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col space-y-3" : undefined}>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          <Input
+            aria-label={t("wanted.filterTitle")}
+            className="w-full sm:max-w-sm"
+            placeholder={t("wanted.filterTitlePlaceholder")}
+            value={titleFilterInput}
+            onChange={(event) => setTitleFilterInput(event.target.value)}
+          />
+
           <Select
             value={statusFilter ?? "__all__"}
             onValueChange={(v) => {
@@ -478,24 +545,49 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                         <p className="text-sm text-muted-foreground">{t("wanted.noDecisions")}</p>
                       ) : (
                         <div className="space-y-2">
-                          {decisions.map((d) => (
-                            <div key={d.id} className="rounded-lg border border-border bg-background/40 p-3">
-                              <p className="break-words text-xs font-medium text-foreground">{d.releaseTitle}</p>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {decisionBadge(d.decisionCode, t)}
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                                  {t("wanted.decScore")}: {d.candidateScore}
-                                </span>
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                                  {t("wanted.decDelta")}: {d.scoreDelta ?? "—"}
-                                </span>
+                          {decisions.map((d) => {
+                            const scoringEntries = parseDecisionExplanation(d.explanationJson);
+                            const hasScoringBreakdown = scoringEntries.length > 0;
+                            const scoringExpanded = expandedDecisionIds.has(d.id);
+
+                            return (
+                              <div key={d.id} className="rounded-lg border border-border bg-background/40 p-3">
+                                <p className="break-words text-xs font-medium text-foreground">{d.releaseTitle}</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {decisionBadge(d.decisionCode, t)}
+                                  <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                    {t("wanted.decScore")}: {d.candidateScore}
+                                  </span>
+                                  <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                    {t("wanted.decDelta")}: {d.scoreDelta ?? "—"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                  <span>{formatBytes(d.releaseSizeBytes)}</span>
+                                  <span>{formatDate(d.createdAt)}</span>
+                                </div>
+                                {hasScoringBreakdown ? (
+                                  <div className="mt-3 border-t border-border pt-3">
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                                      onClick={() => toggleDecisionScoring(d.id)}
+                                    >
+                                      {scoringExpanded ? (
+                                        <ChevronDown className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <ChevronRight className="h-3.5 w-3.5" />
+                                      )}
+                                      <span>{t("wanted.scoreBreakdown")}</span>
+                                    </button>
+                                    {scoringExpanded ? (
+                                      <ScoringBreakdown entries={scoringEntries} />
+                                    ) : null}
+                                  </div>
+                                ) : null}
                               </div>
-                              <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                                <span>{formatBytes(d.releaseSizeBytes)}</span>
-                                <span>{formatDate(d.createdAt)}</span>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -645,6 +737,7 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                             <Table className="min-w-[720px]">
                               <TableHeader>
                                 <TableRow>
+                                  <TableHead className="w-8" />
                                   <TableHead>{t("wanted.decRelease")}</TableHead>
                                   <TableHead>{t("wanted.decDecision")}</TableHead>
                                   <TableHead>{t("wanted.decScore")}</TableHead>
@@ -654,27 +747,57 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {decisions.map((d) => (
-                                  <TableRow key={d.id}>
-                                    <TableCell
-                                      className="max-w-[300px] truncate text-xs"
-                                      title={d.releaseTitle}
-                                    >
-                                      {d.releaseTitle}
-                                    </TableCell>
-                                    <TableCell>
-                                      {decisionBadge(d.decisionCode, t)}
-                                    </TableCell>
-                                    <TableCell>{d.candidateScore}</TableCell>
-                                    <TableCell>{d.scoreDelta ?? "—"}</TableCell>
-                                    <TableCell className="text-xs">
-                                      {formatBytes(d.releaseSizeBytes)}
-                                    </TableCell>
-                                    <TableCell className="text-xs">
-                                      {formatDate(d.createdAt)}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
+                                {decisions.map((d) => {
+                                  const scoringEntries = parseDecisionExplanation(d.explanationJson);
+                                  const hasScoringBreakdown = scoringEntries.length > 0;
+                                  const scoringExpanded = expandedDecisionIds.has(d.id);
+
+                                  return (
+                                    <Fragment key={d.id}>
+                                      <TableRow>
+                                        <TableCell>
+                                          {hasScoringBreakdown ? (
+                                            <button
+                                              type="button"
+                                              className="p-0.5 text-muted-foreground hover:text-foreground"
+                                              onClick={() => toggleDecisionScoring(d.id)}
+                                            >
+                                              {scoringExpanded ? (
+                                                <ChevronDown className="h-4 w-4" />
+                                              ) : (
+                                                <ChevronRight className="h-4 w-4" />
+                                              )}
+                                            </button>
+                                          ) : null}
+                                        </TableCell>
+                                        <TableCell
+                                          className="max-w-[300px] truncate text-xs"
+                                          title={d.releaseTitle}
+                                        >
+                                          {d.releaseTitle}
+                                        </TableCell>
+                                        <TableCell>
+                                          {decisionBadge(d.decisionCode, t)}
+                                        </TableCell>
+                                        <TableCell>{d.candidateScore}</TableCell>
+                                        <TableCell>{d.scoreDelta ?? "—"}</TableCell>
+                                        <TableCell className="text-xs">
+                                          {formatBytes(d.releaseSizeBytes)}
+                                        </TableCell>
+                                        <TableCell className="text-xs">
+                                          {formatDate(d.createdAt)}
+                                        </TableCell>
+                                      </TableRow>
+                                      {scoringExpanded ? (
+                                        <TableRow>
+                                          <TableCell colSpan={7} className="bg-background/70 p-3">
+                                            <ScoringBreakdown entries={scoringEntries} />
+                                          </TableCell>
+                                        </TableRow>
+                                      ) : null}
+                                    </Fragment>
+                                  );
+                                })}
                               </TableBody>
                             </Table>
                           )}
@@ -722,6 +845,36 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ScoringBreakdown({
+  entries,
+}: {
+  entries: ReleaseDecisionExplanationEntry[];
+}) {
+  const t = useTranslate();
+
+  return (
+    <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span>{t("wanted.scoreCode")}</span>
+        <span>{t("wanted.decDelta")}</span>
+      </div>
+      <div className="mt-2 space-y-1">
+        {entries.map((entry, index) => (
+          <div
+            key={`${entry.code}-${index}`}
+            className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 font-mono text-xs text-foreground"
+          >
+            <span className="truncate" title={entry.code}>
+              {entry.code}
+            </span>
+            <span>{formatSignedDelta(entry.delta)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

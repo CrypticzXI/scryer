@@ -2636,6 +2636,7 @@ impl DbRuntime {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
@@ -2646,6 +2647,7 @@ impl DbRuntime {
                 status: status.map(str::to_string),
                 media_type: media_type.map(str::to_string),
                 title_id: title_id.map(str::to_string),
+                title_search: title_search.map(str::to_string),
                 latest_decision_code: latest_decision_code.map(str::to_string),
                 limit,
                 offset,
@@ -2664,6 +2666,7 @@ impl DbRuntime {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -2672,6 +2675,7 @@ impl DbRuntime {
                 status: status.map(str::to_string),
                 media_type: media_type.map(str::to_string),
                 title_id: title_id.map(str::to_string),
+                title_search: title_search.map(str::to_string),
                 latest_decision_code: latest_decision_code.map(str::to_string),
                 reply: reply_tx,
             })

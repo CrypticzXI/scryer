@@ -666,7 +666,7 @@ const ko: LocaleDictionary = {
   "queue.manualImport": "수동 가져오기",
   "queue.manualImporting": "대기열에 추가 중…",
   "queue.manualImportQueued": "수동 가져오기가 대기열에 추가되었습니다.",
-  "queue.manualImportFailed": "수동 가져오기 대기열 추가 실패.",
+  "queue.manualImportFailed": "수동 가져오기에 실패했습니다.",
   "queue.removeFailed": "제거 실패",
   "queue.manualImportTooltip":
     "수동 가져오기는 주의가 필요한 대기열 항목에서 사용할 수 있습니다.",

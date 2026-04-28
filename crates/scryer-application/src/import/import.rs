@@ -1986,6 +1986,7 @@ async fn mark_wanted_completed_for_collection(
             Some("interstitial_movie"),
             Some(title_id),
             None,
+            None,
             100,
             0,
         )
@@ -3757,30 +3758,30 @@ pub async fn preview_manual_import(
     download_client_item_id: &str,
     title_id: &str,
 ) -> AppResult<ManualImportPreview> {
-    // Look up completed download to get dest_dir
-    let completed_downloads = app
-        .services
-        .integrations
-        .download_client
-        .list_completed_downloads()
-        .await?;
-    let completed = completed_downloads
-        .iter()
-        .find(|cd| {
-            cd.download_client_item_id == download_client_item_id
-                && client_id
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_none_or(|client_id| cd.client_id == client_id)
-        })
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
+    let completed = match app
+        .resolve_manual_import_source(client_id, None, download_client_item_id)
+        .await?
+    {
+        crate::ManualImportSourceResolution::Eligible {
+            completed: Some(completed),
+        } => completed,
+        crate::ManualImportSourceResolution::Eligible { completed: None } => {
+            return Err(AppError::NotFound(format!(
                 "completed download not found: {}",
                 download_client_item_id
-            ))
-        })?;
+            )));
+        }
+        crate::ManualImportSourceResolution::SourceFailed { message } => {
+            return Err(AppError::Validation(format!(
+                "source_job_failed: {message}"
+            )));
+        }
+        crate::ManualImportSourceResolution::NotEligible { message } => {
+            return Err(AppError::Validation(message));
+        }
+    };
 
-    // Scan for video files (recursive, no sample filtering — let user see everything)
+    // Scan for video files (recursive, no sample filtering - let user see everything)
     let dest_dir = Path::new(&completed.dest_dir);
     let video_files = find_video_files(dest_dir, false)?;
 
@@ -3813,7 +3814,7 @@ pub async fn preview_manual_import(
             .to_string();
         let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
 
-        let parsed = build_augmented_episode_import_metadata(path, completed, other_video_files);
+        let parsed = build_augmented_episode_import_metadata(path, &completed, other_video_files);
 
         let mut suggested_episode_id = None;
         let mut suggested_episode_label = None;
@@ -3960,6 +3961,11 @@ fn classify_manual_import_error_message(message: &str) -> ImportErrorCode {
         ImportErrorCode::EpisodeNotFound
     } else if normalized.contains("episode lookup failed") {
         ImportErrorCode::EpisodeLookupFailed
+    } else if normalized.contains("source_job_failed")
+        || normalized.contains("source download failed")
+        || normalized.contains("source job failed")
+    {
+        ImportErrorCode::SourceJobFailed
     } else if normalized.contains("permission denied")
         || normalized.contains("operation not permitted")
     {
@@ -3979,7 +3985,7 @@ fn classify_manual_import_error_message(message: &str) -> ImportErrorCode {
     }
 }
 
-fn manual_import_result_json(
+pub(crate) fn manual_import_result_json(
     import_id: &str,
     payload: &ManualImportRequestPayload,
     status: ImportStatus,
@@ -3999,6 +4005,75 @@ fn manual_import_result_json(
         completed_at: Utc::now(),
     })
     .ok()
+}
+
+pub(crate) fn manual_import_source_failed_result_json(
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+    message: String,
+) -> Option<String> {
+    manual_import_result_json(
+        import_id,
+        payload,
+        ImportStatus::Failed,
+        Some(ImportErrorCode::SourceJobFailed),
+        Some(message),
+        Vec::new(),
+    )
+}
+
+pub(crate) async fn fail_active_manual_import_for_source(
+    app: &AppUseCase,
+    tracked: &crate::tracked_downloads::TrackedDownload,
+    failure_reason: &str,
+) {
+    let record = match app
+        .services
+        .workflow
+        .imports
+        .get_import_by_source_ref_and_type(
+            &tracked.client_type,
+            &tracked.client_item.download_client_item_id,
+            ImportType::ManualImport,
+        )
+        .await
+    {
+        Ok(Some(record)) if record.status.is_active() => record,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                item_id = %tracked.client_item.download_client_item_id,
+                "failed to inspect manual import request for failed source"
+            );
+            return;
+        }
+    };
+
+    let payload = serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json)
+        .unwrap_or_else(|_| ManualImportRequestPayload {
+            requested_by_user_id: None,
+            title_id: tracked.title_id.clone(),
+            download_client_item_id: tracked.client_item.download_client_item_id.clone(),
+            client_id: Some(tracked.client_id.clone()).filter(|value| !value.is_empty()),
+            client_type: tracked.client_type.clone(),
+            files: Vec::new(),
+            requested_at: record.created_at.clone(),
+        });
+    let message = format!("source download failed before import: {failure_reason}");
+    let result_json = manual_import_source_failed_result_json(&record.id, &payload, message);
+
+    if let Err(error) = app
+        .update_import_status_and_notify(&record.id, ImportStatus::Failed, result_json)
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            import_id = %record.id,
+            item_id = %tracked.client_item.download_client_item_id,
+            "failed to terminate manual import request for failed source"
+        );
+    }
 }
 
 fn manual_import_terminal_status_and_error(
@@ -4256,21 +4331,31 @@ pub async fn execute_queued_manual_import(
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
+    let source_resolution = app
+        .resolve_manual_import_source(
+            payload.client_id.as_deref(),
+            Some(payload.client_type.as_str()),
+            &payload.download_client_item_id,
+        )
+        .await?;
+    let completed_source = match source_resolution {
+        crate::ManualImportSourceResolution::Eligible { completed } => completed,
+        crate::ManualImportSourceResolution::SourceFailed { message }
+        | crate::ManualImportSourceResolution::NotEligible { message } => {
+            return Ok((
+                ImportStatus::Failed,
+                manual_import_source_failed_result_json(import_id, payload, message),
+            ));
+        }
+    };
+
     if payload.files.is_empty() {
-        let completed = app
-            .services
-            .integrations
-            .download_client
-            .list_completed_downloads()
-            .await?
-            .into_iter()
-            .find(|download| completed_download_matches_manual_import(download, payload))
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "completed download {}",
-                    payload.download_client_item_id
-                ))
-            })?;
+        let completed = completed_source.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "completed download {}",
+                payload.download_client_item_id
+            ))
+        })?;
 
         let result = app
             .trigger_manual_import(&actor, &completed, payload.title_id.as_deref())
@@ -4318,14 +4403,8 @@ pub async fn execute_queued_manual_import(
     let title_id = payload.title_id.as_deref().ok_or_else(|| {
         AppError::Validation("title id is required for mapped manual import".into())
     })?;
-    let completed = app
-        .services
-        .integrations
-        .download_client
-        .list_completed_downloads()
-        .await?
-        .into_iter()
-        .find(|download| completed_download_matches_manual_import(download, payload));
+    let completed = completed_source
+        .filter(|download| completed_download_matches_manual_import(download, payload));
     let results = execute_manual_import(
         app,
         &actor,

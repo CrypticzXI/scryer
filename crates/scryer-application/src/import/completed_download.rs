@@ -183,6 +183,40 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
         return false;
     }
 
+    match app
+        .resolve_manual_import_source(
+            Some(td.client_id.as_str()),
+            Some(td.client_type.as_str()),
+            &td.client_item.download_client_item_id,
+        )
+        .await
+    {
+        Ok(crate::ManualImportSourceResolution::Eligible { .. }) => {}
+        Ok(crate::ManualImportSourceResolution::SourceFailed { message })
+        | Ok(crate::ManualImportSourceResolution::NotEligible { message }) => {
+            tracing::warn!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                reason = %message,
+                "import: source is no longer eligible; routing to failure handling"
+            );
+            td.state = TrackedDownloadState::FailedPending;
+            td.status = TrackedDownloadStatus::Error;
+            td.client_item.attention_reason = Some(message.clone());
+            td.status_messages = vec![message];
+            return false;
+        }
+        Err(error) => {
+            tracing::warn!(
+                id = %td.id,
+                error = %error,
+                "import: could not revalidate source before import"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+            return false;
+        }
+    }
+
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 

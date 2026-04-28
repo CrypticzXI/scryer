@@ -201,6 +201,109 @@ function withFailureDetail(message: string, detail: string | null): string {
   return detail ? `${message} ${detail}` : message;
 }
 
+function splitSucceededTitleIds(
+  targets: TitleRecord[],
+  predicate: (title: TitleRecord) => boolean,
+): { succeededIds: string[]; failedIds: string[] } {
+  const succeededIds: string[] = [];
+  const failedIds: string[] = [];
+
+  targets.forEach((title) => {
+    if (predicate(title)) {
+      succeededIds.push(title.id);
+    } else {
+      failedIds.push(title.id);
+    }
+  });
+
+  return { succeededIds, failedIds };
+}
+
+function inferMonitoredBatchOutcome(
+  targets: TitleRecord[],
+  refreshedTitles: TitleRecord[],
+  monitored: boolean,
+): { succeededIds: string[]; failedIds: string[] } {
+  const refreshedById = new Map(refreshedTitles.map((title) => [title.id, title]));
+  return splitSucceededTitleIds(
+    targets,
+    (title) => refreshedById.get(title.id)?.monitored === monitored,
+  );
+}
+
+function inferTitleUpdateBatchOutcome(
+  targets: TitleRecord[],
+  refreshedTitles: TitleRecord[],
+  changes: TitleOptionUpdates,
+): { succeededIds: string[]; failedIds: string[] } {
+  const refreshedById = new Map(refreshedTitles.map((title) => [title.id, title]));
+  return splitSucceededTitleIds(targets, (title) => {
+    const refreshed = refreshedById.get(title.id);
+    if (!refreshed) {
+      return false;
+    }
+
+    if (
+      changes.qualityProfileId !== undefined &&
+      (refreshed.qualityProfileId ?? "") !== changes.qualityProfileId
+    ) {
+      return false;
+    }
+    if (
+      changes.rootFolderPath !== undefined &&
+      (refreshed.rootFolderPath ?? "") !== changes.rootFolderPath
+    ) {
+      return false;
+    }
+    if (
+      changes.monitorType !== undefined &&
+      (refreshed.monitorType ?? "") !== changes.monitorType
+    ) {
+      return false;
+    }
+    if (
+      changes.useSeasonFolders !== undefined &&
+      refreshed.useSeasonFolders !== changes.useSeasonFolders
+    ) {
+      return false;
+    }
+    if (
+      changes.monitorSpecials !== undefined &&
+      refreshed.monitorSpecials !== changes.monitorSpecials
+    ) {
+      return false;
+    }
+    if (
+      changes.interSeasonMovies !== undefined &&
+      refreshed.interSeasonMovies !== changes.interSeasonMovies
+    ) {
+      return false;
+    }
+    if (
+      changes.fillerPolicy !== undefined &&
+      (refreshed.fillerPolicy ?? "") !== changes.fillerPolicy
+    ) {
+      return false;
+    }
+    if (
+      changes.recapPolicy !== undefined &&
+      (refreshed.recapPolicy ?? "") !== changes.recapPolicy
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function inferTitleDeleteBatchOutcome(
+  targets: TitleRecord[],
+  refreshedTitles: TitleRecord[],
+): { succeededIds: string[]; failedIds: string[] } {
+  const remainingIds = new Set(refreshedTitles.map((title) => title.id));
+  return splitSucceededTitleIds(targets, (title) => !remainingIds.has(title.id));
+}
+
 function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | null {
   if (previews.length === 0) {
     return null;
@@ -589,8 +692,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
     [activeFacet, client, refreshRuleSets, ruleSets, setGlobalStatus, t],
   );
-  const refreshTitles = React.useCallback(
-    async () => {
+  const reloadTitles = React.useCallback(
+    async (): Promise<TitleRecord[] | null> => {
       setTitleLoading(true);
       setTitleStatus(t("title.loading"));
 
@@ -607,16 +710,22 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           mergeCatalogTitlesPreservingImages(current, nextTitles),
         );
         setTitleStatus(t("title.statusTemplate", { count: nextTitles.length }));
+        return nextTitles;
       } catch (error) {
         setTitleStatus(
           error instanceof Error ? error.message : t("status.failedToLoad"),
         );
+        return null;
       } finally {
         setTitleLoading(false);
       }
     },
     [activeFacet, client, setMonitoredTitles, setTitleLoading, setTitleStatus, t],
   );
+
+  const refreshTitles = React.useCallback(async () => {
+    await reloadTitles();
+  }, [reloadTitles]);
 
   const applyRefreshedTitleRecord = React.useCallback(
     (titleId: string, title: TitleRecord | null) => {
@@ -962,18 +1071,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )
           .toPromise();
         const payload = result.data ?? {};
-        const succeededIds: string[] = [];
-        const failedIds: string[] = [];
-
-        targets.forEach((title, index) => {
-          if (payload[batchItemAlias(index)]) {
-            succeededIds.push(title.id);
-          } else {
-            failedIds.push(title.id);
-          }
-        });
-
-        await refreshTitles();
+        const refreshedTitles = await reloadTitles();
+        let { succeededIds, failedIds } = refreshedTitles
+          ? inferMonitoredBatchOutcome(targets, refreshedTitles, monitored)
+          : {
+              succeededIds: [] as string[],
+              failedIds: [...targets.map((title) => title.id)],
+            };
+        if (!refreshedTitles && !result.error) {
+          succeededIds = [];
+          failedIds = [];
+          targets.forEach((title, index) => {
+            if (payload[batchItemAlias(index)]) {
+              succeededIds.push(title.id);
+            } else {
+              failedIds.push(title.id);
+            }
+          });
+        }
         setSelectedTitleIds(new Set(failedIds));
 
         const detail = batchFailureDetail(result.error);
@@ -1025,7 +1140,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setBulkActionBusy(false);
       }
     },
-    [bulkActionBusy, client, refreshTitles, selectedTitles, setGlobalStatus, t],
+    [bulkActionBusy, client, reloadTitles, selectedTitles, setGlobalStatus, t],
   );
 
   const applyBulkTitleOptions = React.useCallback(
@@ -1053,18 +1168,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )
           .toPromise();
         const payload = result.data ?? {};
-        const succeededIds: string[] = [];
-        const failedIds: string[] = [];
-
-        targets.forEach((title, index) => {
-          if (payload[batchItemAlias(index)]) {
-            succeededIds.push(title.id);
-          } else {
-            failedIds.push(title.id);
-          }
-        });
-
-        await refreshTitles();
+        const refreshedTitles = await reloadTitles();
+        let { succeededIds, failedIds } = refreshedTitles
+          ? inferTitleUpdateBatchOutcome(targets, refreshedTitles, changes)
+          : {
+              succeededIds: [] as string[],
+              failedIds: [...targets.map((title) => title.id)],
+            };
+        if (!refreshedTitles && !result.error) {
+          succeededIds = [];
+          failedIds = [];
+          targets.forEach((title, index) => {
+            if (payload[batchItemAlias(index)]) {
+              succeededIds.push(title.id);
+            } else {
+              failedIds.push(title.id);
+            }
+          });
+        }
         setSelectedTitleIds(new Set(failedIds));
 
         const detail = batchFailureDetail(result.error);
@@ -1103,7 +1224,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setBulkActionBusy(false);
       }
     },
-    [bulkActionBusy, client, refreshTitles, selectedTitles, setGlobalStatus, t],
+    [bulkActionBusy, client, reloadTitles, selectedTitles, setGlobalStatus, t],
   );
 
   const closeBulkDeleteDialog = React.useCallback(() => {
@@ -1160,7 +1281,31 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           return;
         }
 
-        const payload = result.data ?? {};
+        let payload = result.data ?? {};
+        if (Object.keys(payload).length === 0 && result.error) {
+          const settled = await Promise.allSettled(
+            targets.map(async (title) => {
+              const single = await client
+                .query<{ deleteTitlePreview: DeletePreview }>(
+                  deleteTitlePreviewQuery,
+                  { input: { titleId: title.id } },
+                  { requestPolicy: "network-only" },
+                )
+                .toPromise();
+              if (single.error || !single.data?.deleteTitlePreview) {
+                throw single.error ?? new Error("delete title preview failed");
+              }
+              return [title.id, single.data.deleteTitlePreview] as const;
+            }),
+          );
+
+          payload = {};
+          settled.forEach((outcome, index) => {
+            if (outcome.status === "fulfilled") {
+              payload[batchItemAlias(index)] = outcome.value[1];
+            }
+          });
+        }
         const nextPreviewsByTitleId: Record<string, DeletePreview> = {};
         let failedCount = 0;
 
@@ -1273,18 +1418,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         )
         .toPromise();
       const payload = result.data ?? {};
-      const succeededIds: string[] = [];
-      const failedIds: string[] = [];
-
-      targets.forEach((title, index) => {
-        if (payload[batchItemAlias(index)]) {
-          succeededIds.push(title.id);
-        } else {
-          failedIds.push(title.id);
-        }
-      });
-
-      await refreshTitles();
+      const refreshedTitles = await reloadTitles();
+      let { succeededIds, failedIds } = refreshedTitles
+        ? inferTitleDeleteBatchOutcome(targets, refreshedTitles)
+        : {
+            succeededIds: [] as string[],
+            failedIds: [...targets.map((title) => title.id)],
+          };
+      if (!refreshedTitles && !result.error) {
+        succeededIds = [];
+        failedIds = [];
+        targets.forEach((title, index) => {
+          if (payload[batchItemAlias(index)]) {
+            succeededIds.push(title.id);
+          } else {
+            failedIds.push(title.id);
+          }
+        });
+      }
       setSelectedTitleIds(new Set(failedIds));
 
       const detail = batchFailureDetail(result.error);
@@ -1329,7 +1480,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     bulkDeleteTypedConfirmation,
     client,
     closeBulkDeleteDialog,
-    refreshTitles,
+    reloadTitles,
     selectedTitles,
     setGlobalStatus,
     t,

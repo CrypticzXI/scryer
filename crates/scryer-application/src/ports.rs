@@ -866,6 +866,7 @@ pub trait WantedItemRepository: Send + Sync {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
@@ -876,6 +877,7 @@ pub trait WantedItemRepository: Send + Sync {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
     ) -> AppResult<i64>;
 
@@ -898,7 +900,7 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
 ) -> AppResult<Option<WantedItem>> {
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
-            .list_wanted_items(None, None, Some(&item.title_id), None, 500, 0)
+            .list_wanted_items(None, None, Some(&item.title_id), None, None, 500, 0)
             .await?
             .into_iter()
             .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
@@ -911,7 +913,7 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
     }
 
     Ok(repo
-        .list_wanted_items(None, None, Some(&item.title_id), None, 500, 0)
+        .list_wanted_items(None, None, Some(&item.title_id), None, None, 500, 0)
         .await?
         .into_iter()
         .find(|existing| existing.episode_id.is_none() && existing.collection_id.is_none()))

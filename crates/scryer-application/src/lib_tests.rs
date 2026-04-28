@@ -2702,11 +2702,13 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<WantedItem>> {
         let latest_decisions = self.release_decisions.lock().await.clone();
+        let normalized_title_search = title_search.map(str::to_lowercase);
         let items: Vec<WantedItem> = self
             .store
             .lock()
@@ -2720,6 +2722,13 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                 status.is_none_or(|status| item.status.as_str() == status)
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
+                    && normalized_title_search.as_ref().is_none_or(|title_search| {
+                        item.title_name
+                            .as_deref()
+                            .is_some_and(|title_name| {
+                                title_name.to_lowercase().contains(title_search)
+                            })
+                    })
                     && latest_decision_code.is_none_or(|code| {
                         latest_decision
                             .as_ref()
@@ -2738,9 +2747,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         let latest_decisions = self.release_decisions.lock().await.clone();
+        let normalized_title_search = title_search.map(str::to_lowercase);
         Ok(self
             .store
             .lock()
@@ -2754,6 +2765,13 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                 status.is_none_or(|status| item.status.as_str() == status)
                     && media_type.is_none_or(|media_type| item.media_type == media_type)
                     && title_id.is_none_or(|title_id| item.title_id == title_id)
+                    && normalized_title_search.as_ref().is_none_or(|title_search| {
+                        item.title_name
+                            .as_deref()
+                            .is_some_and(|title_name| {
+                                title_name.to_lowercase().contains(title_search)
+                            })
+                    })
                     && latest_decision_code.is_none_or(|code| {
                         latest_decision
                             .as_ref()
@@ -11127,7 +11145,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .expect("monitor interstitial collection");
 
     let wanted = wanted_items
-        .list_wanted_items(None, None, Some(&title.id), None, 50, 0)
+        .list_wanted_items(None, None, Some(&title.id), None, None, 50, 0)
         .await
         .expect("list wanted items");
     assert_eq!(wanted.len(), 1);

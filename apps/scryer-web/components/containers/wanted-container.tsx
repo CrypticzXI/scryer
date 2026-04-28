@@ -47,6 +47,8 @@ export const WantedContainer = memo(function WantedContainer({
   const [statusFilter, setStatusFilter] = useState<WantedStatus | undefined>(undefined);
   const [mediaTypeFilter, setMediaTypeFilter] = useState<WantedMediaType | undefined>(undefined);
   const [latestDecisionCodeFilter, setLatestDecisionCodeFilter] = useState<string | undefined>(undefined);
+  const [titleFilterInput, setTitleFilterInput] = useState("");
+  const [titleSearch, setTitleSearch] = useState<string | undefined>(undefined);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -130,6 +132,7 @@ export const WantedContainer = memo(function WantedContainer({
         .query(wantedItemsQuery, {
           status: statusFilter,
           mediaType: mediaTypeFilter,
+          titleSearch,
           latestDecisionCode: latestDecisionCodeFilter,
           limit,
           offset,
@@ -144,13 +147,32 @@ export const WantedContainer = memo(function WantedContainer({
     } finally {
       setLoading(false);
     }
-  }, [client, statusFilter, mediaTypeFilter, latestDecisionCodeFilter, offset, t, setGlobalStatus]);
+  }, [
+    client,
+    statusFilter,
+    mediaTypeFilter,
+    titleSearch,
+    latestDecisionCodeFilter,
+    offset,
+    t,
+    setGlobalStatus,
+  ]);
 
   useEffect(() => {
     if (wantedSection === "wanted") {
       void refreshItems();
     }
   }, [refreshItems, wantedSection]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      const normalized = titleFilterInput.trim();
+      setOffset(0);
+      setTitleSearch(normalized.length > 0 ? normalized : undefined);
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [titleFilterInput]);
 
   // --- Cutoff data fetching ---
 
@@ -348,6 +370,8 @@ export const WantedContainer = memo(function WantedContainer({
           setMediaTypeFilter,
           latestDecisionCodeFilter,
           setLatestDecisionCodeFilter,
+          titleFilterInput,
+          setTitleFilterInput,
           offset,
           setOffset,
           limit,

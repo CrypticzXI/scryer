@@ -335,6 +335,7 @@ pub struct WantedItemsQuery {
     pub status: Option<String>,
     pub media_type: Option<String>,
     pub title_id: Option<String>,
+    pub title_search: Option<String>,
     pub latest_decision_code: Option<String>,
     pub limit: i64,
     pub offset: i64,

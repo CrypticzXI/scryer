@@ -1531,8 +1531,8 @@ export const previewManualImportQuery = `query PreviewManualImport($clientId: St
   }
 }`;
 
-export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $mediaType: WantedMediaTypeValue, $titleId: String, $latestDecisionCode: String, $limit: Int, $offset: Int) {
-  wantedItems(status: $status, mediaType: $mediaType, titleId: $titleId, latestDecisionCode: $latestDecisionCode, limit: $limit, offset: $offset) {
+export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $mediaType: WantedMediaTypeValue, $titleId: String, $titleSearch: String, $latestDecisionCode: String, $limit: Int, $offset: Int) {
+  wantedItems(status: $status, mediaType: $mediaType, titleId: $titleId, titleSearch: $titleSearch, latestDecisionCode: $latestDecisionCode, limit: $limit, offset: $offset) {
     items {
       id
       titleId

@@ -353,6 +353,10 @@ export function deriveDownloadQueueDisplayState(
     return "remove_failed";
   }
 
+  if (stateKey === "failed") {
+    return "failed";
+  }
+
   if (
     importStatusKey === "pending" ||
     importStatusKey === "running" ||
@@ -365,8 +369,7 @@ export function deriveDownloadQueueDisplayState(
     (importStatusKey === "failed" || importStatusKey === "skipped") &&
     (trackedStateKey === "import_blocked" ||
       stateKey === "completed" ||
-      stateKey === "import_pending" ||
-      stateKey === "failed")
+      stateKey === "import_pending")
   ) {
     return "import_failed";
   }
@@ -378,7 +381,7 @@ export function deriveDownloadQueueDisplayState(
   const canDeriveBlockedState =
     trackedStateKey.length === 0 &&
     failureReason.length > 0 &&
-    (stateKey === "completed" || stateKey === "import_pending" || stateKey === "failed") &&
+    (stateKey === "completed" || stateKey === "import_pending") &&
     (importStatusKey === "skipped" || importStatusKey === "failed");
   if (canDeriveBlockedState) {
     return "import_blocked";

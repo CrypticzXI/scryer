@@ -695,7 +695,7 @@ const pt_BR: LocaleDictionary = {
   "queue.manualImport": "Importar manualmente",
   "queue.manualImporting": "Adicionando à fila…",
   "queue.manualImportQueued": "Importação manual adicionada à fila.",
-  "queue.manualImportFailed": "Falha ao adicionar importação manual à fila.",
+  "queue.manualImportFailed": "Falha na importação manual.",
   "queue.removeFailed": "Falha ao remover",
   "queue.manualImportTooltip":
     "A importação manual está disponível para itens da fila que precisam de atenção.",

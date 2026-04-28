@@ -315,6 +315,7 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
         limit: i64,
         offset: i64,
@@ -324,6 +325,7 @@ impl WantedItemRepository for SqliteLibraryStateStore {
                 status,
                 media_type,
                 title_id,
+                title_search,
                 latest_decision_code,
                 limit,
                 offset,
@@ -336,10 +338,17 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         status: Option<&str>,
         media_type: Option<&str>,
         title_id: Option<&str>,
+        title_search: Option<&str>,
         latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         self.db
-            .count_wanted_items(status, media_type, title_id, latest_decision_code)
+            .count_wanted_items(
+                status,
+                media_type,
+                title_id,
+                title_search,
+                latest_decision_code,
+            )
             .await
     }
 

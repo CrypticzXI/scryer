@@ -712,8 +712,8 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use scryer_domain::{
-        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
-        ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title,
+        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Entitlement, Id,
+        ImportRecord, ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, User,
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -798,13 +798,18 @@ mod tests {
         }
     }
 
+    struct TestImportStatusUpdate(ImportStatus, Option<String>);
+
     #[derive(Default)]
     struct TestImportRepo {
         import_record: Option<ImportRecord>,
+        status_updates: Arc<Mutex<Vec<TestImportStatusUpdate>>>,
     }
 
     #[derive(Default)]
     struct TestDownloadClient {
+        queue_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
+        recent_activity: Arc<Mutex<Vec<DownloadQueueItem>>>,
         completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
     }
 
@@ -819,6 +824,14 @@ mod tests {
 
         async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
             Ok(self.completed_downloads.lock().await.clone())
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            Ok(self.queue_items.lock().await.clone())
+        }
+
+        async fn list_recent_activity(&self, _: usize) -> AppResult<Vec<DownloadQueueItem>> {
+            Ok(self.recent_activity.lock().await.clone())
         }
     }
 
@@ -910,9 +923,13 @@ mod tests {
         async fn update_import_status(
             &self,
             _: &str,
-            _: ImportStatus,
-            _: Option<String>,
+            status: ImportStatus,
+            result_json: Option<String>,
         ) -> AppResult<()> {
+            self.status_updates
+                .lock()
+                .await
+                .push(TestImportStatusUpdate(status, result_json));
             Ok(())
         }
 
@@ -1460,6 +1477,15 @@ mod tests {
         )
     }
 
+    fn trigger_user() -> User {
+        User {
+            id: "user-1".to_string(),
+            username: "user@example.test".to_string(),
+            password_hash: None,
+            entitlements: vec![Entitlement::TriggerActions],
+        }
+    }
+
     fn build_client_item() -> DownloadQueueItem {
         DownloadQueueItem {
             id: Id::new().0,
@@ -1585,6 +1611,7 @@ mod tests {
                 created_at: "now".to_string(),
                 updated_at: "now".to_string(),
             }),
+            ..Default::default()
         });
         let app = build_app(download_submissions.clone(), imports);
         let mut tracker = TrackedDownloadService::new();
@@ -1751,6 +1778,7 @@ mod tests {
                 completed_dir.to_string_lossy().as_ref(),
                 Some("anime"),
             )])),
+            ..Default::default()
         });
         let app = build_app_with_title_repo_and_download_client(
             title_repo,
@@ -1831,6 +1859,7 @@ mod tests {
                 completed_dir.to_string_lossy().as_ref(),
                 Some("movie"),
             )])),
+            ..Default::default()
         });
         let app = build_app_with_title_repo_and_download_client(
             title_repo,
@@ -2157,6 +2186,171 @@ mod tests {
             tracker
                 .find("client-1:failed")
                 .is_some_and(|td| td.is_trackable)
+        );
+    }
+
+    #[test]
+    fn failed_download_check_preempts_import_pending_state() {
+        let mut client_item = build_client_item();
+        client_item.state = DownloadQueueState::Failed;
+        client_item.attention_reason = Some("health below critical".to_string());
+        let mut tracked = TrackedDownload {
+            id: "client-1:failed-import-pending".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "nzbget".to_string(),
+            client_item,
+            state: TrackedDownloadState::ImportPending,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+        };
+
+        crate::failed_download_handler::check(&mut tracked);
+
+        assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn queue_manual_import_rejects_failed_source_job() {
+        let mut failed_item = build_client_item();
+        failed_item.client_type = "weaver".to_string();
+        failed_item.client_name = "weaver".to_string();
+        failed_item.download_client_item_id = "job-failed".to_string();
+        failed_item.state = DownloadQueueState::Failed;
+        failed_item.attention_reason = Some("health below critical".to_string());
+
+        let download_client = Arc::new(TestDownloadClient {
+            recent_activity: Arc::new(Mutex::new(vec![failed_item])),
+            ..Default::default()
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            Arc::new(NullTitleRepository),
+            download_client,
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo::default()),
+        );
+
+        let result = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-failed".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Validation(message)) if message.contains("source_job_failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn preview_manual_import_rejects_failed_source_job() {
+        let mut failed_item = build_client_item();
+        failed_item.client_type = "weaver".to_string();
+        failed_item.client_name = "weaver".to_string();
+        failed_item.download_client_item_id = "job-failed-preview".to_string();
+        failed_item.state = DownloadQueueState::Failed;
+        failed_item.attention_reason = Some("health below critical".to_string());
+
+        let download_client = Arc::new(TestDownloadClient {
+            recent_activity: Arc::new(Mutex::new(vec![failed_item])),
+            ..Default::default()
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            Arc::new(NullTitleRepository),
+            download_client,
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo::default()),
+        );
+
+        let result =
+            crate::preview_manual_import(&app, Some("client-1"), "job-failed-preview", "title-1")
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Validation(message)) if message.contains("source_job_failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_source_invalidates_active_manual_import_request() {
+        let payload = crate::ManualImportRequestPayload {
+            requested_by_user_id: Some("user-1".to_string()),
+            title_id: Some("title-1".to_string()),
+            download_client_item_id: "job-active-manual".to_string(),
+            client_id: Some("client-1".to_string()),
+            client_type: "weaver".to_string(),
+            files: Vec::new(),
+            requested_at: Utc::now().to_rfc3339(),
+        };
+        let imports = Arc::new(TestImportRepo {
+            import_record: Some(ImportRecord {
+                id: "import-1".to_string(),
+                source_system: "weaver".to_string(),
+                source_ref: "job-active-manual".to_string(),
+                import_type: ImportType::ManualImport,
+                status: ImportStatus::Pending,
+                payload_json: serde_json::to_string(&payload).expect("serialize payload"),
+                result_json: None,
+                started_at: None,
+                finished_at: None,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            }),
+            ..Default::default()
+        });
+        let app = build_app(
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            imports.clone(),
+        );
+        let mut client_item = build_client_item();
+        client_item.client_type = "weaver".to_string();
+        client_item.download_client_item_id = "job-active-manual".to_string();
+        let tracked = TrackedDownload {
+            id: "client-1:job-active-manual".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "weaver".to_string(),
+            client_item,
+            state: TrackedDownloadState::FailedPending,
+            status: TrackedDownloadStatus::Error,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+        };
+
+        crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;
+
+        let updates = imports.status_updates.lock().await;
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, ImportStatus::Failed);
+        assert!(
+            updates[0]
+                .1
+                .as_deref()
+                .is_some_and(|json| json.contains("source_job_failed"))
         );
     }
 }

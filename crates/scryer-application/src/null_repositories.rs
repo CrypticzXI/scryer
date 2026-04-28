@@ -435,6 +435,7 @@ impl WantedItemRepository for NullWantedItemRepository {
         _status: Option<&str>,
         _media_type: Option<&str>,
         _title_id: Option<&str>,
+        _title_search: Option<&str>,
         _latest_decision_code: Option<&str>,
         _limit: i64,
         _offset: i64,
@@ -446,6 +447,7 @@ impl WantedItemRepository for NullWantedItemRepository {
         _status: Option<&str>,
         _media_type: Option<&str>,
         _title_id: Option<&str>,
+        _title_search: Option<&str>,
         _latest_decision_code: Option<&str>,
     ) -> AppResult<i64> {
         Ok(0)

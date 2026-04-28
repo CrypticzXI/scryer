@@ -3111,11 +3111,11 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .expect("latest blocked decision should insert");
 
     let items = workflow
-        .list_wanted_items(None, None, None, Some("title_mismatch"), 50, 0)
+        .list_wanted_items(None, None, None, None, Some("title_mismatch"), 50, 0)
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(None, None, None, Some("title_mismatch"))
+        .count_wanted_items(None, None, None, None, Some("title_mismatch"))
         .await
         .expect("filtered wanted count should load");
 
@@ -3129,6 +3129,77 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .expect("latest decision should be hydrated");
     assert_eq!(latest_decision.decision_code, "title_mismatch");
     assert_eq!(latest_decision.release_title, "Mismatch Release");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_wanted_items_filters_on_title_name_contains_case_insensitive() {
+    let (services, db) = temp_services("scryer_wanted_title_search").await;
+    let workflow = library_state_store(&services);
+    let catalog = catalog_store(&services);
+    let now = Utc::now();
+
+    let mut title = make_test_title("title-search-match", None);
+    title.name = "Schoolhouse Rock! Earth".to_string();
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("matching title should insert");
+    let mut other_title = make_test_title("title-search-other", None);
+    other_title.name = "Different Show".to_string();
+    TitleRepository::create(&catalog, other_title.clone())
+        .await
+        .expect("other title should insert");
+
+    let wanted_match = WantedItem {
+        id: "wanted-search-match".to_string(),
+        title_id: title.id.clone(),
+        title_name: Some("Schoolhouse Rock! Earth".to_string()),
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        media_type: "episode".to_string(),
+        search_phase: "long_tail".to_string(),
+        next_search_at: None,
+        last_search_at: None,
+        search_count: 0,
+        baseline_date: None,
+        status: WantedStatus::Wanted,
+        grabbed_release: None,
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+    };
+    let wanted_other = WantedItem {
+        id: "wanted-search-other".to_string(),
+        title_id: other_title.id.clone(),
+        title_name: Some("Different Show".to_string()),
+        ..wanted_match.clone()
+    };
+
+    workflow
+        .upsert_wanted_item(&wanted_match)
+        .await
+        .expect("matching wanted item should insert");
+    workflow
+        .upsert_wanted_item(&wanted_other)
+        .await
+        .expect("other wanted item should insert");
+
+    let items = workflow
+        .list_wanted_items(None, None, None, Some("earth"), None, 50, 0)
+        .await
+        .expect("filtered wanted items should load");
+    let count = workflow
+        .count_wanted_items(None, None, None, Some("earth"), None)
+        .await
+        .expect("filtered wanted count should load");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(count, 1);
+    assert_eq!(items[0].id, wanted_match.id);
 
     let _ = std::fs::remove_file(db);
 }

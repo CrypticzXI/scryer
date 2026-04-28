@@ -691,8 +691,7 @@ const de: LocaleDictionary = {
   "queue.manualImport": "Manueller Import",
   "queue.manualImporting": "Wird zur Warteschlange hinzugefügt…",
   "queue.manualImportQueued": "Manueller Import eingereiht.",
-  "queue.manualImportFailed":
-    "Manueller Import konnte nicht eingereiht werden.",
+  "queue.manualImportFailed": "Manueller Import fehlgeschlagen.",
   "queue.removeFailed": "Entfernen fehlgeschlagen",
   "queue.manualImportTooltip":
     "Manueller Import ist für Warteschlangenelemente verfügbar, die Aufmerksamkeit erfordern.",

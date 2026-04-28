@@ -533,7 +533,7 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(&title.id), None, 5000, 0)
+            .list_wanted_items(None, None, Some(&title.id), None, None, 5000, 0)
             .await
         {
             Ok(items) => items,
@@ -886,7 +886,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, None, None, 200, 0)
+        .list_wanted_items(Some("grabbed"), None, None, None, None, 200, 0)
         .await
     {
         Ok(items) => items,
@@ -1209,7 +1209,7 @@ async fn resolve_failure_wanted_item(
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, Some(title_id), None, 25, 0)
+        .list_wanted_items(Some("grabbed"), None, Some(title_id), None, None, 25, 0)
         .await
         .ok()?;
 
@@ -2740,10 +2740,15 @@ impl AppUseCase {
             status,
             media_type,
             title_id,
+            title_search,
             latest_decision_code,
             limit,
             offset,
         } = query;
+        let title_search = title_search.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
         let items = self
             .services
             .workflow
@@ -2752,6 +2757,7 @@ impl AppUseCase {
                 status.as_deref(),
                 media_type.as_deref(),
                 title_id.as_deref(),
+                title_search.as_deref(),
                 latest_decision_code.as_deref(),
                 limit,
                 offset,
@@ -2765,6 +2771,7 @@ impl AppUseCase {
                 status.as_deref(),
                 media_type.as_deref(),
                 title_id.as_deref(),
+                title_search.as_deref(),
                 latest_decision_code.as_deref(),
             )
             .await?;
@@ -2871,7 +2878,7 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(title_id), None, 500, 0)
+            .list_wanted_items(None, None, Some(title_id), None, None, 500, 0)
             .await?;
         let pending_releases = self
             .services
@@ -2950,7 +2957,7 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(Some("wanted"), None, Some(title_id), None, 500, 0)
+            .list_wanted_items(Some("wanted"), None, Some(title_id), None, None, 500, 0)
             .await?;
 
         let now = Utc::now();
@@ -2999,6 +3006,7 @@ impl AppUseCase {
                 Some("wanted"),
                 Some("episode"),
                 Some(title_id),
+                None,
                 None,
                 500,
                 0,

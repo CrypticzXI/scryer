@@ -703,8 +703,7 @@ const fr: LocaleDictionary = {
   "queue.manualImport": "Importation manuelle",
   "queue.manualImporting": "Ajout à la file…",
   "queue.manualImportQueued": "Importation manuelle mise en file d'attente.",
-  "queue.manualImportFailed":
-    "Échec de la mise en file d'attente de l'importation manuelle.",
+  "queue.manualImportFailed": "Échec de l'importation manuelle.",
   "queue.removeFailed": "Échec de la suppression",
   "queue.manualImportTooltip":
     "L'importation manuelle est disponible pour les éléments de file d'attente nécessitant une attention.",

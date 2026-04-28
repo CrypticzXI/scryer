@@ -704,7 +704,7 @@ const es: LocaleDictionary = {
   "queue.manualImport": "Importar manualmente",
   "queue.manualImporting": "Añadiendo a la cola…",
   "queue.manualImportQueued": "Importación manual en cola.",
-  "queue.manualImportFailed": "Error al poner en cola la importación manual.",
+  "queue.manualImportFailed": "Error en la importación manual.",
   "queue.removeFailed": "Error al eliminar",
   "queue.manualImportTooltip":
     "La importación manual está disponible para elementos de la cola que requieren atención.",

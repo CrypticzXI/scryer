@@ -17,13 +17,16 @@ use crate::tracked_downloads::TrackedDownload;
 
 /// Detect failed downloads during the poll cycle.
 ///
-/// Called for downloads in Downloading or ImportBlocked state. If the client
-/// reports failure (or the download is encrypted), transitions to FailedPending.
+/// Called for downloads that have not reached a terminal tracked state. If the
+/// client reports failure, transitions to FailedPending before import can run.
 pub fn check(td: &mut TrackedDownload) {
     // Only process if in a check-eligible state.
-    if td.state != TrackedDownloadState::Downloading
-        && td.state != TrackedDownloadState::ImportBlocked
-    {
+    if !matches!(
+        td.state,
+        TrackedDownloadState::Downloading
+            | TrackedDownloadState::ImportPending
+            | TrackedDownloadState::ImportBlocked
+    ) {
         return;
     }
 
@@ -80,6 +83,7 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
         None,
     )
     .await;
+    crate::fail_active_manual_import_for_source(app, td, failure_reason).await;
 
     td.state = TrackedDownloadState::Failed;
 

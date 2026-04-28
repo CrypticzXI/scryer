@@ -693,7 +693,7 @@ const it: LocaleDictionary = {
   "queue.manualImport": "Importazione manuale",
   "queue.manualImporting": "Aggiunta alla coda…",
   "queue.manualImportQueued": "Importazione manuale accodata.",
-  "queue.manualImportFailed": "Accodamento importazione manuale fallito.",
+  "queue.manualImportFailed": "Importazione manuale non riuscita.",
   "queue.removeFailed": "Rimozione non riuscita",
   "queue.manualImportTooltip":
     "L'importazione manuale è disponibile per gli elementi in coda che richiedono attenzione.",

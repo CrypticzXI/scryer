@@ -678,7 +678,7 @@ const ja: LocaleDictionary = {
   "queue.manualImport": "手動インポート",
   "queue.manualImporting": "キューイング中…",
   "queue.manualImportQueued": "手動インポートがキューに追加されました。",
-  "queue.manualImportFailed": "手動インポートのキュー追加に失敗しました。",
+  "queue.manualImportFailed": "手動インポートに失敗しました。",
   "queue.removeFailed": "削除に失敗しました",
   "queue.manualImportTooltip":
     "手動インポートは対応が必要なキューアイテムで利用できます。",
