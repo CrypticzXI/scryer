@@ -54,6 +54,7 @@ const en: LocaleDictionary = {
   "label.activityStream": "Activity Stream",
   "external.openOn": "Open on {{site}}",
   "label.unknown": "Unknown",
+  "label.unchanged": "Unchanged",
   "label.deleting": "Deleting…",
   "label.configured": "Configured",
   "label.missing": "Missing",
@@ -525,8 +526,18 @@ const en: LocaleDictionary = {
   "title.table.status": "Status",
   "title.table.size": "Size",
   "title.viewModeToggle": "View mode",
+  "title.viewModeCompact": "Compact",
+  "title.viewModePosterTable": "Poster-table",
   "title.viewModeTable": "Table view",
   "title.viewModePoster": "Poster view",
+  "title.bulkSelectionCount": "{{count}} selected",
+  "title.bulkEditTitle": "Edit Selected Titles",
+  "title.bulkEditDescription": "Apply changes to {{count}} selected titles.",
+  "title.bulkDeleteTitle": "Delete Selected Titles",
+  "title.bulkDeleteDescription":
+    "Remove {{count}} selected titles from the catalog.",
+  "title.selectTitle": "Select {{name}}",
+  "title.selectAllTitles": "Select all visible titles",
   "title.interactiveSearchComingSoon": "Interactive search is coming soon.",
   "title.seasonMonitored": "Season monitored",
   "title.episodeMonitored": "Episode monitored",
@@ -1522,6 +1533,24 @@ const en: LocaleDictionary = {
   "status.deleteCatalogConfirm":
     "Remove {{name}} from catalog? Use the option below to also remove local files.",
   "status.titleDeleted": "{{name}} removed from catalog.",
+  "status.bulkMonitorSuccess": "Monitored {{count}} titles.",
+  "status.bulkMonitorPartial":
+    "Monitored {{count}} titles; {{failed}} failed.",
+  "status.bulkMonitorFailed": "Failed to monitor selected titles.",
+  "status.bulkUnmonitorSuccess": "Unmonitored {{count}} titles.",
+  "status.bulkUnmonitorPartial":
+    "Unmonitored {{count}} titles; {{failed}} failed.",
+  "status.bulkUnmonitorFailed": "Failed to unmonitor selected titles.",
+  "status.bulkTitleUpdateSuccess": "Updated {{count}} titles.",
+  "status.bulkTitleUpdatePartial":
+    "Updated {{count}} titles; {{failed}} failed.",
+  "status.bulkTitleUpdateFailed": "Failed to update selected titles.",
+  "status.bulkDeletePreviewFailed":
+    "Failed to prepare delete preview for {{failed}} selected titles.",
+  "status.bulkTitleDeleteSuccess": "Deleted {{count}} titles.",
+  "status.bulkTitleDeletePartial":
+    "Deleted {{count}} titles; {{failed}} failed.",
+  "status.bulkTitleDeleteFailed": "Failed to delete selected titles.",
   "status.titleMatchUpdated": "Updated match for {{name}}.",
   "status.qualityProfileBlocked":
     "Skipped: blocked by quality profile ({{reason}})",

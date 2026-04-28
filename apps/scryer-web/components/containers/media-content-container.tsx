@@ -2,6 +2,9 @@ import * as React from "react";
 import { MediaContentView } from "@/components/views/media-content-view";
 import {
   addTitleMutation,
+  buildDeleteTitleBatchMutation,
+  buildSetTitleMonitoredBatchMutation,
+  buildUpdateTitleBatchMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
@@ -10,6 +13,7 @@ import {
   updateRuleSetMutation,
 } from "@/lib/graphql/mutations";
 import {
+  buildDeleteTitlePreviewBatchQuery,
   deleteTitlePreviewQuery,
   ruleSetsQuery,
   routingPageInitQuery,
@@ -30,9 +34,11 @@ import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
+import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { useQueueFormState } from "@/lib/hooks/use-queue-form-state";
 import { useTitleManagementState } from "@/lib/hooks/use-title-management-state";
 import type { Release, TitleRecord, RuleSetRecord } from "@/lib/types";
+import type { DeletePreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
@@ -44,7 +50,14 @@ import { useSearchContext } from "@/lib/context/search-context";
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
+import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { toast } from "sonner";
+import { BulkTitleEditDialog } from "@/components/views/media-content/bulk-title-edit-dialog";
+import {
+  readStoredContentViewMode,
+  writeStoredContentViewMode,
+  type ContentViewMode,
+} from "@/components/views/media-content/content-view-mode";
 
 const HYDRATION_POSTER_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
@@ -138,6 +151,94 @@ function isPendingHydrationPosterTitle(title: TitleRecord, nowMs: number): boole
   return nowMs - createdAtMs <= HYDRATION_POSTER_REFRESH_WINDOW_MS;
 }
 
+function sameIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function deriveVisibleCatalogTitles(
+  titles: TitleRecord[],
+  titleFilter: string,
+): TitleRecord[] {
+  const normalizedFilter = titleFilter.trim().toLowerCase();
+  if (!normalizedFilter) {
+    return titles;
+  }
+
+  return titles.filter((title) =>
+    title.name.toLowerCase().includes(normalizedFilter),
+  );
+}
+
+function batchItemAlias(index: number): string {
+  return `item${index}`;
+}
+
+function batchFailureDetail(error: unknown): string | null {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    return message || null;
+  }
+
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    return trimmed || null;
+  }
+
+  return null;
+}
+
+function withFailureDetail(message: string, detail: string | null): string {
+  return detail ? `${message} ${detail}` : message;
+}
+
+function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | null {
+  if (previews.length === 0) {
+    return null;
+  }
+
+  const samplePaths = Array.from(
+    new Set(previews.flatMap((preview) => preview.samplePaths)),
+  ).slice(0, 12);
+  const typedPrompt =
+    previews.find((preview) => preview.requiresTypedConfirmation)
+      ?.typedConfirmationPrompt ?? null;
+
+  return {
+    fingerprint: "",
+    totalFileCount: previews.reduce(
+      (sum, preview) => sum + preview.totalFileCount,
+      0,
+    ),
+    mediaCount: previews.reduce((sum, preview) => sum + preview.mediaCount, 0),
+    subtitleCount: previews.reduce(
+      (sum, preview) => sum + preview.subtitleCount,
+      0,
+    ),
+    imageCount: previews.reduce((sum, preview) => sum + preview.imageCount, 0),
+    otherCount: previews.reduce((sum, preview) => sum + preview.otherCount, 0),
+    directoryCount: previews.reduce(
+      (sum, preview) => sum + preview.directoryCount,
+      0,
+    ),
+    requiresTypedConfirmation: previews.some(
+      (preview) => preview.requiresTypedConfirmation,
+    ),
+    typedConfirmationPrompt: typedPrompt,
+    targetLabel: "",
+    samplePaths,
+  };
+}
+
 export const MediaContentContainer = React.memo(function MediaContentContainer({
   view,
   contentSettingsSection,
@@ -161,6 +262,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
   const { getActiveSession, getSessionById } = useLibraryScanProgress();
   const activeLibraryScanSession = getActiveSession(activeFacet);
+  const isMobile = useIsMobile();
   const activeQualityScopeId =
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
   const isMediaView =
@@ -168,6 +270,29 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettings = isMediaView;
+  const [desktopViewMode, setDesktopViewMode] = React.useState<ContentViewMode>(
+    () => readStoredContentViewMode(),
+  );
+  const effectiveViewMode: ContentViewMode = isMobile
+    ? "poster"
+    : desktopViewMode;
+  const [selectedTitleIds, setSelectedTitleIds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
+  const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = React.useState(false);
+  const [bulkDeleteFilesOnDisk, setBulkDeleteFilesOnDisk] =
+    React.useState(false);
+  const [bulkDeleteTypedConfirmation, setBulkDeleteTypedConfirmation] =
+    React.useState("");
+  const [bulkDeletePreviewLoading, setBulkDeletePreviewLoading] =
+    React.useState(false);
+  const [bulkDeletePreviewError, setBulkDeletePreviewError] = React.useState<
+    string | null
+  >(null);
+  const [bulkDeletePreviewsByTitleId, setBulkDeletePreviewsByTitleId] =
+    React.useState<Record<string, DeletePreview>>({});
 
   const {
     titleNameForQueue,
@@ -221,6 +346,63 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     titleDeletePreviewVariables,
     titleToDelete !== null && deleteFilesOnDisk,
   );
+  const visibleTitles = React.useMemo(
+    () => deriveVisibleCatalogTitles(monitoredTitles, titleFilter),
+    [monitoredTitles, titleFilter],
+  );
+  const selectedTitles = React.useMemo(
+    () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
+    [selectedTitleIds, visibleTitles],
+  );
+
+  React.useEffect(() => {
+    if (isMobile) {
+      return;
+    }
+    writeStoredContentViewMode(desktopViewMode);
+  }, [desktopViewMode, isMobile]);
+
+  React.useEffect(() => {
+    if (
+      effectiveViewMode === "compact" &&
+      shouldLoadCatalogTitles &&
+      contentSettingsSection === "overview"
+    ) {
+      return;
+    }
+    setSelectedTitleIds((current) => (current.size === 0 ? current : new Set()));
+  }, [
+    contentSettingsSection,
+    effectiveViewMode,
+    shouldLoadCatalogTitles,
+    view,
+  ]);
+
+  React.useEffect(() => {
+    const visibleIdSet = new Set(visibleTitles.map((title) => title.id));
+    setSelectedTitleIds((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+      const next = new Set(
+        [...current].filter((titleId) => visibleIdSet.has(titleId)),
+      );
+      return sameIdSet(current, next) ? current : next;
+    });
+  }, [visibleTitles]);
+
+  React.useEffect(() => {
+    if (selectedTitles.length > 0) {
+      return;
+    }
+    setBulkEditDialogOpen(false);
+    setBulkDeleteDialogOpen(false);
+    setBulkDeleteFilesOnDisk(false);
+    setBulkDeleteTypedConfirmation("");
+    setBulkDeletePreviewLoading(false);
+    setBulkDeletePreviewError(null);
+    setBulkDeletePreviewsByTitleId({});
+  }, [selectedTitles.length]);
 
   const {
     moviesPath,
@@ -729,6 +911,449 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [client, setGlobalStatus, setMonitoredTitles, t],
   );
 
+  const toggleTitleSelection = React.useCallback((titleId: string) => {
+    setSelectedTitleIds((current) => {
+      const next = new Set(current);
+      if (next.has(titleId)) {
+        next.delete(titleId);
+      } else {
+        next.add(titleId);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAllVisibleTitles = React.useCallback(
+    (checked: boolean) => {
+      setSelectedTitleIds(
+        checked ? new Set(visibleTitles.map((title) => title.id)) : new Set(),
+      );
+    },
+    [visibleTitles],
+  );
+
+  const clearSelectedTitles = React.useCallback(() => {
+    setSelectedTitleIds((current) => (current.size === 0 ? current : new Set()));
+  }, []);
+
+  const setViewMode = React.useCallback((nextMode: ContentViewMode) => {
+    setDesktopViewMode(nextMode);
+  }, []);
+
+  const bulkMonitorTitles = React.useCallback(
+    async (monitored: boolean) => {
+      const targets = [...selectedTitles];
+      if (targets.length === 0 || bulkActionBusy) {
+        return;
+      }
+
+      setBulkActionBusy(true);
+      try {
+        const variables = Object.fromEntries(
+          targets.map((title, index) => [
+            `input${index}`,
+            { titleId: title.id, monitored },
+          ]),
+        );
+        const result = await client
+          .mutation<Record<string, { id: string; monitored: boolean }>>(
+            buildSetTitleMonitoredBatchMutation(targets.length),
+            variables,
+          )
+          .toPromise();
+        const payload = result.data ?? {};
+        const succeededIds: string[] = [];
+        const failedIds: string[] = [];
+
+        targets.forEach((title, index) => {
+          if (payload[batchItemAlias(index)]) {
+            succeededIds.push(title.id);
+          } else {
+            failedIds.push(title.id);
+          }
+        });
+
+        await refreshTitles();
+        setSelectedTitleIds(new Set(failedIds));
+
+        const detail = batchFailureDetail(result.error);
+        if (succeededIds.length === 0) {
+          setGlobalStatus(
+            withFailureDetail(
+              monitored
+                ? t("status.bulkMonitorFailed")
+                : t("status.bulkUnmonitorFailed"),
+              detail,
+            ),
+          );
+          return;
+        }
+
+        if (failedIds.length > 0) {
+          setGlobalStatus(
+            withFailureDetail(
+              monitored
+                ? t("status.bulkMonitorPartial", {
+                    count: succeededIds.length,
+                    failed: failedIds.length,
+                  })
+                : t("status.bulkUnmonitorPartial", {
+                    count: succeededIds.length,
+                    failed: failedIds.length,
+                  }),
+              detail,
+            ),
+          );
+          return;
+        }
+
+        setGlobalStatus(
+          monitored
+            ? t("status.bulkMonitorSuccess", { count: succeededIds.length })
+            : t("status.bulkUnmonitorSuccess", { count: succeededIds.length }),
+        );
+      } catch (error) {
+        setGlobalStatus(
+          withFailureDetail(
+            monitored
+              ? t("status.bulkMonitorFailed")
+              : t("status.bulkUnmonitorFailed"),
+            batchFailureDetail(error),
+          ),
+        );
+      } finally {
+        setBulkActionBusy(false);
+      }
+    },
+    [bulkActionBusy, client, refreshTitles, selectedTitles, setGlobalStatus, t],
+  );
+
+  const applyBulkTitleOptions = React.useCallback(
+    async (changes: TitleOptionUpdates) => {
+      const targets = [...selectedTitles];
+      if (targets.length === 0 || bulkActionBusy) {
+        return;
+      }
+
+      setBulkActionBusy(true);
+      try {
+        const variables = Object.fromEntries(
+          targets.map((title, index) => [
+            `input${index}`,
+            {
+              titleId: title.id,
+              options: changes,
+            },
+          ]),
+        );
+        const result = await client
+          .mutation<Record<string, { id: string }>>(
+            buildUpdateTitleBatchMutation(targets.length),
+            variables,
+          )
+          .toPromise();
+        const payload = result.data ?? {};
+        const succeededIds: string[] = [];
+        const failedIds: string[] = [];
+
+        targets.forEach((title, index) => {
+          if (payload[batchItemAlias(index)]) {
+            succeededIds.push(title.id);
+          } else {
+            failedIds.push(title.id);
+          }
+        });
+
+        await refreshTitles();
+        setSelectedTitleIds(new Set(failedIds));
+
+        const detail = batchFailureDetail(result.error);
+        if (succeededIds.length === 0) {
+          setGlobalStatus(
+            withFailureDetail(t("status.bulkTitleUpdateFailed"), detail),
+          );
+          return;
+        }
+
+        setBulkEditDialogOpen(false);
+        if (failedIds.length > 0) {
+          setGlobalStatus(
+            withFailureDetail(
+              t("status.bulkTitleUpdatePartial", {
+                count: succeededIds.length,
+                failed: failedIds.length,
+              }),
+              detail,
+            ),
+          );
+          return;
+        }
+
+        setGlobalStatus(
+          t("status.bulkTitleUpdateSuccess", { count: succeededIds.length }),
+        );
+      } catch (error) {
+        setGlobalStatus(
+          withFailureDetail(
+            t("status.bulkTitleUpdateFailed"),
+            batchFailureDetail(error),
+          ),
+        );
+      } finally {
+        setBulkActionBusy(false);
+      }
+    },
+    [bulkActionBusy, client, refreshTitles, selectedTitles, setGlobalStatus, t],
+  );
+
+  const closeBulkDeleteDialog = React.useCallback(() => {
+    setBulkDeleteDialogOpen(false);
+    setBulkDeleteFilesOnDisk(false);
+    setBulkDeleteTypedConfirmation("");
+    setBulkDeletePreviewLoading(false);
+    setBulkDeletePreviewError(null);
+    setBulkDeletePreviewsByTitleId({});
+  }, []);
+
+  React.useEffect(() => {
+    if (!bulkDeleteFilesOnDisk) {
+      setBulkDeleteTypedConfirmation("");
+      setBulkDeletePreviewLoading(false);
+      setBulkDeletePreviewError(null);
+      setBulkDeletePreviewsByTitleId({});
+    }
+  }, [bulkDeleteFilesOnDisk]);
+
+  React.useEffect(() => {
+    if (!bulkDeleteDialogOpen || !bulkDeleteFilesOnDisk) {
+      return;
+    }
+
+    const targets = [...selectedTitles];
+    if (targets.length === 0) {
+      setBulkDeletePreviewLoading(false);
+      setBulkDeletePreviewError(null);
+      setBulkDeletePreviewsByTitleId({});
+      return;
+    }
+
+    let cancelled = false;
+    setBulkDeletePreviewLoading(true);
+    setBulkDeletePreviewError(null);
+
+    const loadPreviews = async () => {
+      try {
+        const variables = Object.fromEntries(
+          targets.map((title, index) => [
+            `input${index}`,
+            { titleId: title.id },
+          ]),
+        );
+        const result = await client
+          .query<Record<string, DeletePreview>>(
+            buildDeleteTitlePreviewBatchQuery(targets.length),
+            variables,
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (cancelled) {
+          return;
+        }
+
+        const payload = result.data ?? {};
+        const nextPreviewsByTitleId: Record<string, DeletePreview> = {};
+        let failedCount = 0;
+
+        targets.forEach((title, index) => {
+          const preview = payload[batchItemAlias(index)] as DeletePreview | undefined;
+          if (preview) {
+            nextPreviewsByTitleId[title.id] = preview;
+          } else {
+            failedCount += 1;
+          }
+        });
+
+        setBulkDeletePreviewsByTitleId(nextPreviewsByTitleId);
+        if (failedCount > 0) {
+          setBulkDeletePreviewError(
+            withFailureDetail(
+              t("status.bulkDeletePreviewFailed", { failed: failedCount }),
+              batchFailureDetail(result.error),
+            ),
+          );
+        } else {
+          setBulkDeletePreviewError(null);
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setBulkDeletePreviewsByTitleId({});
+        setBulkDeletePreviewError(
+          withFailureDetail(
+            t("status.bulkDeletePreviewFailed", { failed: targets.length }),
+            batchFailureDetail(error),
+          ),
+        );
+      } finally {
+        if (!cancelled) {
+          setBulkDeletePreviewLoading(false);
+        }
+      }
+    };
+
+    void loadPreviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    bulkDeleteDialogOpen,
+    bulkDeleteFilesOnDisk,
+    client,
+    selectedTitles,
+    t,
+  ]);
+
+  const bulkDeletePreview = React.useMemo(
+    () =>
+      aggregateDeletePreviews(
+        Object.values(bulkDeletePreviewsByTitleId).filter(Boolean),
+      ),
+    [bulkDeletePreviewsByTitleId],
+  );
+  const bulkDeletePreviewMissing =
+    bulkDeleteFilesOnDisk &&
+    selectedTitles.some((title) => !bulkDeletePreviewsByTitleId[title.id]);
+  const bulkDeleteConfirmDisabled =
+    bulkActionBusy ||
+    selectedTitles.length === 0 ||
+    (bulkDeleteFilesOnDisk &&
+      (bulkDeletePreviewLoading ||
+        !!bulkDeletePreviewError ||
+        bulkDeletePreviewMissing ||
+        !bulkDeletePreview ||
+        (bulkDeletePreview.requiresTypedConfirmation &&
+          bulkDeleteTypedConfirmation.trim() !== "DELETE")));
+
+  const confirmBulkDeleteTitles = React.useCallback(async () => {
+    const targets = [...selectedTitles];
+    if (targets.length === 0 || bulkActionBusy) {
+      return;
+    }
+
+    setBulkActionBusy(true);
+    try {
+      const variables = Object.fromEntries(
+        targets.map((title, index) => {
+          const preview = bulkDeletePreviewsByTitleId[title.id];
+          return [
+            `input${index}`,
+            {
+              titleId: title.id,
+              ...(bulkDeleteFilesOnDisk
+                ? {
+                    deleteFilesOnDisk: true,
+                    previewFingerprint: preview?.fingerprint,
+                    ...(bulkDeleteTypedConfirmation.trim()
+                      ? {
+                          typedConfirmation:
+                            bulkDeleteTypedConfirmation.trim(),
+                        }
+                      : {}),
+                  }
+                : {}),
+            },
+          ];
+        }),
+      );
+      const result = await client
+        .mutation<Record<string, boolean>>(
+          buildDeleteTitleBatchMutation(targets.length),
+          variables,
+        )
+        .toPromise();
+      const payload = result.data ?? {};
+      const succeededIds: string[] = [];
+      const failedIds: string[] = [];
+
+      targets.forEach((title, index) => {
+        if (payload[batchItemAlias(index)]) {
+          succeededIds.push(title.id);
+        } else {
+          failedIds.push(title.id);
+        }
+      });
+
+      await refreshTitles();
+      setSelectedTitleIds(new Set(failedIds));
+
+      const detail = batchFailureDetail(result.error);
+      if (succeededIds.length === 0) {
+        setGlobalStatus(
+          withFailureDetail(t("status.bulkTitleDeleteFailed"), detail),
+        );
+        return;
+      }
+
+      closeBulkDeleteDialog();
+      if (failedIds.length > 0) {
+        setGlobalStatus(
+          withFailureDetail(
+            t("status.bulkTitleDeletePartial", {
+              count: succeededIds.length,
+              failed: failedIds.length,
+            }),
+            detail,
+          ),
+        );
+        return;
+      }
+
+      setGlobalStatus(
+        t("status.bulkTitleDeleteSuccess", { count: succeededIds.length }),
+      );
+    } catch (error) {
+      setGlobalStatus(
+        withFailureDetail(
+          t("status.bulkTitleDeleteFailed"),
+          batchFailureDetail(error),
+        ),
+      );
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }, [
+    bulkActionBusy,
+    bulkDeleteFilesOnDisk,
+    bulkDeletePreviewsByTitleId,
+    bulkDeleteTypedConfirmation,
+    client,
+    closeBulkDeleteDialog,
+    refreshTitles,
+    selectedTitles,
+    setGlobalStatus,
+    t,
+  ]);
+
+  const openBulkTitleEdit = React.useCallback(() => {
+    if (selectedTitles.length === 0 || bulkActionBusy) {
+      return;
+    }
+    setBulkEditDialogOpen(true);
+  }, [bulkActionBusy, selectedTitles.length]);
+
+  const openBulkTitleDelete = React.useCallback(() => {
+    if (selectedTitles.length === 0 || bulkActionBusy) {
+      return;
+    }
+    setBulkDeleteFilesOnDisk(false);
+    setBulkDeleteTypedConfirmation("");
+    setBulkDeletePreviewLoading(false);
+    setBulkDeletePreviewError(null);
+    setBulkDeletePreviewsByTitleId({});
+    setBulkDeleteDialogOpen(true);
+  }, [bulkActionBusy, selectedTitles.length]);
+
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
       setTitleToDelete(title);
@@ -1055,11 +1680,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           refreshTitles,
           titleLoading,
           titleStatus,
-          monitoredTitles: titleFilter
-            ? monitoredTitles.filter((t) =>
-                t.name.toLowerCase().includes(titleFilter.toLowerCase()),
-              )
-            : monitoredTitles,
+          monitoredTitles: visibleTitles,
           queueExisting,
           toggleTitleMonitored,
           runInteractiveSearchForTitle,
@@ -1093,8 +1714,66 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           scanLibrary: handleLibraryScan,
           deleteCatalogTitle: requestDeleteTitle,
           isDeletingCatalogTitleById: deleteTitleLoadingById,
+          isMobile,
+          viewMode: desktopViewMode,
+          setViewMode,
+          selectedTitleIds,
+          toggleTitleSelection,
+          toggleAllVisibleTitles,
+          clearSelectedTitles,
+          bulkActionBusy,
+          bulkMonitorTitles,
+          openBulkTitleEdit,
+          openBulkTitleDelete,
         }}
       />
+      <BulkTitleEditDialog
+        open={bulkEditDialogOpen}
+        onOpenChange={setBulkEditDialogOpen}
+        view={view}
+        selectedTitles={selectedTitles}
+        qualityProfiles={qualityProfiles}
+        rootFolders={rootFolders}
+        busy={bulkActionBusy}
+        onSubmit={applyBulkTitleOptions}
+      />
+      <ConfirmDialog
+        open={bulkDeleteDialogOpen}
+        title={t("title.bulkDeleteTitle")}
+        description={t("title.bulkDeleteDescription", {
+          count: selectedTitles.length,
+        })}
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        isBusy={bulkActionBusy}
+        confirmDisabled={bulkDeleteConfirmDisabled}
+        onConfirm={confirmBulkDeleteTitles}
+        onCancel={closeBulkDeleteDialog}
+      >
+        <div className="space-y-3">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={bulkDeleteFilesOnDisk}
+              onCheckedChange={(checked) =>
+                setBulkDeleteFilesOnDisk(checked === true)
+              }
+              disabled={bulkActionBusy}
+            />
+            <span className="text-xs text-card-foreground">
+              {t("title.deleteFilesOnDisk")}
+            </span>
+          </label>
+          {bulkDeleteFilesOnDisk ? (
+            <DeletePreviewSummary
+              preview={bulkDeletePreview}
+              loading={bulkDeletePreviewLoading}
+              error={bulkDeletePreviewError}
+              typedConfirmation={bulkDeleteTypedConfirmation}
+              onTypedConfirmationChange={setBulkDeleteTypedConfirmation}
+            />
+          ) : null}
+        </div>
+      </ConfirmDialog>
       <ConfirmDialog
         open={titleToDelete !== null}
         title={t("label.delete")}

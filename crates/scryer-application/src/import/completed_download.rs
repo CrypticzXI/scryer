@@ -23,6 +23,7 @@ const PATH_WAITING_MESSAGE: &str =
     "Completed download path is not available yet. Retrying for up to 10 minutes.";
 const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable. Check volume mounts or download paths, then retry manually.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
+const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
 pub(crate) type CompletedDownloadLookup = HashMap<(String, String, String), CompletedDownload>;
@@ -168,15 +169,22 @@ pub(crate) async fn check_with_lookup(
 /// Phase 2: run the actual import for a download in ImportPending state.
 ///
 /// This is async because it calls the import pipeline. Returns true if the
-/// download transitioned to a terminal state (Imported or ImportBlocked).
+/// download reached a terminal tracked state and can be persisted/removed.
+pub(crate) fn mark_importing(td: &mut TrackedDownload) {
+    td.state = TrackedDownloadState::Importing;
+    td.status = TrackedDownloadStatus::Ok;
+    td.status_messages = vec![IMPORT_RUNNING_MESSAGE.to_string()];
+}
+
 pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) -> bool {
-    if td.state != TrackedDownloadState::ImportPending {
+    if td.state != TrackedDownloadState::ImportPending
+        && td.state != TrackedDownloadState::Importing
+    {
         return false;
     }
 
-    td.state = TrackedDownloadState::Importing;
-    td.status = TrackedDownloadStatus::Ok;
-    td.status_messages.clear();
+    mark_importing(td);
+    crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
     let Some(completed) = find_completed_download(app, td, None).await else {
         tracing::debug!(

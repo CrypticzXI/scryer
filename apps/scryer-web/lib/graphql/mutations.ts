@@ -662,6 +662,52 @@ export const updateTitleMutation = `mutation UpdateTitle($input: UpdateTitleInpu
   }
 }`;
 
+export function buildSetTitleMonitoredBatchMutation(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: SetTitleMonitoredInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) =>
+      `item${index}: setTitleMonitored(input: $input${index}) { id monitored }`,
+  ).join("\n");
+
+  return `mutation SetTitleMonitoredBatch(${variables}) {
+${fields}
+}`;
+}
+
+export function buildUpdateTitleBatchMutation(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: UpdateTitleInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) => `item${index}: updateTitle(input: $input${index}) { id }`,
+  ).join("\n");
+
+  return `mutation UpdateTitleBatch(${variables}) {
+${fields}
+}`;
+}
+
+export function buildDeleteTitleBatchMutation(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: DeleteTitleInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) => `item${index}: deleteTitle(input: $input${index})`,
+  ).join("\n");
+
+  return `mutation DeleteTitleBatch(${variables}) {
+${fields}
+}`;
+}
+
 export const fixTitleMatchMutation = `mutation FixTitleMatch($input: FixTitleMatchInput!) {
   fixTitleMatch(input: $input) {
     hydrated

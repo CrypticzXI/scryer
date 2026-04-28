@@ -59,6 +59,8 @@ pub struct AppRuntimeAcquisitionState {
     pub download_submission_guards: DownloadSubmissionGuardTable,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
+    pub tracked_download_snapshot:
+        Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
 }
 
 #[derive(Clone)]
@@ -119,6 +121,7 @@ impl Default for AppRuntimeState {
                 download_submission_guards: DownloadSubmissionGuardTable::default(),
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
+                tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),

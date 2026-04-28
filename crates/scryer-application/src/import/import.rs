@@ -2668,10 +2668,8 @@ async fn execute_resolved_episode_import(
         .as_deref()
         .and_then(|value| non_empty_string(Some(value.to_string())))
         .or_else(|| prepared.parsed.quality.clone());
-    let effective_parsed = parsed_with_quality_override(
-        &prepared.parsed,
-        effective_quality_label.as_deref(),
-    );
+    let effective_parsed =
+        parsed_with_quality_override(&prepared.parsed, effective_quality_label.as_deref());
     let dest_path = episode_import_dest_path(
         title,
         &effective_parsed,

@@ -457,6 +457,23 @@ export const deleteTitlePreviewQuery = `query DeleteTitlePreview($input: DeleteT
   }
 }`;
 
+export function buildDeleteTitlePreviewBatchQuery(count: number): string {
+  const variables = Array.from(
+    { length: count },
+    (_, index) => `$input${index}: DeleteTitlePreviewInput!`,
+  ).join(", ");
+  const fields = Array.from(
+    { length: count },
+    (_, index) =>
+      `item${index}: deleteTitlePreview(input: $input${index}) {${DELETE_PREVIEW_FIELDS}
+  }`,
+  ).join("\n");
+
+  return `query DeleteTitlePreviewBatch(${variables}) {
+${fields}
+}`;
+}
+
 export const deleteMediaFilePreviewQuery = `query DeleteMediaFilePreview($input: DeleteMediaFilePreviewInput!) {
   deleteMediaFilePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
   }

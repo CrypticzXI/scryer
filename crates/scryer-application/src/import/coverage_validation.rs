@@ -4,6 +4,7 @@ use scryer_domain::{Episode, MediaFacet, Title};
 pub(crate) const COVERAGE_RUNTIME_MISMATCH_CODE: &str = "coverage_runtime_mismatch";
 
 const MIN_VALIDATED_RUNTIME_SECONDS: i32 = 60;
+const MIN_REAL_RUNTIME_COVERAGE_PERCENT: usize = 80;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CoverageValidationCoverage {
@@ -39,6 +40,11 @@ struct CoverageRuntimeSnapshot {
     threshold_percent: i32,
 }
 
+struct RuntimeCoverageEstimate {
+    average_runtime_minutes: i32,
+    real_runtime_coverage_count: usize,
+}
+
 pub(crate) fn validate_broad_episode_coverage(
     title: &Title,
     parsed: &crate::ParsedReleaseMetadata,
@@ -46,7 +52,7 @@ pub(crate) fn validate_broad_episode_coverage(
     accepted: &crate::post_download_gate::ImportedFileAcceptance,
 ) -> Result<(), CoverageValidationIssue> {
     if title.facet == MediaFacet::Anime
-        || !accepted.scan_error.is_none()
+        || accepted.scan_error.is_some()
         || target_episodes.is_empty()
     {
         return Ok(());
@@ -124,14 +130,21 @@ impl CoverageRuntimeSnapshot {
                 crate::ParsedEpisodeReleaseType::RangePack,
                 ReleaseCoverage::EpisodeSet(episode_ids),
             ) if episode_ids.len() >= 3 => {
-                let expected_runtime_minutes = episode_runtime_sum(target_episodes, episode_ids)?;
+                let runtime_estimate =
+                    runtime_coverage_for_episode_ids(target_episodes, episode_ids)?;
+                let expected_runtime_minutes = acquisition_coverage::coverage_runtime_minutes(
+                    coverage,
+                    parsed,
+                    target_episodes,
+                    Some(runtime_estimate.average_runtime_minutes),
+                )?;
                 Some(Self {
                     coverage: CoverageValidationCoverage::EpisodeSet {
                         episode_count: episode_ids.len(),
                     },
                     expected_runtime_minutes,
                     covered_episode_count: episode_ids.len(),
-                    real_runtime_coverage_count: episode_ids.len(),
+                    real_runtime_coverage_count: runtime_estimate.real_runtime_coverage_count,
                     threshold_percent: 45,
                 })
             }
@@ -143,14 +156,21 @@ impl CoverageRuntimeSnapshot {
                 crate::ParsedEpisodeReleaseType::SeasonPack,
                 ReleaseCoverage::EpisodeSet(episode_ids),
             ) if episode_ids.len() >= 3 => {
-                let expected_runtime_minutes = episode_runtime_sum(target_episodes, episode_ids)?;
+                let runtime_estimate =
+                    runtime_coverage_for_episode_ids(target_episodes, episode_ids)?;
+                let expected_runtime_minutes = acquisition_coverage::coverage_runtime_minutes(
+                    coverage,
+                    parsed,
+                    target_episodes,
+                    Some(runtime_estimate.average_runtime_minutes),
+                )?;
                 Some(Self {
                     coverage: CoverageValidationCoverage::EpisodeSet {
                         episode_count: episode_ids.len(),
                     },
                     expected_runtime_minutes,
                     covered_episode_count: episode_ids.len(),
-                    real_runtime_coverage_count: episode_ids.len(),
+                    real_runtime_coverage_count: runtime_estimate.real_runtime_coverage_count,
                     threshold_percent: 25,
                 })
             }
@@ -174,35 +194,19 @@ fn collection_snapshot(
         return None;
     }
 
-    let runtimes = covered_episodes
-        .iter()
-        .map(|episode| {
-            episode
-                .duration_seconds
-                .and_then(|seconds| i32::try_from(seconds / 60).ok())
-        })
-        .collect::<Option<Vec<_>>>()?;
     let covered_episode_count = covered_episodes.len();
-    let average_runtime_minutes =
-        runtimes.iter().sum::<i32>() / i32::try_from(runtimes.len()).ok()?;
-    if average_runtime_minutes <= 0 {
-        return None;
-    }
-
-    let expected_runtime_minutes = if parsed
-        .episode
-        .as_ref()
-        .is_some_and(|episode| episode.is_partial_season)
-    {
-        acquisition_coverage::coverage_runtime_minutes(
-            coverage,
-            parsed,
-            target_episodes,
-            Some(average_runtime_minutes),
-        )?
-    } else {
-        runtimes.iter().sum()
-    };
+    let runtime_estimate = runtime_coverage_from_durations(
+        covered_episodes
+            .iter()
+            .map(|episode| episode.duration_seconds),
+        covered_episode_count,
+    )?;
+    let expected_runtime_minutes = acquisition_coverage::coverage_runtime_minutes(
+        coverage,
+        parsed,
+        target_episodes,
+        Some(runtime_estimate.average_runtime_minutes),
+    )?;
 
     (expected_runtime_minutes > 0).then_some(CoverageRuntimeSnapshot {
         coverage: CoverageValidationCoverage::Collection {
@@ -210,23 +214,55 @@ fn collection_snapshot(
         },
         expected_runtime_minutes,
         covered_episode_count,
-        real_runtime_coverage_count: covered_episode_count,
+        real_runtime_coverage_count: runtime_estimate.real_runtime_coverage_count,
         threshold_percent,
     })
 }
 
-fn episode_runtime_sum(episodes: &[Episode], episode_ids: &[String]) -> Option<i32> {
-    episode_ids
-        .iter()
-        .map(|episode_id| {
+fn runtime_coverage_for_episode_ids(
+    episodes: &[Episode],
+    episode_ids: &[String],
+) -> Option<RuntimeCoverageEstimate> {
+    runtime_coverage_from_durations(
+        episode_ids.iter().map(|episode_id| {
             episodes
                 .iter()
                 .find(|episode| episode.id == *episode_id)
                 .and_then(|episode| episode.duration_seconds)
+        }),
+        episode_ids.len(),
+    )
+}
+
+fn runtime_coverage_from_durations<I>(
+    durations_seconds: I,
+    covered_episode_count: usize,
+) -> Option<RuntimeCoverageEstimate>
+where
+    I: IntoIterator<Item = Option<i64>>,
+{
+    let real_runtime_minutes = durations_seconds
+        .into_iter()
+        .filter_map(|duration_seconds| {
+            duration_seconds
                 .and_then(|seconds| i32::try_from(seconds / 60).ok())
+                .filter(|minutes| *minutes > 0)
         })
-        .collect::<Option<Vec<_>>>()
-        .map(|runtimes| runtimes.into_iter().sum())
+        .collect::<Vec<_>>();
+    let real_runtime_coverage_count = real_runtime_minutes.len();
+    if real_runtime_coverage_count == 0
+        || real_runtime_coverage_count * 100
+            < covered_episode_count * MIN_REAL_RUNTIME_COVERAGE_PERCENT
+    {
+        return None;
+    }
+
+    let average_runtime_minutes = real_runtime_minutes.iter().sum::<i32>()
+        / i32::try_from(real_runtime_coverage_count).ok()?;
+    (average_runtime_minutes > 0).then_some(RuntimeCoverageEstimate {
+        average_runtime_minutes,
+        real_runtime_coverage_count,
+    })
 }
 
 #[cfg(test)]
@@ -448,6 +484,55 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn coverage_runtime_large_range_pack_with_one_missing_duration_still_rejects() {
+        let parsed =
+            parsed_episode_range(&[1, 2, 3, 4, 5], crate::ParsedEpisodeReleaseType::RangePack);
+        let episodes = vec![
+            episode("ep-1", Some("season-1"), 1, Some(1_440)),
+            episode("ep-2", Some("season-1"), 2, Some(1_440)),
+            episode("ep-3", Some("season-1"), 3, Some(1_440)),
+            episode("ep-4", Some("season-1"), 4, Some(1_440)),
+            episode("ep-5", Some("season-1"), 5, None),
+        ];
+
+        let issue = validate_broad_episode_coverage(
+            &title(MediaFacet::Series),
+            &parsed,
+            &episodes,
+            &acceptance(Some(1_440), None),
+        )
+        .expect_err("range pack should still be rejected when most runtimes are present");
+
+        assert_eq!(issue.code, COVERAGE_RUNTIME_MISMATCH_CODE);
+        assert_eq!(issue.covered_episode_count, 5);
+        assert_eq!(issue.real_runtime_coverage_count, 4);
+    }
+
+    #[test]
+    fn coverage_runtime_season_pack_with_one_missing_duration_still_rejects() {
+        let parsed = parsed_season_pack(false);
+        let episodes = vec![
+            episode("ep-1", Some("season-1"), 1, Some(1_440)),
+            episode("ep-2", Some("season-1"), 2, Some(1_440)),
+            episode("ep-3", Some("season-1"), 3, Some(1_440)),
+            episode("ep-4", Some("season-1"), 4, Some(1_440)),
+            episode("ep-5", Some("season-1"), 5, None),
+        ];
+
+        let issue = validate_broad_episode_coverage(
+            &title(MediaFacet::Series),
+            &parsed,
+            &episodes,
+            &acceptance(Some(1_440), None),
+        )
+        .expect_err("season pack should still be rejected when most runtimes are present");
+
+        assert_eq!(issue.code, COVERAGE_RUNTIME_MISMATCH_CODE);
+        assert_eq!(issue.covered_episode_count, 5);
+        assert_eq!(issue.real_runtime_coverage_count, 4);
     }
 
     #[test]

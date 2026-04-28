@@ -89,9 +89,12 @@ fn import_source_title_from_payload(
         .filter(|title| !title.is_empty())
         .map(ToString::to_string);
 
-    let fallback_path_title = source_path
-        .and_then(path_basename)
-        .or_else(|| payload.get("dest_dir").and_then(Value::as_str).and_then(path_basename));
+    let fallback_path_title = source_path.and_then(path_basename).or_else(|| {
+        payload
+            .get("dest_dir")
+            .and_then(Value::as_str)
+            .and_then(path_basename)
+    });
 
     if source_system.eq_ignore_ascii_case("weaver")
         && payload_title

@@ -400,6 +400,42 @@ impl TrackedDownloadService {
     }
 }
 
+pub(crate) async fn publish_runtime_tracked_download_snapshot(
+    app: &AppUseCase,
+    tracked: &TrackedDownload,
+) {
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked.id.clone(),
+            TrackedDownloadQueueMetadata::from(tracked),
+        );
+}
+
+pub(crate) async fn publish_runtime_tracked_download_snapshot_cache(
+    app: &AppUseCase,
+    tracker: &TrackedDownloadService,
+) {
+    let snapshot = tracker
+        .get_all()
+        .into_iter()
+        .map(|tracked| {
+            (
+                tracked.id.clone(),
+                TrackedDownloadQueueMetadata::from(tracked),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    *app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await = snapshot;
+}
+
 fn title_id_present(value: Option<&str>) -> bool {
     value.is_some_and(|id| !id.trim().is_empty())
 }

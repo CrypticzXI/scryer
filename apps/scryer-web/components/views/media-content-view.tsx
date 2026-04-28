@@ -2,7 +2,6 @@
 import * as React from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
-import { LayoutGrid, LayoutList } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -26,6 +25,7 @@ import { RenameSettingsPanel } from "./media-content/rename-settings-panel";
 import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
+import { CompactTitleTable } from "./media-content/compact-title-table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { RuleSetRecord } from "@/lib/types/rule-sets";
 import type {
@@ -33,7 +33,7 @@ import type {
   ParsedQualityProfileEntry,
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
-import { useIsMobile } from "@/lib/hooks/use-mobile";
+import type { ContentViewMode } from "./media-content/content-view-mode";
 
 type Facet = "movie" | "series" | "anime";
 
@@ -195,10 +195,20 @@ export function MediaContentView({
     onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
+    isMobile: boolean;
+    viewMode: ContentViewMode;
+    setViewMode: (value: ContentViewMode) => void;
+    selectedTitleIds: ReadonlySet<string>;
+    toggleTitleSelection: (titleId: string) => void;
+    toggleAllVisibleTitles: (checked: boolean) => void;
+    clearSelectedTitles: () => void;
+    bulkActionBusy: boolean;
+    bulkMonitorTitles: (monitored: boolean) => Promise<void> | void;
+    openBulkTitleEdit: () => void;
+    openBulkTitleDelete: () => void;
   };
 }) {
   const t = useTranslate();
-  const isMobile = useIsMobile();
   const {
     view,
     contentSettingsSection,
@@ -289,6 +299,17 @@ export function MediaContentView({
     onOpenOverview,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
+    isMobile,
+    viewMode,
+    setViewMode,
+    selectedTitleIds,
+    toggleTitleSelection,
+    toggleAllVisibleTitles,
+    clearSelectedTitles,
+    bulkActionBusy,
+    bulkMonitorTitles,
+    openBulkTitleEdit,
+    openBulkTitleDelete,
   } = state;
 
   const scopeLabel =
@@ -297,18 +318,6 @@ export function MediaContentView({
       : activeQualityScopeId === "series"
         ? t("search.facetSeries")
         : t("search.facetAnime");
-  type ContentViewMode = "table" | "poster";
-  const [viewMode, setViewMode] = React.useState<ContentViewMode>(() => {
-    try {
-      const stored = localStorage.getItem("scryer:content-view-mode");
-      return stored === "poster" ? "poster" : "table";
-    } catch {
-      return "table";
-    }
-  });
-  React.useEffect(() => {
-    try { localStorage.setItem("scryer:content-view-mode", viewMode); } catch { /* noop */ }
-  }, [viewMode]);
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
 
   const mediaLibrarySettingsTitle =
@@ -573,18 +582,36 @@ export function MediaContentView({
                     type="single"
                     value={viewMode}
                     onValueChange={(v) => {
-                      if (v === "table" || v === "poster") setViewMode(v);
+                      if (
+                        v === "compact" ||
+                        v === "poster-table" ||
+                        v === "poster"
+                      ) {
+                        setViewMode(v);
+                      }
                     }}
                     size="sm"
                     aria-label={t("title.viewModeToggle")}
                   >
                     <ToggleGroupItem
-                      value="table"
+                      value="compact"
                       size="sm"
-                      aria-label={t("title.viewModeTable")}
+                      aria-label={t("title.viewModeCompact")}
                       className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
                     >
-                      <LayoutList className="h-4 w-4" />
+                      <span className="px-1 text-xs font-medium">
+                        {t("title.viewModeCompact")}
+                      </span>
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="poster-table"
+                      size="sm"
+                      aria-label={t("title.viewModePosterTable")}
+                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
+                    >
+                      <span className="px-1 text-xs font-medium">
+                        {t("title.viewModePosterTable")}
+                      </span>
                     </ToggleGroupItem>
                     <ToggleGroupItem
                       value="poster"
@@ -592,7 +619,9 @@ export function MediaContentView({
                       aria-label={t("title.viewModePoster")}
                       className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
                     >
-                      <LayoutGrid className="h-4 w-4" />
+                      <span className="px-1 text-xs font-medium">
+                        {t("title.viewModePoster")}
+                      </span>
                     </ToggleGroupItem>
                   </ToggleGroup>
                 ) : null}
@@ -628,6 +657,35 @@ export function MediaContentView({
                       onAutoQueue={queueExisting}
                       isDeletingById={isDeletingCatalogTitleById}
                       overviewTargetView={overviewTargetView}
+                    />
+                  );
+                }
+
+                if (effectiveViewMode === "compact") {
+                  return (
+                    <CompactTitleTable
+                      view={view}
+                      titles={monitoredTitles}
+                      titleLoading={titleLoading}
+                      resolvedProfileName={resolvedProfileName}
+                      qualityProfiles={qualityProfiles}
+                      qualityProfilesLoading={mediaSettingsLoading}
+                      onOpenOverview={onOpenOverview}
+                      onDelete={handleDeleteCatalogTitle}
+                      onAutoQueue={queueExisting}
+                      onToggleMonitored={toggleTitleMonitored}
+                      onInteractiveSearch={runInteractiveSearchForTitle}
+                      onQueueFromInteractive={queueExistingFromRelease}
+                      isDeletingById={isDeletingCatalogTitleById}
+                      isTogglingMonitoredById={isTogglingTitleMonitoredById}
+                      selectedTitleIds={selectedTitleIds}
+                      onToggleSelected={toggleTitleSelection}
+                      onToggleSelectAll={toggleAllVisibleTitles}
+                      onClearSelection={clearSelectedTitles}
+                      onBulkMonitor={bulkMonitorTitles}
+                      onBulkEdit={openBulkTitleEdit}
+                      onBulkDelete={openBulkTitleDelete}
+                      bulkActionBusy={bulkActionBusy}
                     />
                   );
                 }

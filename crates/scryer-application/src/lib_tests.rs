@@ -1,7 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
-    DomainEventPayload, EventType, JobRunCompletedEventData, JobRunStartedEventData,
+    DomainEventPayload, EventType, ImportType, JobRunCompletedEventData, JobRunStartedEventData,
     RootFolderEntry, TrackedDownloadState,
 };
 use std::collections::{HashMap, HashSet};
@@ -664,7 +664,6 @@ impl MediaFileRepository for MockMediaFileRepo {
             .find(|entry| entry.file_path == file_path)
             .cloned())
     }
-
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
         let mut list = self.store.lock().await;
         let position = list
@@ -673,6 +672,213 @@ impl MediaFileRepository for MockMediaFileRepo {
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
         list.remove(position);
         Ok(())
+    }
+}
+
+#[derive(Default, Clone)]
+struct TrackingImportRepo {
+    records: Arc<Mutex<Vec<ImportRecord>>>,
+}
+
+#[async_trait]
+impl ImportRepository for TrackingImportRepo {
+    async fn queue_import_request(
+        &self,
+        source_system: String,
+        source_ref: String,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        let id = Id::new().0;
+        let now = Utc::now().to_rfc3339();
+        self.records.lock().await.push(ImportRecord {
+            id: id.clone(),
+            source_system,
+            source_ref,
+            import_type: ImportType::parse(&import_type).unwrap_or(ImportType::ManualImport),
+            status: ImportStatus::Pending,
+            payload_json,
+            result_json: None,
+            started_at: None,
+            finished_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        });
+        Ok(id)
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .find(|record| record.id == id)
+            .cloned())
+    }
+
+    async fn get_import_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Option<ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
+            .cloned())
+    }
+
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        import_type: ImportType,
+    ) -> AppResult<Option<ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find(|record| {
+                record.source_system == source_system
+                    && record.source_ref == source_ref
+                    && record.import_type == import_type
+            })
+            .cloned())
+    }
+
+    async fn update_import_status(
+        &self,
+        id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        let mut records = self.records.lock().await;
+        let record = records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("import record {id}")))?;
+        record.status = status;
+        record.result_json = result_json;
+        if record.started_at.is_none() {
+            record.started_at = Some(now.clone());
+        }
+        if status.is_terminal() {
+            record.finished_at = Some(now.clone());
+        }
+        record.updated_at = now;
+        Ok(())
+    }
+
+    async fn recover_stale_processing_imports(&self, _stale_seconds: i64) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        _import_type: ImportType,
+        _stale_seconds: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .filter(|record| record.status.is_active())
+            .cloned()
+            .collect())
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .filter(|record| record.import_type == import_type && record.status.is_active())
+            .cloned()
+            .collect())
+    }
+
+    async fn list_imports_for_sources(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>> {
+        let records = self.records.lock().await;
+        Ok(sources
+            .iter()
+            .filter_map(|(source_system, source_ref)| {
+                records
+                    .iter()
+                    .rev()
+                    .find(|record| {
+                        record.source_system == *source_system && record.source_ref == *source_ref
+                    })
+                    .cloned()
+            })
+            .collect())
+    }
+
+    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
+            .is_some_and(|record| {
+                matches!(
+                    record.status,
+                    ImportStatus::Completed | ImportStatus::Skipped
+                )
+            }))
+    }
+
+    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
+        let mut records = self.records.lock().await.clone();
+        records.reverse();
+        records.truncate(limit);
+        Ok(records)
+    }
+}
+
+#[derive(Default, Clone)]
+struct BlockingFileImporter {
+    release: Arc<Notify>,
+    call_count: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl FileImporter for BlockingFileImporter {
+    async fn import_file(
+        &self,
+        source: &Path,
+        dest: &Path,
+    ) -> AppResult<scryer_domain::ImportFileResult> {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(scryer_domain::ImportFileResult {
+            strategy: scryer_domain::ImportStrategy::Copy,
+            source_path: source.to_path_buf(),
+            dest_path: dest.to_path_buf(),
+            size_bytes: std::fs::metadata(source)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        })
     }
 }
 
@@ -2936,6 +3142,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
 struct StubDownloadClient {
     queue_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
+    completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
@@ -3018,6 +3225,10 @@ impl DownloadClient for StubDownloadClient {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
+        Ok(self.completed_downloads.lock().await.clone())
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
@@ -3946,7 +4157,11 @@ async fn normalize_routing_settings_assigns_distinct_priorities_to_multiple_inde
         .expect("normalize indexer routing");
 
     let raw = settings
-        .get_scoped_value(SETTINGS_SCOPE_SYSTEM, INDEXER_ROUTING_SETTINGS_KEY, "series")
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "series",
+        )
         .await
         .expect("indexer routing JSON present after normalize");
     let parsed: serde_json::Value =
@@ -7867,6 +8082,28 @@ fn queue_history_fixture_item(
     }
 }
 
+fn completed_download_fixture_item(
+    download_client_item_id: &str,
+    title_id: &str,
+    name: &str,
+    dest_dir: &str,
+) -> CompletedDownload {
+    CompletedDownload {
+        client_type: "nzbget".to_string(),
+        client_id: "primary".to_string(),
+        download_client_item_id: download_client_item_id.to_string(),
+        name: name.to_string(),
+        dest_dir: dest_dir.to_string(),
+        category: Some("movie".to_string()),
+        size_bytes: None,
+        completed_at: Some(Utc::now()),
+        parameters: vec![
+            ("*scryer_title_id".to_string(), title_id.to_string()),
+            ("*scryer_facet".to_string(), "movie".to_string()),
+        ],
+    }
+}
+
 #[tokio::test]
 async fn list_download_import_page_returns_only_import_rows_for_selected_filter() {
     let download_client = Arc::new(StubDownloadClient::default());
@@ -7924,7 +8161,52 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
 }
 
 #[tokio::test]
-async fn list_download_import_page_blocks_when_tracked_snapshot_handle_never_replies() {
+async fn list_download_import_page_returns_promptly_when_tracked_snapshot_handle_never_replies() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (tracked_download_tx, _blocked_rx) = tokio::sync::mpsc::channel(1);
+    let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+        crate::tracked_downloads::TrackedDownloadHandle::new(tracked_download_tx),
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    *download_client.history_items.lock().await = vec![queue_history_fixture_item(
+        "pending-1",
+        DownloadQueueState::ImportPending,
+        40,
+    )];
+
+    let page = timeout(
+        Duration::from_millis(100),
+        app.list_download_import_page(&user, 50, 0, DownloadImportFilter::All),
+    )
+    .await
+    .expect("download import page should stay responsive even when the tracked snapshot handle is wedged")
+    .expect("download import page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "pending-1");
+}
+
+#[tokio::test]
+async fn list_download_import_page_uses_runtime_tracked_snapshot_cache() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -7955,16 +8237,225 @@ async fn list_download_import_page_blocks_when_tracked_snapshot_handle_never_rep
         40,
     )];
 
-    let result = timeout(
+    let tracked_id =
+        crate::tracked_downloads::tracked_download_id(Some("primary"), "nzbget", "completed-1");
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked_id,
+            crate::tracked_downloads::TrackedDownloadQueueMetadata {
+                title_id: Some("title-1".to_string()),
+                facet: Some("series".to_string()),
+                source_title: Some("Cached Release".to_string()),
+                state: TrackedDownloadState::ImportBlocked,
+                status: scryer_domain::TrackedDownloadStatus::Warning,
+                status_messages: vec!["moving files to nas".to_string()],
+                match_type: scryer_domain::TitleMatchType::Submission,
+            },
+        );
+
+    let page = timeout(
         Duration::from_millis(100),
         app.list_download_import_page(&user, 50, 0, DownloadImportFilter::All),
     )
-    .await;
+    .await
+    .expect("download import page should stay responsive with cached tracked metadata")
+    .expect("download import page should load");
 
-    assert!(
-        result.is_err(),
-        "download import page should wait indefinitely when tracked snapshot replies never arrive"
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.items[0].tracked_state,
+        Some(TrackedDownloadState::ImportBlocked)
     );
+    assert_eq!(
+        page.items[0].tracked_status,
+        Some(scryer_domain::TrackedDownloadStatus::Warning)
+    );
+    assert_eq!(
+        page.items[0].tracked_status_messages,
+        vec!["moving files to nas".to_string()]
+    );
+    assert_eq!(page.items[0].title_id.as_deref(), Some("title-1"));
+}
+
+#[tokio::test]
+async fn list_download_import_page_degrades_promptly_for_limit_one_count_reads_when_snapshot_cache_is_contended()
+ {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let mut importing =
+        queue_history_fixture_item("importing-1", DownloadQueueState::Completed, 40);
+    importing.import_status = Some(ImportStatus::Processing);
+    *download_client.history_items.lock().await = vec![importing];
+
+    let _snapshot_guard = app
+        .runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await;
+
+    let page = timeout(
+        Duration::from_millis(100),
+        app.list_download_import_page(&user, 1, 0, DownloadImportFilter::All),
+    )
+    .await
+    .expect("limit-one count-style download import read should degrade instead of blocking")
+    .expect("download import page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "importing-1");
+    assert_eq!(page.items[0].import_status, Some(ImportStatus::Processing));
+    assert_eq!(page.items[0].tracked_state, None);
+}
+
+#[tokio::test]
+async fn download_import_page_stays_responsive_while_background_import_worker_is_blocked() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+        crate::tracked_downloads::TrackedDownloadHandle::new(tracked_download_tx),
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let file_importer = Arc::new(BlockingFileImporter::default());
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_imports(import_repo.clone())
+            .with_media_files(media_files)
+            .with_file_importer(file_importer.clone())
+    });
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Responsive Import Test".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let completed_dir = tempdir
+        .path()
+        .join("Responsive.Import.Test.2026.1080p.WEB-DL");
+    std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
+    let source_video = completed_dir.join("Responsive.Import.Test.2026.1080p.WEB-DL.mkv");
+    std::fs::write(&source_video, b"fake-video").expect("seed completed download video");
+
+    let item_id = "blocked-worker-1";
+    let release_name = "Responsive.Import.Test.2026.1080p.WEB-DL";
+    let mut history_item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    history_item.title_id = Some(title.id.clone());
+    history_item.title_name = release_name.to_string();
+    history_item.facet = Some("movie".to_string());
+    *download_client.history_items.lock().await = vec![history_item];
+    *download_client.completed_downloads.lock().await = vec![completed_download_fixture_item(
+        item_id,
+        &title.id,
+        release_name,
+        completed_dir.to_string_lossy().as_ref(),
+    )];
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(crate::integration::start_download_queue_poller(
+        app.clone(),
+        token.child_token(),
+        tracked_download_rx,
+    ));
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if file_importer.call_count.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background import worker should reach the file importer");
+
+    let page = timeout(
+        Duration::from_millis(150),
+        app.list_download_import_page(&user, 1, 0, DownloadImportFilter::All),
+    )
+    .await
+    .expect(
+        "download import read should stay responsive while the background import worker is blocked",
+    )
+    .expect("download import page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, item_id);
+    assert_eq!(
+        page.items[0].tracked_state,
+        Some(TrackedDownloadState::Importing)
+    );
+    assert_eq!(page.items[0].import_status, Some(ImportStatus::Processing));
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(&page.items[0]),
+        DownloadDisplayState::Importing
+    );
+    assert_eq!(
+        page.items[0].tracked_status_messages,
+        vec!["Moving files to library.".to_string()]
+    );
+
+    token.cancel();
+    file_importer.release.notify_waiters();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
 }
 
 #[tokio::test]
