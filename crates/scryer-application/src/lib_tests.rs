@@ -3359,6 +3359,61 @@ fn bootstrap_with_cleanup_tracking(
     )
 }
 
+fn bootstrap_with_cleanup_tracking_and_tracked_handle(
+    download_client: Arc<StubDownloadClient>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    tracked_download_handle: crate::tracked_downloads::TrackedDownloadHandle,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo);
+    let settings = Arc::new(MockSettingsRepo);
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        Arc::new(MockIndexerClient),
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions)
+    .with_pending_releases(pending_releases)
+    .with_tracked_download_handle(tracked_download_handle)
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, User::new_admin("admin"))
+}
+
 fn bootstrap_with_cleanup_tracking_and_indexer(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
@@ -3859,6 +3914,51 @@ async fn normalize_routing_settings_backfills_partial_legacy_indexer_json() {
     assert!(entry.contains_key("priority"));
     // Existing categories must not be overwritten.
     assert_eq!(entry.get("categories"), Some(&serde_json::json!(["2000"])));
+}
+
+#[tokio::test]
+async fn normalize_routing_settings_assigns_distinct_priorities_to_multiple_indexers() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "series",
+            &serde_json::json!({
+                "indexer-1": {
+                    "enabled": true,
+                    "categories": ["5000"]
+                },
+                "indexer-2": {
+                    "enabled": true,
+                    "categories": ["5000"]
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+
+    app.normalize_routing_settings()
+        .await
+        .expect("normalize indexer routing");
+
+    let raw = settings
+        .get_scoped_value(SETTINGS_SCOPE_SYSTEM, INDEXER_ROUTING_SETTINGS_KEY, "series")
+        .await
+        .expect("indexer routing JSON present after normalize");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("indexer routing JSON parses");
+    let first_priority = parsed["indexer-1"]["priority"]
+        .as_i64()
+        .expect("indexer-1 priority");
+    let second_priority = parsed["indexer-2"]["priority"]
+        .as_i64()
+        .expect("indexer-2 priority");
+
+    assert_ne!(first_priority, second_priority);
 }
 
 fn bootstrap_with_cutoff_projection_state(
@@ -7820,6 +7920,50 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
     assert_eq!(
         crate::integration::derive_download_queue_display_state(&page.items[0]),
         DownloadDisplayState::ImportBlocked
+    );
+}
+
+#[tokio::test]
+async fn list_download_import_page_blocks_when_tracked_snapshot_handle_never_replies() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (tracked_download_tx, _blocked_rx) = tokio::sync::mpsc::channel(1);
+    let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+        crate::tracked_downloads::TrackedDownloadHandle::new(tracked_download_tx),
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    *download_client.history_items.lock().await = vec![queue_history_fixture_item(
+        "completed-1",
+        DownloadQueueState::Completed,
+        40,
+    )];
+
+    let result = timeout(
+        Duration::from_millis(100),
+        app.list_download_import_page(&user, 50, 0, DownloadImportFilter::All),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "download import page should wait indefinitely when tracked snapshot replies never arrive"
     );
 }
 

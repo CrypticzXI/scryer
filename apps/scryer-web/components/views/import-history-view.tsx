@@ -1,14 +1,16 @@
 
-import { useState, useCallback } from "react";
-import { KeyRound, Loader2, RefreshCw, RotateCcw } from "lucide-react";
+import { Fragment, useState, useCallback, useEffect, useMemo } from "react";
+import {
+  ChevronDown,
+  ChevronUp,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  RotateCcw,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -61,9 +63,32 @@ const statusClasses: Record<ImportRecordStatus, string> = {
     "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
   completed:
     "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-  skipped: "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  failed: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  skipped: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
 };
+
+const decisionClasses: Record<ImportDecision, string> = {
+  imported:
+    "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  rejected:
+    "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  skipped:
+    "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+  conflict:
+    "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
+  unmatched:
+    "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
+  failed: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+};
+
+const statusFilterOrder: ImportRecordStatus[] = [
+  "processing",
+  "running",
+  "pending",
+  "completed",
+  "failed",
+  "skipped",
+];
 
 type StatusFilter = "all" | ImportRecordStatus;
 
@@ -80,15 +105,6 @@ const importTypeLabels: Record<ImportType, string> = {
   rename_stale_plan: "Rename Stale Plan",
 };
 
-const statusFilterOptions: ImportRecordStatus[] = [
-  "pending",
-  "running",
-  "processing",
-  "completed",
-  "failed",
-  "skipped",
-];
-
 function formatTimestamp(ts: string | null): string {
   if (!ts) return "\u2014";
   try {
@@ -101,8 +117,11 @@ function formatTimestamp(ts: string | null): string {
   }
 }
 
-function formatImportType(importType: ImportType): string {
-  return importTypeLabels[importType] ?? humanizeEnumValue(importType);
+function formatImportType(record: Pick<ImportRecord, "facet" | "importType">): string {
+  if (record.importType === "series_download" && record.facet === "anime") {
+    return "Anime Download";
+  }
+  return importTypeLabels[record.importType] ?? humanizeEnumValue(record.importType);
 }
 
 function formatImportStatus(status: ImportRecordStatus): string {
@@ -121,6 +140,58 @@ function formatImportSkipReason(
     return passwordRequiredLabel;
   }
   return humanizeEnumValue(skipReason);
+}
+
+function formatSourceSystem(sourceSystem: string): string {
+  return humanizeEnumValue(sourceSystem);
+}
+
+function hasRecordDetails(record: ImportRecord): boolean {
+  return Boolean(
+    record.errorMessage ||
+      record.sourcePath ||
+      record.destPath ||
+      (record.sourceTitle && record.sourceTitle !== record.sourceRef),
+  );
+}
+
+function ImportDecisionBadge({ decision }: { decision: ImportDecision }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-2 py-1 text-xs font-medium ${decisionClasses[decision]}`}
+    >
+      {formatImportDecision(decision)}
+    </span>
+  );
+}
+
+function DetailToggleButton({
+  expanded,
+  detailId,
+  label,
+  onToggle,
+}: {
+  expanded: boolean;
+  detailId: string;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex min-h-6 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-expanded={expanded}
+      aria-controls={detailId}
+      onClick={onToggle}
+    >
+      <span>{label}</span>
+      {expanded ? (
+        <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : (
+        <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+      )}
+    </button>
+  );
 }
 
 function RetryButton({
@@ -221,11 +292,35 @@ export function ImportHistoryView({
   const t = useTranslate();
   const isMobile = useIsMobile();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [expandedRecordIds, setExpandedRecordIds] = useState<Record<string, true>>({});
+
+  const statusFilterOptions = useMemo(() => {
+    const presentStatuses = new Set(records.map((record) => record.status));
+    return statusFilterOrder.filter((status) => presentStatuses.has(status));
+  }, [records]);
+
+  useEffect(() => {
+    if (statusFilter !== "all" && !statusFilterOptions.includes(statusFilter)) {
+      setStatusFilter("all");
+    }
+  }, [statusFilter, statusFilterOptions]);
+
+  const toggleExpandedRecord = useCallback((recordId: string) => {
+    setExpandedRecordIds((current) => {
+      if (current[recordId]) {
+        const { [recordId]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [recordId]: true };
+    });
+  }, []);
 
   const filtered =
     statusFilter === "all"
       ? records
       : records.filter((r) => r.status === statusFilter);
+
+  const visibleColumnCount = onRetry ? 7 : 6;
 
   return (
     <Card>
@@ -331,17 +426,23 @@ export function ImportHistoryView({
                       </span>
                     </div>
                   </div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <span>{formatSourceSystem(record.sourceSystem)}</span>
+                    {record.sourceTitle && record.sourceTitle !== record.sourceRef ? (
+                      <span className="break-all">{record.sourceRef}</span>
+                    ) : null}
+                  </div>
                   <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    <span>{formatImportType(record.importType)}</span>
+                    <span>{formatImportType(record)}</span>
                     <span>{formatTimestamp(record.createdAt)}</span>
                     {record.finishedAt && record.finishedAt !== record.createdAt ? (
                       <span>{formatTimestamp(record.finishedAt)}</span>
                     ) : null}
                   </div>
                   {record.decision ? (
-                    <p className="mt-2 text-xs text-foreground">
-                      {formatImportDecision(record.decision)}
-                    </p>
+                    <div className="mt-2">
+                      <ImportDecisionBadge decision={record.decision} />
+                    </div>
                   ) : null}
                   {record.skipReason ? (
                     <p className="mt-1 break-words text-xs text-muted-foreground">
@@ -381,7 +482,7 @@ export function ImportHistoryView({
                 <TableRow>
                   <TableHead className="w-28 min-w-28">{t("importHistory.status")}</TableHead>
                   <TableHead className="w-[28%] min-w-0">{t("importHistory.sourceRef")}</TableHead>
-                  <TableHead className="w-24 min-w-0">Type</TableHead>
+                  <TableHead className="w-24 min-w-0">{t("label.type")}</TableHead>
                   <TableHead className="w-[16%] min-w-0">{t("importHistory.decision")}</TableHead>
                   <TableHead className="w-[18%] min-w-0">{t("importHistory.error")}</TableHead>
                   <TableHead className="w-36 min-w-36">{t("importHistory.createdAt")}</TableHead>
@@ -391,131 +492,149 @@ export function ImportHistoryView({
               <TableBody>
                 {filtered.map((record) => {
                   const hasError = Boolean(record.errorMessage);
-                  const hasPaths = record.sourcePath || record.destPath;
+                  const detailId = `import-history-detail-${record.id}`;
+                  const isExpanded = Boolean(expandedRecordIds[record.id]);
+                  const showDetails = hasRecordDetails(record);
+                  const sourceMeta = record.sourceTitle && record.sourceTitle !== record.sourceRef
+                    ? `${formatSourceSystem(record.sourceSystem)} • ${record.sourceRef}`
+                    : formatSourceSystem(record.sourceSystem);
 
                   return (
-                    <TableRow key={record.id}>
-                      {/* Status */}
-                      <TableCell className="align-middle">
-                        <span
-                          className={`inline-flex items-center rounded border px-2 py-1 text-xs font-medium ${statusClasses[record.status]}`}
-                        >
-                          {formatImportStatus(record.status)}
-                        </span>
-                      </TableCell>
-
-                      {/* Source */}
-                      <TableCell className="min-w-0 align-middle">
-                        <p
-                          className="break-words whitespace-normal text-sm"
-                          title={record.sourceTitle ?? record.sourceRef}
-                        >
-                          {record.sourceTitle ?? record.sourceRef}
-                        </p>
-                        {record.sourceTitle ? (
-                          <p
-                            className="text-xs text-muted-foreground break-words whitespace-normal"
-                            title={record.sourceRef}
+                    <Fragment key={record.id}>
+                      <TableRow>
+                        <TableCell className="align-middle">
+                          <span
+                            className={`inline-flex items-center rounded border px-2 py-1 text-xs font-medium ${statusClasses[record.status]}`}
                           >
-                            {record.sourceRef}
+                            {formatImportStatus(record.status)}
+                          </span>
+                        </TableCell>
+
+                        <TableCell className="min-w-0 align-middle">
+                          <p
+                            className="break-words whitespace-normal text-sm font-medium text-foreground"
+                            title={record.sourceTitle ?? record.sourceRef}
+                          >
+                            {record.sourceTitle ?? record.sourceRef}
                           </p>
+                          <p className="mt-1 break-words whitespace-normal text-xs text-muted-foreground">
+                            {sourceMeta}
+                          </p>
+                          {showDetails ? (
+                            <div className="mt-2">
+                              <DetailToggleButton
+                                expanded={isExpanded}
+                                detailId={detailId}
+                                label={t(isExpanded ? "queue.hideDetails" : "queue.showDetails")}
+                                onToggle={() => toggleExpandedRecord(record.id)}
+                              />
+                            </div>
+                          ) : null}
+                        </TableCell>
+
+                        <TableCell className="min-w-0 align-middle">
+                          <span className="text-xs text-muted-foreground">
+                            {formatImportType(record)}
+                          </span>
+                        </TableCell>
+
+                        <TableCell className="min-w-0 align-middle">
+                          {record.decision ? (
+                            <div>
+                              <ImportDecisionBadge decision={record.decision} />
+                            </div>
+                          ) : null}
+                          {record.skipReason ? (
+                            <p className="mt-1 break-words whitespace-normal text-xs text-muted-foreground">
+                              {formatImportSkipReason(
+                                record.skipReason,
+                                t("importHistory.passwordRequired"),
+                              )}
+                            </p>
+                          ) : null}
+                          {!record.decision && !record.skipReason ? (
+                            <span className="text-xs text-muted-foreground/60">{"\u2014"}</span>
+                          ) : null}
+                        </TableCell>
+
+                        <TableCell className="min-w-0 align-middle">
+                          {hasError ? (
+                            <p
+                              className={cn(
+                                "max-w-full break-words whitespace-pre-wrap text-xs text-rose-500 dark:text-rose-300",
+                                !isExpanded && "line-clamp-3",
+                              )}
+                            >
+                              {record.errorMessage}
+                            </p>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/60">{"\u2014"}</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="align-middle">
+                          <p className="text-xs text-muted-foreground">
+                            {formatTimestamp(record.createdAt)}
+                          </p>
+                          {record.finishedAt && record.finishedAt !== record.createdAt ? (
+                            <p className="text-xs text-muted-foreground/60" title="Finished">
+                              {formatTimestamp(record.finishedAt)}
+                            </p>
+                          ) : null}
+                        </TableCell>
+
+                        {onRetry ? (
+                          <TableCell className="align-middle">
+                            {record.status === "failed" ? (
+                              <RetryButton record={record} onRetry={onRetry} />
+                            ) : null}
+                          </TableCell>
                         ) : null}
-                        {hasPaths ? (
-                          <HoverCard openDelay={200} closeDelay={100}>
-                            <HoverCardTrigger asChild>
-                              <button
-                                type="button"
-                                className="mt-0.5 text-xs text-muted-foreground/70 underline decoration-dotted hover:text-muted-foreground"
-                              >
-                                paths
-                              </button>
-                            </HoverCardTrigger>
-                            <HoverCardContent sideOffset={4} className="w-96 max-w-sm text-xs">
+                      </TableRow>
+
+                      {showDetails && isExpanded ? (
+                        <TableRow>
+                          <TableCell colSpan={visibleColumnCount} className="bg-muted/10 px-4 py-3">
+                            <div id={detailId} className="grid gap-3 rounded-xl border border-border/70 bg-background/70 p-3 md:grid-cols-2">
+                              {record.sourceTitle && record.sourceTitle !== record.sourceRef ? (
+                                <div>
+                                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    {t("importHistory.sourceRef")}
+                                  </p>
+                                  <p className="mt-1 break-all text-sm text-foreground">{record.sourceRef}</p>
+                                </div>
+                              ) : null}
                               {record.sourcePath ? (
-                                <div className="mb-1">
-                                  <span className="font-medium text-muted-foreground">From: </span>
-                                  <span className="break-all">{record.sourcePath}</span>
+                                <div>
+                                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Source path
+                                  </p>
+                                  <p className="mt-1 break-all text-sm text-foreground">{record.sourcePath}</p>
                                 </div>
                               ) : null}
                               {record.destPath ? (
                                 <div>
-                                  <span className="font-medium text-muted-foreground">To: </span>
-                                  <span className="break-all">{record.destPath}</span>
+                                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    Destination path
+                                  </p>
+                                  <p className="mt-1 break-all text-sm text-foreground">{record.destPath}</p>
                                 </div>
                               ) : null}
-                            </HoverCardContent>
-                          </HoverCard>
-                        ) : null}
-                      </TableCell>
-
-                      {/* Type */}
-                      <TableCell className="min-w-0 align-middle">
-                        <span className="text-xs text-muted-foreground">
-                          {formatImportType(record.importType)}
-                        </span>
-                      </TableCell>
-
-                      {/* Decision */}
-                      <TableCell className="min-w-0 align-middle">
-                        {record.decision ? (
-                          <span className="text-xs">
-                            {formatImportDecision(record.decision)}
-                          </span>
-                        ) : null}
-                        {record.skipReason ? (
-                          <p className="text-xs text-muted-foreground break-words whitespace-normal">
-                            {formatImportSkipReason(
-                              record.skipReason,
-                              t("importHistory.passwordRequired"),
-                            )}
-                          </p>
-                        ) : null}
-                        {!record.decision && !record.skipReason ? (
-                          <span className="text-xs text-muted-foreground/60">{"\u2014"}</span>
-                        ) : null}
-                      </TableCell>
-
-                      {/* Error */}
-                      <TableCell className="min-w-0 align-middle">
-                        {hasError ? (
-                          <HoverCard openDelay={200} closeDelay={100}>
-                            <HoverCardTrigger asChild>
-                              <p className="max-w-full cursor-default break-words whitespace-normal text-xs text-rose-400 line-clamp-2">
-                                {record.errorMessage}
-                              </p>
-                            </HoverCardTrigger>
-                            <HoverCardContent sideOffset={4} className="max-w-sm text-xs">
-                              <p className="whitespace-pre-wrap break-words text-foreground">
-                                {record.errorMessage}
-                              </p>
-                            </HoverCardContent>
-                          </HoverCard>
-                        ) : (
-                          <span className="text-xs text-muted-foreground/60">{"\u2014"}</span>
-                        )}
-                      </TableCell>
-
-                      {/* Date */}
-                      <TableCell className="align-middle">
-                        <p className="text-xs text-muted-foreground">
-                          {formatTimestamp(record.createdAt)}
-                        </p>
-                        {record.finishedAt && record.finishedAt !== record.createdAt ? (
-                          <p className="text-xs text-muted-foreground/60" title="Finished">
-                            {formatTimestamp(record.finishedAt)}
-                          </p>
-                        ) : null}
-                      </TableCell>
-
-                      {/* Retry */}
-                      {onRetry ? (
-                        <TableCell className="align-middle">
-                          {record.status === "failed" ? (
-                            <RetryButton record={record} onRetry={onRetry} />
-                          ) : null}
-                        </TableCell>
+                              {record.errorMessage ? (
+                                <div className="md:col-span-2">
+                                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    {t("importHistory.error")}
+                                  </p>
+                                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-rose-500 dark:text-rose-300">
+                                    {record.errorMessage}
+                                  </p>
+                                </div>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
                       ) : null}
-                    </TableRow>
+                    </Fragment>
                   );
                 })}
               </TableBody>

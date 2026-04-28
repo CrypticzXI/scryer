@@ -421,9 +421,8 @@ const EpisodeRow = React.memo(function EpisodeRow({
   );
 
   const handleAutoSearchClick = React.useCallback(() => {
-    openPanelTab("search");
     onAutoSearchEpisode?.(episode);
-  }, [episode, onAutoSearchEpisode, openPanelTab]);
+  }, [episode, onAutoSearchEpisode]);
 
   const handleToggleEpisodeMonitored = React.useCallback(() => {
     if (!onSetEpisodeMonitored) {

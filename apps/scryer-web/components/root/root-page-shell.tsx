@@ -498,10 +498,8 @@ function AuthenticatedHomePage({
       setManualImportRequiredCount(
         Number(manualImportCountResult.data?.downloadImport?.totalCount ?? 0),
       );
-    } catch {
-      setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
-      setIgnoredImportCounts({ movie: 0, series: 0, anime: 0 });
-      setManualImportRequiredCount(0);
+    } catch (error) {
+      console.warn("Failed to refresh sidebar counts", error);
     }
   }, []);
 

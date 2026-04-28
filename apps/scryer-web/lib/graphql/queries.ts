@@ -275,6 +275,7 @@ const SUBTITLE_BLACKLIST_FIELDS = `
     sourceSystem
     sourceRef
     sourceTitle
+    facet
     importType
     status
     errorMessage

@@ -36,6 +36,14 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer-release-parser",
     "scryer-rules",
 ];
+const BUILTIN_PLUGIN_ARTIFACTS: &[&str] = &[
+    "crates/scryer-plugins/builtins/animetosho_indexer.wasm",
+    "crates/scryer-plugins/builtins/dognzb_indexer.wasm",
+    "crates/scryer-plugins/builtins/jimaku_subtitle_provider.wasm",
+    "crates/scryer-plugins/builtins/newznab_indexer.wasm",
+    "crates/scryer-plugins/builtins/nzbgeek_indexer.wasm",
+    "crates/scryer-plugins/builtins/torznab_indexer.wasm",
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -583,6 +591,46 @@ fn add_prod_package_args(command: &mut Command) {
     }
 }
 
+fn builtin_plugin_paths(ctx: &TaskContext) -> Vec<PathBuf> {
+    BUILTIN_PLUGIN_ARTIFACTS
+        .iter()
+        .map(|path| ctx.path(path))
+        .collect()
+}
+
+fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+    let plugins_dir = ctx
+        .repo_root
+        .parent()
+        .ok_or_else(|| anyhow!("scryer repo has no parent directory"))?
+        .join("scryer-plugins");
+    let plugins_xtask = plugins_dir.join("xtask/Cargo.toml");
+    if !plugins_xtask.is_file() {
+        bail!(
+            "scryer-plugins xtask not found at {}",
+            plugins_xtask.display()
+        );
+    }
+
+    let output_dir = ctx.path("crates/scryer-plugins/builtins");
+    step("Rebuilding embedded plugin builtins");
+    let mut command = ctx.release_command_in("cargo", &plugins_dir);
+    command.args([
+        "run",
+        "--locked",
+        "--manifest-path",
+        "xtask/Cargo.toml",
+        "--",
+        "builtins",
+        "--output-dir",
+    ]);
+    command.arg(&output_dir);
+    run_streaming(&mut command, "[plugins] ")?;
+    ok("Embedded plugin builtins refreshed");
+
+    Ok(builtin_plugin_paths(ctx))
+}
+
 fn git_checkout_paths(ctx: &TaskContext, paths: &[PathBuf]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
@@ -697,6 +745,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     prompt_continue_if_dirty(ctx)?;
     require_command("gh")?;
     ok("Pre-flight OK");
+
+    let builtin_plugin_paths = refresh_builtin_plugins(ctx)?;
 
     let release_stamp = ctx.path(".claude/release-validation-timestamp");
     step("Checking release group validation status");
@@ -857,6 +907,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         if npm_lock.exists() {
             restore.push(npm_lock);
         }
+        restore.extend(builtin_plugin_paths.clone());
         git_checkout_paths(ctx, &restore)?;
         return Ok(());
     }
@@ -873,6 +924,11 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     }
     if npm_lock.exists() && changed_file(ctx, &npm_lock)? {
         changed.push(npm_lock.clone());
+    }
+    for path in &builtin_plugin_paths {
+        if changed_file(ctx, path)? {
+            changed.push(path.clone());
+        }
     }
     if !changed.is_empty() {
         let mut add = ctx.release_command_in("git", &ctx.repo_root);

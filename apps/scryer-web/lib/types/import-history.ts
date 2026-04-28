@@ -1,3 +1,5 @@
+import type { Facet } from "./titles";
+
 export type ImportType =
   | "movie_download"
   | "series_download"
@@ -42,6 +44,7 @@ export type ImportRecord = {
   sourceSystem: string;
   sourceRef: string;
   sourceTitle: string | null;
+  facet: Facet | null;
   importType: ImportType;
   status: ImportRecordStatus;
   errorMessage: string | null;

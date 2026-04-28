@@ -2441,6 +2441,7 @@ async fn import_single_episode_file(
         source_video,
         &parsed,
         &target_episodes,
+        &target_episodes,
         season as u32,
         &ep_num_str,
         abs_str.as_deref(),
@@ -2575,6 +2576,7 @@ async fn execute_resolved_episode_import(
     source_video: &Path,
     parsed: &crate::ParsedReleaseMetadata,
     target_episodes: &[scryer_domain::Episode],
+    coverage_episodes: &[scryer_domain::Episode],
     rename_season: u32,
     rename_episode_number: &str,
     rename_absolute_number: Option<&str>,
@@ -2631,7 +2633,7 @@ async fn execute_resolved_episode_import(
     if let Err(issue) = super::coverage_validation::validate_broad_episode_coverage(
         title,
         &prepared.parsed,
-        target_episodes,
+        coverage_episodes,
         prepared.accepted.as_ref(),
     ) {
         tracing::info!(
@@ -2651,7 +2653,9 @@ async fn execute_resolved_episode_import(
                 blocking_rule_codes: Vec::new(),
             },
             finalize_before_import: true,
-            reason_code: Some(super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string()),
+            reason_code: Some(
+                super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
+            ),
         });
     }
 
@@ -2661,11 +2665,16 @@ async fn execute_resolved_episode_import(
         .unwrap_or("mkv")
         .to_string();
     let effective_quality_label = quality_override
-        .and_then(|value| non_empty_string(Some(value)))
+        .as_deref()
+        .and_then(|value| non_empty_string(Some(value.to_string())))
         .or_else(|| prepared.parsed.quality.clone());
+    let effective_parsed = parsed_with_quality_override(
+        &prepared.parsed,
+        effective_quality_label.as_deref(),
+    );
     let dest_path = episode_import_dest_path(
         title,
-        &prepared.parsed,
+        &effective_parsed,
         &ext,
         media_root,
         title_folder,
@@ -2701,7 +2710,7 @@ async fn execute_resolved_episode_import(
             quality_profile,
             &required_audio_languages,
             &persona,
-            &prepared.parsed,
+            &effective_parsed,
             crate::post_download_gate::facet_to_category_hint(&title.facet),
             title.runtime_minutes,
             Some(source_size),
@@ -2792,7 +2801,7 @@ async fn execute_resolved_episode_import(
         .any(|file| file.file_path == dest_path.to_string_lossy().as_ref());
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
-        &prepared.parsed,
+        &effective_parsed,
         prepared.accepted.as_ref(),
         quality_profile,
         title,
@@ -3325,6 +3334,44 @@ pub(crate) async fn resolve_target_episodes(
     }
 
     episodes
+}
+
+fn prefer_broader_coverage_episodes(
+    target_episodes: &[scryer_domain::Episode],
+    claimed_episodes: Vec<scryer_domain::Episode>,
+) -> Vec<scryer_domain::Episode> {
+    if claimed_episodes.len() > target_episodes.len() {
+        claimed_episodes
+    } else {
+        target_episodes.to_vec()
+    }
+}
+
+fn parsed_with_quality_override(
+    parsed: &crate::ParsedReleaseMetadata,
+    quality_label: Option<&str>,
+) -> crate::ParsedReleaseMetadata {
+    let mut effective = parsed.clone();
+    if let Some(quality_label) = quality_label {
+        effective.quality = Some(quality_label.to_string());
+    }
+    effective
+}
+
+async fn resolve_manual_import_coverage_episodes(
+    app: &AppUseCase,
+    title: &scryer_domain::Title,
+    parsed: &crate::ParsedReleaseMetadata,
+    fallback_season: u32,
+    target_episodes: &[scryer_domain::Episode],
+) -> Vec<scryer_domain::Episode> {
+    let Some(ep_meta) = parsed.episode.as_ref() else {
+        return target_episodes.to_vec();
+    };
+
+    let claimed_episodes =
+        resolve_target_episodes(app, title, ep_meta, &fallback_season.to_string()).await;
+    prefer_broader_coverage_episodes(target_episodes, claimed_episodes)
 }
 
 async fn write_series_sidecars(
@@ -3902,6 +3949,7 @@ fn manual_import_error_from_skip_reason(skip_reason: Option<ImportSkipReason>) -
     match skip_reason {
         Some(ImportSkipReason::DiskFull) => ImportErrorCode::DiskFull,
         Some(ImportSkipReason::PermissionDenied) => ImportErrorCode::PermissionDenied,
+        Some(ImportSkipReason::PolicyMismatch) => ImportErrorCode::PolicyMismatch,
         _ => ImportErrorCode::Unknown,
     }
 }
@@ -4059,6 +4107,14 @@ pub async fn execute_manual_import(
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         let ep_num_str = episode.episode_number.clone().unwrap_or_default();
+        let coverage_episodes = resolve_manual_import_coverage_episodes(
+            app,
+            &title,
+            &parsed,
+            season_num,
+            std::slice::from_ref(&episode),
+        )
+        .await;
         match execute_resolved_episode_import(
             app,
             actor,
@@ -4069,6 +4125,7 @@ pub async fn execute_manual_import(
             source,
             &parsed,
             std::slice::from_ref(&episode),
+            &coverage_episodes,
             season_num,
             &ep_num_str,
             episode.absolute_number.as_deref(),

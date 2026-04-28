@@ -23,6 +23,7 @@ export type ImportErrorCode =
   | "file_not_found"
   | "episode_not_found"
   | "episode_lookup_failed"
+  | "policy_mismatch"
   | "io_failed"
   | "permission_denied"
   | "disk_full"

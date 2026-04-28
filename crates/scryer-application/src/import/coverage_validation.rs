@@ -45,7 +45,9 @@ pub(crate) fn validate_broad_episode_coverage(
     target_episodes: &[Episode],
     accepted: &crate::post_download_gate::ImportedFileAcceptance,
 ) -> Result<(), CoverageValidationIssue> {
-    if title.facet == MediaFacet::Anime || !accepted.scan_error.is_none() || target_episodes.is_empty()
+    if title.facet == MediaFacet::Anime
+        || !accepted.scan_error.is_none()
+        || target_episodes.is_empty()
     {
         return Ok(());
     }
@@ -85,7 +87,8 @@ pub(crate) fn validate_broad_episode_coverage(
     }
 
     let actual_runtime_seconds = i64::from(actual_runtime_seconds);
-    if actual_runtime_seconds * 100 >= expected_runtime_seconds * i64::from(snapshot.threshold_percent)
+    if actual_runtime_seconds * 100
+        >= expected_runtime_seconds * i64::from(snapshot.threshold_percent)
     {
         return Ok(());
     }
@@ -132,9 +135,10 @@ impl CoverageRuntimeSnapshot {
                     threshold_percent: 45,
                 })
             }
-            (crate::ParsedEpisodeReleaseType::SeasonPack, ReleaseCoverage::Collection(collection_id)) => {
-                collection_snapshot(collection_id, coverage, parsed, target_episodes, 25)
-            }
+            (
+                crate::ParsedEpisodeReleaseType::SeasonPack,
+                ReleaseCoverage::Collection(collection_id),
+            ) => collection_snapshot(collection_id, coverage, parsed, target_episodes, 25),
             (
                 crate::ParsedEpisodeReleaseType::SeasonPack,
                 ReleaseCoverage::EpisodeSet(episode_ids),
@@ -470,7 +474,8 @@ mod tests {
 
     #[test]
     fn coverage_runtime_multi_episode_release_passes_through() {
-        let parsed = parsed_episode_range(&[1, 2, 3], crate::ParsedEpisodeReleaseType::MultiEpisode);
+        let parsed =
+            parsed_episode_range(&[1, 2, 3], crate::ParsedEpisodeReleaseType::MultiEpisode);
         let episodes = vec![
             episode("ep-1", Some("season-1"), 1, Some(1_440)),
             episode("ep-2", Some("season-1"), 2, Some(1_440)),

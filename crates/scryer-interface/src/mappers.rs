@@ -18,8 +18,91 @@ use scryer_domain::{
 use scryer_rules;
 use serde_json::Value;
 use std::fs;
+use std::path::Path;
 
 use crate::types::*;
+
+fn import_facet_from_payload(payload: &Value) -> Option<MediaFacetValue> {
+    let parameters = payload.get("parameters")?.as_array()?;
+    for parameter in parameters {
+        let (key, value) = match parameter {
+            Value::Array(values) => (
+                values.first().and_then(Value::as_str),
+                values.get(1).and_then(Value::as_str),
+            ),
+            Value::Object(_) => (
+                parameter.get("key").and_then(Value::as_str),
+                parameter.get("value").and_then(Value::as_str),
+            ),
+            _ => (None, None),
+        };
+        let Some(key) = key else {
+            continue;
+        };
+        if key != "*scryer_facet" {
+            continue;
+        }
+        let Some(value) = value else {
+            continue;
+        };
+        return match value.trim().to_ascii_lowercase().as_str() {
+            "movie" => Some(MediaFacetValue::Movie),
+            "series" => Some(MediaFacetValue::Series),
+            "anime" => Some(MediaFacetValue::Anime),
+            _ => None,
+        };
+    }
+    None
+}
+
+fn path_basename(path: &str) -> Option<String> {
+    let trimmed = path.trim().trim_end_matches(std::path::MAIN_SEPARATOR);
+    if trimmed.is_empty() {
+        return None;
+    }
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn looks_like_weaver_job_id(title: &str, source_ref: &str) -> bool {
+    let trimmed = title.trim();
+    !trimmed.is_empty()
+        && (trimmed == source_ref
+            || (trimmed.len() >= 4 && trimmed.chars().all(|ch| ch.is_ascii_digit())))
+}
+
+fn import_source_title_from_payload(
+    payload: &Value,
+    source_system: &str,
+    source_ref: &str,
+    source_path: Option<&str>,
+) -> Option<String> {
+    let payload_title = payload
+        .get("source_title")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string);
+
+    let fallback_path_title = source_path
+        .and_then(path_basename)
+        .or_else(|| payload.get("dest_dir").and_then(Value::as_str).and_then(path_basename));
+
+    if source_system.eq_ignore_ascii_case("weaver")
+        && payload_title
+            .as_deref()
+            .is_some_and(|title| looks_like_weaver_job_id(title, source_ref))
+    {
+        return fallback_path_title.or(payload_title);
+    }
+
+    payload_title.or(fallback_path_title)
+}
 
 pub(crate) fn from_scoring_overrides(
     overrides: scryer_application::ScoringOverrides,
@@ -1156,23 +1239,23 @@ pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportR
             (None, None, None, None, None, None)
         };
 
-    let source_title = serde_json::from_str::<serde_json::Value>(&record.payload_json)
-        .ok()
-        .and_then(|payload| {
-            payload
-                .get("source_title")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| payload.get("name").and_then(serde_json::Value::as_str))
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .map(ToString::to_string)
-        });
+    let payload = serde_json::from_str::<serde_json::Value>(&record.payload_json).ok();
+    let source_title = payload.as_ref().and_then(|payload| {
+        import_source_title_from_payload(
+            payload,
+            &record.source_system,
+            &record.source_ref,
+            source_path.as_deref(),
+        )
+    });
+    let facet = payload.as_ref().and_then(import_facet_from_payload);
 
     ImportRecordPayload {
         id: record.id,
         source_system: record.source_system,
         source_ref: record.source_ref,
         source_title,
+        facet,
         import_type: ImportTypeValue::from_domain(record.import_type),
         status: ImportStatusValue::from_domain(record.status),
         error_message,
@@ -1184,6 +1267,48 @@ pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportR
         started_at: record.started_at,
         finished_at: record.finished_at,
         created_at: record.created_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_import_record;
+    use crate::types::MediaFacetValue;
+    use scryer_domain::{CompletedDownload, ImportRecord, ImportStatus, ImportType};
+
+    #[test]
+    fn from_import_record_uses_release_folder_for_numeric_weaver_job_name() {
+        let payload = CompletedDownload {
+            client_type: "weaver".to_string(),
+            client_id: String::new(),
+            download_client_item_id: "10495".to_string(),
+            name: "10495".to_string(),
+            dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
+            category: Some("anime".to_string()),
+            size_bytes: None,
+            completed_at: None,
+            parameters: vec![("*scryer_facet".to_string(), "anime".to_string())],
+        };
+        let record = ImportRecord {
+            id: "import-1".to_string(),
+            source_system: "weaver".to_string(),
+            source_ref: "10495".to_string(),
+            import_type: ImportType::SeriesDownload,
+            status: ImportStatus::Completed,
+            payload_json: serde_json::to_string(&payload).expect("serialize completed download"),
+            result_json: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-04-27T20:17:00Z".to_string(),
+            updated_at: "2026-04-27T20:17:00Z".to_string(),
+        };
+
+        let mapped = from_import_record(record);
+        assert_eq!(
+            mapped.source_title.as_deref(),
+            Some("Example.Show.S01E01.1080p.WEB-DL")
+        );
+        assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
     }
 }
 

@@ -61,10 +61,6 @@ impl ConfigMutations {
             .await
             .map_err(to_gql_error)?;
 
-        app.ensure_indexer_routing_entry_for_indexer(&actor, &config.id)
-            .await
-            .map_err(to_gql_error)?;
-
         Ok(from_indexer_config(config))
     }
 

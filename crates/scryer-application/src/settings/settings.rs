@@ -2719,12 +2719,16 @@ impl AppUseCase {
                 && let Some(mut payload) = parse_json_object(&raw_json)
             {
                 let mut changed = false;
-                let next_priority = next_routing_priority(&payload);
+                let mut next_priority = next_routing_priority(&payload);
                 for (_, value) in payload.iter_mut() {
-                    if let Some(entry) = value.as_object_mut()
-                        && normalize_download_client_routing_entry_in_place(entry, next_priority)
-                    {
-                        changed = true;
+                    if let Some(entry) = value.as_object_mut() {
+                        let missing_priority = !entry.contains_key("priority");
+                        if normalize_download_client_routing_entry_in_place(entry, next_priority) {
+                            changed = true;
+                            if missing_priority {
+                                next_priority += 1;
+                            }
+                        }
                     }
                 }
                 if changed {
@@ -2751,12 +2755,17 @@ impl AppUseCase {
                 && let Some(mut payload) = parse_json_object(&raw_json)
             {
                 let mut changed = false;
-                let next_priority = next_routing_priority(&payload);
+                let mut next_priority = next_routing_priority(&payload);
                 for (_, value) in payload.iter_mut() {
-                    if let Some(entry) = value.as_object_mut()
-                        && normalize_indexer_routing_entry_in_place(scope_id, entry, next_priority)
-                    {
-                        changed = true;
+                    if let Some(entry) = value.as_object_mut() {
+                        let missing_priority = !entry.contains_key("priority");
+                        if normalize_indexer_routing_entry_in_place(scope_id, entry, next_priority)
+                        {
+                            changed = true;
+                            if missing_priority {
+                                next_priority += 1;
+                            }
+                        }
                     }
                 }
                 if changed {

@@ -295,6 +295,10 @@ fn import_error_code_round_trips() {
         Some(ImportErrorCode::EpisodeLookupFailed)
     );
     assert_eq!(
+        ImportErrorCode::parse("policy_mismatch"),
+        Some(ImportErrorCode::PolicyMismatch)
+    );
+    assert_eq!(
         ImportErrorCode::parse("unknown"),
         Some(ImportErrorCode::Unknown)
     );
