@@ -1759,7 +1759,7 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    pub async fn blacklist_subtitle_download(
+    pub async fn blocklist_subtitle_download(
         &self,
         media_file_id: &str,
         provider: &str,
@@ -1769,7 +1769,7 @@ impl DbRuntime {
     ) -> AppResult<String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
-            .send(DbCommand::BlacklistSubtitleDownload {
+            .send(DbCommand::BlocklistSubtitleDownload {
                 media_file_id: media_file_id.to_string(),
                 provider: provider.to_string(),
                 provider_file_id: provider_file_id.to_string(),
@@ -2647,10 +2647,7 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    pub async fn count_wanted_items(
-        &self,
-        query: WantedItemsQuery,
-    ) -> AppResult<i64> {
+    pub async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::CountWantedItems {

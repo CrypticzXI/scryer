@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,16 +22,23 @@ import {
 
 const PAGE_SIZE = 50;
 
+type ScopedEpisodeHistoryFilter = {
+  episodeId: string;
+  episodeLabel: string;
+};
+
 export function TitleHistoryModal({
   open,
   onOpenChange,
   titleId,
   titleName,
+  scopedEpisode,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   titleId: string;
   titleName: string;
+  scopedEpisode?: ScopedEpisodeHistoryFilter | null;
 }) {
   const client = useClient();
   const t = useTranslate();
@@ -40,9 +47,19 @@ export function TitleHistoryModal({
   const [loading, setLoading] = React.useState(false);
   const [activeFilters, setActiveFilters] = React.useState<string[]>([]);
   const [offset, setOffset] = React.useState(0);
+  const [scopedEpisodeDismissed, setScopedEpisodeDismissed] =
+    React.useState(false);
+  const activeScopedEpisode = scopedEpisodeDismissed
+    ? null
+    : (scopedEpisode ?? null);
 
   const fetchHistory = React.useCallback(
-    async (eventTypes: string[], pageOffset: number, append: boolean) => {
+    async (
+      eventTypes: string[],
+      pageOffset: number,
+      append: boolean,
+      episodeId?: string | null,
+    ) => {
       setLoading(true);
       try {
         const result = await client
@@ -50,6 +67,7 @@ export function TitleHistoryModal({
             filter: {
               eventTypes: eventTypes.length > 0 ? eventTypes : null,
               titleIds: [titleId],
+              episodeId: episodeId ?? null,
               limit: PAGE_SIZE,
               offset: pageOffset,
             },
@@ -71,18 +89,32 @@ export function TitleHistoryModal({
   );
 
   React.useEffect(() => {
+    setScopedEpisodeDismissed(false);
+  }, [open, scopedEpisode?.episodeId]);
+
+  React.useEffect(() => {
     if (open) {
       setOffset(0);
       setEvents([]);
-      void fetchHistory(activeFilters, 0, false);
+      void fetchHistory(
+        activeFilters,
+        0,
+        false,
+        activeScopedEpisode?.episodeId ?? null,
+      );
     }
-  }, [open, activeFilters, fetchHistory]);
+  }, [open, activeFilters, activeScopedEpisode?.episodeId, fetchHistory]);
 
   const loadMore = React.useCallback(() => {
     const nextOffset = offset + PAGE_SIZE;
     setOffset(nextOffset);
-    void fetchHistory(activeFilters, nextOffset, true);
-  }, [offset, activeFilters, fetchHistory]);
+    void fetchHistory(
+      activeFilters,
+      nextOffset,
+      true,
+      activeScopedEpisode?.episodeId ?? null,
+    );
+  }, [offset, activeFilters, activeScopedEpisode?.episodeId, fetchHistory]);
 
   const toggleFilter = React.useCallback((eventType: string) => {
     setActiveFilters((prev) =>
@@ -96,6 +128,12 @@ export function TitleHistoryModal({
     setActiveFilters([]);
   }, []);
 
+  const clearScopedEpisode = React.useCallback(() => {
+    setOffset(0);
+    setEvents([]);
+    setScopedEpisodeDismissed(true);
+  }, []);
+
   const hasMore = events.length < totalCount;
 
   return (
@@ -104,6 +142,25 @@ export function TitleHistoryModal({
         <DialogHeader>
           <DialogTitle>{titleName} — {t("history.title")}</DialogTitle>
         </DialogHeader>
+
+        {activeScopedEpisode ? (
+          <div className="flex flex-wrap items-center gap-2 pb-2">
+            <span className="text-xs text-muted-foreground">{t("label.filter")}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={clearScopedEpisode}
+              aria-label={`${t("label.remove")} ${activeScopedEpisode.episodeLabel}`}
+              className="h-7 gap-1.5 px-2 text-xs"
+            >
+              <span className="max-w-[32rem] truncate">
+                {activeScopedEpisode.episodeLabel}
+              </span>
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap gap-1.5 pb-2">
           <Button

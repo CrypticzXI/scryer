@@ -64,6 +64,12 @@ struct SubtitleDeleteContext {
 }
 
 #[derive(Clone, Debug)]
+enum ExternalSubtitleRemovalMode {
+    DeleteOnly,
+    DeleteAndBlocklist { reason: Option<String> },
+}
+
+#[derive(Clone, Debug)]
 struct UserDeleteManifest {
     fingerprint: String,
     target_label: String,
@@ -168,14 +174,14 @@ impl AppUseCase {
         Ok(manifest.to_preview())
     }
 
-    pub async fn preview_delete_subtitle_file(
+    pub async fn preview_delete_external_subtitle_file(
         &self,
         actor: &User,
-        subtitle_download_id: &str,
+        external_subtitle_id: &str,
     ) -> AppResult<DeletePreview> {
         require(actor, &Entitlement::ManageTitle)?;
         let context = self
-            .resolve_subtitle_delete_context(subtitle_download_id)
+            .resolve_subtitle_delete_context(external_subtitle_id)
             .await?;
         let manifest = self.build_delete_manifest(context).await?;
         Ok(manifest.to_preview())
@@ -203,41 +209,100 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn blacklist_subtitle_download(
+    pub async fn delete_external_subtitle(
         &self,
         actor: &User,
-        subtitle_download_id: &str,
+        external_subtitle_id: &str,
+        preview_fingerprint: &str,
+        typed_confirmation: Option<&str>,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageTitle)?;
+        self.remove_external_subtitle(
+            external_subtitle_id,
+            ExternalSubtitleRemovalMode::DeleteOnly,
+            preview_fingerprint,
+            typed_confirmation,
+        )
+        .await
+    }
+
+    pub async fn blocklist_external_subtitle(
+        &self,
+        actor: &User,
+        external_subtitle_id: &str,
         reason: Option<&str>,
         preview_fingerprint: &str,
         typed_confirmation: Option<&str>,
     ) -> AppResult<()> {
         require(actor, &Entitlement::ManageTitle)?;
-        let context = self
-            .resolve_subtitle_delete_context(subtitle_download_id)
-            .await?;
-        self.execute_delete_context(context, preview_fingerprint, typed_confirmation)
-            .await?;
+        self.remove_external_subtitle(
+            external_subtitle_id,
+            ExternalSubtitleRemovalMode::DeleteAndBlocklist {
+                reason: reason.map(str::to_string),
+            },
+            preview_fingerprint,
+            typed_confirmation,
+        )
+        .await
+    }
 
-        let record = self
+    async fn remove_external_subtitle(
+        &self,
+        external_subtitle_id: &str,
+        mode: ExternalSubtitleRemovalMode,
+        preview_fingerprint: &str,
+        typed_confirmation: Option<&str>,
+    ) -> AppResult<()> {
+        let subtitle = self
             .services
             .workflow
             .subtitle_downloads
-            .delete(subtitle_download_id)
+            .get(external_subtitle_id)
             .await?
             .ok_or_else(|| {
-                AppError::NotFound(format!("subtitle download {}", subtitle_download_id))
+                AppError::NotFound(format!("external subtitle {}", external_subtitle_id))
             })?;
 
-        if let Some(provider_file_id) = &record.provider_file_id {
+        if matches!(mode, ExternalSubtitleRemovalMode::DeleteAndBlocklist { .. })
+            && (subtitle.source_kind != scryer_domain::ExternalSubtitleSourceKind::Downloaded
+                || subtitle.provider.as_deref().is_none_or(str::is_empty)
+                || subtitle.provider_file_id.is_none())
+        {
+            return Err(AppError::Validation(
+                "only provider-backed downloaded subtitles can be blocklisted".into(),
+            ));
+        }
+
+        self.execute_delete_context(
+            UserDeleteContext::Subtitle(SubtitleDeleteContext {
+                subtitle_download_id: subtitle.id.clone(),
+                file_path: subtitle.file_path.clone(),
+            }),
+            preview_fingerprint,
+            typed_confirmation,
+        )
+        .await?;
+
+        let deleted = self
+            .services
+            .workflow
+            .subtitle_downloads
+            .delete(external_subtitle_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("external subtitle {}", external_subtitle_id))
+            })?;
+
+        if let ExternalSubtitleRemovalMode::DeleteAndBlocklist { reason } = mode {
             self.services
                 .workflow
                 .subtitle_downloads
-                .blacklist(
-                    &record.media_file_id,
-                    &record.provider,
-                    provider_file_id,
-                    &record.language,
-                    reason,
+                .blocklist(
+                    &deleted.media_file_id,
+                    deleted.provider.as_deref().unwrap_or_default(),
+                    deleted.provider_file_id.as_deref().unwrap_or_default(),
+                    &deleted.language,
+                    reason.as_deref(),
                 )
                 .await?;
         }
@@ -356,7 +421,7 @@ impl AppUseCase {
             .get(subtitle_download_id)
             .await?
             .ok_or_else(|| {
-                AppError::NotFound(format!("subtitle download {}", subtitle_download_id))
+                AppError::NotFound(format!("external subtitle {}", subtitle_download_id))
             })?;
 
         Ok(UserDeleteContext::Subtitle(SubtitleDeleteContext {

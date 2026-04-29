@@ -277,7 +277,7 @@ async fn list_available_with_builtins_and_registry() {
     let result = ctx.app.list_available_plugins(&admin()).await.unwrap();
 
     // Should have nzbgeek (installed+builtin), newznab (installed+builtin),
-    // and animetosho (not installed, from registry)
+    // and animetosho (not installed, but recognized as builtin-capable)
     assert!(result.len() >= 3, "got {} plugins", result.len());
 
     let nzbgeek = result.iter().find(|p| p.id == "nzbgeek").unwrap();
@@ -286,7 +286,7 @@ async fn list_available_with_builtins_and_registry() {
 
     let animetosho = result.iter().find(|p| p.id == "animetosho").unwrap();
     assert!(!animetosho.is_installed);
-    assert!(!animetosho.builtin);
+    assert!(animetosho.builtin);
     assert!(animetosho.wasm_url.is_some());
 }
 

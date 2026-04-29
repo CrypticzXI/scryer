@@ -8,8 +8,8 @@ import type {
 } from "@/components/containers/series-overview-container";
 import { MediaInfoBadges } from "@/components/common/media-info-badges";
 import { InterstitialMoviePanel } from "./interstitial-movie-panel";
-import { deriveMediaFileQualityLabel, formatDate, formatFileSize } from "./helpers";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import { formatDate, formatFileSize } from "./helpers";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ export function EpisodeDetailsPanel({
 }: {
   episode: CollectionEpisode;
   mediaFiles: EpisodeMediaFile[];
-  subtitleDownloads?: SubtitleDownloadRecord[];
+  subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   linkedMovie?: InterstitialMovieMetadata | null;
   onDeleteFile?: (fileId: string) => void;
@@ -35,7 +35,7 @@ export function EpisodeDetailsPanel({
     mediaFileId: string;
     filePath: string;
   } | null>(null);
-  const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, SubtitleDownloadRecord[]>>(
+  const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, ExternalSubtitleRecord[]>>(
     (grouped, download) => {
       (grouped[download.mediaFileId] ??= []).push(download);
       return grouped;
@@ -67,18 +67,12 @@ export function EpisodeDetailsPanel({
         {mediaFiles.length > 0 ? (
           <div className="space-y-2">
             {mediaFiles.map((file) => {
-              const qualityLabel = deriveMediaFileQualityLabel(file);
               const downloads = subtitleDownloadsByMediaFile[file.id] ?? [];
               return (
                 <div key={file.id} className="space-y-1.5 rounded bg-card/60 px-3 py-2 text-sm">
                   <div className="flex flex-wrap items-center gap-3">
                     <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                     <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">{file.filePath}</span>
-                    {qualityLabel ? (
-                      <span className="rounded border border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/20 dark:bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
-                        {qualityLabel}
-                      </span>
-                    ) : null}
                     <span className="text-xs text-muted-foreground/60">{formatFileSize(Number(file.sizeBytes))}</span>
                     <span className="text-xs text-muted-foreground/60">{formatDate(file.createdAt)}</span>
                     {file.acquisitionScore != null ? (
@@ -116,7 +110,12 @@ export function EpisodeDetailsPanel({
                     ) : null}
                   </div>
                   <MediaInfoBadges file={file} />
-                  <ExternalSubtitleSection downloads={downloads} />
+                  <ExternalSubtitleSection
+                    downloads={downloads}
+                    onChanged={() => {
+                      void onRefreshSubtitles?.();
+                    }}
+                  />
                 </div>
               );
             })}

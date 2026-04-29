@@ -390,6 +390,12 @@ export function SettingsSubtitleProvidersSection({
         (providerType) => providerType.providerType === nextProviderType,
       );
       setProviderDraft((previous) => {
+        const previousProvider = providerTypes.find(
+          (providerType) => providerType.providerType === previous.providerType,
+        );
+        const shouldAutofillName =
+          previous.name.trim().length === 0 ||
+          previous.name === (previousProvider?.name ?? previous.providerType);
         const nextConfigValues: Record<string, string> = {};
         for (const field of nextProvider?.configFields ?? []) {
           if (field.valueSource === "host_binding") {
@@ -403,10 +409,9 @@ export function SettingsSubtitleProvidersSection({
         return {
           ...previous,
           providerType: nextProviderType,
-          name:
-            previous.name.trim().length > 0
-              ? previous.name
-              : (nextProvider?.name ?? previous.name),
+          name: shouldAutofillName
+            ? (nextProvider?.name ?? previous.name)
+            : previous.name,
           configValues: nextConfigValues,
           persistedConfigValues: {},
           storedSecretKeys: [],
@@ -557,21 +562,6 @@ export function SettingsSubtitleProvidersSection({
 
         <div className="grid gap-4 md:grid-cols-2">
           <label>
-            <Label className="mb-2 block">{t("label.name")}</Label>
-            <Input
-              value={providerDraft.name}
-              onChange={(event) =>
-                setProviderDraft((previous) => ({
-                  ...previous,
-                  name: event.target.value,
-                }))
-              }
-              placeholder={t("settings.subtitleProviderNamePlaceholder")}
-              required
-            />
-          </label>
-
-          <label>
             <Label className="mb-2 block">{t("settings.subtitleProviderType")}</Label>
             <Select
               value={normalizedProviderType}
@@ -588,6 +578,21 @@ export function SettingsSubtitleProvidersSection({
                 ))}
               </SelectContent>
             </Select>
+          </label>
+
+          <label>
+            <Label className="mb-2 block">{t("label.name")}</Label>
+            <Input
+              value={providerDraft.name}
+              onChange={(event) =>
+                setProviderDraft((previous) => ({
+                  ...previous,
+                  name: event.target.value,
+                }))
+              }
+              placeholder={t("settings.subtitleProviderNamePlaceholder")}
+              required
+            />
           </label>
         </div>
 

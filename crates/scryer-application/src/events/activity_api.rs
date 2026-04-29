@@ -93,11 +93,7 @@ pub fn is_supported_title_history_event_type(event_type: TitleHistoryEventType) 
     SUPPORTED_TITLE_HISTORY_EVENT_TYPES.contains(&event_type)
 }
 
-fn title_history_record_matches(
-    record: &TitleHistoryRecord,
-    filter: &TitleHistoryFilter,
-    episode_id: Option<&str>,
-) -> bool {
+fn title_history_record_matches(record: &TitleHistoryRecord, filter: &TitleHistoryFilter) -> bool {
     filter
         .event_types
         .as_ref()
@@ -110,13 +106,15 @@ fn title_history_record_matches(
             .download_id
             .as_ref()
             .is_none_or(|download_id| record.download_id.as_deref() == Some(download_id))
-        && episode_id.is_none_or(|expected| record.episode_id.as_deref() == Some(expected))
+        && filter
+            .episode_id
+            .as_ref()
+            .is_none_or(|expected| record.episode_id.as_deref() == Some(expected.as_str()))
 }
 
 async fn project_title_history_page(
     app: &AppUseCase,
     filter: &TitleHistoryFilter,
-    episode_id: Option<&str>,
 ) -> AppResult<TitleHistoryPage> {
     // Title and episode history are projected exclusively from durable domain events.
     // The legacy `title_history` table is deprecated compatibility state and must not
@@ -143,7 +141,7 @@ async fn project_title_history_page(
         });
     }
 
-    if filter.group_by_event && episode_id.is_none() {
+    if filter.group_by_event && filter.episode_id.is_none() {
         let limit = filter.limit.max(1);
         let total_count = app
             .services
@@ -228,7 +226,7 @@ async fn project_title_history_page(
                 if !matched_title_ids.is_empty() && !matched_title_ids.contains(&record.title_id) {
                     continue;
                 }
-                if !title_history_record_matches(&record, filter, episode_id) {
+                if !title_history_record_matches(&record, filter) {
                     continue;
                 }
 
@@ -913,6 +911,18 @@ impl AppUseCase {
         Ok(self.runtime.events.settings_changed_broadcast.subscribe())
     }
 
+    pub fn subscribe_provider_catalog_changed(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<Vec<crate::ProviderCatalogFamily>>> {
+        require(actor, &Entitlement::ManageConfig)?;
+        Ok(self
+            .runtime
+            .events
+            .provider_catalog_changed_broadcast
+            .subscribe())
+    }
+
     pub fn subscribe_download_queue_state(
         &self,
         actor: &User,
@@ -930,7 +940,7 @@ impl AppUseCase {
         filter: &TitleHistoryFilter,
     ) -> AppResult<TitleHistoryPage> {
         require(actor, &Entitlement::ViewHistory)?;
-        project_title_history_page(self, filter, None).await
+        project_title_history_page(self, filter).await
     }
 
     pub async fn list_title_history_for_title(
@@ -949,11 +959,11 @@ impl AppUseCase {
                 title_ids: Some(vec![title_id.to_string()]),
                 title_search: None,
                 download_id: None,
+                episode_id: None,
                 group_by_event: false,
                 limit,
                 offset,
             },
-            None,
         )
         .await
     }

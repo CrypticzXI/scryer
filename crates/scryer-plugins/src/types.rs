@@ -63,6 +63,175 @@ pub(crate) fn indexer_capabilities_to_domain(
         imdb_search: capabilities.imdb_search,
         tvdb_search: capabilities.tvdb_search,
         anidb_search: capabilities.anidb_search,
+        protocols: capabilities
+            .protocols
+            .iter()
+            .copied()
+            .map(indexer_protocol_to_domain)
+            .collect(),
+        feed_modes: capabilities
+            .feed_modes
+            .iter()
+            .copied()
+            .map(indexer_feed_mode_to_domain)
+            .collect(),
+        search_inputs: capabilities
+            .search_inputs
+            .iter()
+            .copied()
+            .map(indexer_search_input_to_domain)
+            .collect(),
+        supported_external_ids: capabilities.supported_external_ids.clone(),
+        category_model: capabilities
+            .category_model
+            .as_ref()
+            .map(indexer_category_model_to_domain),
+        limits: capabilities
+            .limits
+            .as_ref()
+            .map(indexer_limit_capabilities_to_domain),
+        torrent: capabilities
+            .torrent
+            .as_ref()
+            .map(indexer_torrent_capabilities_to_domain),
+        response_features: capabilities
+            .response_features
+            .as_ref()
+            .map(indexer_response_features_to_domain),
+    }
+}
+
+fn indexer_protocol_to_domain(
+    protocol: IndexerProtocol,
+) -> scryer_domain::IndexerProtocolCapability {
+    match protocol {
+        IndexerProtocol::Usenet => scryer_domain::IndexerProtocolCapability::Usenet,
+        IndexerProtocol::Torrent => scryer_domain::IndexerProtocolCapability::Torrent,
+        IndexerProtocol::Mixed => scryer_domain::IndexerProtocolCapability::Mixed,
+        IndexerProtocol::Unknown => scryer_domain::IndexerProtocolCapability::Unknown,
+    }
+}
+
+fn indexer_feed_mode_to_domain(mode: IndexerFeedMode) -> scryer_domain::IndexerFeedModeCapability {
+    match mode {
+        IndexerFeedMode::Recent => scryer_domain::IndexerFeedModeCapability::Recent,
+        IndexerFeedMode::Rss => scryer_domain::IndexerFeedModeCapability::Rss,
+        IndexerFeedMode::AutomaticSearch => {
+            scryer_domain::IndexerFeedModeCapability::AutomaticSearch
+        }
+        IndexerFeedMode::InteractiveSearch => {
+            scryer_domain::IndexerFeedModeCapability::InteractiveSearch
+        }
+    }
+}
+
+fn indexer_search_input_to_domain(
+    input: IndexerSearchInput,
+) -> scryer_domain::IndexerSearchInputCapability {
+    match input {
+        IndexerSearchInput::TextQuery => scryer_domain::IndexerSearchInputCapability::TextQuery,
+        IndexerSearchInput::TitleQuery => scryer_domain::IndexerSearchInputCapability::TitleQuery,
+        IndexerSearchInput::IdQuery => scryer_domain::IndexerSearchInputCapability::IdQuery,
+        IndexerSearchInput::AggregateIdQuery => {
+            scryer_domain::IndexerSearchInputCapability::AggregateIdQuery
+        }
+        IndexerSearchInput::Season => scryer_domain::IndexerSearchInputCapability::Season,
+        IndexerSearchInput::Episode => scryer_domain::IndexerSearchInputCapability::Episode,
+        IndexerSearchInput::AbsoluteEpisode => {
+            scryer_domain::IndexerSearchInputCapability::AbsoluteEpisode
+        }
+        IndexerSearchInput::AirDate => scryer_domain::IndexerSearchInputCapability::AirDate,
+        IndexerSearchInput::SpecialEpisodeTitle => {
+            scryer_domain::IndexerSearchInputCapability::SpecialEpisodeTitle
+        }
+        IndexerSearchInput::Category => scryer_domain::IndexerSearchInputCapability::Category,
+        IndexerSearchInput::Offset => scryer_domain::IndexerSearchInputCapability::Offset,
+        IndexerSearchInput::Limit => scryer_domain::IndexerSearchInputCapability::Limit,
+    }
+}
+
+fn indexer_category_model_to_domain(
+    model: &IndexerCategoryModel,
+) -> scryer_domain::IndexerCategoryModel {
+    scryer_domain::IndexerCategoryModel {
+        value_kinds: model
+            .value_kinds
+            .iter()
+            .copied()
+            .map(indexer_category_value_kind_to_domain)
+            .collect(),
+        separate_anime_categories: model.separate_anime_categories,
+        provider_category_metadata: model.provider_category_metadata,
+        categories: model
+            .categories
+            .iter()
+            .map(indexer_category_descriptor_to_domain)
+            .collect(),
+    }
+}
+
+fn indexer_category_descriptor_to_domain(
+    descriptor: &IndexerCategoryDescriptor,
+) -> scryer_domain::IndexerCategoryDescriptor {
+    scryer_domain::IndexerCategoryDescriptor {
+        value: descriptor.value.clone(),
+        label: descriptor.label.clone(),
+        value_kind: indexer_category_value_kind_to_domain(descriptor.value_kind),
+        facets: descriptor.facets.clone(),
+    }
+}
+
+fn indexer_category_value_kind_to_domain(
+    kind: IndexerCategoryValueKind,
+) -> scryer_domain::IndexerCategoryValueKind {
+    match kind {
+        IndexerCategoryValueKind::Numeric => scryer_domain::IndexerCategoryValueKind::Numeric,
+        IndexerCategoryValueKind::String => scryer_domain::IndexerCategoryValueKind::String,
+    }
+}
+
+fn indexer_limit_capabilities_to_domain(
+    limits: &IndexerLimitCapabilities,
+) -> scryer_domain::IndexerLimitCapabilities {
+    scryer_domain::IndexerLimitCapabilities {
+        page_size: limits.page_size,
+        max_page_size: limits.max_page_size,
+        max_pages: limits.max_pages,
+        rate_limit_hint_seconds: limits.rate_limit_hint_seconds,
+        api_quota_supported: limits.api_quota_supported,
+        grab_quota_supported: limits.grab_quota_supported,
+    }
+}
+
+fn indexer_torrent_capabilities_to_domain(
+    torrent: &IndexerTorrentCapabilities,
+) -> scryer_domain::IndexerTorrentCapabilities {
+    scryer_domain::IndexerTorrentCapabilities {
+        reports_seeders: torrent.reports_seeders,
+        reports_peers: torrent.reports_peers,
+        reports_leechers: torrent.reports_leechers,
+        reports_info_hash: torrent.reports_info_hash,
+        reports_magnet_uri: torrent.reports_magnet_uri,
+        reports_volume_factors: torrent.reports_volume_factors,
+        supports_private_tracker_flags: torrent.supports_private_tracker_flags,
+        supports_seed_requirements: torrent.supports_seed_requirements,
+    }
+}
+
+fn indexer_response_features_to_domain(
+    features: &IndexerResponseFeatures,
+) -> scryer_domain::IndexerResponseFeatures {
+    scryer_domain::IndexerResponseFeatures {
+        languages: features.languages,
+        subtitles: features.subtitles,
+        grabs: features.grabs,
+        votes: features.votes,
+        comments: features.comments,
+        info_url: features.info_url,
+        guid: features.guid,
+        raw_provider_metadata: features.raw_provider_metadata,
+        password_hint: features.password_hint,
+        protection_hint: features.protection_hint,
     }
 }
 

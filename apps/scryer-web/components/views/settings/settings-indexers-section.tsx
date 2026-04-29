@@ -377,6 +377,28 @@ export function SettingsIndexersSection({
     [setIndexerDraft],
   );
 
+  const handleProviderTypeChange = React.useCallback(
+    (nextProviderType: string) => {
+      const nextProvider = providerTypes.find(
+        (providerType) => providerType.providerType === nextProviderType,
+      );
+      setIndexerDraft((prev: IndexerDraft) => {
+        const previousProvider = providerTypes.find(
+          (providerType) => providerType.providerType === prev.providerType,
+        );
+        const shouldAutofillName =
+          prev.name.trim().length === 0 ||
+          prev.name === (previousProvider?.name ?? prev.providerType);
+        return {
+          ...prev,
+          providerType: nextProviderType,
+          name: shouldAutofillName ? (nextProvider?.name ?? prev.name) : prev.name,
+        };
+      });
+    },
+    [providerTypes, setIndexerDraft],
+  );
+
   return (
     <div className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
@@ -516,31 +538,12 @@ export function SettingsIndexersSection({
           <form className="space-y-3" onSubmit={submitIndexer}>
             <div className="grid gap-3 md:grid-cols-3">
               <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
-                <Input
-                  value={indexerDraft.name}
-                  onChange={(event) =>
-                    setIndexerDraft((prev: IndexerDraft) => ({
-                      ...prev,
-                      name: event.target.value,
-                    }))
-                  }
-                  required
-                  placeholder={t("form.indexerNamePlaceholder")}
-                />
-              </label>
-              <label>
                 <Label className="mb-2 block">
                   {t("form.providerTypePlaceholder")}
                 </Label>
                 <Select
                   value={normalizedProviderType || undefined}
-                  onValueChange={(v) =>
-                    setIndexerDraft((prev: IndexerDraft) => ({
-                      ...prev,
-                      providerType: v,
-                    }))
-                  }
+                  onValueChange={handleProviderTypeChange}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue
@@ -555,6 +558,20 @@ export function SettingsIndexersSection({
                     ))}
                   </SelectContent>
                 </Select>
+              </label>
+              <label>
+                <Label className="mb-2 block">{t("label.name")}</Label>
+                <Input
+                  value={indexerDraft.name}
+                  onChange={(event) =>
+                    setIndexerDraft((prev: IndexerDraft) => ({
+                      ...prev,
+                      name: event.target.value,
+                    }))
+                  }
+                  required
+                  placeholder={t("form.indexerNamePlaceholder")}
+                />
               </label>
               {shouldShowBaseUrlField ? (
                 <label>

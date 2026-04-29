@@ -236,7 +236,7 @@ impl IndexerPluginProvider for MockPluginProvider {
 
     fn reload_plugins(
         &self,
-        _external_wasm_bytes: &[&[u8]],
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
         _disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
@@ -264,6 +264,18 @@ fn viewer() -> User {
         username: "viewer".to_string(),
         password_hash: None,
         entitlements: vec![scryer_domain::Entitlement::ViewCatalog],
+    }
+}
+
+fn config_admin() -> User {
+    User {
+        id: scryer_domain::Id::new().0,
+        username: "config-admin".to_string(),
+        password_hash: None,
+        entitlements: vec![
+            scryer_domain::Entitlement::ViewCatalog,
+            scryer_domain::Entitlement::ManageConfig,
+        ],
     }
 }
 
@@ -920,6 +932,66 @@ async fn toggle_auth_rejects_viewer() {
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Unauthorized(_)));
+}
+
+#[test]
+fn provider_catalog_families_map_known_plugin_types() {
+    assert_eq!(
+        provider_catalog_families_for_plugin_type("subtitle_provider"),
+        vec![ProviderCatalogFamily::Subtitle]
+    );
+    assert_eq!(
+        provider_catalog_families_for_plugin_type("notification"),
+        vec![ProviderCatalogFamily::Notification]
+    );
+    assert_eq!(
+        provider_catalog_families_for_plugin_type("download_client"),
+        vec![ProviderCatalogFamily::DownloadClient]
+    );
+    assert_eq!(
+        provider_catalog_families_for_plugin_type("indexer"),
+        vec![ProviderCatalogFamily::Indexer]
+    );
+}
+
+#[tokio::test]
+async fn toggle_publishes_provider_catalog_change_for_subtitle_plugins() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut installation = make_installation("jimaku", "1.0.0", false, false);
+    installation.plugin_type = "subtitle_provider".to_string();
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let mut rx = h
+        .app
+        .subscribe_provider_catalog_changed(&config_admin())
+        .unwrap();
+
+    h.app.toggle_plugin(&admin(), "jimaku", true).await.unwrap();
+
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        vec![ProviderCatalogFamily::Subtitle]
+    );
+}
+
+#[tokio::test]
+async fn uninstall_publishes_provider_catalog_change_for_notification_plugins() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut installation = make_installation("jellyfin", "1.0.0", false, true);
+    installation.plugin_type = "notification".to_string();
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let mut rx = h
+        .app
+        .subscribe_provider_catalog_changed(&config_admin())
+        .unwrap();
+
+    h.app.uninstall_plugin(&admin(), "jellyfin").await.unwrap();
+
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        vec![ProviderCatalogFamily::Notification]
+    );
 }
 
 // ── uninstall_plugin ─────────────────────────────────────────────────────────

@@ -256,13 +256,27 @@ pub(crate) async fn list_title_media_size_summaries_query(
 
     let placeholders = title_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT title_id, COALESCE(SUM(CASE WHEN size_bytes > 0 THEN size_bytes ELSE 0 END), 0) AS total_size_bytes
-         FROM media_files
-         WHERE title_id IN ({placeholders})
-           AND {}
-         GROUP BY title_id"
-        ,
-        live_media_file_predicate("media_files")
+        "SELECT matched.title_id,
+                COALESCE(SUM(matched.size_bytes), 0) AS total_size_bytes
+           FROM (
+                SELECT DISTINCT mf.id,
+                       mf.title_id,
+                       CASE
+                           WHEN mf.size_bytes > 0 THEN mf.size_bytes
+                           ELSE 0
+                       END AS size_bytes
+                  FROM media_files mf
+             LEFT JOIN file_episode_map fem
+                    ON fem.file_id = mf.id
+             LEFT JOIN collections c
+                    ON c.title_id = mf.title_id
+                   AND c.ordered_path = mf.file_path
+                 WHERE mf.title_id IN ({placeholders})
+                   AND {}
+                   AND (fem.file_id IS NOT NULL OR c.id IS NOT NULL)
+           ) matched
+          GROUP BY matched.title_id",
+        live_media_file_predicate("mf")
     );
 
     let mut query = sqlx::query(&sql);
@@ -368,6 +382,9 @@ pub(crate) async fn list_title_episode_progress_summaries_query(
          WHERE e.title_id IN ({placeholders})
            AND c.collection_type <> 'specials'
            AND c.collection_index <> '0'
+           AND trim(COALESCE(e.title, '')) <> ''
+           AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
+           AND trim(COALESCE(e.air_date, '')) <> ''
          GROUP BY e.title_id",
         live_media_file_predicate("mf")
     );

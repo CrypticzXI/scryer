@@ -1,8 +1,8 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
-    DomainEventPayload, EventType, ImportType, JobRunCompletedEventData, JobRunStartedEventData,
-    RootFolderEntry, TrackedDownloadState,
+    DomainEventFilter, DomainEventPayload, DomainEventType, EventType, ImportType,
+    JobRunCompletedEventData, JobRunStartedEventData, RootFolderEntry, TrackedDownloadState,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -946,6 +946,41 @@ struct MockDomainEventRepo {
     subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
 }
 
+#[derive(Default)]
+struct MockExternalImportMonitorSnapshotRepo {
+    snapshots: Arc<Mutex<Vec<ExternalImportMonitorSnapshot>>>,
+}
+
+#[async_trait]
+impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapshotRepo {
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        snapshot: &ExternalImportMonitorSnapshot,
+    ) -> AppResult<()> {
+        let mut snapshots = self.snapshots.lock().await;
+        snapshots.retain(|existing| existing.facet != snapshot.facet);
+        snapshots.push(snapshot.clone());
+        Ok(())
+    }
+
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
+        let snapshots = self.snapshots.lock().await;
+        Ok(snapshots
+            .iter()
+            .find(|snapshot| &snapshot.facet == facet)
+            .cloned())
+    }
+
+    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()> {
+        let mut snapshots = self.snapshots.lock().await;
+        snapshots.retain(|snapshot| &snapshot.facet != facet);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl DomainEventRepository for MockDomainEventRepo {
     async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
@@ -1031,11 +1066,9 @@ impl DomainEventRepository for MockDomainEventRepo {
             .rev()
             .filter_map(crate::event_views::title_history_record_from_domain_event)
             .filter(|record| {
-                event_types
-                    .is_none_or(|values| values.contains(&record.event_type))
+                event_types.is_none_or(|values| values.contains(&record.event_type))
                     && title_ids.is_none_or(|values| values.contains(&record.title_id))
-                    && download_id
-                        .is_none_or(|value| record.download_id.as_deref() == Some(value))
+                    && download_id.is_none_or(|value| record.download_id.as_deref() == Some(value))
             })
             .count() as i64)
     }
@@ -1054,14 +1087,14 @@ impl DomainEventRepository for MockDomainEventRepo {
             .iter()
             .rev()
             .filter(|event| {
-                crate::event_views::title_history_record_from_domain_event(event)
-                    .is_some_and(|record| {
-                        event_types
-                            .is_none_or(|values| values.contains(&record.event_type))
+                crate::event_views::title_history_record_from_domain_event(event).is_some_and(
+                    |record| {
+                        event_types.is_none_or(|values| values.contains(&record.event_type))
                             && title_ids.is_none_or(|values| values.contains(&record.title_id))
                             && download_id
                                 .is_none_or(|value| record.download_id.as_deref() == Some(value))
-                    })
+                    },
+                )
             })
             .skip(offset)
             .take(page_size)
@@ -2676,6 +2709,7 @@ struct TrackingWantedItemRepo {
     store: Arc<Mutex<Vec<WantedItem>>>,
     release_decisions: Arc<Mutex<Vec<ReleaseDecision>>>,
     title_facets: Arc<Mutex<HashMap<String, MediaFacet>>>,
+    upsert_calls: Arc<AtomicUsize>,
 }
 
 impl TrackingWantedItemRepo {
@@ -2684,6 +2718,10 @@ impl TrackingWantedItemRepo {
             .lock()
             .await
             .insert(title_id.to_string(), facet);
+    }
+
+    fn upsert_call_count(&self) -> usize {
+        self.upsert_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -2697,6 +2735,7 @@ struct TrackingAcquisitionStateRepo {
 #[async_trait]
 impl WantedItemRepository for TrackingWantedItemRepo {
     async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String> {
+        self.upsert_calls.fetch_add(1, Ordering::SeqCst);
         let mut store = self.store.lock().await;
         if let Some(existing) = store.iter_mut().find(|existing| existing.id == item.id) {
             *existing = item.clone();
@@ -3551,6 +3590,22 @@ impl DownloadQueueCommandRepository for TrackingDownloadQueueCommandRepo {
 
 pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
+}
+
+async fn title_updated_events(app: &AppUseCase, title_id: &str) -> Vec<DomainEvent> {
+    app.services
+        .events
+        .domain_events
+        .list(&DomainEventFilter {
+            event_types: Some(vec![DomainEventType::TitleUpdated]),
+            title_id: Some(title_id.to_string()),
+            facet: None,
+            after_sequence: Some(0),
+            before_sequence: None,
+            limit: 100,
+        })
+        .await
+        .expect("title updated events should load")
 }
 
 fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
@@ -7973,6 +8028,96 @@ async fn queue_best_release_supports_interstitial_movie_collection_scope() {
     );
 }
 
+#[tokio::test]
+async fn resolve_release_search_subject_for_collection_uses_interstitial_movie_metadata() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "Mugen.Train.2020.1080p.WEB-DL",
+    ));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Wrong Show".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    let collection = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Interstitial,
+            collection_index: "1.1".to_string(),
+            label: Some("Mugen Train".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1.1".to_string()),
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
+                tvdb_id: "12345".to_string(),
+                name: "Mugen Train".to_string(),
+                slug: "mugen-train".to_string(),
+                year: Some(2020),
+                content_status: "released".to_string(),
+                overview: "Interstitial movie".to_string(),
+                poster_url: String::new(),
+                language: "ja".to_string(),
+                runtime_minutes: 110,
+                sort_title: "Mugen Train".to_string(),
+                imdb_id: "tt11032374".to_string(),
+                genres: vec!["action".to_string()],
+                studio: "Studio".to_string(),
+                digital_release_date: Some("2024-02-01".to_string()),
+                association_confidence: Some("high".to_string()),
+                continuity_status: Some("canon".to_string()),
+                movie_form: None,
+                confidence: None,
+                signal_summary: None,
+                placement: Some("between_seasons".to_string()),
+                movie_tmdb_id: None,
+                movie_mal_id: None,
+                movie_anidb_id: None,
+            }),
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: false,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create interstitial collection");
+
+    let (search_title, subject) = app
+        .resolve_release_search_subject_for_collection(&title, &collection)
+        .await
+        .expect("resolve interstitial movie subject");
+
+    assert_eq!(search_title.name, "Mugen Train");
+    assert_eq!(search_title.year, Some(2020));
+    assert_eq!(search_title.imdb_id.as_deref(), Some("tt11032374"));
+    assert_eq!(subject.queries, vec!["Mugen Train 2020".to_string()]);
+    assert_eq!(subject.tvdb_id.as_deref(), Some("12345"));
+    assert_eq!(subject.imdb_id.as_deref(), Some("tt11032374"));
+    assert_eq!(
+        subject.submission_scope,
+        SubmissionScope::Collection {
+            collection_id: collection.id,
+        }
+    );
+}
+
 fn cutoff_projection_test_profile(id: &str, cutoff_tier: &str) -> QualityProfile {
     QualityProfile {
         id: id.to_string(),
@@ -10530,6 +10675,7 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
                 title_ids: Some(vec![title.id.clone()]),
                 title_search: None,
                 download_id: Some("failed-season-pack".to_string()),
+                episode_id: None,
                 group_by_event: false,
                 limit: 10,
                 offset: 0,
@@ -12504,6 +12650,351 @@ async fn update_title_metadata_changes_name_and_tags() {
         updated.tags,
         vec!["action".to_string(), "drama".to_string()]
     );
+    let events = title_updated_events(&app, &created.id).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
+    assert!(matches!(
+        &events[0].payload,
+        DomainEventPayload::TitleUpdated(_)
+    ));
+}
+
+async fn create_series_with_collection_and_episode(
+    app: &AppUseCase,
+    user: &User,
+    name: &str,
+) -> (Title, Collection, Episode) {
+    let title = app
+        .add_title(
+            user,
+            NewTitle {
+                name: name.into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let collection = app
+        .create_collection(
+            user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+
+    let episode = app
+        .create_episode(
+            user,
+            title.id.clone(),
+            Some(collection.id.clone()),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+
+    (title, collection, episode)
+}
+
+#[tokio::test]
+async fn set_title_monitored_emits_title_updated_with_actor() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Monitor Fixture".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let updated = app
+        .set_title_monitored(&user, &title.id, false)
+        .await
+        .expect("update monitored");
+
+    assert!(!updated.monitored);
+    let events = title_updated_events(&app, &title.id).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
+}
+
+#[tokio::test]
+async fn set_collection_monitored_emits_one_title_updated_with_actor() {
+    let (app, user) = bootstrap();
+    let (title, collection, _) =
+        create_series_with_collection_and_episode(&app, &user, "Collection Monitor Fixture").await;
+
+    let updated = app
+        .set_collection_monitored(&user, &collection.id, false)
+        .await
+        .expect("update collection monitoring");
+
+    assert!(!updated.monitored);
+    let events = title_updated_events(&app, &title.id).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
+}
+
+#[tokio::test]
+async fn set_episode_monitored_emits_one_title_updated_with_actor() {
+    let (app, user) = bootstrap();
+    let (title, _, episode) =
+        create_series_with_collection_and_episode(&app, &user, "Episode Monitor Fixture").await;
+
+    let updated = app
+        .set_episode_monitored(&user, &episode.id, false)
+        .await
+        .expect("update episode monitoring");
+
+    assert!(!updated.monitored);
+    let events = title_updated_events(&app, &title.id).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
+    let (app, user) = bootstrap();
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Monitor Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "4242".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    app.create_episode(
+        &user,
+        title.id.clone(),
+        Some(collection.id),
+        "standard".into(),
+        Some("1".into()),
+        Some("1".into()),
+        Some("Pilot".into()),
+        Some("Pilot".into()),
+        None,
+        Some(1_200),
+        false,
+        false,
+    )
+    .await
+    .expect("create episode");
+
+    app.save_external_import_monitor_snapshot(
+        &user,
+        MediaFacet::Series,
+        ExternalImportMonitorSnapshotPayload::Series {
+            entries: vec![ExternalImportMonitorSeriesEntry {
+                root_path: "/media/series".to_string(),
+                tvdb_id: Some("4242".to_string()),
+                monitored: false,
+                seasons: vec![],
+                episodes: vec![],
+            }],
+        },
+    )
+    .await
+    .expect("save monitor snapshot");
+
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let events = title_updated_events(&app, &title.id).await;
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|event| event.actor_user_id.is_none()));
+
+    app.save_external_import_monitor_snapshot(
+        &user,
+        MediaFacet::Series,
+        ExternalImportMonitorSnapshotPayload::Series {
+            entries: vec![ExternalImportMonitorSeriesEntry {
+                root_path: "/media/series".to_string(),
+                tvdb_id: Some("4242".to_string()),
+                monitored: false,
+                seasons: vec![],
+                episodes: vec![],
+            }],
+        },
+    )
+    .await
+    .expect("save unchanged monitor snapshot");
+
+    let reapplied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("reapply monitor snapshot");
+
+    assert!(reapplied);
+    let replay_events = title_updated_events(&app, &title.id).await;
+    assert_eq!(replay_events.len(), 3);
+    assert!(
+        replay_events
+            .iter()
+            .all(|event| event.actor_user_id.is_none())
+    );
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+    );
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Sync Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "5150".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    app.create_episode(
+        &user,
+        title.id.clone(),
+        Some(collection.id),
+        "standard".into(),
+        Some("1".into()),
+        Some("1".into()),
+        Some("Pilot".into()),
+        Some("Pilot".into()),
+        None,
+        Some(1_200),
+        false,
+        false,
+    )
+    .await
+    .expect("create episode");
+
+    app.save_external_import_monitor_snapshot(
+        &user,
+        MediaFacet::Series,
+        ExternalImportMonitorSnapshotPayload::Series {
+            entries: vec![ExternalImportMonitorSeriesEntry {
+                root_path: "/media/series".to_string(),
+                tvdb_id: Some("5150".to_string()),
+                monitored: true,
+                seasons: vec![ExternalImportMonitorSeasonEntry {
+                    season_number: 1,
+                    monitored: true,
+                }],
+                episodes: vec![ExternalImportMonitorEpisodeEntry {
+                    tvdb_id: None,
+                    season_number: 1,
+                    episode_number: 1,
+                    monitored: true,
+                }],
+            }],
+        },
+    )
+    .await
+    .expect("save monitor snapshot");
+
+    let upserts_before_apply = wanted_items.upsert_call_count();
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let upserts_after_apply = wanted_items.upsert_call_count();
+    assert_eq!(upserts_after_apply - upserts_before_apply, 1);
 }
 
 #[tokio::test]

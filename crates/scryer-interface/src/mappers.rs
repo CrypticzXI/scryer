@@ -7,8 +7,8 @@ use scryer_application::{
     PendingRelease, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
     QualityProfileSelection, QualityProfileSettings, RegistryPlugin, RenameApplyItemResult,
     RenameApplyResult, RenamePlan, RenamePlanItem, ResolvePendingImportResult, RssSyncReport,
-    ScoringEntry, ScoringSource, ServiceSettings, SubmissionScope, SystemHealth, TitleHistoryPage,
-    TitleReleaseBlocklistEntry, WorkflowOperationInfo,
+    ScoringEntry, ScoringSource, ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope,
+    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry, WorkflowOperationInfo,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
@@ -1484,6 +1484,18 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
                 grab_max: s.grab_max.map(|v| v as i32),
             })
             .collect(),
+    }
+}
+
+pub(crate) fn from_smg_version_compatibility_notice(
+    notice: SmgVersionCompatibilityNotice,
+) -> SmgVersionCompatibilityNoticePayload {
+    SmgVersionCompatibilityNoticePayload {
+        status: notice.status,
+        minimum_version: notice.minimum_version,
+        your_version: notice.your_version,
+        message: notice.message,
+        upgrade_deadline: notice.upgrade_deadline,
     }
 }
 

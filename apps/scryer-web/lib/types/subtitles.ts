@@ -1,8 +1,14 @@
-export type SubtitleDownloadRecord = {
+export type ExternalSubtitleSourceKind = "downloaded" | "discovered";
+
+export type ExternalSubtitleRecord = {
   id: string;
   mediaFileId: string;
+  titleId: string;
+  episodeId: string | null;
+  sourceKind: ExternalSubtitleSourceKind;
   language: string;
-  provider: string;
+  provider: string | null;
+  providerFileId: string | null;
   filePath: string;
   score: number | null;
   hearingImpaired: boolean;
@@ -15,7 +21,7 @@ export type SubtitleDownloadRecord = {
   downloadedAt: string;
 };
 
-export type SubtitleBlacklistEntryRecord = {
+export type ExternalSubtitleBlocklistEntryRecord = {
   id: string;
   mediaFileId: string;
   provider: string;

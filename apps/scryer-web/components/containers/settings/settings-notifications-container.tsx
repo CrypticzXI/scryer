@@ -1,5 +1,5 @@
 
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsNotificationsSection } from "@/components/views/settings/settings-notifications-section";
 import { useClient } from "urql";
@@ -14,6 +14,7 @@ import type {
 } from "@/lib/types";
 import {
   notificationChannelsQuery,
+  notificationProviderTypesQuery,
   notificationSubscriptionsQuery,
   notificationsInitQuery,
 } from "@/lib/graphql/queries";
@@ -58,7 +59,13 @@ function parseConfigJson(configJson: string | null): Record<string, string> {
   }
 }
 
-export function SettingsNotificationsContainer() {
+type SettingsNotificationsContainerProps = {
+  providerCatalogVersion?: number;
+};
+
+export function SettingsNotificationsContainer({
+  providerCatalogVersion = 0,
+}: SettingsNotificationsContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -79,11 +86,14 @@ export function SettingsNotificationsContainer() {
   const [pendingDeleteSubscription, setPendingDeleteSubscription] = useState<NotificationSubscription | null>(null);
   const [subscriptionDraft, setSubscriptionDraft] = useState<NotificationSubscriptionDraft>(() => ({ ...SUBSCRIPTION_INITIAL_DRAFT }));
   const [eventTypes, setEventTypes] = useState<string[]>([]);
+  const providerCatalogVersionRef = useRef(providerCatalogVersion);
 
   // --- Fetch data ---
   const refreshChannels = useCallback(async () => {
     try {
-      const { data, error } = await client.query(notificationChannelsQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(notificationChannelsQuery, {}, { requestPolicy: "network-only" })
+        .toPromise();
       if (error) throw error;
       setChannels(data.notificationChannels || []);
     } catch (error) {
@@ -93,7 +103,9 @@ export function SettingsNotificationsContainer() {
 
   const refreshSubscriptions = useCallback(async () => {
     try {
-      const { data, error } = await client.query(notificationSubscriptionsQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(notificationSubscriptionsQuery, {}, { requestPolicy: "network-only" })
+        .toPromise();
       if (error) throw error;
       setSubscriptions(data.notificationSubscriptions || []);
     } catch (error) {
@@ -101,11 +113,21 @@ export function SettingsNotificationsContainer() {
     }
   }, [client, setGlobalStatus, t]);
 
+  const refreshProviderTypes = useCallback(async () => {
+    const { data, error } = await client
+      .query(notificationProviderTypesQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setProviderTypes(data?.notificationProviderTypes || []);
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const { data, error } = await client.query(notificationsInitQuery, {}).toPromise();
+        const { data, error } = await client
+          .query(notificationsInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
         if (error && !data?.notificationChannels && !data?.notificationSubscriptions) throw error;
         if (cancelled) return;
         setChannels(data?.notificationChannels || []);
@@ -121,6 +143,17 @@ export function SettingsNotificationsContainer() {
       cancelled = true;
     };
   }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    if (providerCatalogVersion === providerCatalogVersionRef.current) {
+      return;
+    }
+
+    providerCatalogVersionRef.current = providerCatalogVersion;
+    void refreshProviderTypes().catch((error: unknown) => {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    });
+  }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
 
   // --- Channel CRUD ---
   const resetChannelDraft = useCallback(() => {

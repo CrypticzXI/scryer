@@ -1,6 +1,8 @@
 
-import { memo } from "react";
+import { memo, useCallback, useState } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { SettingsOverviewContainer } from "@/components/containers/settings/settings-overview-container";
 import { SettingsUsersContainer } from "@/components/containers/settings/settings-users-container";
 import { SettingsIndexersContainer } from "@/components/containers/settings/settings-indexers-container";
@@ -18,6 +20,10 @@ import { SettingsRecycleBinContainer } from "@/components/containers/settings/se
 import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  type ProviderCatalogFamily,
+  useProviderCatalogSubscription,
+} from "@/lib/hooks/use-provider-catalog-subscription";
 
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
@@ -39,9 +45,40 @@ export const SettingsContainer = memo(function SettingsContainer({
   onSelectLanguage,
 }: SettingsContainerProps) {
   const t = useTranslate();
+  const [providerCatalogVersions, setProviderCatalogVersions] = useState<
+    Record<ProviderCatalogFamily, number>
+  >({
+    subtitle: 0,
+    notification: 0,
+    indexer: 0,
+    download_client: 0,
+  });
+  const showPluginsLink =
+    settingsSection === "downloadClients" ||
+    settingsSection === "indexers" ||
+    settingsSection === "notifications" ||
+    settingsSection === "subtitles";
+
+  useProviderCatalogSubscription(
+    useCallback((families: ProviderCatalogFamily[]) => {
+      setProviderCatalogVersions((previous) => {
+        const uniqueFamilies = [...new Set(families)];
+        if (uniqueFamilies.length === 0) {
+          return previous;
+        }
+
+        const next = { ...previous };
+        for (const family of uniqueFamilies) {
+          next[family] += 1;
+        }
+        return next;
+      });
+    }, []),
+  );
+
   return (
     <Card className="bg-card border-border">
-      <CardHeader>
+      <CardHeader className="flex items-center justify-between gap-3">
         <CardTitle>
           {t("settings.sectionTitle", {
             section:
@@ -74,6 +111,11 @@ export const SettingsContainer = memo(function SettingsContainer({
                     : t("settings.qualityProfiles"),
           })}
         </CardTitle>
+        {showPluginsLink ? (
+          <Button asChild variant="primary" className="shrink-0">
+            <Link to="/settings/plugins">{t("settings.plugins")}</Link>
+          </Button>
+        ) : null}
       </CardHeader>
       <CardContent>
         {settingsSection === "profile" ? (
@@ -91,9 +133,13 @@ export const SettingsContainer = memo(function SettingsContainer({
         ) : settingsSection === "users" ? (
           <SettingsUsersContainer />
         ) : settingsSection === "indexers" ? (
-          <SettingsIndexersContainer />
+          <SettingsIndexersContainer
+            providerCatalogVersion={providerCatalogVersions.indexer}
+          />
         ) : settingsSection === "downloadClients" ? (
-          <SettingsDownloadClientsContainer />
+          <SettingsDownloadClientsContainer
+            providerCatalogVersion={providerCatalogVersions.download_client}
+          />
         ) : settingsSection === "acquisition" ? (
           <SettingsAcquisitionContainer />
         ) : settingsSection === "rules" ? (
@@ -101,11 +147,15 @@ export const SettingsContainer = memo(function SettingsContainer({
         ) : settingsSection === "plugins" ? (
           <SettingsPluginsContainer />
         ) : settingsSection === "notifications" ? (
-          <SettingsNotificationsContainer />
+          <SettingsNotificationsContainer
+            providerCatalogVersion={providerCatalogVersions.notification}
+          />
         ) : settingsSection === "post-processing" ? (
           <SettingsPostProcessingContainer />
         ) : settingsSection === "subtitles" ? (
-          <SettingsSubtitlesContainer />
+          <SettingsSubtitlesContainer
+            providerCatalogVersion={providerCatalogVersions.subtitle}
+          />
         ) : settingsSection === "recycleBin" ? (
           <SettingsRecycleBinContainer />
         ) : settingsSection === "delayProfiles" ? (

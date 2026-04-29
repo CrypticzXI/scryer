@@ -8,15 +8,16 @@ use chrono::Utc;
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, NotificationClient, NotificationPluginProvider, NotificationScopeIdUpdate,
+    AppError, AppResult, NotificationClient, NotificationMediaUpdateTypePayload,
+    NotificationPayload, NotificationPluginProvider, NotificationScopeIdUpdate,
     start_notification_dispatcher,
 };
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource, DomainEventPayload,
-    DomainEventStream, DomainEventType, DomainExternalIds, ImportCompletedEventData,
+    DomainEventStream, DomainEventType, DomainExternalIds, ExternalId, ImportCompletedEventData,
     LibraryScanProgressedEventData, MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason,
     MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType,
-    NewDomainEvent, NotificationEventType, TitleContextSnapshot,
+    NewDomainEvent, NewTitle, NotificationEventType, TitleContextSnapshot,
 };
 use scryer_infrastructure::SqliteNotificationStore;
 use scryer_interface::build_schema;
@@ -66,18 +67,12 @@ struct FakeNotificationClient {
 
 #[async_trait]
 impl NotificationClient for FakeNotificationClient {
-    async fn send_notification(
-        &self,
-        event_type: &str,
-        title: &str,
-        message: &str,
-        metadata: &HashMap<String, Value>,
-    ) -> AppResult<()> {
+    async fn send_notification(&self, payload: &NotificationPayload) -> AppResult<()> {
         self.captured.lock().unwrap().push(CapturedNotification {
-            event_type: event_type.to_string(),
-            title: title.to_string(),
-            message: message.to_string(),
-            metadata: metadata.clone(),
+            event_type: payload.event_type.as_str().to_string(),
+            title: payload.summary_title.clone(),
+            message: payload.summary_message.clone(),
+            metadata: captured_metadata(payload),
         });
         Ok(())
     }
@@ -226,6 +221,110 @@ fn lifecycle_metadata(
     ])
 }
 
+fn captured_metadata(payload: &NotificationPayload) -> HashMap<String, Value> {
+    let mut metadata = HashMap::new();
+
+    if let Some(title) = &payload.title {
+        metadata.insert("title_name".to_string(), json!(title.name));
+        metadata.insert("title_facet".to_string(), json!(title.facet));
+        if let Some(year) = title.year {
+            metadata.insert("title_year".to_string(), json!(year));
+        }
+        if !title.tags.is_empty() {
+            metadata.insert("title_tags".to_string(), json!(title.tags));
+        }
+
+        let mut external_ids = serde_json::Map::new();
+        if let Some(tmdb_id) = &title.external_ids.tmdb_id {
+            external_ids.insert("tmdb_id".to_string(), json!(tmdb_id));
+        }
+        if let Some(imdb_id) = &title.external_ids.imdb_id {
+            external_ids.insert("imdb_id".to_string(), json!(imdb_id));
+        }
+        if let Some(tvdb_id) = &title.external_ids.tvdb_id {
+            external_ids.insert("tvdb_id".to_string(), json!(tvdb_id));
+        }
+        if let Some(anidb_id) = &title.external_ids.anidb_id {
+            external_ids.insert("anidb_id".to_string(), json!(anidb_id));
+        }
+        metadata.insert("external_ids".to_string(), Value::Object(external_ids));
+
+        if !title.external_ids.by_source.is_empty()
+            && title
+                .external_ids
+                .by_source
+                .keys()
+                .any(|source| !matches!(source.as_str(), "tmdb" | "imdb" | "tvdb" | "anidb"))
+        {
+            metadata.insert(
+                "external_ids_by_source".to_string(),
+                json!(title.external_ids.by_source),
+            );
+        }
+    }
+
+    if let Some(episode) = payload.episodes.first() {
+        metadata.insert("episode_id".to_string(), json!(episode.id));
+        if let Some(season_number) = &episode.season_number {
+            metadata.insert("episode_season_number".to_string(), json!(season_number));
+        }
+        if let Some(episode_number) = &episode.episode_number {
+            metadata.insert("episode_number".to_string(), json!(episode_number));
+        }
+        if let Some(title) = &episode.title {
+            metadata.insert("episode_title".to_string(), json!(title));
+        }
+        if let Some(air_date) = &episode.air_date {
+            metadata.insert("episode_air_date".to_string(), json!(air_date));
+        }
+    }
+
+    if let Some(file) = &payload.file {
+        if let Some(primary_path) = &file.primary_path {
+            metadata.insert("file_path".to_string(), json!(primary_path));
+        }
+
+        let media_updates = file
+            .media_updates
+            .iter()
+            .map(|update| {
+                json!({
+                    "path": update.path,
+                    "update_type": match update.update_type {
+                        NotificationMediaUpdateTypePayload::Created => "created",
+                        NotificationMediaUpdateTypePayload::Modified => "modified",
+                        NotificationMediaUpdateTypePayload::Deleted => "deleted",
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        metadata.insert("media_updates".to_string(), Value::Array(media_updates));
+    }
+
+    metadata
+}
+
+fn import_completed_event_data(
+    title: TitleContextSnapshot,
+    media_updates: Vec<MediaPathUpdate>,
+    imported_count: i32,
+    episode_ids: Vec<String>,
+) -> ImportCompletedEventData {
+    ImportCompletedEventData {
+        title,
+        media_updates,
+        imported_count,
+        import_id: None,
+        source_system: None,
+        source_ref: None,
+        source_title: None,
+        source_path: None,
+        dest_path: None,
+        quality: None,
+        episode_ids,
+    }
+}
+
 fn title_context(
     title_name: &str,
     facet: &str,
@@ -237,6 +336,13 @@ fn title_context(
         external_ids,
         poster_url: None,
         year: None,
+    }
+}
+
+fn external_id(source: &str, value: &str) -> ExternalId {
+    ExternalId {
+        source: source.to_string(),
+        value: value.to_string(),
     }
 }
 
@@ -759,8 +865,8 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
                 "evt-import-complete",
                 "title-1",
                 "series",
-                DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                    title: title_context(
+                DomainEventPayload::ImportCompleted(import_completed_event_data(
+                    title_context(
                         "Example Show",
                         "series",
                         DomainExternalIds {
@@ -770,13 +876,13 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
                             anidb_id: None,
                         },
                     ),
-                    media_updates: vec![MediaPathUpdate {
+                    vec![MediaPathUpdate {
                         path: "/data/TV/Example Show/S01E01.mkv".to_string(),
                         update_type: MediaUpdateType::Created,
                     }],
-                    imported_count: 1,
-                    episode_ids: vec!["episode-1".to_string()],
-                }),
+                    1,
+                    vec!["episode-1".to_string()],
+                )),
             ),
         ),
         (
@@ -962,6 +1068,150 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
 }
 
 #[tokio::test]
+async fn notification_dispatcher_prefers_local_catalog_metadata_over_snapshot() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::jellyfin());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Canonical Show".to_string(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2024),
+                tags: vec!["local-tag".to_string()],
+                external_ids: vec![
+                    external_id("tvdb", "321"),
+                    external_id("imdb", "tt7654321"),
+                    external_id("anilist", "9999"),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("add title");
+
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season 1".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id.clone()),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("2024-01-01".into()),
+            Some(1500),
+            false,
+            true,
+        )
+        .await
+        .expect("create episode");
+
+    let channel = app
+        .create_notification_channel(
+            &user,
+            "Jellyfin".into(),
+            "jellyfin".into(),
+            config_json_with_path_mappings(),
+            true,
+        )
+        .await
+        .expect("create channel");
+
+    app.create_notification_subscription(
+        &user,
+        channel.id.clone(),
+        DomainEventType::ImportCompleted.as_str().to_string(),
+        "global".into(),
+        None,
+        true,
+    )
+    .await
+    .expect("create subscription");
+
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    tokio::task::yield_now().await;
+
+    app.append_domain_event(new_event(
+        "evt-local-enrichment",
+        &title.id,
+        "series",
+        DomainEventPayload::ImportCompleted(import_completed_event_data(
+            title_context(
+                "Snapshot Show",
+                "series",
+                DomainExternalIds {
+                    imdb_id: Some("tt0000000".to_string()),
+                    tmdb_id: None,
+                    tvdb_id: Some("999".to_string()),
+                    anidb_id: None,
+                },
+            ),
+            vec![MediaPathUpdate {
+                path: "/data/TV/Canonical Show/S01E01.mkv".to_string(),
+                update_type: MediaUpdateType::Created,
+            }],
+            1,
+            vec![episode.id.clone()],
+        )),
+    ))
+    .await
+    .expect("append domain event");
+
+    let captured = wait_for_captured(&provider, 1).await;
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher task");
+
+    let metadata = &captured[0].metadata;
+    assert_eq!(metadata.get("title_name"), Some(&json!("Canonical Show")));
+    assert_eq!(metadata.get("title_year"), Some(&json!(2024)));
+    assert_eq!(
+        metadata.get("title_tags"),
+        Some(&json!(vec!["local-tag".to_string()]))
+    );
+    assert_eq!(
+        metadata.get("external_ids"),
+        Some(&json!({
+            "tvdb_id": "321",
+            "imdb_id": "tt7654321",
+        }))
+    );
+    assert_eq!(
+        metadata.get("external_ids_by_source"),
+        Some(&json!({
+            "anilist": ["9999"],
+            "imdb": ["tt7654321"],
+            "tvdb": ["321"],
+        }))
+    );
+    assert_eq!(metadata.get("episode_id"), Some(&json!(episode.id)));
+    assert_eq!(metadata.get("episode_season_number"), Some(&json!("1")));
+    assert_eq!(metadata.get("episode_number"), Some(&json!("1")));
+    assert_eq!(metadata.get("episode_title"), Some(&json!("Pilot")));
+    assert_eq!(metadata.get("episode_air_date"), Some(&json!("2024-01-01")));
+}
+
+#[tokio::test]
 async fn notification_dispatcher_replays_notifications_after_operational_burst() {
     let ctx = TestContext::new().await;
     let provider = Arc::new(FakeNotificationProvider::jellyfin());
@@ -1020,8 +1270,8 @@ async fn notification_dispatcher_replays_notifications_after_operational_burst()
         "evt-import-after-burst",
         "title-1",
         "series",
-        DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-            title: title_context(
+        DomainEventPayload::ImportCompleted(import_completed_event_data(
+            title_context(
                 "Burst Replay Show",
                 "series",
                 DomainExternalIds {
@@ -1031,13 +1281,13 @@ async fn notification_dispatcher_replays_notifications_after_operational_burst()
                     anidb_id: None,
                 },
             ),
-            media_updates: vec![MediaPathUpdate {
+            vec![MediaPathUpdate {
                 path: "/data/TV/Burst Replay Show/S01E01.mkv".to_string(),
                 update_type: MediaUpdateType::Created,
             }],
-            imported_count: 1,
-            episode_ids: vec!["episode-1".to_string()],
-        }),
+            1,
+            vec!["episode-1".to_string()],
+        )),
     ))
     .await
     .expect("notification event should append");
@@ -1124,8 +1374,8 @@ async fn notification_dispatcher_ignores_operational_burst_while_running() {
             "evt-live-import-after-burst",
             "title-1",
             "series",
-            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-                title: title_context(
+            DomainEventPayload::ImportCompleted(import_completed_event_data(
+                title_context(
                     "Live Burst Show",
                     "series",
                     DomainExternalIds {
@@ -1135,13 +1385,13 @@ async fn notification_dispatcher_ignores_operational_burst_while_running() {
                         anidb_id: None,
                     },
                 ),
-                media_updates: vec![MediaPathUpdate {
+                vec![MediaPathUpdate {
                     path: "/data/TV/Live Burst Show/S01E01.mkv".to_string(),
                     update_type: MediaUpdateType::Created,
                 }],
-                imported_count: 1,
-                episode_ids: vec!["episode-1".to_string()],
-            }),
+                1,
+                vec!["episode-1".to_string()],
+            )),
         ))
         .await
         .expect("notification event should append");

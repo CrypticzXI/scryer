@@ -435,6 +435,8 @@ const en: LocaleDictionary = {
   "settings.historyRetentionExternalHelp":
     "Operational cleanup for acquisition scratch data still runs, and this does not control history retained by SABnzbd, NZBGet, or Weaver.",
   "settings.keepHistoryForever": "Keep history forever",
+  "settings.historyRetentionDaysHeader": "Retain history for",
+  "settings.historyRetentionDaysSuffix": "days",
   "settings.historyRetentionDaysLabel": "Retain history for N days",
   "settings.historyRetentionSaved": "History retention settings saved.",
   "settings.historyRetentionValidation":
@@ -492,6 +494,14 @@ const en: LocaleDictionary = {
   "pwa.installApp": "Install Scryer",
   "pwa.iosInstallHint":
     'Tap the share button and select "Add to Home Screen" to install.',
+  "smgUpgrade.deprecatedTitle": "Scryer update recommended",
+  "smgUpgrade.deprecatedBody":
+    "This Scryer version is nearing end of support. Upgrade soon to continue using Scryer.",
+  "smgUpgrade.blockedTitle": "Scryer update required",
+  "smgUpgrade.blockedBody":
+    "This Scryer version is no longer supported. Upgrade now to continue using Scryer.",
+  "smgUpgrade.minimumVersion": "Minimum supported version: {{version}}",
+  "smgUpgrade.deadline": "Support cutoff: {{date}}",
 
   "title.addAndQueue": "Add Title and Queue",
   "title.addToCatalog": "Add to Catalog",
@@ -523,6 +533,9 @@ const en: LocaleDictionary = {
   "title.table.poster": "Poster",
   "title.table.qualityTier": "Quality",
   "title.table.episodes": "Episodes",
+  "title.table.episodeProgressTooltip": "{{owned}} / {{total}} episodes",
+  "title.table.episodeProgressTooltipWithTotal":
+    "{{owned}} / {{total}} episodes ({{monitored}} monitored)",
   "title.table.status": "Status",
   "title.table.size": "Size",
   "title.viewModeToggle": "View mode",
@@ -579,6 +592,7 @@ const en: LocaleDictionary = {
   "title.inheritDefault": "Inherit Default",
   "title.monitoredSection": "Monitored {{facet}}",
   "title.noWantedItem": "No active wanted item.",
+  "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Queue Latest",
   "title.requiredAudioLanguages": "Required Audio Languages",
   "title.requiredAudioLanguagesFacetInfo":
@@ -942,12 +956,30 @@ const en: LocaleDictionary = {
     "True when HDR10+ is detected from the release metadata",
   "settings.refReleaseIsHlg":
     "True when HLG is detected from the release metadata",
+  "settings.refReleaseIs10Bit":
+    "True when 10-bit video is detected from the release metadata",
+  "settings.refReleaseIsUncensored":
+    "True when the release is tagged as uncensored",
+  "settings.refReleaseIsDubsOnly":
+    "True when the release is tagged as dubs-only",
+  "settings.refReleaseHasReleaseGroup":
+    "True when a non-empty release group was parsed",
+  "settings.refReleaseIsObfuscated":
+    "True when the release name appears obfuscated",
+  "settings.refReleaseIsRetagged":
+    "True when the release name appears retagged or reposted",
   "settings.refReleaseStreamingService":
     "Detected streaming service tag, if present",
   "settings.refReleaseEdition":
     "Edition tag such as extended, IMAX, or criterion",
   "settings.refReleaseAnimeVersion":
     "Anime version number such as v2 or v3, when present",
+  "settings.refReleaseEpisodeReleaseType":
+    "Episode packaging kind such as single_episode, multi_episode, season_pack, or unknown",
+  "settings.refReleaseIsSeasonPack":
+    "True when the release appears to contain a full or partial season pack",
+  "settings.refReleaseIsMultiEpisode":
+    "True when the release appears to contain multiple episodes",
   "settings.refReleaseGroup": "Release group or uploader name",
   "settings.refReleaseYear": "Release year",
   "settings.refReleaseParseConf": "Confidence score for the parse (0.0 to 1.0)",
@@ -975,11 +1007,15 @@ const en: LocaleDictionary = {
   "settings.refProfileACodecAllow":
     "Allowed audio codecs (empty means all allowed)",
   "settings.refProfileACodecBlock": "Blocked audio codecs",
+  "settings.refProfileAtmosPreferred":
+    "Profile prefers Dolby Atmos when available",
   "settings.refProfileDVAllowed": "Dolby Vision releases are accepted",
   "settings.refProfileHdrAllowed": "HDR releases are accepted",
   "settings.refProfilePreferRemux": "Profile prefers full remux releases",
   "settings.refProfileAllowBdDisk": "Blu-ray disc sources are accepted",
   "settings.refProfileAllowUpgrades": "Upgrading existing files is allowed",
+  "settings.refProfilePreferDualAudio":
+    "Profile prefers dual-audio releases",
   "settings.refProfileRequiredLangs":
     "Mandatory audio languages (ISO 639-3 codes)",
 
@@ -1454,8 +1490,10 @@ const en: LocaleDictionary = {
   "subtitle.credentialsRequiredBody":
     "Configure your subtitle username and password in Settings > Subtitles before searching for subtitles for this file.",
   "subtitle.credentialsRequiredAction": "Open subtitle settings",
-  "subtitle.blacklist": "Blocklist",
-  "subtitle.blacklisted": "Subtitle added to blocklist",
+  "subtitle.blocklist": "Blocklist",
+  "subtitle.blocklisted": "Subtitle added to blocklist",
+  "subtitle.deleted": "Subtitle deleted",
+  "subtitle.onDisk": "On Disk",
   "subtitle.releaseInfo": "Release",
   "subtitle.provider": "Provider",
   "subtitle.language": "Language",

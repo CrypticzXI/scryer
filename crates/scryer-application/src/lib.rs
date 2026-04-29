@@ -239,19 +239,21 @@ pub use null_repositories::{
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, DomainEventRepository, DownloadClient,
     DownloadClientConfigRepository, DownloadClientPluginProvider, DownloadQueueCommandRepository,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
-    HousekeepingRepository, ImportArtifactRepository, ImportRepository, IndexerClient,
-    IndexerConfigRepository, IndexerPluginProvider, IndexerStatsTracker, JobRunRepository,
-    LibraryProbeRepository, LibraryScanUnmatchedItemRepository, MediaAnalyzer, MediaFileRepository,
-    NotificationAppPayload, NotificationChannelRepository, NotificationClient,
-    NotificationDownloadPayload, NotificationEpisodePayload, NotificationExternalIdsPayload,
-    NotificationFilePayload, NotificationHealthPayload, NotificationImportPayload,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
+    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
+    IndexerClient, IndexerConfigRepository, IndexerPluginProvider, IndexerStatsTracker,
+    JobRunRepository, LibraryProbeRepository, LibraryScanUnmatchedItemRepository, MediaAnalyzer,
+    MediaFileRepository, NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationActorPayload,
+    NotificationAppPayload, NotificationApplicationUpdatePayload, NotificationChannelRepository,
+    NotificationClient, NotificationDownloadPayload, NotificationEpisodePayload,
+    NotificationExternalIdsPayload, NotificationFilePayload, NotificationHealthPayload,
+    NotificationImportPayload, NotificationManualInteractionPayload, NotificationMediaFilePayload,
     NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
-    NotificationPluginProvider, NotificationReleasePayload, NotificationSubscriptionRepository,
-    NotificationTitlePayload, PendingReleaseRepository, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
-    RuleSetRepository, SettingsRepository, ShowRepository, StagedNzbStore,
-    SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
+    NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
+    NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
+    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
+    ReleaseAttemptRepository, RuleSetRepository, SettingsRepository, ShowRepository,
+    StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
     TitleImageRepository, TitleRepository, UserRepository, WantedItemRepository,
     WorkflowOperationInfo, WorkflowOperationRepository,
@@ -274,7 +276,7 @@ pub use quality_profile::{
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
-pub use services::{AppServices, AppServicesBuilder, AppUseCase};
+pub use services::{AppServices, AppServicesBuilder, AppUseCase, ProviderCatalogFamily};
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
@@ -303,6 +305,7 @@ pub use settings::keys::{
     TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY,
 };
 pub(crate) use types::JwtClaims;
+pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
     CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetTitle, DecisionCodeCount,

@@ -1,94 +1,77 @@
-## Workflow Orchestration
+# Scryer Repo Guidance
 
-### 1. Plan Mode Default
-- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
-- If something goes sideways, STOP and re-plan immediately – don't keep pushing
-- Use plan mode for verification steps, not just building
-- Write detailed specs upfront to reduce ambiguity
+This file is intentionally repo-facing. Machine-local workflow preferences,
+personal agent habits, and workstation-specific instructions belong in the
+workspace-level `AGENTS.md`, not here.
 
-### 2. Subagent Strategy
-- Use subagents liberally to keep main context window clean
-- Offload research, exploration, and parallel analysis to subagents
-- For complex problems, throw more compute at it via subagents
-- One task per subagent for focused execution
+## Project map
 
-### 3. Self-Improvement Loop
-- After ANY correction from the user: update `tasks/lessons.md` with the pattern
-- Write rules for yourself that prevent the same mistake
-- Ruthlessly iterate on these lessons until mistake rate drops
-- Review lessons at session start for relevant project
+- Backend crates live under `crates/`:
+  - `scryer-domain`: shared domain types and invariants
+  - `scryer-application`: orchestration and use cases
+  - `scryer-infrastructure`: persistence, external clients, and adapters
+  - `scryer-interface`: GraphQL and API mapping
+  - `scryer`: service entrypoint
+- Frontend lives in `apps/scryer-web/`:
+  - routes and containers under `src/` and `components/`
+  - shared UI primitives under `components/ui/`
+  - translations under `lib/i18n/locales/`
+- Build and release automation lives in `cargo xtask`
+- Docker assets live under `docker/`
+- CI lives under `.github/workflows/`
 
-### 4. Verification Before Done
-- Never mark a task complete without proving it works
-- Diff behavior between main and your changes when relevant
-- Ask yourself: "Would a staff engineer approve this?"
-- Run tests, check logs, demonstrate correctness
+## Documentation and planning
 
-### 5. Demand Elegance (Balanced)
-- For non-trivial changes: pause and ask "is there a more elegant way?"
-- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
-- Skip this for simple, obvious fixes – don't over-engineer
-- Challenge your own work before presenting it
+- Architecture documents, plans, and ADRs live in
+  `github.com/scryer-media/scryer-docs`.
+- Before making an architectural change, check whether a relevant plan or ADR
+  already exists there.
+- If a change affects runtime contracts or documented behavior, update the docs
+  repo in the same workstream.
 
-### 6. Autonomous Bug Fixing
-- When given a bug report: just fix it. Don't ask for hand-holding
-- Point at logs, errors, failing tests – then resolve them
-- Zero context switching required from the user
-- Go fix failing CI tests without being told how
+## Change discipline
 
-## Task Management
+- Preserve existing layer boundaries. Prefer extending the canonical flow in the
+  owning layer over introducing a parallel path.
+- Keep changes small and ownership-consistent. Avoid spreading the same logic
+  across multiple entry points when one shared orchestration path should own it.
+- In the web app, route all user-visible copy through `t(...)` and locale files.
+- Reuse existing UI primitives before introducing bespoke controls or patterns.
+- When touching a cross-cutting behavior, trace all public entry points for that
+  concern before deciding the implementation shape.
 
-1. **Plan First**: Plans live in `scryer-docs/plans/` (sibling repo). Read existing plans before starting implementation.
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go (update the plan doc)
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Update the relevant plan in `scryer-docs/plans/`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+## Verification
 
-## Core Principles
-
-- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
-- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
-
-## Rust Style Rules
-
-- Always use `clamp()` instead of `.min().max()` or `.max().min()` chains — clippy will catch it every time.
-
-## Codebase Navigation
-
-- **Rust crates**: `crates/` — domain, application, infrastructure, interface, service (scryer)
-- **Frontend**: `apps/scryer-web/` — Vite + React 19 + React Router 7
-- **UI primitives**: `apps/scryer-web/components/ui/` — shadcn/ui components (managed via `npx shadcn@latest add`)
-- **Theme tokens**: `apps/scryer-web/app/globals.css` — Tailwind v4 `@theme` with semantic color variables
-- **i18n**: `apps/scryer-web/lib/i18n/locales/` — all visible strings are translated via `t(...)`
-- **Docker**: `docker/` — Dockerfiles for build, dev, release
-- **CI**: `.github/workflows/scryer.yml` — tag-triggered build + release pipeline
-
-## Related Repos
-
-- **Metadata API**: private service — Go, PostgreSQL
-- **Documentation**: `github.com/scryer-media/scryer-docs` — architecture, specs, plans, ADRs, intentions
-
-## Build & Test
+- Run the narrowest checks that prove the change, then broaden when the risk
+  justifies it.
+- Direct Cargo commands should use `--locked`.
+- Useful commands:
 
 ```bash
-# Rust
 cargo build --workspace --locked
 cargo test --workspace --locked
 
-# Repo automation
 cargo xtask --help
 cargo xtask ci clippy
 cargo xtask stack up
 cargo xtask stack up --seed
 cargo xtask release --dry-run
 
-# Frontend
 cd apps/scryer-web && npm ci && npm run build
-
-# Convenience wrapper
-./scripts/stack-restart.sh
 ```
 
-**Always pass `--locked` to Cargo invocations** (`cargo build --locked`, `cargo check --locked`, `cargo test --locked`, etc). The `Cargo.lock` is the source of truth; agent runs must not implicitly resolve or mutate it.
+- Do not add `--locked` to `cargo xtask ci clippy`; run that command exactly as
+  written.
+
+## Local stack troubleshooting
+
+When debugging the local development stack, these commands are the standard
+starting point:
+
+```bash
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs --tail=200 scryer
+docker compose -f docker-compose.dev.yml logs --tail=200 nodejs
+docker compose -f docker-compose.dev.yml logs --tail=200 nzbget
+./scripts/stack-restart.sh
+```

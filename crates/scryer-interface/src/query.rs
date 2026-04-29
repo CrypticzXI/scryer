@@ -16,10 +16,10 @@ use crate::mappers::{
     from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
     from_media_settings, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_submission_scope, from_subtitle_provider_config,
-    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
-    from_user, from_wanted_item,
+    from_service_settings, from_smg_version_compatibility_notice, from_submission_scope,
+    from_subtitle_provider_config, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
+    from_title_media_file, from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -392,15 +392,15 @@ impl QueryRoot {
         Ok(from_delete_preview(preview))
     }
 
-    async fn delete_subtitle_preview(
+    async fn delete_external_subtitle_preview(
         &self,
         ctx: &Context<'_>,
-        input: DeleteSubtitlePreviewInput,
+        input: DeleteExternalSubtitlePreviewInput,
     ) -> GqlResult<DeletePreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let preview = app
-            .preview_delete_subtitle_file(&actor, &input.subtitle_download_id)
+            .preview_delete_external_subtitle_file(&actor, &input.external_subtitle_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_delete_preview(preview))
@@ -488,24 +488,34 @@ impl QueryRoot {
 
         let SearchReleasesInput {
             title_id,
+            collection_id,
             season,
             episode,
             limit,
         } = input;
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
-        let results = match (season, episode) {
-            (Some(season), Some(episode)) => app
+        let results = match (collection_id, season, episode) {
+            (Some(collection_id), None, None) => app
+                .search_indexers_for_interstitial_movie(&actor, title_id, collection_id)
+                .await
+                .map_err(to_gql_error)?,
+            (None, Some(season), Some(episode)) => app
                 .search_indexers_for_episode(&actor, title_id, season, episode)
                 .await
                 .map_err(to_gql_error)?,
-            (None, None) => app
+            (None, None, None) => app
                 .search_indexers_for_title(&actor, title_id)
                 .await
                 .map_err(to_gql_error)?,
-            (Some(_), None) | (None, Some(_)) => {
+            (None, Some(_), None) | (None, None, Some(_)) => {
                 return Err(Error::new(
                     "episode searches require both season and episode",
+                ));
+            }
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+                return Err(Error::new(
+                    "collection searches cannot include season or episode",
                 ));
             }
         };
@@ -552,6 +562,7 @@ impl QueryRoot {
                 title_ids: None,
                 title_search: None,
                 download_id: None,
+                episode_id: None,
                 group_by_event: false,
                 limit: limit.unwrap_or(100).max(1) as usize,
                 offset: offset.unwrap_or(0).max(0) as usize,
@@ -583,6 +594,7 @@ impl QueryRoot {
             title_ids: filter.title_ids,
             title_search: filter.title_search,
             download_id: filter.download_id,
+            episode_id: filter.episode_id,
             group_by_event: filter.group_by_event.unwrap_or(false),
             limit: filter.limit.unwrap_or(50).max(1) as usize,
             offset: filter.offset.unwrap_or(0).max(0) as usize,
@@ -1205,6 +1217,19 @@ impl QueryRoot {
         let actor = actor_from_ctx(ctx)?;
         let health = app.system_health(&actor).await.map_err(to_gql_error)?;
         Ok(from_system_health(health))
+    }
+
+    async fn smg_version_compatibility_notice(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<SmgVersionCompatibilityNoticePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let _actor = actor_from_ctx(ctx)?;
+        let notice = app
+            .smg_version_compatibility_notice()
+            .await
+            .map_err(to_gql_error)?;
+        Ok(notice.map(from_smg_version_compatibility_notice))
     }
 
     async fn recycled_items(
@@ -1984,27 +2009,29 @@ impl QueryRoot {
         })
     }
 
-    /// List downloaded subtitles for a title.
-    async fn subtitle_downloads(
+    /// List external subtitles for a title.
+    async fn external_subtitles(
         &self,
         ctx: &Context<'_>,
         title_id: String,
-    ) -> GqlResult<Vec<SubtitleDownloadPayload>> {
+    ) -> GqlResult<Vec<ExternalSubtitlePayload>> {
         let _actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
         let downloads = app
-            .list_subtitle_downloads_for_title(&title_id)
+            .list_external_subtitles_for_title(&title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(downloads
             .into_iter()
-            .map(|d| SubtitleDownloadPayload {
+            .map(|d| ExternalSubtitlePayload {
                 id: d.id,
                 media_file_id: d.media_file_id,
                 title_id: d.title_id,
                 episode_id: d.episode_id,
+                source_kind: d.source_kind.as_str().to_string(),
                 language: d.language,
                 provider: d.provider,
+                provider_file_id: d.provider_file_id,
                 file_path: d.file_path,
                 score: d.score,
                 hearing_impaired: d.hearing_impaired,
@@ -2019,21 +2046,21 @@ impl QueryRoot {
             .collect())
     }
 
-    /// List subtitle blacklist entries for a specific media file.
-    async fn subtitle_blacklist_entries(
+    /// List external subtitle blocklist entries for a specific media file.
+    async fn external_subtitle_blocklist_entries(
         &self,
         ctx: &Context<'_>,
         media_file_id: String,
-    ) -> GqlResult<Vec<SubtitleBlacklistEntryPayload>> {
+    ) -> GqlResult<Vec<ExternalSubtitleBlocklistEntryPayload>> {
         let _actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
         let entries = app
-            .list_subtitle_blacklist_for_media_file(&media_file_id)
+            .list_external_subtitle_blocklist_for_media_file(&media_file_id)
             .await
             .map_err(to_gql_error)?;
         Ok(entries
             .into_iter()
-            .map(|entry| SubtitleBlacklistEntryPayload {
+            .map(|entry| ExternalSubtitleBlocklistEntryPayload {
                 id: entry.id,
                 media_file_id: entry.media_file_id,
                 provider: entry.provider,

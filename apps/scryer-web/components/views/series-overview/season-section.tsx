@@ -6,10 +6,8 @@ import {
   Clock3,
   Eye,
   EyeOff,
-  Film,
   Loader2,
   Search,
-  Star,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,6 +37,10 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import {
+  EpisodeProgressBar,
+  getCollectionEpisodeProgressPresentation,
+} from "@/components/views/media-content/title-table-shared";
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
@@ -47,14 +49,16 @@ import type {
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
 import type { EpisodePanelTab } from "./episode-panel-reducer";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
   blocklistEntryMatchesEpisode,
   buildSpecialsMovieEpisodeMatches,
   deriveMediaFileQualityLabel,
   formatDate,
+  formatFileSize,
   formatRuntimeFromSeconds,
+  isEpisodeCountableForProgress,
   isSpecialsCollection,
   seasonHeading,
 } from "./helpers";
@@ -66,7 +70,7 @@ type TranslateFn = ReturnType<typeof useTranslate>;
 
 const EMPTY_EPISODE_FILES: EpisodeMediaFile[] = [];
 const EMPTY_RELEASES: Release[] = [];
-const EMPTY_SUBTITLE_DOWNLOADS: SubtitleDownloadRecord[] = [];
+const EMPTY_SUBTITLE_DOWNLOADS: ExternalSubtitleRecord[] = [];
 const EMPTY_BLOCKLIST_ENTRIES: TitleReleaseBlocklistEntry[] = [];
 
 function EpisodeTableActionButton({
@@ -220,10 +224,10 @@ type EpisodePanelContentProps = {
   onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
   onRunEpisodeSearch: (episode: CollectionEpisode) => void;
-  onTabChange: (tab: EpisodePanelTab) => void;
+  onTabChange: (tab: EpisodePanelTab | "history") => void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchBlocked: boolean;
-  subtitleDownloads: SubtitleDownloadRecord[];
+  subtitleDownloads: ExternalSubtitleRecord[];
 };
 
 const EpisodePanelContent = React.memo(function EpisodePanelContent({
@@ -257,11 +261,12 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
   return (
     <Tabs
       value={activeTab}
-      onValueChange={(value) => onTabChange(value as EpisodePanelTab)}
+      onValueChange={(value) => onTabChange(value as EpisodePanelTab | "history")}
     >
       <TabsList className="flex w-full flex-nowrap overflow-x-auto">
         <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
         <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
+        <TabsTrigger value="history" className="shrink-0">{t("history.title")}</TabsTrigger>
         <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
       </TabsList>
       <TabsContent value="details">
@@ -329,6 +334,7 @@ type EpisodeRowProps = {
   linkedMovie?: InterstitialMovieMetadata | null;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onDeleteFile?: (fileId: string) => void;
+  onOpenHistory: (episode: CollectionEpisode) => void;
   onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
   onRunEpisodeSearch: (episode: CollectionEpisode) => void;
@@ -337,7 +343,7 @@ type EpisodeRowProps = {
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchBlocked: boolean;
   searchLoading: boolean;
-  subtitleDownloads: SubtitleDownloadRecord[];
+  subtitleDownloads: ExternalSubtitleRecord[];
 };
 
 const EpisodeRow = React.memo(function EpisodeRow({
@@ -353,6 +359,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
   linkedMovie,
   onAutoSearchEpisode,
   onDeleteFile,
+  onOpenHistory,
   onQueueFromEpisodeSearch,
   onRefreshSubtitles,
   onRunEpisodeSearch,
@@ -414,10 +421,16 @@ const EpisodeRow = React.memo(function EpisodeRow({
   }, [activeTab, isPanelOpen, openPanelTab]);
 
   const handleEpisodeTabChange = React.useCallback(
-    (tab: EpisodePanelTab) => {
+    (tab: EpisodePanelTab | "history") => {
+      if (tab === "history") {
+        setIsPanelOpen(true);
+        onOpenHistory(episode);
+        return;
+      }
+
       openPanelTab(tab);
     },
-    [openPanelTab],
+    [episode, onOpenHistory, openPanelTab],
   );
 
   const handleAutoSearchClick = React.useCallback(() => {
@@ -699,6 +712,7 @@ export function SeasonSection({
   searchLoadingByEpisode,
   searchBlockedByEpisode,
   onRunEpisodeSearch,
+  onOpenEpisodeHistory,
   onQueueFromEpisodeSearch,
   autoSearchLoadingByEpisode,
   onAutoSearchEpisode,
@@ -710,6 +724,11 @@ export function SeasonSection({
   onRunSeasonSearch,
   onQueueFromSeasonSearch,
   onDeleteFile,
+  interstitialSearchResults,
+  interstitialSearchLoading,
+  interstitialSearchAttempted,
+  onRunInterstitialMovieSearch,
+  onQueueFromInterstitialMovieSearch,
   onAutoSearchInterstitialMovie,
   autoSearchInterstitialMovieLoading,
 }: {
@@ -721,7 +740,7 @@ export function SeasonSection({
   initiallyOpenEpisodeId?: string | null;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
-  subtitleDownloads?: SubtitleDownloadRecord[];
+  subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchResultsByEpisode: Record<string, Release[]>;
@@ -729,6 +748,7 @@ export function SeasonSection({
   searchBlockedByEpisode: Record<string, boolean>;
   autoSearchLoadingByEpisode: Record<string, boolean>;
   onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onOpenEpisodeHistory: (episode: CollectionEpisode) => void;
   onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
@@ -739,6 +759,11 @@ export function SeasonSection({
   onRunSeasonSearch?: () => void;
   onQueueFromSeasonSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
+  interstitialSearchResults?: Release[];
+  interstitialSearchLoading?: boolean;
+  interstitialSearchAttempted?: boolean;
+  onRunInterstitialMovieSearch?: (collection: TitleCollection) => void;
+  onQueueFromInterstitialMovieSearch?: (collection: TitleCollection, release: Release) => Promise<void> | void;
   onAutoSearchInterstitialMovie?: (collection: TitleCollection) => void;
   autoSearchInterstitialMovieLoading?: boolean;
 }) {
@@ -778,142 +803,200 @@ export function SeasonSection({
     });
   }, [collection.firstEpisodeNumber, collection.lastEpisodeNumber, t]);
 
-  const episodeCountLabel = React.useMemo(
-    () => (
-      episodes.length === 1
-        ? t("title.episodeCountOne", { count: episodes.length })
-        : t("title.episodeCountOther", { count: episodes.length })
-    ),
-    [episodes.length, t],
+  const collectionMetrics = React.useMemo(() => {
+    if (collection.collectionType === "interstitial") {
+      return null;
+    }
+
+    const uniqueFiles = new Map<string, EpisodeMediaFile>();
+    let totalEpisodes = 0;
+    let monitoredEpisodes = 0;
+    let ownedEpisodes = 0;
+
+    for (const episode of episodes) {
+      if (!isEpisodeCountableForProgress(episode)) {
+        continue;
+      }
+
+      totalEpisodes += 1;
+
+      if (episode.monitored) {
+        monitoredEpisodes += 1;
+      }
+
+      const episodeFiles = mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES;
+      if (episodeFiles.length > 0) {
+        ownedEpisodes += 1;
+      }
+
+      for (const file of episodeFiles) {
+        if (!uniqueFiles.has(file.id)) {
+          uniqueFiles.set(file.id, file);
+        }
+      }
+    }
+
+    let matchedSizeBytes = 0;
+    for (const file of uniqueFiles.values()) {
+      const sizeBytes = Number(file.sizeBytes);
+      if (Number.isFinite(sizeBytes) && sizeBytes > 0) {
+        matchedSizeBytes += sizeBytes;
+      }
+    }
+
+    return {
+      totalEpisodes,
+      monitoredEpisodes,
+      ownedEpisodes,
+      matchedSizeBytes,
+    };
+  }, [collection.collectionType, episodes, mediaFilesByEpisode]);
+
+  const collectionEpisodeProgress = React.useMemo(
+    () => {
+      if (!collectionMetrics || collectionMetrics.totalEpisodes <= 0) {
+        return null;
+      }
+
+      return getCollectionEpisodeProgressPresentation({
+        ownedEpisodes: collectionMetrics.ownedEpisodes,
+        totalEpisodes: collectionMetrics.totalEpisodes,
+        monitoredEpisodes: collectionMetrics.monitoredEpisodes,
+        monitored: seasonCheckedState !== false,
+        t,
+      });
+    },
+    [collectionMetrics, seasonCheckedState, t],
   );
 
-  const specialCountLabel = React.useMemo(
-    () => (
-      episodes.length === 1
-        ? t("title.specialCountOne", { count: episodes.length })
-        : t("title.specialCountOther", { count: episodes.length })
-    ),
-    [episodes.length, t],
-  );
+  const collectionSizeLabel = React.useMemo(() => {
+    const derivedSizeBytes = collectionMetrics?.matchedSizeBytes ?? 0;
+    if (derivedSizeBytes > 0) {
+      return formatFileSize(derivedSizeBytes);
+    }
 
-  const movieCountLabel = React.useMemo(
-    () => (
-      standaloneSpecialMovies.length === 1
-        ? t("title.movieCountOne", { count: standaloneSpecialMovies.length })
-        : t("title.movieCountOther", { count: standaloneSpecialMovies.length })
-    ),
-    [standaloneSpecialMovies.length, t],
-  );
+    if (
+      collection.collectionType === "interstitial"
+      && typeof collection.fileSizeBytes === "number"
+      && collection.fileSizeBytes > 0
+    ) {
+      return formatFileSize(collection.fileSizeBytes);
+    }
+
+    return null;
+  }, [collection.collectionType, collection.fileSizeBytes, collectionMetrics]);
+
+  const isSpecials = isSpecialsCollection(collection);
+  const showCollectionHeader = true;
+  const showSectionContent = expanded;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-background/40">
-      <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        onClick={onToggle}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onToggle();
-          }
-        }}
-        className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-3 bg-card/60 px-4 py-2 text-left transition hover:bg-accent/80"
-      >
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={seasonToggling}
-            aria-label={t("title.seasonMonitored")}
-            className={cn(
-              "inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
-              seasonToggling && "opacity-50",
-              seasonCheckedState === true
-                ? "text-emerald-600 dark:text-emerald-300"
-                : seasonCheckedState === "indeterminate"
-                  ? "text-amber-500 dark:text-amber-400"
-                  : "text-muted-foreground/60",
-            )}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (!onSetCollectionMonitored) {
-                return;
-              }
+      {showCollectionHeader ? (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onToggle();
+            }
+          }}
+          className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-3 bg-card/60 px-4 py-2 text-left transition hover:bg-accent/80"
+        >
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={seasonToggling}
+              aria-label={t("title.seasonMonitored")}
+              className={cn(
+                "inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
+                seasonToggling && "opacity-50",
+                seasonCheckedState === true
+                  ? "text-emerald-600 dark:text-emerald-300"
+                  : seasonCheckedState === "indeterminate"
+                    ? "text-amber-500 dark:text-amber-400"
+                    : "text-muted-foreground/60",
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!onSetCollectionMonitored) {
+                  return;
+                }
 
-              setSeasonToggling(true);
-              const nextMonitored = seasonCheckedState !== true;
-              onSetCollectionMonitored(collection.id, nextMonitored)
-                .finally(() => setSeasonToggling(false));
-            }}
-          >
-            {seasonCheckedState === false ? (
-              <EyeOff className="size-5" />
-            ) : (
-              <Eye className="size-5" />
-            )}
-          </button>
-          <Chevron className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div>
-            <p className="text-sm font-semibold text-foreground">
-              {seasonHeading(collection, t)}
-            </p>
-            {episodeRangeLabel ? <p className="text-xs text-muted-foreground">{episodeRangeLabel}</p> : null}
+                setSeasonToggling(true);
+                const nextMonitored = seasonCheckedState !== true;
+                onSetCollectionMonitored(collection.id, nextMonitored)
+                  .finally(() => setSeasonToggling(false));
+              }}
+            >
+              {seasonCheckedState === false ? (
+                <EyeOff className="size-5" />
+              ) : (
+                <Eye className="size-5" />
+              )}
+            </button>
+            <Chevron className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-foreground">
+                {seasonHeading(collection, t)}
+              </p>
+              {episodeRangeLabel ? <p className="text-xs text-muted-foreground">{episodeRangeLabel}</p> : null}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {!isSpecials && collectionSizeLabel ? (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {collectionSizeLabel}
+              </span>
+            ) : null}
+            {!isSpecials && collection.collectionType !== "interstitial" && collectionEpisodeProgress ? (
+              <EpisodeProgressBar
+                progress={collectionEpisodeProgress}
+                compact
+                className="w-[6.75rem]"
+              />
+            ) : null}
+            {onRunSeasonSearch && collection.collectionType !== "interstitial" ? (
+              <HoverCard openDelay={600} closeDelay={75}>
+                <HoverCardTrigger asChild>
+                  <EpisodeTableActionButton
+                    tone="auto"
+                    aria-label={t("series.searchSeason")}
+                    disabled={seasonSearchLoading === true}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRunSeasonSearch();
+                    }}
+                    label={t("series.searchSeason")}
+                  >
+                    {seasonSearchLoading === true ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Zap className="h-4 w-4" />
+                    )}
+                  </EpisodeTableActionButton>
+                </HoverCardTrigger>
+                <HoverCardContent side="left" className="w-auto p-2 text-xs">
+                  {t("help.seasonSearchTooltip")}
+                </HoverCardContent>
+              </HoverCard>
+            ) : null}
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground">
-            {collection.collectionType === "interstitial" ? (
-              <span className="inline-flex items-center gap-1">
-                <Film className="h-3 w-3" />
-                {t("narrative.movie")}
-              </span>
-            ) : isSpecialsCollection(collection) ? (
-              <span className="inline-flex items-center gap-1">
-                <Star className="h-3 w-3" />
-                {standaloneSpecialMovies.length > 0 ? `${movieCountLabel} · ` : ""}
-                {specialCountLabel}
-              </span>
-            ) : (
-              <>{episodeCountLabel}</>
-            )}
-          </span>
-          {onRunSeasonSearch && !isSpecialsCollection(collection) && collection.collectionType !== "interstitial" ? (
-            <HoverCard openDelay={600} closeDelay={75}>
-              <HoverCardTrigger asChild>
-                <EpisodeTableActionButton
-                  tone="search"
-                  aria-label={t("series.searchSeason")}
-                  disabled={seasonSearchLoading === true}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRunSeasonSearch();
-                  }}
-                  label={t("series.searchSeason")}
-                >
-                  {seasonSearchLoading === true ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Search className="h-4 w-4" />
-                  )}
-                </EpisodeTableActionButton>
-              </HoverCardTrigger>
-              <HoverCardContent side="left" className="w-auto p-2 text-xs">
-                {t("help.seasonSearchTooltip")}
-              </HoverCardContent>
-            </HoverCard>
-          ) : null}
-        </div>
-      </div>
+      ) : null}
 
-      {searchBlocked && onRunSeasonSearch && !isSpecialsCollection(collection) && collection.collectionType !== "interstitial" ? (
+      {searchBlocked && onRunSeasonSearch && showCollectionHeader && collection.collectionType !== "interstitial" ? (
         <div className="border-t border-border bg-card/40 p-4">
           <TitleSearchDownloadClientNotice />
         </div>
       ) : null}
 
-      {expanded ? (
+      {showSectionContent ? (
         collection.collectionType === "interstitial" ? (
-          <div className="border-t border-border px-4 py-3 text-sm text-muted-foreground">
+          <div className={cn(showCollectionHeader && "border-t border-border", "px-4 py-3 text-sm text-muted-foreground")}>
             {collection.interstitialMovie ? (
               <div className="flex flex-col gap-3">
                 <InterstitialMoviePanel
@@ -921,19 +1004,71 @@ export function SeasonSection({
                   hasFile={collection.orderedPath != null}
                   monitored={collection.monitored}
                 />
-                {collection.monitored && !collection.orderedPath && onAutoSearchInterstitialMovie ? (
-                  <>
+                <div className="flex flex-wrap items-center gap-2">
+                  {onRunInterstitialMovieSearch ? (
+                    <button
+                      type="button"
+                      disabled={interstitialSearchLoading}
+                      onClick={() => onRunInterstitialMovieSearch(collection)}
+                      className="inline-flex items-center gap-1.5 self-start rounded-md border border-border bg-card/45 px-3 py-1.5 text-xs text-card-foreground transition hover:bg-muted disabled:opacity-50"
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      {t("title.searchReleasesAction")}
+                    </button>
+                  ) : null}
+                  {onAutoSearchInterstitialMovie ? (
                     <button
                       type="button"
                       disabled={autoSearchInterstitialMovieLoading}
                       onClick={() => onAutoSearchInterstitialMovie(collection)}
                       className="inline-flex items-center gap-1.5 self-start rounded-md border border-border bg-card/45 px-3 py-1.5 text-xs text-card-foreground transition hover:bg-muted disabled:opacity-50"
                     >
-                      <Search className="h-3.5 w-3.5" />
-                      {autoSearchInterstitialMovieLoading ? "Searching..." : "Search Movie"}
+                      {autoSearchInterstitialMovieLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Zap className="h-3.5 w-3.5" />
+                      )}
+                      {t("title.queueLatest")}
                     </button>
-                    {searchBlocked ? <TitleSearchDownloadClientNotice /> : null}
-                  </>
+                  ) : null}
+                </div>
+                {searchBlocked ? <TitleSearchDownloadClientNotice /> : null}
+                {!searchBlocked && interstitialSearchLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>{t("title.searchingReleases")}</span>
+                  </div>
+                ) : null}
+                {!searchBlocked
+                && !interstitialSearchLoading
+                && interstitialSearchResults
+                && interstitialSearchResults.length > 0
+                && onQueueFromInterstitialMovieSearch ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {t("title.searchReleasesAction")}
+                    </p>
+                    <SearchResultBuckets
+                      results={interstitialSearchResults}
+                      onQueue={(release) => onQueueFromInterstitialMovieSearch(collection, release)}
+                      requireCandidateToken
+                    />
+                  </div>
+                ) : null}
+                {!searchBlocked
+                && !interstitialSearchLoading
+                && interstitialSearchAttempted
+                && (!interstitialSearchResults || interstitialSearchResults.length === 0) ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("title.noReleasesFound", { name: collection.interstitialMovie.name })}
+                  </p>
+                ) : null}
+                {!searchBlocked
+                && !interstitialSearchLoading
+                && !interstitialSearchAttempted ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("title.interactiveSearchHint", { name: collection.interstitialMovie.name })}
+                  </p>
                 ) : null}
               </div>
             ) : (
@@ -943,7 +1078,7 @@ export function SeasonSection({
         ) : (
           <>
             {isSpecialsCollection(collection) && standaloneSpecialMovies.length > 0 ? (
-              <div className="border-t border-border px-4 py-3">
+              <div className={cn(showCollectionHeader && "border-t border-border", "px-4 py-3")}>
                 <div className="space-y-4">
                   {standaloneSpecialMovies.map((movie) => (
                     <div
@@ -957,7 +1092,7 @@ export function SeasonSection({
               </div>
             ) : null}
             {seasonSearchResults && seasonSearchResults.length > 0 && onQueueFromSeasonSearch ? (
-              <div className="border-t border-border px-4 py-3">
+              <div className={cn(showCollectionHeader && "border-t border-border", "px-4 py-3")}>
                 <p className="mb-2 text-xs font-medium text-muted-foreground">Season pack results</p>
                 <SearchResultBuckets
                   results={seasonSearchResults}
@@ -967,11 +1102,11 @@ export function SeasonSection({
               </div>
             ) : null}
             {episodes.length === 0 ? (
-              <div className="border-t border-border px-4 py-3 text-sm text-muted-foreground">
+              <div className={cn(showCollectionHeader && "border-t border-border", "px-4 py-3 text-sm text-muted-foreground")}>
                 No episode records for this season.
               </div>
             ) : isMobile ? (
-              <div className="border-t border-border px-3 py-3">
+              <div className={cn(showCollectionHeader && "border-t border-border", "px-3 py-3")}>
                 <div className="space-y-3">
                   {episodes.map((episode) => (
                     <EpisodeRow
@@ -988,6 +1123,7 @@ export function SeasonSection({
                       linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
                       onAutoSearchEpisode={onAutoSearchEpisode}
                       onDeleteFile={onDeleteFile}
+                      onOpenHistory={onOpenEpisodeHistory}
                       onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
                       onRefreshSubtitles={onRefreshSubtitles}
                       onRunEpisodeSearch={onRunEpisodeSearch}
@@ -1002,7 +1138,7 @@ export function SeasonSection({
                 </div>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className={cn(showCollectionHeader && "border-t border-border", "overflow-x-auto")}>
                 <Table className="min-w-[760px]">
                   <TableHeader>
                     <TableRow>
@@ -1030,6 +1166,7 @@ export function SeasonSection({
                         linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
                         onAutoSearchEpisode={onAutoSearchEpisode}
                         onDeleteFile={onDeleteFile}
+                        onOpenHistory={onOpenEpisodeHistory}
                         onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
                         onRefreshSubtitles={onRefreshSubtitles}
                         onRunEpisodeSearch={onRunEpisodeSearch}

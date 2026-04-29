@@ -10,7 +10,7 @@ use scryer_application::{
     ShowRepository, SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
     TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedStatus,
+    WantedItemsQuery, WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -4485,6 +4485,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         id: "library_scan_unmatched:test".to_string(),
         facet: MediaFacet::Movie,
         status: PendingImportStatus::Pending,
+        title_id: None,
         scan_session_id: "session-1".to_string(),
         scan_root: "/library".to_string(),
         item_path: "/library/Unknown.Movie.2020.mkv".to_string(),
@@ -4606,6 +4607,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         id: "library_scan_unmatched:ignored".to_string(),
         facet: MediaFacet::Movie,
         status: PendingImportStatus::Ignored,
+        title_id: None,
         scan_session_id: "session-1".to_string(),
         scan_root: "/library".to_string(),
         item_path: "/library/Unknown.Movie.2020.mkv".to_string(),

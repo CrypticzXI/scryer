@@ -1,18 +1,21 @@
+use crate::ports::NOTIFICATION_REQUEST_SCHEMA_VERSION;
 use crate::{
-    AppUseCase, NotificationAppPayload, NotificationDownloadPayload, NotificationEpisodePayload,
-    NotificationExternalIdsPayload, NotificationFilePayload, NotificationImportPayload,
-    NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
-    NotificationReleasePayload, NotificationTitlePayload,
+    AppUseCase, NotificationActorPayload, NotificationAppPayload, NotificationDownloadPayload,
+    NotificationEpisodePayload, NotificationExternalIdsPayload, NotificationFilePayload,
+    NotificationImportPayload, NotificationMediaFilePayload, NotificationMediaUpdatePayload,
+    NotificationMediaUpdateTypePayload, NotificationPayload, NotificationReleasePayload,
+    NotificationSeverityPayload, NotificationTitlePayload,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType, DownloadFailedEventData,
-    ImportCompletedEventData, ImportRejectedEventData, MediaFileDeletedEventData,
-    MediaFileDeletedReason, MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate,
-    MediaUpdateType,
-    NotificationEventType, PostProcessingCompletedEventData, PostProcessingResult,
-    ReleaseGrabbedEventData, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
-    TitleAddedEventData, TitleContextSnapshot, TitleDeletedEventData,
+    Episode, ExternalId, ImportCompletedEventData, ImportRejectedEventData,
+    MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
+    MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NotificationEventType,
+    PostProcessingCompletedEventData, PostProcessingResult, ReleaseGrabbedEventData,
+    SubtitleDownloadedEventData, SubtitleSearchFailedEventData, Title, TitleAddedEventData,
+    TitleContextSnapshot, TitleDeletedEventData,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -157,6 +160,7 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
     let Some(notification) = build_notification(event) else {
         return;
     };
+    let notification = enrich_notification(app, event, notification).await;
 
     let sub_repo = match app.notification_subscriptions_repo() {
         Ok(repo) => repo,
@@ -289,8 +293,7 @@ fn build_release_grabbed_notification(data: &ReleaseGrabbedEventData) -> BuiltNo
     let mut payload = base_notification_payload(
         NotificationEventType::Grab,
         format!("Grabbed: {}", data.title.title_name),
-        data
-            .source_title
+        data.source_title
             .as_ref()
             .map(|source_title| {
                 format!(
@@ -324,8 +327,7 @@ fn build_download_failed_notification(data: &DownloadFailedEventData) -> BuiltNo
     let mut payload = base_notification_payload(
         NotificationEventType::Download,
         format!("Download failed: {title}"),
-        data
-            .reason
+        data.reason
             .clone()
             .unwrap_or_else(|| "Download failed.".to_string()),
         data.title.as_ref(),
@@ -343,6 +345,7 @@ fn build_download_failed_notification(data: &DownloadFailedEventData) -> BuiltNo
         client_id: data.client_id.clone(),
         client_name: data.client_name.clone(),
         client_type: data.client_type.clone(),
+        ..Default::default()
     });
     BuiltNotification { payload }
 }
@@ -379,6 +382,7 @@ fn build_import_completed_notification(data: &ImportCompletedEventData) -> Built
         dest_path: data.dest_path.clone(),
         imported_count: Some(data.imported_count),
         status: Some("completed".to_string()),
+        ..Default::default()
     });
     BuiltNotification { payload }
 }
@@ -392,8 +396,7 @@ fn build_import_rejected_notification(data: &ImportRejectedEventData) -> BuiltNo
     let mut payload = base_notification_payload(
         NotificationEventType::ImportRejected,
         format!("Import rejected: {title}"),
-        data
-            .reason
+        data.reason
             .clone()
             .unwrap_or_else(|| "Import was rejected.".to_string()),
         data.title.as_ref(),
@@ -437,9 +440,9 @@ fn build_media_file_renamed_notification(data: &MediaFileRenamedEventData) -> Bu
             NotificationEventType::Rename,
             format!("Renamed: {}", data.title.title_name),
             format!(
-            "Renamed {} file(s) for '{}'.",
-            data.renamed_count, data.title.title_name
-        ),
+                "Renamed {} file(s) for '{}'.",
+                data.renamed_count, data.title.title_name
+            ),
             Some(&data.title),
             &data.episode_ids,
             &data.media_updates,
@@ -561,8 +564,7 @@ fn build_subtitle_search_failed_notification(
     let mut payload = base_notification_payload(
         NotificationEventType::SubtitleSearchFailed,
         format!("Subtitle search failed: {}", data.title.title_name),
-        data
-            .reason
+        data.reason
             .clone()
             .unwrap_or_else(|| format!("Subtitle search failed for '{}'.", data.title.title_name)),
         Some(&data.title),
@@ -585,34 +587,62 @@ fn base_notification_payload(
     updates: &[MediaPathUpdate],
 ) -> NotificationPayload {
     NotificationPayload {
+        schema_version: NOTIFICATION_REQUEST_SCHEMA_VERSION,
         event_type,
+        event_id: None,
+        occurred_at: None,
+        correlation_id: None,
+        actor: None,
+        severity: None,
+        is_test: matches!(event_type, NotificationEventType::Test),
         summary_title,
         summary_message,
         app: NotificationAppPayload {
             name: "Scryer".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        title: title.map(title_payload),
+        title: title.map(title_payload_from_context),
         episode: episode_payload(episode_ids),
+        episodes: Vec::new(),
         release: None,
         download: None,
         import: None,
         health: None,
         file: file_payload(updates),
+        media_files: Vec::new(),
+        application_update: None,
+        manual_interaction: None,
     }
 }
 
-fn title_payload(title: &TitleContextSnapshot) -> NotificationTitlePayload {
+fn title_payload_from_context(title: &TitleContextSnapshot) -> NotificationTitlePayload {
     NotificationTitlePayload {
+        id: None,
         name: title.title_name.clone(),
         facet: title.facet.as_str().to_string(),
         year: title.year,
+        slug: None,
+        path: None,
+        overview: None,
+        sort_title: None,
         poster_url: title.poster_url.clone(),
+        banner_url: None,
+        background_url: None,
+        genres: Vec::new(),
+        tags: Vec::new(),
+        aliases: Vec::new(),
+        original_language: None,
+        original_country: None,
         external_ids: NotificationExternalIdsPayload {
             tmdb_id: title.external_ids.tmdb_id.clone(),
             imdb_id: title.external_ids.imdb_id.clone(),
             tvdb_id: title.external_ids.tvdb_id.clone(),
             anidb_id: title.external_ids.anidb_id.clone(),
+            tvmaze_id: None,
+            anilist_ids: Vec::new(),
+            mal_ids: Vec::new(),
+            kitsu_ids: Vec::new(),
+            by_source: external_ids_by_source_from_snapshot(title),
         },
     }
 }
@@ -621,6 +651,7 @@ fn episode_payload(episode_ids: &[String]) -> Option<NotificationEpisodePayload>
     (!episode_ids.is_empty()).then(|| NotificationEpisodePayload {
         episode_ids: episode_ids.to_vec(),
         display: None,
+        ..Default::default()
     })
 }
 
@@ -643,6 +674,397 @@ fn file_payload(updates: &[MediaPathUpdate]) -> Option<NotificationFilePayload> 
             })
             .collect(),
     })
+}
+
+async fn enrich_notification(
+    app: &AppUseCase,
+    event: &DomainEvent,
+    mut notification: BuiltNotification,
+) -> BuiltNotification {
+    notification.payload.schema_version = NOTIFICATION_REQUEST_SCHEMA_VERSION;
+    notification.payload.event_id = Some(event.event_id.clone());
+    notification.payload.occurred_at = Some(event.occurred_at.to_rfc3339());
+    notification.payload.correlation_id = event.correlation_id.clone();
+    notification.payload.actor =
+        event
+            .actor_user_id
+            .as_ref()
+            .map(|user_id| NotificationActorPayload {
+                user_id: Some(user_id.clone()),
+            });
+    notification.payload.severity = Some(notification_severity(notification.payload.event_type));
+    notification.payload.is_test =
+        matches!(notification.payload.event_type, NotificationEventType::Test);
+
+    notification.payload.title =
+        resolve_notification_title(app, event, notification.payload.title.take()).await;
+    notification.payload.episodes =
+        resolve_notification_episodes(app, notification.payload.episode.as_ref()).await;
+    if let Some(summary) = notification.payload.episode.as_mut()
+        && summary.display.is_none()
+    {
+        summary.display = notification
+            .payload
+            .episodes
+            .first()
+            .and_then(|episode| episode.display.clone());
+    }
+    notification.payload.media_files =
+        resolve_notification_media_files(app, event, notification.payload.file.as_ref()).await;
+    enrich_release_from_media_files(&mut notification.payload);
+
+    notification
+}
+
+fn notification_severity(event_type: NotificationEventType) -> NotificationSeverityPayload {
+    match event_type {
+        NotificationEventType::Download
+        | NotificationEventType::ImportRejected
+        | NotificationEventType::SubtitleSearchFailed => NotificationSeverityPayload::Error,
+        NotificationEventType::HealthIssue => NotificationSeverityPayload::Warning,
+        _ => NotificationSeverityPayload::Info,
+    }
+}
+
+async fn resolve_notification_title(
+    app: &AppUseCase,
+    event: &DomainEvent,
+    fallback: Option<NotificationTitlePayload>,
+) -> Option<NotificationTitlePayload> {
+    let Some(title_id) = event.title_id.as_deref() else {
+        return fallback;
+    };
+
+    match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => Some(title_payload_from_title(&title)),
+        Ok(None) => fallback,
+        Err(error) => {
+            warn!(title_id, error = %error, "failed to load notification title metadata");
+            fallback
+        }
+    }
+}
+
+async fn resolve_notification_episodes(
+    app: &AppUseCase,
+    summary: Option<&NotificationEpisodePayload>,
+) -> Vec<NotificationEpisodePayload> {
+    let Some(summary) = summary else {
+        return Vec::new();
+    };
+    if summary.episode_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut episodes = Vec::new();
+    for episode_id in &summary.episode_ids {
+        match app
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await
+        {
+            Ok(Some(episode)) => episodes.push(episode_payload_from_episode(&episode)),
+            Ok(None) => {}
+            Err(error) => warn!(
+                episode_id,
+                error = %error,
+                "failed to load notification episode metadata"
+            ),
+        }
+    }
+    episodes
+}
+
+async fn resolve_notification_media_files(
+    app: &AppUseCase,
+    event: &DomainEvent,
+    file_summary: Option<&NotificationFilePayload>,
+) -> Vec<NotificationMediaFilePayload> {
+    let mut media_files = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+
+    for file_id in notification_file_ids(event) {
+        match app
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(&file_id)
+            .await
+        {
+            Ok(Some(media_file)) => {
+                if seen_paths.insert(media_file.file_path.clone()) {
+                    media_files.push(media_file_payload_from_record(&media_file));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => warn!(
+                file_id,
+                error = %error,
+                "failed to load notification media file by id"
+            ),
+        }
+    }
+
+    for path in notification_media_update_paths(file_summary) {
+        match app
+            .services
+            .library
+            .media_files
+            .get_media_file_by_path(&path)
+            .await
+        {
+            Ok(Some(media_file)) => {
+                if seen_paths.insert(media_file.file_path.clone()) {
+                    media_files.push(media_file_payload_from_record(&media_file));
+                }
+            }
+            Ok(None) => {
+                if seen_paths.insert(path.clone()) {
+                    media_files.push(NotificationMediaFilePayload {
+                        path,
+                        ..NotificationMediaFilePayload::default()
+                    });
+                }
+            }
+            Err(error) => warn!(
+                path,
+                error = %error,
+                "failed to load notification media file by path"
+            ),
+        }
+    }
+
+    media_files
+}
+
+fn enrich_release_from_media_files(payload: &mut NotificationPayload) {
+    let Some(release) = payload.release.as_mut() else {
+        return;
+    };
+    let Some(first_media_file) = payload.media_files.first() else {
+        return;
+    };
+
+    if release.quality.is_none() {
+        release.quality = first_media_file.quality.clone();
+    }
+    if release.release_group.is_none() {
+        release.release_group = first_media_file.release_group.clone();
+    }
+    if release.languages.is_empty() {
+        release.languages = first_media_file.audio_languages.clone();
+    }
+}
+
+fn title_payload_from_title(title: &Title) -> NotificationTitlePayload {
+    NotificationTitlePayload {
+        id: Some(title.id.clone()),
+        name: title.name.clone(),
+        facet: title.facet.as_str().to_string(),
+        year: title.year,
+        slug: title.slug.clone(),
+        path: title.folder_path.clone(),
+        overview: title.overview.clone(),
+        sort_title: title.sort_title.clone(),
+        poster_url: title.poster_url.clone(),
+        banner_url: title.banner_url.clone(),
+        background_url: title.background_url.clone(),
+        genres: title.genres.clone(),
+        tags: title.tags.clone(),
+        aliases: title_aliases(title),
+        original_language: title.language.clone(),
+        original_country: title.country.clone(),
+        external_ids: external_ids_payload_from_title(title),
+    }
+}
+
+fn title_aliases(title: &Title) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut aliases = Vec::new();
+    for alias in &title.aliases {
+        if seen.insert(alias.clone()) {
+            aliases.push(alias.clone());
+        }
+    }
+    for alias in &title.tagged_aliases {
+        if seen.insert(alias.name.clone()) {
+            aliases.push(alias.name.clone());
+        }
+    }
+    aliases
+}
+
+fn external_ids_payload_from_title(title: &Title) -> NotificationExternalIdsPayload {
+    let mut payload = NotificationExternalIdsPayload::default();
+    if let Some(imdb_id) = &title.imdb_id {
+        payload.imdb_id = Some(imdb_id.clone());
+        payload
+            .by_source
+            .entry("imdb".to_string())
+            .or_default()
+            .push(imdb_id.clone());
+    }
+
+    for external_id in &title.external_ids {
+        push_external_id(&mut payload, external_id);
+    }
+
+    payload
+}
+
+fn push_external_id(payload: &mut NotificationExternalIdsPayload, external_id: &ExternalId) {
+    let source = external_id.source.to_ascii_lowercase();
+    payload
+        .by_source
+        .entry(source.clone())
+        .or_default()
+        .push(external_id.value.clone());
+
+    match source.as_str() {
+        "tmdb" if payload.tmdb_id.is_none() => payload.tmdb_id = Some(external_id.value.clone()),
+        "imdb" if payload.imdb_id.is_none() => payload.imdb_id = Some(external_id.value.clone()),
+        "tvdb" if payload.tvdb_id.is_none() => payload.tvdb_id = Some(external_id.value.clone()),
+        "anidb" if payload.anidb_id.is_none() => payload.anidb_id = Some(external_id.value.clone()),
+        "tvmaze" if payload.tvmaze_id.is_none() => {
+            payload.tvmaze_id = Some(external_id.value.clone())
+        }
+        "anilist" => payload.anilist_ids.push(external_id.value.clone()),
+        "mal" => payload.mal_ids.push(external_id.value.clone()),
+        "kitsu" => payload.kitsu_ids.push(external_id.value.clone()),
+        _ => {}
+    }
+}
+
+fn external_ids_by_source_from_snapshot(
+    title: &TitleContextSnapshot,
+) -> BTreeMap<String, Vec<String>> {
+    let mut by_source = BTreeMap::new();
+    if let Some(tmdb_id) = &title.external_ids.tmdb_id {
+        by_source.insert("tmdb".to_string(), vec![tmdb_id.clone()]);
+    }
+    if let Some(imdb_id) = &title.external_ids.imdb_id {
+        by_source.insert("imdb".to_string(), vec![imdb_id.clone()]);
+    }
+    if let Some(tvdb_id) = &title.external_ids.tvdb_id {
+        by_source.insert("tvdb".to_string(), vec![tvdb_id.clone()]);
+    }
+    if let Some(anidb_id) = &title.external_ids.anidb_id {
+        by_source.insert("anidb".to_string(), vec![anidb_id.clone()]);
+    }
+    by_source
+}
+
+fn episode_payload_from_episode(episode: &Episode) -> NotificationEpisodePayload {
+    NotificationEpisodePayload {
+        id: Some(episode.id.clone()),
+        episode_ids: vec![episode.id.clone()],
+        display: episode_display(episode),
+        collection_id: episode.collection_id.clone(),
+        season_number: episode.season_number.clone(),
+        episode_number: episode.episode_number.clone(),
+        absolute_number: episode.absolute_number.clone(),
+        title: episode.title.clone(),
+        overview: episode.overview.clone(),
+        air_date: episode.air_date.clone(),
+        air_date_utc: None,
+        episode_type: Some(episode.episode_type.as_str().to_string()),
+        finale_type: None,
+        tvdb_id: episode.tvdb_id.clone(),
+    }
+}
+
+fn episode_display(episode: &Episode) -> Option<String> {
+    match (&episode.season_number, &episode.episode_number) {
+        (Some(season_number), Some(episode_number)) => Some(format!(
+            "S{}E{}",
+            padded_number(season_number),
+            padded_number(episode_number)
+        )),
+        _ => episode
+            .absolute_number
+            .as_ref()
+            .map(|absolute_number| format!("#{absolute_number}")),
+    }
+}
+
+fn padded_number(value: &str) -> String {
+    value
+        .parse::<u32>()
+        .map(|parsed| format!("{parsed:02}"))
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn notification_file_ids(event: &DomainEvent) -> Vec<String> {
+    match &event.payload {
+        DomainEventPayload::MediaFileDeleted(data) => {
+            data.file_id.iter().cloned().collect::<Vec<_>>()
+        }
+        DomainEventPayload::MediaFileUpgraded(data) => {
+            let mut file_ids = Vec::new();
+            if let Some(previous_file_id) = &data.previous_file_id {
+                file_ids.push(previous_file_id.clone());
+            }
+            if let Some(current_file_id) = &data.current_file_id {
+                file_ids.push(current_file_id.clone());
+            }
+            file_ids
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn notification_media_update_paths(file_summary: Option<&NotificationFilePayload>) -> Vec<String> {
+    let Some(file_summary) = file_summary else {
+        return Vec::new();
+    };
+
+    file_summary
+        .media_updates
+        .iter()
+        .map(|update| update.path.clone())
+        .collect()
+}
+
+fn media_file_payload_from_record(
+    media_file: &crate::types::TitleMediaFile,
+) -> NotificationMediaFilePayload {
+    NotificationMediaFilePayload {
+        id: Some(media_file.id.clone()),
+        path: media_file.file_path.clone(),
+        previous_path: media_file.original_file_path.clone(),
+        recycle_bin_path: None,
+        size_bytes: Some(media_file.size_bytes),
+        quality: media_file
+            .quality_label
+            .clone()
+            .or_else(|| media_file.resolution.clone()),
+        release_group: media_file.release_group.clone(),
+        scene_name: media_file.scene_name.clone(),
+        audio_languages: media_file.audio_languages.clone(),
+        subtitle_languages: media_file.subtitle_languages.clone(),
+        video_codec: media_file
+            .video_codec
+            .clone()
+            .or_else(|| media_file.video_codec_parsed.clone()),
+        audio_codec: media_file
+            .audio_codec
+            .clone()
+            .or_else(|| media_file.audio_codec_parsed.clone()),
+        audio_channels: media_file.audio_channels_parsed.clone().or_else(|| {
+            media_file
+                .audio_channels
+                .map(|channels| channels.to_string())
+        }),
+        video_width: media_file.video_width,
+        video_height: media_file.video_height,
+        video_bit_depth: media_file.video_bit_depth,
+        video_hdr_format: media_file.video_hdr_format.clone(),
+        video_frame_rate: media_file.video_frame_rate.clone(),
+        container_format: media_file.container_format.clone(),
+        edition: media_file.edition.clone(),
+    }
 }
 
 fn subscription_event_types(event_type: NotificationEventType) -> Vec<NotificationEventType> {

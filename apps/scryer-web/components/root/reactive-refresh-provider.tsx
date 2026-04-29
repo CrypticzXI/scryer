@@ -167,13 +167,13 @@ function applyReactiveRefreshActionResult(
           unknown,
           unknown
         >["titleReleaseBlocklist"],
-        subtitleDownloads: (payload[typedActionPlan.subtitleDownloadsAlias] ?? []) as TitleOverviewNativeSnapshot<
+        externalSubtitles: (payload[typedActionPlan.externalSubtitlesAlias] ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
-        >["subtitleDownloads"],
+        >["externalSubtitles"],
         hasDownloadClients: (payload[typedActionPlan.setupStatusAlias] as { hasDownloadClients?: boolean } | null | undefined)?.hasDownloadClients === true,
       });
       return;
@@ -223,7 +223,7 @@ function reactiveRefreshActionAliases(
         actionPlan.titleAcquisitionDiagnosticsAlias,
         actionPlan.titleEventsAlias,
         actionPlan.titleReleaseBlocklistAlias,
-        actionPlan.subtitleDownloadsAlias,
+        actionPlan.externalSubtitlesAlias,
         actionPlan.setupStatusAlias,
       ];
     case "titleOverviewDownloadFeedback":

@@ -3,8 +3,15 @@ use async_graphql::{Context, InputObject, Object, SimpleObject};
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 #[derive(InputObject)]
-pub struct BlacklistSubtitleInput {
-    pub subtitle_download_id: String,
+pub struct DeleteExternalSubtitleInput {
+    pub external_subtitle_id: String,
+    pub preview_fingerprint: Option<String>,
+    pub typed_confirmation: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct BlocklistExternalSubtitleInput {
+    pub external_subtitle_id: String,
     pub reason: Option<String>,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
@@ -115,11 +122,11 @@ impl SubtitleMutations {
         Ok(true)
     }
 
-    /// Blacklist a downloaded subtitle: delete the file and DB record, then add to blacklist.
-    async fn blacklist_subtitle(
+    /// Delete an external subtitle file and its tracked record.
+    async fn delete_external_subtitle(
         &self,
         ctx: &Context<'_>,
-        input: BlacklistSubtitleInput,
+        input: DeleteExternalSubtitleInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -129,9 +136,35 @@ impl SubtitleMutations {
             )
         })?;
 
-        app.blacklist_subtitle_download(
+        app.delete_external_subtitle(
             &actor,
-            &input.subtitle_download_id,
+            &input.external_subtitle_id,
+            preview_fingerprint,
+            input.typed_confirmation.as_deref(),
+        )
+        .await
+        .map_err(to_gql_error)?;
+
+        Ok(true)
+    }
+
+    /// Blocklist a downloaded provider-backed subtitle: delete the file and DB record, then add to the blocklist.
+    async fn blocklist_external_subtitle(
+        &self,
+        ctx: &Context<'_>,
+        input: BlocklistExternalSubtitleInput,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let preview_fingerprint = input.preview_fingerprint.as_deref().ok_or_else(|| {
+            async_graphql::Error::new(
+                "delete preview confirmation is required before deleting subtitle files on disk",
+            )
+        })?;
+
+        app.blocklist_external_subtitle(
+            &actor,
+            &input.external_subtitle_id,
             input.reason.as_deref(),
             preview_fingerprint,
             input.typed_confirmation.as_deref(),

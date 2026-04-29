@@ -424,6 +424,8 @@ const ko: LocaleDictionary = {
   "settings.historyRetentionExternalHelp":
     "수집 임시 데이터에 대한 운영 정리는 계속 실행되며, 이 설정은 SABnzbd, NZBGet, Weaver가 보존하는 기록에는 적용되지 않습니다.",
   "settings.keepHistoryForever": "기록을 영구히 보존",
+  "settings.historyRetentionDaysHeader": "기록 보존 기간",
+  "settings.historyRetentionDaysSuffix": "일",
   "settings.historyRetentionDaysLabel": "기록을 N일 동안 보존",
   "settings.historyRetentionSaved": "기록 보존 설정이 저장되었습니다.",
   "settings.historyRetentionValidation":
@@ -555,6 +557,7 @@ const ko: LocaleDictionary = {
   "title.inheritDefault": "기본값 상속",
   "title.monitoredSection": "모니터링 중인 {{facet}}",
   "title.noWantedItem": "활성 원하는 항목이 없습니다.",
+  "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "최신 대기열",
   "title.requiredAudioLanguages": "필수 오디오 언어",
   "title.requiredAudioLanguagesFacetInfo":
@@ -829,169 +832,6 @@ const ko: LocaleDictionary = {
   "settings.ruleGlobal": "글로벌",
   "settings.ruleNoFacetRules":
     "사용 가능한 커스텀 규칙이 없습니다. 설정 > 커스텀 규칙에서 규칙을 생성하세요.",
-  "settings.refTitle": "입력 컨텍스트 참조",
-  "settings.refSubtitle":
-    "Rego 규칙에서 사용할 수 있는 전체 필드 참조를 펼치려면 클릭하세요.",
-  "settings.refIntro":
-    "모든 규칙은 다섯 개의 최상위 문서가 포함된 input 객체를 받습니다. Rego 코드에서 input.release, input.profile, input.context, input.builtin_score, input.file로 접근합니다. input.file은 다운로드 전 스코어링 시 null이며 다운로드 후 가져오기 평가 시에만 채워집니다.",
-  "settings.refColField": "필드",
-  "settings.refColType": "유형",
-  "settings.refColDescription": "설명",
-  "settings.refColFunction": "함수",
-  "settings.refColReturns": "반환",
-  "settings.refSectionRelease": "— 파싱된 릴리스 메타데이터",
-  "settings.refReleaseRawTitle": "인덱서의 원본 파싱 전 릴리스 제목",
-  "settings.refReleaseQuality": "감지된 품질 티어 (예: 2160P, 1080P, 720P)",
-  "settings.refReleaseSource": "미디어 소스 (예: WEB-DL, BLURAY, HDTV)",
-  "settings.refReleaseVideoCodec": "비디오 코덱 (예: H.265, H.264, AV1)",
-  "settings.refReleaseAudio": "기본 오디오 코덱 (예: DDP, AAC, TrueHD)",
-  "settings.refReleaseAudioCodecs": "감지된 모든 오디오 코덱 배열",
-  "settings.refReleaseAudioChannels": "오디오 채널 구성 (예: 5.1, 7.1, 2.0)",
-  "settings.refReleaseLangsAudio": "ISO 639-3 오디오 언어 코드 (예: eng, jpn)",
-  "settings.refReleaseLangsSub": "ISO 639-3 자막 언어 코드",
-  "settings.refReleaseIsDualAudio": "다중 오디오 트랙이 감지되면 true",
-  "settings.refReleaseIsAtmos": "Dolby Atmos 오디오가 있으면 true",
-  "settings.refReleaseIsDV": "Dolby Vision 메타데이터가 감지되면 true",
-  "settings.refReleaseDetectedHdr": "HDR이 감지되면 true (비DV)",
-  "settings.refReleaseIsRemux": "전체 리먹스이면 true (트랜스코딩 없음)",
-  "settings.refReleaseIsBdDisk": "블루레이 디스크 소스이면 true",
-  "settings.refReleaseIsProper": "Proper로 태그되면 true",
-  "settings.refReleaseIsRepack": "Repack으로 태그되면 true",
-  "settings.refReleaseIsAiEnhanced":
-    "파서가 AI 향상 인코드 마커를 감지하면 true",
-  "settings.refReleaseIsHardcodedSubs":
-    "릴리스 이름에서 하드코딩 자막이 감지되면 true",
-  "settings.refReleaseIsHdr10Plus":
-    "릴리스 메타데이터에서 HDR10+가 감지되면 true",
-  "settings.refReleaseIsHlg": "릴리스 메타데이터에서 HLG가 감지되면 true",
-  "settings.refReleaseStreamingService":
-    "감지된 스트리밍 서비스 태그 (있는 경우)",
-  "settings.refReleaseEdition": "Extended, IMAX, Criterion 등의 에디션 태그",
-  "settings.refReleaseAnimeVersion":
-    "v2, v3 등의 애니메이션 버전 번호 (있는 경우)",
-  "settings.refReleaseGroup": "릴리스 그룹 또는 업로더 이름",
-  "settings.refReleaseYear": "출시 연도",
-  "settings.refReleaseParseConf": "파싱 신뢰도 점수 (0.0~1.0)",
-  "settings.refReleaseSizeBytes":
-    "바이트 단위 파일 크기 (scryer.size_gib()로 변환 가능)",
-  "settings.refReleaseAgeDays": "릴리스 이후 경과 일수",
-  "settings.refReleaseThumbsUp": "인덱서 추천/투표 수",
-  "settings.refReleaseThumbsDown": "인덱서 비추천/부정 투표 수",
-  "settings.refReleaseExtra":
-    "플러그인 제공 메타데이터 객체, input.release.extra.<key>로 접근 가능",
-  "settings.refSectionProfile": "— 활성 품질 프로필 설정",
-  "settings.refProfileId": "프로필 고유 식별자",
-  "settings.refProfileName": "프로필 표시 이름",
-  "settings.refProfileQualityTiers": "허용 품질 티어의 순서 목록",
-  "settings.refProfileArchivalQuality": "보관용으로 간주되는 최고 품질 티어",
-  "settings.refProfileAllowUnknown": "인식되지 않는 품질의 허용 여부",
-  "settings.refProfileSourceAllow": "허용 소스 (비어있으면 모두 허용)",
-  "settings.refProfileSourceBlock": "차단 소스",
-  "settings.refProfileVCodecAllow": "허용 비디오 코덱 (비어있으면 모두 허용)",
-  "settings.refProfileVCodecBlock": "차단 비디오 코덱",
-  "settings.refProfileACodecAllow": "허용 오디오 코덱 (비어있으면 모두 허용)",
-  "settings.refProfileACodecBlock": "차단 오디오 코덱",
-  "settings.refProfileDVAllowed": "Dolby Vision 릴리스 허용",
-  "settings.refProfileHdrAllowed": "HDR 릴리스 허용",
-  "settings.refProfilePreferRemux": "프로필이 전체 리먹스를 선호함",
-  "settings.refProfileAllowBdDisk": "블루레이 디스크 소스 허용",
-  "settings.refProfileAllowUpgrades": "기존 파일 업그레이드 허용",
-  "settings.refProfileRequiredLangs": "필수 오디오 언어 (ISO 639-3 코드)",
-  "settings.refSectionContext": "— 타이틀 및 검색 컨텍스트",
-  "settings.refCtxTitleId":
-    "구체적인 타이틀이 알려진 경우 내부 Scryer 타이틀 ID",
-  "settings.refCtxMediaType":
-    "평가 중인 미디어 유형, 일반적으로 movie, series, 또는 anime",
-  "settings.refCtxCategory": "스코어링 및 규칙 평가에 사용되는 카테고리 힌트",
-  "settings.refCtxTags": "타이틀의 사용자 정의 태그",
-  "settings.refCtxHasExisting": "이 타이틀에 대해 파일이 이미 존재하면 true",
-  "settings.refCtxExistingScore": "기존 파일의 기본 점수 (있는 경우)",
-  "settings.refCtxSearchMode": "평가 모드. 현재 값은 auto와 post_download",
-  "settings.refCtxRuntimeMin": "콘텐츠 러닝타임 (분)",
-  "settings.refCtxIsAnime": "타이틀이 애니메이션으로 분류되면 true",
-  "settings.refCtxIsFiller": "에피소드가 필러로 표시되면 true",
-  "settings.refSectionBuiltinScore": "— 기본 스코어링 엔진 결과",
-  "settings.refBuiltinTotal": "기본 스코어링 엔진의 총 점수",
-  "settings.refBuiltinBlocked": "기본 규칙이 이 릴리스를 차단하면 true",
-  "settings.refBuiltinCodes": "적용된 스코어링 코드 목록 (예: quality_tier_0)",
-  "settings.refSectionFile":
-    "— 실제 분석된 파일 메타데이터 (다운로드 전에는 null)",
-  "settings.refFileVideoCodec": "미디어 분석을 통한 검증된 비디오 코덱",
-  "settings.refFileVideoWidth": "검증된 비디오 너비 (픽셀)",
-  "settings.refFileVideoHeight": "검증된 비디오 높이 (픽셀)",
-  "settings.refFileVideoBitrateKbps": "검증된 비디오 비트레이트 (kbps)",
-  "settings.refFileVideoBitDepth": "검증된 비디오 비트 깊이",
-  "settings.refFileVideoHdrFormat":
-    "Dolby Vision, HDR10, HDR10+, HLG 등의 검증된 HDR 포맷",
-  "settings.refFileDoviProfile": "Dolby Vision 프로필 번호 (있는 경우)",
-  "settings.refFileDoviBlCompatId":
-    "Dolby Vision 베이스 레이어 호환성 ID (있는 경우)",
-  "settings.refFileVideoFrameRate": "미디어 분석을 통한 검증된 프레임레이트",
-  "settings.refFileVideoProfile": "Main 10 또는 High 등의 검증된 코덱 프로필",
-  "settings.refFileAudioCodec": "검증된 기본 오디오 코덱",
-  "settings.refFileAudioProfile":
-    "LC, Dolby TrueHD + Dolby Atmos 또는 DTS-HD MA + DTS:X IMAX와 같은 기본 검증 오디오 프로필 또는 확장 레이블",
-  "settings.refFileAudioChannels": "검증된 기본 오디오 채널 수",
-  "settings.refFileAudioBitrateKbps": "검증된 기본 오디오 비트레이트 (kbps)",
-  "settings.refFileAudioLanguages": "실제 파일에서 감지된 모든 오디오 언어",
-  "settings.refFileAudioStreams":
-    "오디오 스트림별 상세 정보; input.file.audio_streams[] 참조",
-  "settings.refFileSubtitleLanguages": "실제 파일에서 감지된 모든 자막 언어",
-  "settings.refFileSubtitleCodecs": "실제 파일에서 감지된 모든 자막 코덱",
-  "settings.refFileSubtitleStreams":
-    "자막 스트림별 상세 정보; input.file.subtitle_streams[] 참조",
-  "settings.refFileHasMultiAudio":
-    "실제 파일에 다중 오디오 스트림이 있으면 true",
-  "settings.refFileDurationSeconds": "검증된 러닝타임 (초)",
-  "settings.refFileNumChapters":
-    "컨테이너가 챕터를 노출하는 경우 검증된 챕터 수",
-  "settings.refFileContainerFormat": "matroska, mp4 등의 검증된 컨테이너 포맷",
-  "settings.refSectionAudioStreams": "— 중첩 오디오 스트림 항목",
-  "settings.refAudioStreamCodec": "스트림별 오디오 코덱",
-  "settings.refAudioStreamProfile":
-    "스트림별로 검증된 오디오 프로필 또는 확장 라벨",
-  "settings.refAudioStreamChannels": "스트림별 채널 수",
-  "settings.refAudioStreamLanguage": "스트림별 언어 코드",
-  "settings.refAudioStreamBitrateKbps": "스트림별 비트레이트 (kbps)",
-  "settings.refSectionSubtitleStreams": "— 중첩 자막 스트림 항목",
-  "settings.refSubtitleStreamCodec": "스트림별 자막 코덱",
-  "settings.refSubtitleStreamLanguage": "스트림별 언어 코드",
-  "settings.refSubtitleStreamName": "스트림별 자막 트랙 제목 (있는 경우)",
-  "settings.refSubtitleStreamForced": "자막 스트림이 강제로 표시되면 true",
-  "settings.refSubtitleStreamDefault": "자막 스트림이 기본값으로 표시되면 true",
-  "settings.refSectionBuiltins": "커스텀 Scryer 함수",
-  "settings.refBuiltinsIntro":
-    "이 헬퍼 함수들은 모든 표준 OPA 내장 함수 외에 Rego 규칙에서 사용할 수 있습니다.",
-  "settings.refFnBlockScore":
-    "릴리스를 완전 차단하는 데 사용되는 상수 -10000을 반환합니다",
-  "settings.refFnSizeGib":
-    "바이트를 GiB로 변환 (예: scryer.size_gib(input.release.size_bytes) > 50)",
-  "settings.refFnLangMatches":
-    '별칭이 있는 ISO 639-3 코드와 일치합니다(예: scryer.lang_matches("jpn", "ja")는 true입니다).',
-  "settings.refFnNormalizeSource":
-    '소스 이름을 정규화합니다(예: "webdl"이 "WEB-DL"이 됨)',
-  "settings.refFnNormalizeCodec":
-    '코덱 이름을 정규화합니다(예: "h264"는 "H.264"가 됨)',
-  "settings.refSectionSandbox": "샌드박스 및 제한 사항",
-  "settings.refSandboxIntro":
-    "모든 사용자 규칙은 다음 제한 사항이 있는 샌드박스된 Rego 평가기 내에서 실행됩니다:",
-  "settings.refSandboxNoIO":
-    "네트워크 또는 파일 시스템 접근 불가 — 규칙은 HTTP 요청, 파일 읽기 등 I/O를 수행할 수 없습니다. http.send와 같은 표준 OPA 내장 함수는 사용할 수 없습니다.",
-  "settings.refSandboxPkgIsolation":
-    "패키지 격리 — 각 규칙은 자동으로 자체 패키지에 네임스페이스됩니다. 규칙은 다른 규칙의 데이터를 읽거나 수정할 수 없습니다.",
-  "settings.refSandboxReadOnly":
-    "읽기 전용 입력 — 규칙은 input 문서만 읽을 수 있습니다. 애플리케이션 상태를 수정하거나 평가 간 데이터를 유지할 수 없습니다.",
-  "settings.refSandboxOutputRestricted":
-    "score_entry로 출력 제한 — 각 규칙에서 score_entry 맵만 추출됩니다. 다른 정의나 할당은 무시됩니다.",
-  "settings.refSandboxIntegerOnly":
-    "정수 전용 점수 델타 — score_entry의 값은 i32 범위 내의 정수여야 합니다. 부동 소수점은 검증 시 거부됩니다 (round() 또는 ceil()로 변환하세요).",
-  "settings.refSandboxValidation":
-    "저장 전 검증 — 규칙은 저장 전에 합성 입력에 대해 컴파일 및 테스트 실행됩니다. 유효하지 않은 규칙은 거부됩니다.",
-  "settings.refSandboxErrorIsolation":
-    "오류 격리 — 한 규칙이 런타임에 실패해도 다른 모든 규칙은 정상적으로 계속 평가됩니다. 실패는 로그에 기록되지만 스코어링을 중단하지 않습니다.",
-  "settings.refSectionOutput": "규칙 출력 형식",
-  "settings.refOutputIntro":
-    "규칙은 문자열 키(스코어 코드)를 정수 값(포인트 델타)으로 매핑하는 score_entry 규칙을 정의해야 합니다. 양수는 릴리스를 부스트하고, 음수는 감점하며, scryer.block_score()는 완전 차단합니다. 파일 기반 규칙은 input.file이 다운로드 후 평가 전까지 null이므로 다운로드 전에는 자연스럽게 무작동합니다.",
   "settings.subtitles": "자막",
   "settings.subtitlesSaved": "자막 설정이 저장되었습니다.",
   "settings.sub.enabled": "자막 관리 활성화",
@@ -1317,8 +1157,10 @@ const ko: LocaleDictionary = {
   "subtitle.credentialsRequiredTitle": "자막 자격 증명 필요",
   "subtitle.credentialsRequiredBody": "이 파일의 자막을 검색하기 전에 설정 > 자막에서 자막 사용자 이름과 비밀번호를 구성하세요.",
   "subtitle.credentialsRequiredAction": "자막 설정 열기",
-  "subtitle.blacklist": "차단 목록",
-  "subtitle.blacklisted": "자막이 차단 목록에 추가되었습니다.",
+  "subtitle.blocklist": "차단 목록",
+  "subtitle.blocklisted": "자막이 차단 목록에 추가되었습니다.",
+  "subtitle.deleted": "자막을 삭제했습니다",
+  "subtitle.onDisk": "디스크에 있음",
   "subtitle.releaseInfo": "출시",
   "subtitle.provider": "공급자",
   "subtitle.language": "언어",

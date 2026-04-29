@@ -6,8 +6,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use extism::Manifest;
 use scryer_application::{
-    DownloadClient, DownloadClientPluginProvider, IndexerClient, IndexerPluginProvider,
-    NotificationClient, NotificationPluginProvider, SubtitlePluginProvider, SubtitleProviderClient,
+    DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient,
+    IndexerPluginProvider, NotificationClient, NotificationPluginProvider, SubtitlePluginProvider,
+    SubtitleProviderClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
@@ -43,7 +44,13 @@ static WASMTIME_PLUGIN_BUILD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex:
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PluginLoadSource {
     Builtin,
-    External,
+    External { first_party: bool },
+}
+
+impl PluginLoadSource {
+    fn can_use_first_party_host_bindings(self) -> bool {
+        matches!(self, Self::Builtin | Self::External { first_party: true })
+    }
 }
 
 struct LoadedPlugin {
@@ -75,7 +82,6 @@ fn builtin_indexer_provider_types() -> Vec<String> {
             &[
                 crate::builtins::NZBGEEK_WASM,
                 crate::builtins::NEWZNAB_WASM,
-                crate::builtins::DOGNZB_WASM,
                 crate::builtins::ANIMETOSHO_WASM,
                 crate::builtins::TORZNAB_WASM,
             ],
@@ -113,10 +119,22 @@ impl WasmIndexerPluginProvider {
 
     /// Register an externally-installed plugin from WASM bytes.
     /// External plugins take priority over built-ins with the same provider_type.
-    pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
-        match load_from_bytes(wasm_bytes) {
+    pub fn with_external_bytes(self, wasm_bytes: &[u8]) -> Self {
+        self.with_external_plugin(ExternalPluginWasm {
+            bytes: wasm_bytes,
+            first_party: false,
+        })
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match load_from_bytes(plugin.bytes) {
             Ok((descriptor, bytes)) => {
-                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::External) {
+                if !validate_indexer_descriptor(
+                    &descriptor,
+                    PluginLoadSource::External {
+                        first_party: plugin.first_party,
+                    },
+                ) {
                     return self;
                 }
 
@@ -396,6 +414,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                 imdb_search: true,
                 tvdb_search: true,
                 anidb_search: false,
+                ..Default::default()
             })
     }
 
@@ -567,7 +586,7 @@ impl IndexerPluginProvider for DynamicPluginProvider {
 
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload(build_indexer_plugin_provider(
@@ -591,13 +610,22 @@ impl WasmDownloadClientPluginProvider {
         }
     }
 
-    pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
-        match load_from_bytes(wasm_bytes) {
+    pub fn with_external_bytes(self, wasm_bytes: &[u8]) -> Self {
+        self.with_external_plugin(ExternalPluginWasm {
+            bytes: wasm_bytes,
+            first_party: false,
+        })
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match load_from_bytes(plugin.bytes) {
             Ok((descriptor, bytes)) => {
                 if !validate_descriptor_for_type(
                     &descriptor,
                     Some("download_client"),
-                    PluginLoadSource::External,
+                    PluginLoadSource::External {
+                        first_party: plugin.first_party,
+                    },
                 ) {
                     return self;
                 }
@@ -762,7 +790,7 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
 
     fn reload_plugins(
         &self,
-        _external_wasm_bytes: &[&[u8]],
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
         _disabled_builtins: &[String],
     ) -> Result<(), String> {
         Err("use DynamicDownloadClientPluginProvider for reload".to_string())
@@ -867,7 +895,7 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
 
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload(build_download_client_plugin_provider(
@@ -998,8 +1026,8 @@ fn binding_allowed_for_plugin(
 ) -> bool {
     match binding {
         SdkHostBinding::SmgOpenSubtitlesApiKey => {
-            let _ = load_source;
-            descriptor.plugin_type() == "subtitle_provider"
+            load_source.can_use_first_party_host_bindings()
+                && descriptor.plugin_type() == "subtitle_provider"
                 && descriptor.id.eq_ignore_ascii_case("opensubtitles")
                 && descriptor
                     .provider_type()
@@ -1022,28 +1050,25 @@ fn allowed_host_pattern_is_valid(host: &str) -> bool {
     }
 
     if let Some(suffix) = host.strip_prefix("*.") {
-        return !suffix.is_empty()
-            && !suffix.contains('*')
-            && url::Host::parse(suffix).is_ok();
+        return !suffix.is_empty() && !suffix.contains('*') && url::Host::parse(suffix).is_ok();
     }
 
     !host.contains('*') && url::Host::parse(host).is_ok()
 }
 
 pub fn build_indexer_plugin_provider(
-    external_wasm_bytes: &[&[u8]],
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
     disabled_builtins: &[String],
 ) -> WasmIndexerPluginProvider {
     let mut provider = WasmIndexerPluginProvider::empty();
 
-    for bytes in external_wasm_bytes {
-        provider = provider.with_external_bytes(bytes);
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
     }
 
     for loaded in load_builtin_bytes_parallel(&[
         crate::builtins::NZBGEEK_WASM,
         crate::builtins::NEWZNAB_WASM,
-        crate::builtins::DOGNZB_WASM,
         crate::builtins::ANIMETOSHO_WASM,
         crate::builtins::TORZNAB_WASM,
     ]) {
@@ -1058,13 +1083,13 @@ pub fn build_indexer_plugin_provider(
 }
 
 pub fn build_download_client_plugin_provider(
-    external_wasm_bytes: &[&[u8]],
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
     disabled_builtins: &[String],
 ) -> WasmDownloadClientPluginProvider {
     let mut provider = WasmDownloadClientPluginProvider::empty();
 
-    for bytes in external_wasm_bytes {
-        provider = provider.with_external_bytes(bytes);
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
     }
 
     for provider_type in disabled_builtins {
@@ -1087,13 +1112,22 @@ impl WasmSubtitlePluginProvider {
         }
     }
 
-    pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
-        match load_from_bytes(wasm_bytes) {
+    pub fn with_external_bytes(self, wasm_bytes: &[u8]) -> Self {
+        self.with_external_plugin(ExternalPluginWasm {
+            bytes: wasm_bytes,
+            first_party: false,
+        })
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match load_from_bytes(plugin.bytes) {
             Ok((descriptor, bytes)) => {
                 if !validate_descriptor_for_type(
                     &descriptor,
                     Some("subtitle_provider"),
-                    PluginLoadSource::External,
+                    PluginLoadSource::External {
+                        first_party: plugin.first_party,
+                    },
                 ) {
                     return self;
                 }
@@ -1258,7 +1292,7 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
 
     fn reload_plugins(
         &self,
-        _external_wasm_bytes: &[&[u8]],
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
         _disabled_builtins: &[String],
     ) -> Result<(), String> {
         Err("use DynamicSubtitlePluginProvider for reload".to_string())
@@ -1372,7 +1406,7 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
 
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload(build_subtitle_plugin_provider(
@@ -1405,13 +1439,13 @@ fn cache_fingerprint(value: &str) -> String {
 }
 
 pub fn build_subtitle_plugin_provider(
-    external_wasm_bytes: &[&[u8]],
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
     disabled_builtins: &[String],
 ) -> WasmSubtitlePluginProvider {
     let mut provider = WasmSubtitlePluginProvider::empty();
 
-    for bytes in external_wasm_bytes {
-        provider = provider.with_external_bytes(bytes);
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
     }
 
     for loaded in load_builtin_bytes_parallel(&[crate::builtins::JIMAKU_WASM]) {
@@ -1451,7 +1485,10 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
 
         match load_single_plugin(&wasm_path) {
             Ok((descriptor, wasm_bytes)) => {
-                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::External) {
+                if !validate_indexer_descriptor(
+                    &descriptor,
+                    PluginLoadSource::External { first_party: false },
+                ) {
                     continue;
                 }
 
@@ -1753,13 +1790,22 @@ impl WasmNotificationPluginProvider {
         }
     }
 
-    pub fn with_external_bytes(mut self, wasm_bytes: &[u8]) -> Self {
-        match load_from_bytes(wasm_bytes) {
+    pub fn with_external_bytes(self, wasm_bytes: &[u8]) -> Self {
+        self.with_external_plugin(ExternalPluginWasm {
+            bytes: wasm_bytes,
+            first_party: false,
+        })
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match load_from_bytes(plugin.bytes) {
             Ok((descriptor, bytes)) => {
                 if !validate_descriptor_for_type(
                     &descriptor,
                     Some("notification"),
-                    PluginLoadSource::External,
+                    PluginLoadSource::External {
+                        first_party: plugin.first_party,
+                    },
                 ) {
                     return self;
                 }
@@ -1898,7 +1944,7 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
 
     fn reload_plugins(
         &self,
-        _external_wasm_bytes: &[&[u8]],
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
         _disabled_builtins: &[String],
     ) -> Result<(), String> {
         Err("use DynamicNotificationPluginProvider for reload".to_string())
@@ -1991,7 +2037,7 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
 
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload(build_notification_plugin_provider(
@@ -2003,13 +2049,13 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
 }
 
 pub fn build_notification_plugin_provider(
-    external_wasm_bytes: &[&[u8]],
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
     disabled_builtins: &[String],
 ) -> WasmNotificationPluginProvider {
     let mut provider = WasmNotificationPluginProvider::empty();
 
-    for bytes in external_wasm_bytes {
-        provider = provider.with_external_bytes(bytes);
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
     }
 
     for provider_type in disabled_builtins {
@@ -2131,15 +2177,15 @@ mod tests {
     fn indexer_family_types_are_accepted() {
         assert!(validate_indexer_descriptor(
             &descriptor("indexer"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
         assert!(validate_indexer_descriptor(
             &descriptor("usenet_indexer"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
         assert!(validate_indexer_descriptor(
             &descriptor("torrent_indexer"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 
@@ -2147,11 +2193,11 @@ mod tests {
     fn non_indexer_types_are_rejected_for_indexer_provider() {
         assert!(!validate_indexer_descriptor(
             &descriptor("notification"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
         assert!(!validate_indexer_descriptor(
             &descriptor("download_client"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 
@@ -2165,12 +2211,12 @@ mod tests {
 
         assert!(validate_indexer_descriptor(
             &indexer,
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
         assert!(validate_descriptor_for_type(
             &subtitle,
             Some("subtitle_provider"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 
@@ -2187,15 +2233,12 @@ mod tests {
     #[test]
     fn constrained_allowed_host_glob_is_accepted() {
         let mut descriptor = descriptor("subtitle_provider");
-        set_allowed_hosts(
-            &mut descriptor,
-            vec!["*.opensubtitles.com".to_string()],
-        );
+        set_allowed_hosts(&mut descriptor, vec!["*.opensubtitles.com".to_string()]);
 
         assert!(validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 
@@ -2215,7 +2258,7 @@ mod tests {
                 !validate_descriptor_for_type(
                     &descriptor,
                     Some("subtitle_provider"),
-                    PluginLoadSource::External
+                    PluginLoadSource::External { first_party: false }
                 ),
                 "pattern should be rejected: {pattern}"
             );
@@ -2245,13 +2288,14 @@ mod tests {
         assert!(validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: true }
         ));
     }
 
     #[test]
     fn non_official_external_plugins_cannot_request_opensubtitles_api_key_binding() {
         let mut descriptor = descriptor("subtitle_provider");
+        descriptor.id = "opensubtitles".to_string();
         set_provider_type(&mut descriptor, "opensubtitles");
         let ProviderDescriptor::Subtitle(subtitle) = &mut descriptor.provider else {
             panic!("expected subtitle descriptor");
@@ -2271,7 +2315,7 @@ mod tests {
         assert!(!validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 
@@ -2296,7 +2340,7 @@ mod tests {
         assert!(!validate_descriptor_for_type(
             &descriptor,
             Some("notification"),
-            PluginLoadSource::External
+            PluginLoadSource::External { first_party: false }
         ));
     }
 

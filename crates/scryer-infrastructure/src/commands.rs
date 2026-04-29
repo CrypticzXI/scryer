@@ -12,8 +12,7 @@ use scryer_application::{
     ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, InsertMediaFileInput,
     LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease, PendingReleaseStatus,
     ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
-    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem,
-    WantedItemsQuery,
+    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem, WantedItemsQuery,
     WorkflowOperationInfo,
 };
 use scryer_domain::{
@@ -511,7 +510,7 @@ pub(crate) enum DbCommand {
         id: String,
         reply: Sender<AppResult<Option<SubtitleDownload>>>,
     },
-    BlacklistSubtitleDownload {
+    BlocklistSubtitleDownload {
         media_file_id: String,
         provider: String,
         provider_file_id: String,
@@ -1965,7 +1964,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::BlacklistSubtitleDownload {
+                DbCommand::BlocklistSubtitleDownload {
                     media_file_id,
                     provider,
                     provider_file_id,
@@ -1974,8 +1973,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     reply,
                 } => {
                     let _ = reply.send(
-                        run_with_sqlite_busy_retries("blacklist_subtitle_download", || {
-                            crate::queries::subtitle::insert_blacklist_entry(
+                        run_with_sqlite_busy_retries("blocklist_subtitle_download", || {
+                            crate::queries::subtitle::insert_blocklist_entry(
                                 &pool,
                                 &media_file_id,
                                 &provider,
@@ -2670,9 +2669,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::ListWantedItems { query, reply } => {
-                    let _ = reply.send(
-                        crate::queries::wanted::list_wanted_items_query(&pool, &query).await,
-                    );
+                    let _ = reply
+                        .send(crate::queries::wanted::list_wanted_items_query(&pool, &query).await);
                 }
                 DbCommand::CountWantedItems { query, reply } => {
                     let _ = reply.send(

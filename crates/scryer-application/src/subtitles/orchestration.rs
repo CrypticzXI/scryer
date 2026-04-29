@@ -19,7 +19,9 @@ use crate::{
     ScopedExternalId, SubtitleProviderClient, SubtitleProviderConfigUpdate,
     SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
 };
-use scryer_domain::{Entitlement, SubtitleDownload, Title, User};
+use scryer_domain::{
+    Entitlement, ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
+};
 
 #[derive(Clone)]
 struct PluginSubtitleProviderAdapter {
@@ -354,7 +356,7 @@ fn subtitle_provider_search_concurrency_limit() -> usize {
 }
 
 impl AppUseCase {
-    pub async fn list_subtitle_downloads_for_title(
+    pub async fn list_external_subtitles_for_title(
         &self,
         title_id: &str,
     ) -> AppResult<Vec<SubtitleDownload>> {
@@ -365,14 +367,14 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn list_subtitle_blacklist_for_media_file(
+    pub async fn list_external_subtitle_blocklist_for_media_file(
         &self,
         media_file_id: &str,
-    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
+    ) -> AppResult<Vec<SubtitleBlocklistEntry>> {
         self.services
             .workflow
             .subtitle_downloads
-            .list_blacklist_for_media_file(media_file_id)
+            .list_blocklist_for_media_file(media_file_id)
             .await
     }
 
@@ -424,14 +426,14 @@ impl AppUseCase {
 
         let mut filtered = Vec::with_capacity(results.len());
         for result in results {
-            let is_blacklisted = self
+            let is_blocklisted = self
                 .services
                 .workflow
                 .subtitle_downloads
-                .is_blacklisted(media_file_id, &result.provider, &result.provider_file_id)
+                .is_blocklisted(media_file_id, &result.provider, &result.provider_file_id)
                 .await
                 .unwrap_or(false);
-            if !is_blacklisted {
+            if !is_blocklisted {
                 filtered.push(result);
             }
         }
@@ -496,8 +498,9 @@ impl AppUseCase {
             media_file_id: media_file.id.clone(),
             title_id: media_file.title_id.clone(),
             episode_id: media_file.episode_id.clone(),
+            source_kind: ExternalSubtitleSourceKind::Downloaded,
             language: language.to_string(),
-            provider: provider_name.to_string(),
+            provider: Some(provider_name.to_string()),
             provider_file_id: Some(provider_file_id.to_string()),
             file_path: dest_path.to_string_lossy().to_string(),
             score,
@@ -1227,14 +1230,14 @@ async fn run_subtitle_search_for_file(
 
         let mut filtered_results = Vec::new();
         for result in &results {
-            let blacklisted = app
+            let blocklisted = app
                 .services
                 .workflow
                 .subtitle_downloads
-                .is_blacklisted(&mf.id, &result.provider, &result.provider_file_id)
+                .is_blocklisted(&mf.id, &result.provider, &result.provider_file_id)
                 .await
                 .unwrap_or(false);
-            if !blacklisted {
+            if !blocklisted {
                 filtered_results.push(result);
             }
         }
@@ -1285,8 +1288,9 @@ async fn run_subtitle_search_for_file(
                     media_file_id: mf.id.clone(),
                     title_id: title.id.clone(),
                     episode_id: mf.episode_id.clone(),
+                    source_kind: ExternalSubtitleSourceKind::Downloaded,
                     language: best.language.clone(),
-                    provider: best.provider.clone(),
+                    provider: Some(best.provider.clone()),
                     provider_file_id: Some(best.provider_file_id.clone()),
                     file_path: dest_path.to_string_lossy().to_string(),
                     score: Some(best.score),
@@ -1450,17 +1454,17 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                     }
                 };
 
-                // Filter blacklisted results
+                // Filter blocklisted results
                 let mut filtered_results = Vec::new();
                 for r in &results {
-                    let blacklisted = app
+                    let blocklisted = app
                         .services
                         .workflow
                         .subtitle_downloads
-                        .is_blacklisted(&mf.id, &r.provider, &r.provider_file_id)
+                        .is_blocklisted(&mf.id, &r.provider, &r.provider_file_id)
                         .await
                         .unwrap_or(false);
-                    if !blacklisted {
+                    if !blocklisted {
                         filtered_results.push(r);
                     }
                 }
@@ -1525,8 +1529,9 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             media_file_id: mf.id.clone(),
                             title_id: title.id.clone(),
                             episode_id: mf.episode_id.clone(),
+                            source_kind: ExternalSubtitleSourceKind::Downloaded,
                             language: best.language.clone(),
-                            provider: best.provider.clone(),
+                            provider: Some(best.provider.clone()),
                             provider_file_id: Some(best.provider_file_id.clone()),
                             file_path: dest_path.to_string_lossy().to_string(),
                             score: Some(best.score),

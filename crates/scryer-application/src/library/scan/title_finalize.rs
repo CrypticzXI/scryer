@@ -331,6 +331,10 @@ pub(crate) async fn finalize_title_scan_file(
         )
     );
     let mut title_updated = persisted_file.title_updated;
+    let external_subtitle_episode_id = match target_episodes.as_slice() {
+        [episode] => Some(episode.id.as_str()),
+        _ => None,
+    };
 
     for episode in &target_episodes {
         if !should_link_target_episodes {
@@ -358,6 +362,31 @@ pub(crate) async fn finalize_title_scan_file(
         }
         crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), None)
             .await;
+    }
+
+    match crate::subtitles::reconcile_external_subtitles_for_media_file(
+        app,
+        &title.id,
+        &persisted_file.file_id,
+        external_subtitle_episode_id,
+        Path::new(&file.path),
+    )
+    .await
+    {
+        Ok(changed) => {
+            if changed {
+                title_updated = true;
+            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                file_id = %persisted_file.file_id,
+                file_path = %file.path,
+                "failed to reconcile external subtitles during title scan"
+            );
+        }
     }
 
     if let Some(outcome) = analysis_outcome {
@@ -482,6 +511,31 @@ pub(super) async fn finalize_movie_scan_file(
     else {
         return;
     };
+
+    match crate::subtitles::reconcile_external_subtitles_for_media_file(
+        app,
+        &title.id,
+        &persisted_file.file_id,
+        None,
+        Path::new(&file.path),
+    )
+    .await
+    {
+        Ok(changed) => {
+            if changed {
+                persisted_file.title_updated = true;
+            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                file_id = %persisted_file.file_id,
+                file_path = %file.path,
+                "failed to reconcile external subtitles during movie scan"
+            );
+        }
+    }
 
     if library_scan_cancel_requested(cancel_token) {
         return;

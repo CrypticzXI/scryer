@@ -1,6 +1,9 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::ImportType;
+use std::collections::BTreeMap;
+
+pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 
 #[async_trait]
 pub trait TitleRepository: Send + Sync {
@@ -1090,7 +1093,7 @@ pub trait IndexerPluginProvider: Send + Sync {
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy>;
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
@@ -1129,8 +1132,15 @@ pub trait IndexerPluginProvider: Send + Sync {
             imdb_search: true,
             tvdb_search: true,
             anidb_search: false,
+            ..Default::default()
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalPluginWasm<'a> {
+    pub bytes: &'a [u8],
+    pub first_party: bool,
 }
 
 pub trait DownloadClientPluginProvider: Send + Sync {
@@ -1159,7 +1169,7 @@ pub trait DownloadClientPluginProvider: Send + Sync {
     }
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
@@ -1179,21 +1189,63 @@ pub struct NotificationExternalIdsPayload {
     pub imdb_id: Option<String>,
     pub tvdb_id: Option<String>,
     pub anidb_id: Option<String>,
+    pub tvmaze_id: Option<String>,
+    pub anilist_ids: Vec<String>,
+    pub mal_ids: Vec<String>,
+    pub kitsu_ids: Vec<String>,
+    pub by_source: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationActorPayload {
+    pub user_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotificationSeverityPayload {
+    #[default]
+    Info,
+    Warning,
+    Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationTitlePayload {
+    pub id: Option<String>,
     pub name: String,
     pub facet: String,
     pub year: Option<i32>,
+    pub slug: Option<String>,
+    pub path: Option<String>,
+    pub overview: Option<String>,
+    pub sort_title: Option<String>,
     pub poster_url: Option<String>,
+    pub banner_url: Option<String>,
+    pub background_url: Option<String>,
+    pub genres: Vec<String>,
+    pub tags: Vec<String>,
+    pub aliases: Vec<String>,
+    pub original_language: Option<String>,
+    pub original_country: Option<String>,
     pub external_ids: NotificationExternalIdsPayload,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NotificationEpisodePayload {
+    pub id: Option<String>,
     pub episode_ids: Vec<String>,
     pub display: Option<String>,
+    pub collection_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
+    pub absolute_number: Option<String>,
+    pub title: Option<String>,
+    pub overview: Option<String>,
+    pub air_date: Option<String>,
+    pub air_date_utc: Option<String>,
+    pub episode_type: Option<String>,
+    pub finale_type: Option<String>,
+    pub tvdb_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1203,6 +1255,11 @@ pub struct NotificationReleasePayload {
     pub quality: Option<String>,
     pub provider: Option<String>,
     pub language: Option<String>,
+    pub release_group: Option<String>,
+    pub protocol: Option<String>,
+    pub indexer: Option<String>,
+    pub languages: Vec<String>,
+    pub custom_scores: BTreeMap<String, i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1211,6 +1268,12 @@ pub struct NotificationDownloadPayload {
     pub client_id: Option<String>,
     pub client_name: Option<String>,
     pub client_type: Option<String>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub status_message: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub progress_percent: Option<i32>,
+    pub output_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1223,12 +1286,20 @@ pub struct NotificationImportPayload {
     pub dest_path: Option<String>,
     pub imported_count: Option<i32>,
     pub status: Option<String>,
+    pub skipped_count: Option<i32>,
+    pub rejected_count: Option<i32>,
+    pub upgrade: bool,
+    pub deleted_paths: Vec<String>,
+    pub replaced_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NotificationHealthPayload {
     pub status: Option<String>,
     pub message: Option<String>,
+    pub severity: Option<String>,
+    pub code: Option<String>,
+    pub details: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1250,19 +1321,69 @@ pub struct NotificationFilePayload {
     pub media_updates: Vec<NotificationMediaUpdatePayload>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationMediaFilePayload {
+    pub id: Option<String>,
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub recycle_bin_path: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub quality: Option<String>,
+    pub release_group: Option<String>,
+    pub scene_name: Option<String>,
+    pub audio_languages: Vec<String>,
+    pub subtitle_languages: Vec<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub audio_channels: Option<String>,
+    pub video_width: Option<i32>,
+    pub video_height: Option<i32>,
+    pub video_bit_depth: Option<i32>,
+    pub video_hdr_format: Option<String>,
+    pub video_frame_rate: Option<String>,
+    pub container_format: Option<String>,
+    pub edition: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationApplicationUpdatePayload {
+    pub current_version: Option<String>,
+    pub target_version: Option<String>,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationManualInteractionPayload {
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+    pub link: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationPayload {
+    pub schema_version: u32,
     pub event_type: scryer_domain::NotificationEventType,
+    pub event_id: Option<String>,
+    pub occurred_at: Option<String>,
+    pub correlation_id: Option<String>,
+    pub actor: Option<NotificationActorPayload>,
+    pub severity: Option<NotificationSeverityPayload>,
+    pub is_test: bool,
     pub summary_title: String,
     pub summary_message: String,
     pub app: NotificationAppPayload,
     pub title: Option<NotificationTitlePayload>,
     pub episode: Option<NotificationEpisodePayload>,
+    pub episodes: Vec<NotificationEpisodePayload>,
     pub release: Option<NotificationReleasePayload>,
     pub download: Option<NotificationDownloadPayload>,
     pub import: Option<NotificationImportPayload>,
     pub health: Option<NotificationHealthPayload>,
     pub file: Option<NotificationFilePayload>,
+    pub media_files: Vec<NotificationMediaFilePayload>,
+    pub application_update: Option<NotificationApplicationUpdatePayload>,
+    pub manual_interaction: Option<NotificationManualInteractionPayload>,
 }
 
 #[async_trait]
@@ -1306,7 +1427,7 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
@@ -1334,7 +1455,7 @@ pub trait SubtitlePluginProvider: Send + Sync {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
     fn reload_plugins(
         &self,
-        external_wasm_bytes: &[&[u8]],
+        external_wasm_bytes: &[ExternalPluginWasm<'_>],
         disabled_builtins: &[String],
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
@@ -1545,20 +1666,20 @@ pub trait SubtitleDownloadRepository: Send + Sync {
         &self,
         media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>>;
-    async fn list_blacklist_for_media_file(
+    async fn list_blocklist_for_media_file(
         &self,
         media_file_id: &str,
-    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>>;
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlocklistEntry>>;
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()>;
     async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()>;
     async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>>;
-    async fn is_blacklisted(
+    async fn is_blocklisted(
         &self,
         media_file_id: &str,
         provider: &str,
         provider_file_id: &str,
     ) -> AppResult<bool>;
-    async fn blacklist(
+    async fn blocklist(
         &self,
         media_file_id: &str,
         provider: &str,

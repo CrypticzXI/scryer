@@ -141,6 +141,32 @@ const RELEASE_FIELDS: RefField[] = [
     descKey: "settings.refReleaseIsHdr10Plus",
   },
   { field: "is_hlg", type: "bool", descKey: "settings.refReleaseIsHlg" },
+  { field: "is_10bit", type: "bool", descKey: "settings.refReleaseIs10Bit" },
+  {
+    field: "is_uncensored",
+    type: "bool",
+    descKey: "settings.refReleaseIsUncensored",
+  },
+  {
+    field: "is_dubs_only",
+    type: "bool",
+    descKey: "settings.refReleaseIsDubsOnly",
+  },
+  {
+    field: "has_release_group",
+    type: "bool",
+    descKey: "settings.refReleaseHasReleaseGroup",
+  },
+  {
+    field: "is_obfuscated",
+    type: "bool",
+    descKey: "settings.refReleaseIsObfuscated",
+  },
+  {
+    field: "is_retagged",
+    type: "bool",
+    descKey: "settings.refReleaseIsRetagged",
+  },
   {
     field: "streaming_service",
     type: "string?",
@@ -151,6 +177,21 @@ const RELEASE_FIELDS: RefField[] = [
     field: "anime_version",
     type: "number?",
     descKey: "settings.refReleaseAnimeVersion",
+  },
+  {
+    field: "episode_release_type",
+    type: "string?",
+    descKey: "settings.refReleaseEpisodeReleaseType",
+  },
+  {
+    field: "is_season_pack",
+    type: "bool",
+    descKey: "settings.refReleaseIsSeasonPack",
+  },
+  {
+    field: "is_multi_episode",
+    type: "bool",
+    descKey: "settings.refReleaseIsMultiEpisode",
   },
   {
     field: "release_group",
@@ -231,6 +272,11 @@ const PROFILE_FIELDS: RefField[] = [
     descKey: "settings.refProfileACodecBlock",
   },
   {
+    field: "atmos_preferred",
+    type: "bool",
+    descKey: "settings.refProfileAtmosPreferred",
+  },
+  {
     field: "dolby_vision_allowed",
     type: "bool",
     descKey: "settings.refProfileDVAllowed",
@@ -254,6 +300,11 @@ const PROFILE_FIELDS: RefField[] = [
     field: "allow_upgrades",
     type: "bool",
     descKey: "settings.refProfileAllowUpgrades",
+  },
+  {
+    field: "prefer_dual_audio",
+    type: "bool",
+    descKey: "settings.refProfilePreferDualAudio",
   },
   {
     field: "required_audio_languages",

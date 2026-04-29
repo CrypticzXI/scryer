@@ -19,7 +19,7 @@ export const WEAVER_API_KEY_SETUP_PATH =
 export const DEFAULT_PORT_FOR_CLIENT_TYPE: Record<string, string> = {
   nzbget: "6789",
   sabnzbd: "8080",
-  weaver: "8090",
+  weaver: "9090",
   qbittorrent: "8080",
 };
 

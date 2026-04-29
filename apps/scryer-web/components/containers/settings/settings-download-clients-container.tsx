@@ -1,5 +1,5 @@
 
-import { type ComponentProps, useCallback, useEffect, useMemo, useState } from "react";
+import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsDownloadClientsSection } from "@/components/views/settings/settings-download-clients-section";
 import {
@@ -9,11 +9,19 @@ import {
   testDownloadClientConnectionMutation,
   updateDownloadClientMutation,
 } from "@/lib/graphql/mutations";
-import { downloadClientsInitQuery, downloadClientsQuery } from "@/lib/graphql/queries";
+import {
+  downloadClientProviderTypesQuery,
+  downloadClientsInitQuery,
+  downloadClientsQuery,
+} from "@/lib/graphql/queries";
 import { DEFAULT_DOWNLOAD_CLIENT_DRAFT } from "@/lib/constants/download-clients";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  isReportedConnectionFeedbackError,
+  runConnectionFeedback,
+} from "@/lib/utils/connection-feedback";
 import {
   buildDownloadClientBaseUrl,
   buildDownloadClientConfigJson,
@@ -32,7 +40,13 @@ import type {
 
 type SettingsDownloadClientsSectionProps = ComponentProps<typeof SettingsDownloadClientsSection>;
 
-export function SettingsDownloadClientsContainer() {
+type SettingsDownloadClientsContainerProps = {
+  providerCatalogVersion?: number;
+};
+
+export function SettingsDownloadClientsContainer({
+  providerCatalogVersion = 0,
+}: SettingsDownloadClientsContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -51,6 +65,7 @@ export function SettingsDownloadClientsContainer() {
   const [pendingDeleteDownloadClient, setPendingDeleteDownloadClient] = useState<DownloadClientRecord | null>(null);
   const [downloadClientOrder, setDownloadClientOrder] = useState<string[]>([]);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
+  const providerCatalogVersionRef = useRef(providerCatalogVersion);
 
   const getDownloadClientErrorMessage = useCallback(
     (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback),
@@ -67,7 +82,9 @@ export function SettingsDownloadClientsContainer() {
 
   const refreshDownloadClients = useCallback(async () => {
     try {
-      const { data, error } = await client.query(downloadClientsQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(downloadClientsQuery, {}, { requestPolicy: "network-only" })
+        .toPromise();
       if (error) throw error;
       const clients: DownloadClientRecord[] = data.downloadClientConfigs || [];
       setSettingsDownloadClients(clients);
@@ -77,11 +94,25 @@ export function SettingsDownloadClientsContainer() {
     }
   }, [client, setGlobalStatus, t]);
 
+  const refreshProviderTypes = useCallback(async () => {
+    const { data, error } = await client
+      .query(downloadClientProviderTypesQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setDownloadClientTypeOptions(
+      buildDownloadClientTypeOptions(
+        (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],
+      ),
+    );
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const { data, error } = await client.query(downloadClientsInitQuery, {}).toPromise();
+        const { data, error } = await client
+          .query(downloadClientsInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
         if (error && !data?.downloadClientConfigs) throw error;
         if (cancelled) return;
         const clients: DownloadClientRecord[] = data?.downloadClientConfigs || [];
@@ -104,19 +135,47 @@ export function SettingsDownloadClientsContainer() {
   }, [client, setGlobalStatus, t]);
 
   useEffect(() => {
+    if (providerCatalogVersion === providerCatalogVersionRef.current) {
+      return;
+    }
+
+    providerCatalogVersionRef.current = providerCatalogVersion;
+    void refreshProviderTypes().catch((error: unknown) => {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    });
+  }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
+
+  useEffect(() => {
     if (editingDownloadClientId) {
       return;
     }
 
     setDownloadClientDraft((prev) => {
       const normalizedClientType = normalizeDownloadClientType(prev.clientType);
-      if (downloadClientTypeOptions.some((option) => option.value === normalizedClientType)) {
+      const configuredOption =
+        downloadClientTypeOptions.find(
+          (option) => option.value === normalizedClientType,
+        ) ?? null;
+      const nextOption = configuredOption ?? downloadClientTypeOptions[0] ?? null;
+
+      if (!nextOption) {
+        return prev;
+      }
+
+      const previousLabel = configuredOption?.label ?? prev.clientType.trim();
+      const shouldAutofillName =
+        prev.name.trim().length === 0 || prev.name === previousLabel;
+      const nextClientType = configuredOption ? prev.clientType : nextOption.value;
+      const nextName = shouldAutofillName ? nextOption.label : prev.name;
+
+      if (nextClientType === prev.clientType && nextName === prev.name) {
         return prev;
       }
 
       return {
         ...prev,
-        clientType: downloadClientTypeOptions[0]?.value ?? DEFAULT_DOWNLOAD_CLIENT_DRAFT.clientType,
+        clientType: nextClientType,
+        name: nextName,
       };
     });
   }, [downloadClientTypeOptions, editingDownloadClientId]);
@@ -155,26 +214,37 @@ export function SettingsDownloadClientsContainer() {
     setMutatingDownloadClientId(editingDownloadClientId || "new");
     try {
       if (isBuiltInDownloadClientType(payload.clientType)) {
-        setGlobalStatus(t("status.testingDownloadClient", { client: selectedDownloadClientLabel }));
-        const { data: testData, error: testError } = await client.mutation(
-          testDownloadClientConnectionMutation,
-          {
-            input: {
-              clientType: payload.clientType,
-              configJson: payload.configJson,
-            },
+        await runConnectionFeedback({
+          setGlobalStatus,
+          startMessage: t("status.testingDownloadClient", {
+            client: selectedDownloadClientLabel,
+          }),
+          successMessage: t("status.downloadClientConnectionTestPassed", {
+            client: selectedDownloadClientLabel,
+          }),
+          failureFallbackMessage: t("status.downloadClientConnectionTestFailed", {
+            client: selectedDownloadClientLabel,
+          }),
+          announceSuccess: false,
+          run: async () => {
+            const { data: testData, error: testError } = await client
+              .mutation(testDownloadClientConnectionMutation, {
+                input: {
+                  clientType: payload.clientType,
+                  configJson: payload.configJson,
+                },
+              })
+              .toPromise();
+            if (testError) throw testError;
+            if (!testData.testDownloadClientConnection) {
+              throw new Error(
+                t("status.downloadClientConnectionTestFailed", {
+                  client: selectedDownloadClientLabel,
+                }),
+              );
+            }
           },
-        ).toPromise();
-        if (testError) throw testError;
-        if (!testData.testDownloadClientConnection) {
-          throw new Error(
-            t("status.downloadClientConnectionTestFailed", { client: selectedDownloadClientLabel }),
-          );
-        }
-        const passedMessage = t("status.downloadClientConnectionTestPassed", {
-          client: selectedDownloadClientLabel,
         });
-        setGlobalStatus(passedMessage);
       }
 
       if (editingDownloadClientId) {
@@ -207,8 +277,13 @@ export function SettingsDownloadClientsContainer() {
       resetDownloadClientDraft();
       await refreshDownloadClients();
     } catch (error) {
-      const message = getDownloadClientErrorMessage(error, t("status.failedToUpdate"));
-      setGlobalStatus(message);
+      if (!isReportedConnectionFeedbackError(error)) {
+        const message = getDownloadClientErrorMessage(
+          error,
+          t("status.failedToUpdate"),
+        );
+        setGlobalStatus(message);
+      }
     } finally {
       setMutatingDownloadClientId(null);
     }
@@ -237,29 +312,38 @@ export function SettingsDownloadClientsContainer() {
 
     setIsTestingDownloadClientConnection(true);
     try {
-      setGlobalStatus(t("status.testingDownloadClient", { client: selectedDownloadClientLabel }));
-      const { data: testData, error: testError } = await client.mutation(
-        testDownloadClientConnectionMutation,
-        {
-          input: {
-            clientType: payload.clientType,
-            configJson: payload.configJson,
-          },
+      await runConnectionFeedback({
+        setGlobalStatus,
+        startMessage: t("status.testingDownloadClient", {
+          client: selectedDownloadClientLabel,
+        }),
+        successMessage: t("status.downloadClientConnectionTestPassed", {
+          client: selectedDownloadClientLabel,
+        }),
+        failureFallbackMessage: t("status.downloadClientConnectionTestFailed", {
+          client: selectedDownloadClientLabel,
+        }),
+        run: async () => {
+          const { data: testData, error: testError } = await client
+            .mutation(testDownloadClientConnectionMutation, {
+              input: {
+                clientType: payload.clientType,
+                configJson: payload.configJson,
+              },
+            })
+            .toPromise();
+          if (testError) throw testError;
+          if (!testData.testDownloadClientConnection) {
+            throw new Error(
+              t("status.downloadClientConnectionTestFailed", {
+                client: selectedDownloadClientLabel,
+              }),
+            );
+          }
         },
-      ).toPromise();
-      if (testError) throw testError;
-      if (!testData.testDownloadClientConnection) {
-        throw new Error(
-          t("status.downloadClientConnectionTestFailed", { client: selectedDownloadClientLabel }),
-        );
-      }
-      const successMessage = t("status.downloadClientConnectionTestPassed", {
-        client: selectedDownloadClientLabel,
       });
-      setGlobalStatus(successMessage);
-    } catch (error) {
-      const message = getDownloadClientErrorMessage(error, t("status.failedToUpdate"));
-      setGlobalStatus(message);
+    } catch {
+      // Connection feedback is already surfaced through the shared helper.
     } finally {
       setIsTestingDownloadClientConnection(false);
     }

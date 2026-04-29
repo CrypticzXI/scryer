@@ -46,7 +46,7 @@ import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 
 const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
 const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
@@ -446,7 +446,7 @@ type Props = {
   blocklistEntries: TitleReleaseBlocklistEntry[];
   mediaFiles: TitleMediaFile[];
   downloadQueueItems: DownloadQueueItem[];
-  subtitleDownloads: SubtitleDownloadRecord[];
+  subtitleDownloads: ExternalSubtitleRecord[];
   onDeleteFile?: (fileId: string) => void;
   onRefreshSubtitles?: () => void;
   onOpenFixMatch?: () => void;
@@ -586,7 +586,7 @@ export function MovieOverviewView({
       )}
     </div>
   );
-  const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, SubtitleDownloadRecord[]>>(
+  const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, ExternalSubtitleRecord[]>>(
     (grouped, download) => {
       (grouped[download.mediaFileId] ??= []).push(download);
       return grouped;
@@ -929,6 +929,9 @@ export function MovieOverviewView({
                         <MediaInfoBadges file={mediaFile} />
                         <ExternalSubtitleSection
                           downloads={subtitleDownloadsByMediaFile[mediaFile.id] ?? []}
+                          onChanged={() => {
+                            onRefreshSubtitles?.();
+                          }}
                         />
                       </div>
                       <div className="flex shrink-0 items-center gap-3 sm:self-center sm:pl-4">

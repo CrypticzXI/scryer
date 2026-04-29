@@ -33,12 +33,13 @@ import { cn } from "@/lib/utils";
 import {
   bytesToReadable,
   defaultSortDirectionForTitleKey,
-  formatEpisodeProgress,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   sortTitlesForTable,
   StatusBadge,
+  TitleEpisodeProgressBar,
   TitleTableActionButton,
+  TitleTableEmptyState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
 } from "./title-table-shared";
@@ -66,6 +67,10 @@ type CompactTitleTableProps = {
   onBulkEdit: () => void;
   onBulkDelete: () => void;
   bulkActionBusy: boolean;
+  showScanLibraryAction?: boolean;
+  onScanLibrary?: () => Promise<void> | void;
+  scanLibraryLoading?: boolean;
+  scanLibraryDisabled?: boolean;
 };
 
 export function CompactTitleTable({
@@ -91,12 +96,16 @@ export function CompactTitleTable({
   onBulkEdit,
   onBulkDelete,
   bulkActionBusy,
+  showScanLibraryAction = false,
+  onScanLibrary,
+  scanLibraryLoading = false,
+  scanLibraryDisabled = false,
 }: CompactTitleTableProps) {
   "use no memo";
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const columnCount = isMovieView ? 6 : 7;
+  const columnCount = isMovieView ? 6 : 8;
   const selectedVisibleCount = titles.filter((title) =>
     selectedTitleIds.has(title.id),
   ).length;
@@ -115,9 +124,9 @@ export function CompactTitleTable({
       <col />
       <col style={{ width: "5.5rem" }} />
       <col style={{ width: "9rem" }} />
-      {!isMovieView ? <col style={{ width: "7rem" }} /> : null}
+      {!isMovieView ? <col style={{ width: "8.5rem" }} /> : null}
       {!isMovieView ? <col style={{ width: "8rem" }} /> : null}
-      {isMovieView ? <col style={{ width: "7rem" }} /> : null}
+      <col style={{ width: "7.5rem" }} />
       <col style={{ width: "10rem" }} />
     </colgroup>
   );
@@ -361,11 +370,8 @@ export function CompactTitleTable({
                 )}
           </TableCell>
           {!isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px] tabular-nums">
-              {formatEpisodeProgress(
-                item.episodesOwned,
-                item.episodesMonitored,
-              )}
+            <TableCell className="align-middle whitespace-nowrap py-1.5">
+              <TitleEpisodeProgressBar item={item} t={t} compact />
             </TableCell>
           ) : null}
           {!isMovieView ? (
@@ -373,11 +379,9 @@ export function CompactTitleTable({
               <StatusBadge status={item.contentStatus} t={t} />
             </TableCell>
           ) : null}
-          {isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
-              {bytesToReadable(item.sizeBytes)}
-            </TableCell>
-          ) : null}
+          <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
+            {bytesToReadable(item.sizeBytes)}
+          </TableCell>
           <TableCell className="text-center align-middle py-1.5">
             <div
               data-ui="row-actions"
@@ -555,13 +559,11 @@ export function CompactTitleTable({
               "whitespace-nowrap",
             )
           : null}
-        {isMovieView
-          ? renderSortableHeader(
-              "size",
-              t("title.table.size"),
-              "whitespace-nowrap",
-            )
-          : null}
+        {renderSortableHeader(
+          "size",
+          t("title.table.size"),
+          "whitespace-nowrap",
+        )}
         <TableHead className="text-center whitespace-nowrap">
           {t("label.actions")}
         </TableHead>
@@ -630,8 +632,8 @@ export function CompactTitleTable({
 
       <div
         ref={titleTableScrollRef}
-        className="relative w-full"
-        style={{ maxHeight: "70vh", overflow: "auto" }}
+        className="relative w-full overflow-auto rounded-lg border border-border bg-background/40"
+        style={{ maxHeight: "70vh" }}
       >
         <table
           data-ui="compact-title-table"
@@ -678,15 +680,18 @@ export function CompactTitleTable({
                 </tbody>
               ) : null}
             </>
-          ) : !titleLoading ? (
-            <TableBody>
-              <TableRow>
-                <TableCell colSpan={columnCount} className="text-muted-foreground">
-                  {t("title.noManaged")}
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          ) : null}
+        ) : !titleLoading ? (
+          <TableBody>
+            <TitleTableEmptyState
+              colSpan={columnCount}
+              t={t}
+              showScanAction={showScanLibraryAction}
+              onScan={onScanLibrary}
+              scanLoading={scanLibraryLoading}
+              scanDisabled={scanLibraryDisabled}
+            />
+          </TableBody>
+        ) : null}
         </table>
       </div>
     </div>

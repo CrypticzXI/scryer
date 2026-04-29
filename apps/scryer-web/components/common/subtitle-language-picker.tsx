@@ -56,9 +56,6 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
     if (pickerRef.current && typeof window !== "undefined") {
       setPickerRect(pickerRef.current.getBoundingClientRect());
     }
-    requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-    });
   }, [isOpen]);
 
   React.useEffect(() => {
@@ -122,6 +119,17 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
       desiredMaxHeight: 320,
     });
   }, [pickerRect]);
+
+  React.useEffect(() => {
+    if (!isOpen || !panelPlacement || typeof window === "undefined") {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isOpen, panelPlacement]);
 
   const toggleLanguage = (code: string) => {
     if (singleSelect) {

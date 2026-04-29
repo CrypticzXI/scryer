@@ -7,6 +7,7 @@ import { SettingsSubtitlesSection } from "@/components/views/settings/settings-s
 import {
   subtitleProviderConfigsQuery,
   subtitleSettingsInitQuery,
+  subtitleProviderTypesQuery,
 } from "@/lib/graphql/queries";
 import {
   createSubtitleProviderConfigMutation,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/graphql/mutations";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import type {
   ConfigFieldDef,
   SubtitleProviderConfigRecord,
@@ -147,7 +149,13 @@ function serializeProviderConfigJson(
   return JSON.stringify(entries);
 }
 
-export function SettingsSubtitlesContainer() {
+type SettingsSubtitlesContainerProps = {
+  providerCatalogVersion?: number;
+};
+
+export function SettingsSubtitlesContainer({
+  providerCatalogVersion = 0,
+}: SettingsSubtitlesContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -166,6 +174,7 @@ export function SettingsSubtitlesContainer() {
   const [isTestingProviderConnection, setIsTestingProviderConnection] =
     React.useState(false);
   const loadedRef = React.useRef(false);
+  const providerCatalogVersionRef = React.useRef(providerCatalogVersion);
 
   const resetProviderDraft = React.useCallback(() => {
     setEditingProviderId(null);
@@ -183,6 +192,56 @@ export function SettingsSubtitlesContainer() {
       (data?.subtitleProviderConfigs ?? []) as SubtitleProviderConfigRecord[],
     );
   }, [client]);
+
+  const refreshProviderTypes = React.useCallback(async () => {
+    const { data, error } = await client
+      .query(subtitleProviderTypesQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) {
+      throw error;
+    }
+    setProviderTypes(
+      (data?.subtitleProviderTypes ?? []) as SubtitleProviderTypeInfo[],
+    );
+  }, [client]);
+
+  React.useEffect(() => {
+    if (editingProviderId || providerTypes.length === 0) {
+      return;
+    }
+
+    setProviderDraft((previous) => {
+      const configuredProvider =
+        providerTypes.find(
+          (providerType) => providerType.providerType === previous.providerType,
+        ) ?? null;
+      const nextProvider = configuredProvider ?? providerTypes[0] ?? null;
+      if (!nextProvider) {
+        return previous;
+      }
+
+      const shouldAutofillName =
+        previous.name.trim().length === 0 ||
+        previous.name === (configuredProvider?.name ?? previous.providerType);
+      const nextProviderType = configuredProvider
+        ? previous.providerType
+        : nextProvider.providerType;
+      const nextName = shouldAutofillName ? nextProvider.name : previous.name;
+
+      if (
+        nextProviderType === previous.providerType &&
+        nextName === previous.name
+      ) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        providerType: nextProviderType,
+        name: nextName,
+      };
+    });
+  }, [editingProviderId, providerTypes]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -223,6 +282,19 @@ export function SettingsSubtitlesContainer() {
       cancelled = true;
     };
   }, [client]);
+
+  React.useEffect(() => {
+    if (providerCatalogVersion === providerCatalogVersionRef.current) {
+      return;
+    }
+
+    providerCatalogVersionRef.current = providerCatalogVersion;
+    void refreshProviderTypes().catch((error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : t("status.failedToLoad");
+      setGlobalStatus(message);
+    });
+  }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
 
   React.useEffect(() => {
     if (!loadedRef.current) {
@@ -482,47 +554,49 @@ export function SettingsSubtitlesContainer() {
 
     setIsTestingProviderConnection(true);
     try {
-      setGlobalStatus(t("status.testingSubtitleProviderConnection"));
-      const { data, error } = await client
-        .mutation(testSubtitleProviderConnectionMutation, {
-          input: {
-            id: editingProviderId ?? undefined,
-            providerType: normalizedProviderType,
-            configJson: serializeProviderConfigJson(
-              selectedProvider?.configFields ?? [],
-              providerDraft.configValues,
-              persistedConfigValues,
-            ),
-          },
-        })
-        .toPromise();
-      if (error) {
-        throw error;
-      }
+      await runConnectionFeedback({
+        setGlobalStatus,
+        startMessage: t("status.testingSubtitleProviderConnection"),
+        successMessage: t("status.subtitleProviderConnectionTestPassed"),
+        failureFallbackMessage: t("status.subtitleProviderConnectionTestFailed"),
+        run: async () => {
+          const { data, error } = await client
+            .mutation(testSubtitleProviderConnectionMutation, {
+              input: {
+                id: editingProviderId ?? undefined,
+                providerType: normalizedProviderType,
+                configJson: serializeProviderConfigJson(
+                  selectedProvider?.configFields ?? [],
+                  providerDraft.configValues,
+                  persistedConfigValues,
+                ),
+              },
+            })
+            .toPromise();
+          if (error) {
+            throw error;
+          }
 
-      const validation = data?.testSubtitleProviderConnection as
-        | SubtitleProviderValidationResult
-        | undefined;
-      const success =
-        validation?.status === "valid" || validation?.status === "ok";
-      const message =
-        validation?.message ||
-        (success
-          ? t("status.subtitleProviderConnectionTestPassed")
-          : t("status.subtitleProviderConnectionTestFailed"));
-      setGlobalStatus(message);
-      if (success) {
-        toast.success(message);
-      } else {
-        toast.error(message);
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : t("status.subtitleProviderConnectionTestFailed");
-      setGlobalStatus(message);
-      toast.error(message);
+          const validation = data?.testSubtitleProviderConnection as
+            | SubtitleProviderValidationResult
+            | undefined;
+          const success =
+            validation?.status === "valid" || validation?.status === "ok";
+          if (!success) {
+            throw new Error(
+              validation?.message ||
+                t("status.subtitleProviderConnectionTestFailed"),
+            );
+          }
+
+          return (
+            validation?.message ||
+            t("status.subtitleProviderConnectionTestPassed")
+          );
+        },
+      });
+    } catch {
+      // Connection feedback is already surfaced through the shared helper.
     } finally {
       setIsTestingProviderConnection(false);
     }

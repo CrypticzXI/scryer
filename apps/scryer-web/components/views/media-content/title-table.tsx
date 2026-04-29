@@ -25,12 +25,11 @@ import { cn } from "@/lib/utils";
 import {
   bytesToReadable,
   defaultSortDirectionForTitleKey,
-  formatEpisodeProgress,
-  resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   sortTitlesForTable,
-  StatusBadge,
+  TitleEpisodeProgressBar,
   TitleTableActionButton,
+  TitleTableEmptyState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
 } from "./title-table-shared";
@@ -50,6 +49,10 @@ type TitleTableProps = {
   onQueueFromInteractive: (title: TitleRecord, release: Release) => void;
   isDeletingById: Record<string, boolean>;
   isTogglingMonitoredById?: Record<string, boolean>;
+  showScanLibraryAction?: boolean;
+  onScanLibrary?: () => Promise<void> | void;
+  scanLibraryLoading?: boolean;
+  scanLibraryDisabled?: boolean;
 };
 
 export function TitleTable({
@@ -67,21 +70,24 @@ export function TitleTable({
   onQueueFromInteractive,
   isDeletingById,
   isTogglingMonitoredById,
+  showScanLibraryAction = false,
+  onScanLibrary,
+  scanLibraryLoading = false,
+  scanLibraryDisabled = false,
 }: TitleTableProps) {
   "use no memo";
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const columnCount = isMovieView ? 6 : 7;
+  const columnCount = isMovieView ? 5 : 6;
   const titleTableColGroup = (
     <colgroup>
-      <col style={{ width: "5.5rem" }} />
+      <col style={{ width: "6.5rem" }} />
       <col />
-      <col style={{ width: "10rem" }} />
-      {!isMovieView ? <col style={{ width: "8rem" }} /> : null}
-      {isMovieView ? <col style={{ width: "8rem" }} /> : null}
-      <col style={{ width: "7rem" }} />
-      <col style={{ width: "12.5rem" }} />
+      <col style={{ width: "6rem" }} />
+      {!isMovieView ? <col style={{ width: "11rem" }} /> : null}
+      <col style={{ width: "8.5rem" }} />
+      <col style={{ width: "14rem" }} />
     </colgroup>
   );
 
@@ -123,7 +129,7 @@ export function TitleTable({
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
-    estimateSize: () => 96,
+    estimateSize: () => 112,
     overscan: 5,
   });
 
@@ -243,10 +249,12 @@ export function TitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const posterThumbUrl = selectPosterVariantUrl(item.posterUrl, "w70");
+    const posterActionButtonClassName = "size-10 [&_svg]:size-5";
+    const posterActionIconClassName = "h-5 w-5";
 
     return (
       <React.Fragment key={item.id}>
-        <TableRow data-ui="title-table-row" className="h-24">
+        <TableRow data-ui="title-table-row" className="h-28">
           <TableCell className="align-middle">
             <button
               type="button"
@@ -255,7 +263,7 @@ export function TitleTable({
               className="inline-block text-left"
               aria-label={t("media.posterAlt", { name: item.name })}
             >
-              <div data-ui="poster-thumb" className="h-20 w-14 overflow-hidden rounded border border-border bg-muted">
+              <div data-ui="poster-thumb" className="h-24 w-16 overflow-hidden rounded border border-border bg-muted">
                 <TitlePosterSlot
                   src={posterThumbUrl}
                   sourceSrc={item.posterSourceUrl}
@@ -275,7 +283,7 @@ export function TitleTable({
               type="button"
               onClick={() => onOpenOverview(overviewTargetView, item)}
               data-ui="title-name"
-              className="block w-full overflow-hidden text-left text-xl font-bold hover:text-foreground hover:underline"
+              className="block w-full overflow-hidden text-left text-2xl font-bold hover:text-foreground hover:underline"
             >
               <span className="block truncate">{item.name}</span>
             </button>
@@ -293,30 +301,14 @@ export function TitleTable({
               )}
             </span>
           </TableCell>
-          <TableCell className="align-middle whitespace-nowrap">
-            {qualityProfilesLoading
-              ? null
-              : resolveDisplayedQualityLabel(
-                  item,
-                  qualityProfiles,
-                  resolvedProfileName,
-                  t("label.unknown"),
-                )}
-          </TableCell>
-          {!isMovieView ? (
-              <TableCell className="align-middle whitespace-nowrap tabular-nums">
-              {formatEpisodeProgress(
-                item.episodesOwned,
-                item.episodesMonitored,
-              )}
-            </TableCell>
-          ) : null}
           {!isMovieView ? (
             <TableCell className="align-middle whitespace-nowrap">
-              <StatusBadge status={item.contentStatus} t={t} />
+              <TitleEpisodeProgressBar item={item} t={t} />
             </TableCell>
           ) : null}
-          {isMovieView ? <TableCell className="align-middle whitespace-nowrap">{bytesToReadable(item.sizeBytes)}</TableCell> : null}
+          <TableCell className="align-middle whitespace-nowrap">
+            {bytesToReadable(item.sizeBytes)}
+          </TableCell>
           <TableCell className="text-center align-middle">
             <div data-ui="row-actions" className="inline-flex items-center justify-end gap-2">
               <HoverCard openDelay={3000} closeDelay={75}>
@@ -326,11 +318,12 @@ export function TitleTable({
                     label={t("label.search")}
                     onClick={() => handleQueueExisting(item)}
                     disabled={autoQueueLoading}
+                    className={posterActionButtonClassName}
                   >
                     {autoQueueLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+                      <Loader2 className={cn(posterActionIconClassName, "animate-spin text-emerald-500")} />
                     ) : (
-                      <Zap className="h-4 w-4" />
+                      <Zap className={posterActionIconClassName} />
                     )}
                   </TitleTableActionButton>
                 </HoverCardTrigger>
@@ -346,8 +339,9 @@ export function TitleTable({
                     tone="search"
                     label={t("label.interactiveSearch")}
                     onClick={() => handleToggleInteractiveSearch(item)}
+                    className={posterActionButtonClassName}
                   >
-                    <Search className="h-4 w-4" />
+                    <Search className={posterActionIconClassName} />
                   </TitleTableActionButton>
                 </HoverCardTrigger>
                 <HoverCardContent>
@@ -362,13 +356,14 @@ export function TitleTable({
                   label={t(item.monitored ? "title.unmonitorAction" : "title.monitorAction")}
                   onClick={() => onToggleMonitored(item, !item.monitored)}
                   disabled={monitorToggleLoading}
+                  className={posterActionButtonClassName}
                 >
                   {monitorToggleLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className={cn(posterActionIconClassName, "animate-spin")} />
                   ) : item.monitored ? (
-                    <EyeOff className="h-4 w-4" />
+                    <EyeOff className={posterActionIconClassName} />
                   ) : (
-                    <Eye className="h-4 w-4" />
+                    <Eye className={posterActionIconClassName} />
                   )}
                 </TitleTableActionButton>
               ) : null}
@@ -377,11 +372,12 @@ export function TitleTable({
                 label={t("label.delete")}
                 onClick={() => onDelete(item)}
                 disabled={deleteLoading}
+                className={posterActionButtonClassName}
               >
                 {deleteLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className={cn(posterActionIconClassName, "animate-spin")} />
                 ) : (
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className={posterActionIconClassName} />
                 )}
               </TitleTableActionButton>
             </div>
@@ -442,10 +438,8 @@ export function TitleTable({
           "text-center whitespace-nowrap",
           "justify-center text-center",
         )}
-        {renderSortableHeader("quality", t("title.table.qualityTier"), "w-48 whitespace-nowrap")}
         {!isMovieView ? renderSortableHeader("episodes", t("title.table.episodes"), "whitespace-nowrap") : null}
-        {!isMovieView ? renderSortableHeader("status", t("title.table.status"), "whitespace-nowrap") : null}
-        {isMovieView ? renderSortableHeader("size", t("title.table.size"), "whitespace-nowrap") : null}
+        {renderSortableHeader("size", t("title.table.size"), "whitespace-nowrap")}
         <TableHead className="text-center whitespace-nowrap">{t("label.actions")}</TableHead>
       </TableRow>
     </TableHeader>
@@ -457,8 +451,8 @@ export function TitleTable({
   return (
     <div
       ref={titleTableScrollRef}
-      className="relative w-full"
-      style={{ maxHeight: "70vh", overflow: "auto" }}
+      className="relative w-full overflow-auto rounded-lg border border-border bg-background/40"
+      style={{ maxHeight: "70vh" }}
     >
       <table data-ui="title-table" data-view={view} className="w-full table-fixed caption-bottom text-sm">
         {titleTableColGroup}
@@ -496,15 +490,18 @@ export function TitleTable({
               </tbody>
             ) : null}
           </>
-        ) : !titleLoading ? (
-          <TableBody>
-            <TableRow>
-              <TableCell colSpan={columnCount} className="text-muted-foreground">
-                {t("title.noManaged")}
-              </TableCell>
-            </TableRow>
-          </TableBody>
-        ) : null}
+          ) : !titleLoading ? (
+            <TableBody>
+              <TitleTableEmptyState
+                colSpan={columnCount}
+                t={t}
+                showScanAction={showScanLibraryAction}
+                onScan={onScanLibrary}
+                scanLoading={scanLibraryLoading}
+                scanDisabled={scanLibraryDisabled}
+              />
+            </TableBody>
+          ) : null}
       </table>
     </div>
   );

@@ -95,19 +95,25 @@ export function SettingsOverviewSection({
               </button>
             </div>
 
-            <div className="space-y-1 max-w-xs">
-              <Label>{t("settings.historyRetentionDaysLabel")}</Label>
-              <Input
-                {...integerInputProps}
-                disabled={generalSettings.keepHistoryForever}
-                value={generalSettings.historyRetentionDays}
-                onChange={(event) => {
-                  const nextValue = sanitizeDigits(event.target.value);
-                  updateGeneralSettings({
-                    historyRetentionDays: nextValue === "" ? 0 : Number(nextValue),
-                  });
-                }}
-              />
+            <div className="space-y-1">
+              <Label>{t("settings.historyRetentionDaysHeader")}</Label>
+              <div className="relative w-36">
+                <Input
+                  {...integerInputProps}
+                  className="pr-16"
+                  disabled={generalSettings.keepHistoryForever}
+                  value={generalSettings.historyRetentionDays}
+                  onChange={(event) => {
+                    const nextValue = sanitizeDigits(event.target.value);
+                    updateGeneralSettings({
+                      historyRetentionDays: nextValue === "" ? 0 : Number(nextValue),
+                    });
+                  }}
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                  {t("settings.historyRetentionDaysSuffix")}
+                </span>
+              </div>
             </div>
 
             <Button onClick={onSaveGeneralSettings} disabled={generalSaving}>

@@ -3,6 +3,7 @@ use scryer_domain::{
     Id, NotificationChannelConfig, NotificationEventType, NotificationSubscription,
 };
 
+use crate::ports::NOTIFICATION_REQUEST_SCHEMA_VERSION;
 use crate::{
     AppError, AppResult, AppUseCase, NotificationAppPayload, NotificationPayload,
     NotificationScopeIdUpdate,
@@ -131,7 +132,14 @@ impl AppUseCase {
 
         client
             .send_notification(&NotificationPayload {
+                schema_version: NOTIFICATION_REQUEST_SCHEMA_VERSION,
                 event_type: NotificationEventType::Test,
+                event_id: None,
+                occurred_at: None,
+                correlation_id: None,
+                actor: None,
+                severity: None,
+                is_test: true,
                 summary_title: "Scryer Test Notification".to_string(),
                 summary_message: "This is a test notification from Scryer.".to_string(),
                 app: NotificationAppPayload {
@@ -140,11 +148,15 @@ impl AppUseCase {
                 },
                 title: None,
                 episode: None,
+                episodes: Vec::new(),
                 release: None,
                 download: None,
                 import: None,
                 health: None,
                 file: None,
+                media_files: Vec::new(),
+                application_update: None,
+                manual_interaction: None,
             })
             .await
     }

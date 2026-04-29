@@ -71,7 +71,7 @@ pub struct SubtitleQuery {
 pub struct SubtitleMatch {
     /// Provider name (e.g., "opensubtitles").
     pub provider: String,
-    /// Provider-specific file identifier (for downloading/blacklisting).
+    /// Provider-specific file identifier (for downloading/blocklisting).
     pub provider_file_id: String,
     /// Stable internal subtitle language code.
     pub language: String,

@@ -1,10 +1,29 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-pub const SDK_VERSION: &str = "1.0.0";
+pub mod indexer;
+pub mod notification;
+pub mod torrent;
+pub use indexer::{
+    IndexerCategoryDescriptor, IndexerCategoryModel, IndexerCategoryValueKind, IndexerFeedMode,
+    IndexerLimitCapabilities, IndexerProtocol, IndexerResponseFeatures, IndexerSearchInput,
+    IndexerTorrentCapabilities, PluginSearchContext, PluginSearchOrigin, PluginSearchQueryKind,
+    PluginSearchRequestKind, PluginSearchSubjectKind, derive_indexer_flags,
+    indexer_capability_fixtures, normalize_external_id_key, normalize_external_ids,
+    normalize_info_hash as normalize_indexer_info_hash, torrent_result, usenet_result,
+};
+pub use notification::{
+    NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationDeliveryMode, NotificationEventOptions,
+    NotificationMediaUpdateBatch, NotificationPayloadFormat, NotificationRichEmbed,
+    NotificationRichEmbedField, NotificationSeverity, PluginNotificationActor,
+    PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
+    to_script_environment, to_webhook_json,
+};
+
+pub const SDK_VERSION: &str = "1.3.0";
 
 pub const EXPORT_DESCRIBE: &str = "scryer_describe";
 pub const EXPORT_VALIDATE_CONFIG: &str = "scryer_validate_config";
@@ -294,6 +313,22 @@ pub struct IndexerCapabilities {
     pub tvdb_search: bool,
     #[serde(default)]
     pub anidb_search: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocols: Vec<IndexerProtocol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feed_modes: Vec<IndexerFeedMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_inputs: Vec<IndexerSearchInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_external_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_model: Option<IndexerCategoryModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<IndexerLimitCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<IndexerTorrentCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_features: Option<IndexerResponseFeatures>,
 }
 
 impl Default for IndexerCapabilities {
@@ -309,6 +344,14 @@ impl Default for IndexerCapabilities {
             imdb_search: false,
             tvdb_search: false,
             anidb_search: false,
+            protocols: Vec::new(),
+            feed_modes: Vec::new(),
+            search_inputs: Vec::new(),
+            supported_external_ids: Vec::new(),
+            category_model: None,
+            limits: None,
+            torrent: None,
+            response_features: None,
         }
     }
 }
@@ -319,8 +362,24 @@ pub struct NotificationCapabilities {
     pub supports_rich_text: bool,
     #[serde(default)]
     pub supports_images: bool,
+    #[serde(default)]
+    pub supports_test: bool,
+    #[serde(default)]
+    pub supports_batch: bool,
+    #[serde(default)]
+    pub supports_coalescing: bool,
+    #[serde(default)]
+    pub requires_host_filesystem: bool,
+    #[serde(default)]
+    pub requires_host_process: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_modes: Vec<NotificationDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload_formats: Vec<NotificationPayloadFormat>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_events: Vec<NotificationEventType>,
+    #[serde(default)]
+    pub event_options: NotificationEventOptions,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -353,6 +412,62 @@ pub struct DownloadClientCapabilities {
     pub host_fs_required: bool,
     #[serde(default)]
     pub test_connection: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<DownloadTorrentCapabilities>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DownloadTorrentCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_sources: Vec<DownloadInputKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferred_sources: Vec<DownloadInputKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub isolation_modes: Vec<DownloadIsolationMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_import_isolation_modes: Vec<DownloadIsolationMode>,
+    #[serde(default)]
+    pub supports_seed_ratio_limit: bool,
+    #[serde(default)]
+    pub supports_seed_time_limit: bool,
+    #[serde(default)]
+    pub removes_on_seed_limit: bool,
+    #[serde(default)]
+    pub supports_start_paused: bool,
+    #[serde(default)]
+    pub supports_stopped: bool,
+    #[serde(default)]
+    pub supports_force_start: bool,
+    #[serde(default)]
+    pub supports_queue_placement: bool,
+    #[serde(default)]
+    pub supports_priority_hint: bool,
+    #[serde(default)]
+    pub supports_sequential_download: bool,
+    #[serde(default)]
+    pub supports_first_last_piece_priority: bool,
+    #[serde(default)]
+    pub supports_content_layout: bool,
+    #[serde(default)]
+    pub supports_skip_checking: bool,
+    #[serde(default)]
+    pub supports_auto_management: bool,
+    #[serde(default)]
+    pub supports_safe_seeding: bool,
+    #[serde(default)]
+    pub supports_anonymity_hops: bool,
+    #[serde(default)]
+    pub supports_selected_files: bool,
+    #[serde(default)]
+    pub supports_post_import_isolation: bool,
+    #[serde(default)]
+    pub reports_content_paths: bool,
+    #[serde(default)]
+    pub reports_metadata_only: bool,
+    #[serde(default)]
+    pub host_fs_required: bool,
+    #[serde(default)]
+    pub client_id_may_differ_from_info_hash: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -479,6 +594,8 @@ pub enum DownloadInputKind {
     Nzb,
     NzbUrl,
     TorrentFile,
+    TorrentUrl,
+    TorrentBytes,
     MagnetUri,
 }
 
@@ -487,7 +604,53 @@ pub enum DownloadInputKind {
 pub enum DownloadIsolationMode {
     Category,
     Tag,
+    Label,
+    View,
     Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadIsolation {
+    pub mode: DownloadIsolationMode,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTorrentInitialState {
+    #[default]
+    Default,
+    Started,
+    Paused,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTorrentQueuePlacement {
+    #[default]
+    Default,
+    First,
+    Last,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTorrentContentLayout {
+    #[default]
+    Default,
+    Original,
+    Subfolder,
+    NoSubfolder,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginDownloadOutputKind {
+    File,
+    Directory,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -739,6 +902,8 @@ pub struct PluginDownloadClientAddRequest {
     pub release: PluginDownloadRelease,
     pub title: PluginDownloadTitle,
     pub routing: PluginDownloadRouting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<PluginTorrentOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -751,9 +916,49 @@ pub struct PluginDownloadSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_bytes_base64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_password: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PluginTorrentOptions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_preference: Vec<DownloadInputKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_goal_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_goal_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_state: Option<PluginTorrentInitialState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_placement: Option<PluginTorrentQueuePlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequential_download: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_last_piece_priority: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_layout: Option<PluginTorrentContentLayout>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_checking: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_management: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_start: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_seeding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anonymity_hops: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_file_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -768,6 +973,10 @@ pub struct PluginDownloadRelease {
     pub indexer_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v1: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v2: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_goal_ratio: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -788,6 +997,10 @@ pub struct PluginDownloadTitle {
 pub struct PluginDownloadRouting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub isolation: Vec<PluginDownloadIsolation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_import_isolation: Vec<PluginDownloadIsolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_priority: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -815,6 +1028,8 @@ pub struct PluginDownloadItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_output_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<PluginTorrentItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_size_bytes: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining_size_bytes: Option<i64>,
@@ -834,6 +1049,50 @@ pub struct PluginDownloadItem {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PluginTorrentItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v1: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v2: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_native_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_rate_bytes_per_second: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_rate_bytes_per_second: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_time_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_encrypted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_private: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginCompletedDownload {
     pub client_item_id: String,
@@ -843,6 +1102,10 @@ pub struct PluginCompletedDownload {
     pub dest_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_kind: Option<PluginDownloadOutputKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -872,6 +1135,8 @@ pub struct PluginDownloadClientMarkImportedRequest {
     pub title_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_import_isolation: Vec<PluginDownloadIsolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -904,6 +1169,16 @@ pub struct PluginNotificationExternalIds {
     pub tvdb_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anidb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tvmaze_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anilist_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mal_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kitsu_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_source: BTreeMap<String, Vec<String>>,
 }
 
 impl PluginNotificationExternalIds {
@@ -912,6 +1187,11 @@ impl PluginNotificationExternalIds {
             && self.imdb_id.is_none()
             && self.tvdb_id.is_none()
             && self.anidb_id.is_none()
+            && self.tvmaze_id.is_none()
+            && self.anilist_ids.is_empty()
+            && self.mal_ids.is_empty()
+            && self.kitsu_ids.is_empty()
+            && self.by_source.is_empty()
     }
 }
 
@@ -923,12 +1203,36 @@ pub struct PluginNotificationApp {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginNotificationTitle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub facet: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_country: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "PluginNotificationExternalIds::is_empty"
@@ -938,10 +1242,34 @@ pub struct PluginNotificationTitle {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PluginNotificationEpisode {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episode_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air_date_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finale_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tvdb_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -956,6 +1284,16 @@ pub struct PluginNotificationRelease {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_scores: BTreeMap<String, i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -968,6 +1306,18 @@ pub struct PluginNotificationDownload {
     pub client_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_percent: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -988,6 +1338,16 @@ pub struct PluginNotificationImport {
     pub imported_count: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_count: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_count: Option<i32>,
+    #[serde(default)]
+    pub upgrade: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -996,9 +1356,17 @@ pub struct PluginNotificationHealth {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationMediaUpdateType {
     Created,
@@ -1006,7 +1374,7 @@ pub enum NotificationMediaUpdateType {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PluginNotificationMediaUpdate {
     pub path: String,
     pub update_type: NotificationMediaUpdateType,
@@ -1020,9 +1388,88 @@ pub struct PluginNotificationFile {
     pub media_updates: Vec<PluginNotificationMediaUpdate>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginNotificationMediaFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycle_bin_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_channels: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_height: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bit_depth: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_hdr_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frame_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edition: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PluginNotificationApplicationUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PluginNotificationManualInteraction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginNotificationRequest {
+    #[serde(default = "default_notification_request_schema_version")]
+    pub schema_version: u32,
     pub event_type: NotificationEventType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<PluginNotificationActor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<NotificationSeverity>,
+    #[serde(default)]
+    pub is_test: bool,
     pub summary_title: String,
     pub summary_message: String,
     pub app: PluginNotificationApp,
@@ -1030,6 +1477,8 @@ pub struct PluginNotificationRequest {
     pub title: Option<PluginNotificationTitle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub episode: Option<PluginNotificationEpisode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub episodes: Vec<PluginNotificationEpisode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<PluginNotificationRelease>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1040,6 +1489,12 @@ pub struct PluginNotificationRequest {
     pub health: Option<PluginNotificationHealth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<PluginNotificationFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_files: Vec<PluginNotificationMediaFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_update: Option<PluginNotificationApplicationUpdate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_interaction: Option<PluginNotificationManualInteraction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1047,9 +1502,23 @@ pub struct PluginNotificationResponse {
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_results: Vec<PluginNotificationTargetResult>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+fn default_notification_request_schema_version() -> u32 {
+    NOTIFICATION_REQUEST_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PluginSearchRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -1070,6 +1539,8 @@ pub struct PluginSearchRequest {
     pub absolute_episode: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tagged_aliases: Vec<TaggedAlias>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<PluginSearchContext>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -1086,7 +1557,7 @@ pub struct PluginSearchResponse {
     pub grab_max: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PluginSearchResult {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1117,6 +1588,54 @@ pub struct PluginSearchResult {
     pub guid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<IndexerSourceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<IndexerProtocol>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub external_ids: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnet_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v1: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_v2: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peers: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leechers: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_volume_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_volume_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexer_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_seed_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_seed_time_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season_pack_seed_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season_pack_seed_time_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1159,6 +1678,12 @@ pub fn plugin_sdk_schema_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexer::{
+        indexer_capability_fixtures, normalize_external_ids, torrent_result, usenet_result,
+    };
+    use crate::torrent::{
+        choose_source_kind, decode_torrent_bytes, normalize_info_hash_pair, seed_seconds_to_minutes,
+    };
 
     #[test]
     fn tagged_descriptor_round_trips() {
@@ -1194,10 +1719,774 @@ mod tests {
     }
 
     #[test]
+    fn v1_download_client_descriptor_defaults_v11_fields() {
+        let json = r#"{
+            "id":"qbittorrent",
+            "name":"qBittorrent",
+            "version":"0.1.0",
+            "sdk_version":"1.0.0",
+            "provider":{
+                "kind":"download_client",
+                "provider_type":"qbittorrent",
+                "accepted_inputs":["magnet_uri","torrent_file"],
+                "isolation_modes":["category","tag","directory"],
+                "capabilities":{
+                    "pause":true,
+                    "resume":true,
+                    "remove":true,
+                    "mark_imported":true
+                }
+            }
+        }"#;
+
+        let parsed: PluginDescriptor = serde_json::from_str(json).unwrap();
+        let ProviderDescriptor::DownloadClient(provider) = parsed.provider else {
+            panic!("expected download client descriptor");
+        };
+
+        assert_eq!(
+            provider.accepted_inputs,
+            vec![DownloadInputKind::MagnetUri, DownloadInputKind::TorrentFile]
+        );
+        assert!(provider.capabilities.pause);
+        assert!(provider.capabilities.torrent.is_none());
+    }
+
+    #[test]
+    fn v11_notification_descriptor_defaults_v12_fields() {
+        let json = r#"{
+            "id":"webhook",
+            "name":"Webhook",
+            "version":"0.1.0",
+            "sdk_version":"1.1.0",
+            "provider":{
+                "kind":"notification",
+                "provider_type":"webhook",
+                "capabilities":{
+                    "supports_rich_text":false,
+                    "supports_images":false,
+                    "supported_events":["test"]
+                }
+            }
+        }"#;
+
+        let parsed: PluginDescriptor = serde_json::from_str(json).unwrap();
+        let ProviderDescriptor::Notification(provider) = parsed.provider else {
+            panic!("expected notification descriptor");
+        };
+
+        assert_eq!(provider.capabilities.delivery_modes, Vec::new());
+        assert!(!provider.capabilities.supports_coalescing);
+        assert!(!provider.capabilities.event_options.supports_upgrade_filter);
+    }
+
+    #[test]
+    fn v12_indexer_descriptor_defaults_v13_fields() {
+        let json = r#"{
+            "id":"torznab",
+            "name":"Torznab",
+            "version":"0.1.0",
+            "sdk_version":"1.2.0",
+            "provider":{
+                "kind":"indexer",
+                "provider_type":"torznab",
+                "source_kind":"torrent",
+                "capabilities":{
+                    "rss":true,
+                    "search":true,
+                    "supported_ids":{"series":["tvdb_id"]},
+                    "query_param":"q"
+                }
+            }
+        }"#;
+
+        let parsed: PluginDescriptor = serde_json::from_str(json).unwrap();
+        let ProviderDescriptor::Indexer(provider) = parsed.provider else {
+            panic!("expected indexer descriptor");
+        };
+
+        assert!(provider.capabilities.protocols.is_empty());
+        assert!(provider.capabilities.feed_modes.is_empty());
+        assert!(provider.capabilities.search_inputs.is_empty());
+        assert!(provider.capabilities.supported_external_ids.is_empty());
+        assert!(provider.capabilities.category_model.is_none());
+        assert!(provider.capabilities.limits.is_none());
+        assert!(provider.capabilities.torrent.is_none());
+        assert!(provider.capabilities.response_features.is_none());
+    }
+
+    #[test]
+    fn torrent_capability_fixtures_round_trip() {
+        let fixtures = torrent_capability_fixtures();
+        for descriptor in fixtures {
+            let json = serde_json::to_string(&descriptor).unwrap();
+            let parsed: PluginDescriptor = serde_json::from_str(&json).unwrap();
+            let ProviderDescriptor::DownloadClient(provider) = parsed.provider else {
+                panic!("expected download client descriptor");
+            };
+            let torrent = provider
+                .capabilities
+                .torrent
+                .expect("missing torrent capability");
+            assert!(!torrent.supported_sources.is_empty());
+        }
+    }
+
+    #[test]
+    fn torrent_helpers_choose_best_source_and_normalize_hashes() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::TorrentUrl,
+                download_url: Some("https://tracker.example/release.torrent".to_string()),
+                magnet_uri: Some(
+                    "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string(),
+                ),
+                torrent_bytes_base64: Some("dG9ycmVudA==".to_string()),
+                torrent_url: Some("https://tracker.example/release.torrent".to_string()),
+                torrent_file_name: Some("release.torrent".to_string()),
+                torrent_content_type: Some("application/x-bittorrent".to_string()),
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease {
+                info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                info_hash_v1: None,
+                info_hash_v2: Some(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+                ),
+                seed_goal_seconds: Some(121),
+                ..PluginDownloadRelease::default()
+            },
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: Some(PluginTorrentOptions {
+                source_preference: vec![
+                    DownloadInputKind::MagnetUri,
+                    DownloadInputKind::TorrentBytes,
+                    DownloadInputKind::TorrentUrl,
+                ],
+                ..PluginTorrentOptions::default()
+            }),
+        };
+
+        let chosen = choose_source_kind(None, &request);
+        assert_eq!(chosen, Some(DownloadInputKind::MagnetUri));
+        assert_eq!(
+            decode_torrent_bytes(&request.source).unwrap(),
+            Some(b"torrent".to_vec())
+        );
+        assert_eq!(
+            normalize_info_hash_pair(&request.release),
+            (
+                Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                Some(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+                )
+            )
+        );
+        assert_eq!(
+            seed_seconds_to_minutes(request.release.seed_goal_seconds),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn notification_capability_fixtures_round_trip() {
+        let fixtures = notification_capability_fixtures();
+        for descriptor in fixtures {
+            let json = serde_json::to_string(&descriptor).unwrap();
+            let parsed: PluginDescriptor = serde_json::from_str(&json).unwrap();
+            let ProviderDescriptor::Notification(provider) = parsed.provider else {
+                panic!("expected notification descriptor");
+            };
+            assert!(!provider.capabilities.delivery_modes.is_empty());
+            assert!(!provider.capabilities.payload_formats.is_empty());
+        }
+    }
+
+    #[test]
+    fn indexer_capability_fixtures_round_trip() {
+        let fixtures = indexer_capability_fixtures();
+        for descriptor in fixtures {
+            let json = serde_json::to_string(&descriptor).unwrap();
+            let parsed: PluginDescriptor = serde_json::from_str(&json).unwrap();
+            let ProviderDescriptor::Indexer(provider) = parsed.provider else {
+                panic!("expected indexer descriptor");
+            };
+            assert!(!provider.capabilities.protocols.is_empty());
+            assert!(!provider.capabilities.feed_modes.is_empty());
+            assert!(!provider.capabilities.search_inputs.is_empty());
+        }
+    }
+
+    #[test]
+    fn indexer_helpers_normalize_ids_and_build_results() {
+        let ids =
+            normalize_external_ids([("imdb", "tt1234567"), ("tvdbid", "987"), ("aid", "18220")]);
+        assert_eq!(ids.get("imdb_id"), Some(&"tt1234567".to_string()));
+        assert_eq!(ids.get("tvdb_id"), Some(&"987".to_string()));
+        assert_eq!(ids.get("anidb_id"), Some(&"18220".to_string()));
+
+        let torrent = torrent_result(
+            "Example.Torrent.Release",
+            Some("magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01".to_string()),
+        );
+        assert_eq!(torrent.source_kind, Some(IndexerSourceKind::Torrent));
+        assert_eq!(torrent.protocol, Some(IndexerProtocol::Torrent));
+
+        let usenet = usenet_result(
+            "Example.Usenet.Release",
+            Some("https://example.invalid/release.nzb".to_string()),
+        );
+        assert_eq!(usenet.source_kind, Some(IndexerSourceKind::Usenet));
+        assert_eq!(usenet.protocol, Some(IndexerProtocol::Usenet));
+    }
+
+    #[test]
+    fn notification_helpers_emit_provider_neutral_shapes() {
+        let request = sample_notification_request();
+
+        let env = to_script_environment(&request);
+        assert_eq!(
+            env.get("SCRYER_NOTIFICATION_EVENT_TYPE"),
+            Some(&"import_complete".to_string())
+        );
+        assert_eq!(
+            env.get("SCRYER_TITLE_NAME"),
+            Some(&"Example Show".to_string())
+        );
+
+        let webhook = to_webhook_json(&request);
+        assert_eq!(webhook["event_type"], "import_complete");
+        assert_eq!(webhook["title"]["name"], "Example Show");
+
+        let embed = rich_embed_from_request(&request);
+        assert_eq!(embed.title, "Import complete");
+        assert_eq!(
+            embed.image_url,
+            Some("https://example.invalid/poster.jpg".to_string())
+        );
+
+        let second = PluginNotificationRequest {
+            event_id: Some("evt-2".to_string()),
+            file: Some(PluginNotificationFile {
+                primary_path: Some("/library/Example Show/S01E02.mkv".to_string()),
+                media_updates: vec![PluginNotificationMediaUpdate {
+                    path: "/library/Example Show/S01E02.mkv".to_string(),
+                    update_type: NotificationMediaUpdateType::Created,
+                }],
+            }),
+            media_files: vec![PluginNotificationMediaFile {
+                path: "/library/Example Show/S01E02.mkv".to_string(),
+                ..PluginNotificationMediaFile::default()
+            }],
+            ..sample_notification_request()
+        };
+        let batches = coalesce_media_updates([&request, &second]);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0].event_ids,
+            vec!["evt-1".to_string(), "evt-2".to_string()]
+        );
+        assert_eq!(batches[0].media_files.len(), 2);
+    }
+
+    #[test]
     fn committed_schema_matches_generated_types() {
-        let schema_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas/plugin-sdk-v1.schema.json");
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("schemas/plugin-sdk-v1.schema.json");
         let expected = std::fs::read_to_string(schema_path).unwrap();
         assert_eq!(expected, plugin_sdk_schema_json());
+    }
+
+    #[test]
+    fn notification_schema_stays_provider_neutral() {
+        let schema = plugin_sdk_schema_json();
+        assert!(!schema.contains("Sonarr"));
+    }
+
+    fn torrent_capability_fixtures() -> Vec<PluginDescriptor> {
+        vec![
+            download_fixture(
+                "qbittorrent",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                        DownloadInputKind::TorrentFile,
+                    ],
+                    preferred_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentBytes,
+                        DownloadInputKind::TorrentUrl,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Category,
+                        DownloadIsolationMode::Tag,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    post_import_isolation_modes: vec![DownloadIsolationMode::Category],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    supports_start_paused: true,
+                    supports_force_start: true,
+                    host_fs_required: false,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "transmission",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    preferred_sources: vec![DownloadInputKind::MagnetUri],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Label,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    supports_start_paused: true,
+                    host_fs_required: false,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "deluge",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Label,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    post_import_isolation_modes: vec![DownloadIsolationMode::Label],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    removes_on_seed_limit: true,
+                    supports_start_paused: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "rtorrent",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Category,
+                        DownloadIsolationMode::View,
+                    ],
+                    post_import_isolation_modes: vec![DownloadIsolationMode::View],
+                    supports_start_paused: true,
+                    supports_queue_placement: true,
+                    supports_priority_hint: true,
+                    client_id_may_differ_from_info_hash: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "flood",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Tag,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    post_import_isolation_modes: vec![DownloadIsolationMode::Tag],
+                    reports_content_paths: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "aria2",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    reports_content_paths: true,
+                    reports_metadata_only: true,
+                    client_id_may_differ_from_info_hash: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "freebox",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Category,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    supports_seed_ratio_limit: true,
+                    supports_start_paused: true,
+                    supports_queue_placement: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "downloadstation",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Category,
+                        DownloadIsolationMode::Directory,
+                    ],
+                    supports_seed_ratio_limit: true,
+                    supports_start_paused: true,
+                    supports_queue_placement: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "rqbit",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    reports_metadata_only: true,
+                    client_id_may_differ_from_info_hash: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "hadouken",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![DownloadIsolationMode::Label],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "tribler",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![DownloadInputKind::MagnetUri],
+                    preferred_sources: vec![DownloadInputKind::MagnetUri],
+                    supports_safe_seeding: true,
+                    supports_anonymity_hops: true,
+                    supports_selected_files: true,
+                    reports_metadata_only: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "blackhole",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                        DownloadInputKind::TorrentFile,
+                    ],
+                    preferred_sources: vec![
+                        DownloadInputKind::TorrentBytes,
+                        DownloadInputKind::TorrentFile,
+                    ],
+                    host_fs_required: true,
+                    client_id_may_differ_from_info_hash: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "utorrent",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![
+                        DownloadIsolationMode::Label,
+                        DownloadIsolationMode::Category,
+                    ],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+            download_fixture(
+                "vuze",
+                DownloadTorrentCapabilities {
+                    supported_sources: vec![
+                        DownloadInputKind::MagnetUri,
+                        DownloadInputKind::TorrentUrl,
+                        DownloadInputKind::TorrentBytes,
+                    ],
+                    isolation_modes: vec![DownloadIsolationMode::Category],
+                    supports_seed_ratio_limit: true,
+                    supports_seed_time_limit: true,
+                    ..DownloadTorrentCapabilities::default()
+                },
+            ),
+        ]
+    }
+
+    fn download_fixture(
+        provider_type: &str,
+        torrent: DownloadTorrentCapabilities,
+    ) -> PluginDescriptor {
+        PluginDescriptor {
+            id: provider_type.to_string(),
+            name: provider_type.to_string(),
+            version: "0.1.0".to_string(),
+            sdk_version: SDK_VERSION.to_string(),
+            provider: ProviderDescriptor::DownloadClient(DownloadClientDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                accepted_inputs: torrent.supported_sources.clone(),
+                isolation_modes: torrent.isolation_modes.clone(),
+                capabilities: DownloadClientCapabilities {
+                    remove: true,
+                    mark_imported: true,
+                    host_fs_required: torrent.host_fs_required,
+                    torrent: Some(torrent),
+                    ..DownloadClientCapabilities::default()
+                },
+            }),
+        }
+    }
+
+    fn notification_capability_fixtures() -> Vec<PluginDescriptor> {
+        vec![
+            notification_fixture(
+                "generic_webhook",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::Webhook],
+                    payload_formats: vec![NotificationPayloadFormat::StructuredJson],
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "custom_script",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::CustomScript],
+                    payload_formats: vec![NotificationPayloadFormat::ScriptEnvironment],
+                    requires_host_process: true,
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "discord_chat",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::Chat],
+                    payload_formats: vec![
+                        NotificationPayloadFormat::StructuredJson,
+                        NotificationPayloadFormat::RichEmbed,
+                    ],
+                    supports_rich_text: true,
+                    supports_images: true,
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "email",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::Email],
+                    payload_formats: vec![
+                        NotificationPayloadFormat::PlainText,
+                        NotificationPayloadFormat::Html,
+                    ],
+                    supports_rich_text: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "push",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::Push],
+                    payload_formats: vec![NotificationPayloadFormat::PlainText],
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "media_server_update",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::MediaServerUpdate],
+                    payload_formats: vec![NotificationPayloadFormat::StructuredJson],
+                    supports_batch: true,
+                    supports_coalescing: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "external_sync",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::ExternalSync],
+                    payload_formats: vec![NotificationPayloadFormat::StructuredJson],
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+            notification_fixture(
+                "aggregator",
+                NotificationCapabilities {
+                    delivery_modes: vec![NotificationDeliveryMode::Aggregator],
+                    payload_formats: vec![NotificationPayloadFormat::StructuredJson],
+                    supports_batch: true,
+                    supports_test: true,
+                    ..NotificationCapabilities::default()
+                },
+            ),
+        ]
+    }
+
+    fn notification_fixture(
+        provider_type: &str,
+        capabilities: NotificationCapabilities,
+    ) -> PluginDescriptor {
+        PluginDescriptor {
+            id: provider_type.to_string(),
+            name: provider_type.to_string(),
+            version: "0.1.0".to_string(),
+            sdk_version: SDK_VERSION.to_string(),
+            provider: ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities,
+            }),
+        }
+    }
+
+    fn sample_notification_request() -> PluginNotificationRequest {
+        PluginNotificationRequest {
+            schema_version: NOTIFICATION_REQUEST_SCHEMA_VERSION,
+            event_type: NotificationEventType::ImportComplete,
+            event_id: Some("evt-1".to_string()),
+            occurred_at: Some("2026-04-29T12:00:00Z".to_string()),
+            correlation_id: Some("corr-1".to_string()),
+            actor: Some(PluginNotificationActor {
+                user_id: Some("user-1".to_string()),
+            }),
+            severity: Some(NotificationSeverity::Info),
+            is_test: false,
+            summary_title: "Import complete".to_string(),
+            summary_message: "Imported Example Show.".to_string(),
+            app: PluginNotificationApp {
+                name: "Scryer".to_string(),
+                version: "test".to_string(),
+            },
+            title: Some(PluginNotificationTitle {
+                id: Some("title-1".to_string()),
+                name: "Example Show".to_string(),
+                facet: "series".to_string(),
+                year: Some(2024),
+                slug: Some("example-show".to_string()),
+                path: Some("/library/Example Show".to_string()),
+                overview: Some("Overview".to_string()),
+                sort_title: Some("Example Show".to_string()),
+                banner_url: None,
+                background_url: None,
+                poster_url: Some("https://example.invalid/poster.jpg".to_string()),
+                genres: vec!["Drama".to_string()],
+                tags: vec!["tag-1".to_string()],
+                aliases: vec!["Example Alias".to_string()],
+                original_language: Some("ja".to_string()),
+                original_country: Some("JP".to_string()),
+                external_ids: PluginNotificationExternalIds {
+                    tvdb_id: Some("tvdb-1".to_string()),
+                    by_source: BTreeMap::from([("tvdb".to_string(), vec!["tvdb-1".to_string()])]),
+                    ..PluginNotificationExternalIds::default()
+                },
+            }),
+            episode: Some(PluginNotificationEpisode {
+                episode_ids: vec!["episode-1".to_string()],
+                display: Some("S01E01".to_string()),
+                ..PluginNotificationEpisode::default()
+            }),
+            episodes: vec![PluginNotificationEpisode {
+                id: Some("episode-1".to_string()),
+                episode_ids: vec!["episode-1".to_string()],
+                display: Some("S01E01".to_string()),
+                season_number: Some("1".to_string()),
+                episode_number: Some("1".to_string()),
+                title: Some("Pilot".to_string()),
+                ..PluginNotificationEpisode::default()
+            }],
+            release: Some(PluginNotificationRelease {
+                source_title: Some("Example.Show.S01E01.1080p.WEB-DL".to_string()),
+                quality: Some("1080p".to_string()),
+                provider: Some("RSS".to_string()),
+                ..PluginNotificationRelease::default()
+            }),
+            download: Some(PluginNotificationDownload {
+                download_id: Some("download-1".to_string()),
+                client_name: Some("qBittorrent".to_string()),
+                status: Some("completed".to_string()),
+                ..PluginNotificationDownload::default()
+            }),
+            import: Some(PluginNotificationImport {
+                import_id: Some("import-1".to_string()),
+                source_path: Some("/downloads/Example.Show.S01E01.mkv".to_string()),
+                dest_path: Some("/library/Example Show/S01E01.mkv".to_string()),
+                imported_count: Some(1),
+                status: Some("completed".to_string()),
+                ..PluginNotificationImport::default()
+            }),
+            health: None,
+            file: Some(PluginNotificationFile {
+                primary_path: Some("/library/Example Show/S01E01.mkv".to_string()),
+                media_updates: vec![PluginNotificationMediaUpdate {
+                    path: "/library/Example Show/S01E01.mkv".to_string(),
+                    update_type: NotificationMediaUpdateType::Created,
+                }],
+            }),
+            media_files: vec![PluginNotificationMediaFile {
+                id: Some("file-1".to_string()),
+                path: "/library/Example Show/S01E01.mkv".to_string(),
+                quality: Some("1080p".to_string()),
+                video_codec: Some("h264".to_string()),
+                audio_codec: Some("aac".to_string()),
+                ..PluginNotificationMediaFile::default()
+            }],
+            application_update: None,
+            manual_interaction: None,
+        }
     }
 }

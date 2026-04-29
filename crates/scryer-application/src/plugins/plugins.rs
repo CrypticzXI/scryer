@@ -1,4 +1,5 @@
 use super::*;
+use crate::ProviderCatalogFamily;
 use chrono::Utc;
 use ring::digest as ring_digest;
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,29 @@ struct RegistryEntry {
     min_scryer_version: Option<String>,
 }
 
+fn installation_matches_official_registry(
+    installation: &PluginInstallation,
+    registry: Option<&RegistryManifest>,
+) -> bool {
+    let Some(registry) = registry else {
+        return false;
+    };
+
+    registry.plugins.iter().any(|entry| {
+        entry.official
+            && !entry.builtin
+            && entry.id == installation.plugin_id
+            && entry.plugin_type == installation.plugin_type
+            && entry.provider_type == installation.provider_type
+            && entry.version == installation.version
+            && entry
+                .wasm_sha256
+                .as_deref()
+                .zip(installation.wasm_sha256.as_deref())
+                .is_some_and(|(expected, installed)| expected.eq_ignore_ascii_case(installed))
+    })
+}
+
 const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/scryer-media/scryer-plugins/main/registry.json";
 
@@ -133,6 +157,19 @@ fn is_indexer_plugin_type(plugin_type: &str) -> bool {
         plugin_type,
         LEGACY_INDEXER_PLUGIN_TYPE | USENET_INDEXER_PLUGIN_TYPE | TORRENT_INDEXER_PLUGIN_TYPE
     )
+}
+
+fn provider_catalog_families_for_plugin_type(plugin_type: &str) -> Vec<ProviderCatalogFamily> {
+    if is_indexer_plugin_type(plugin_type) {
+        return vec![ProviderCatalogFamily::Indexer];
+    }
+
+    match plugin_type {
+        "download_client" => vec![ProviderCatalogFamily::DownloadClient],
+        "notification" => vec![ProviderCatalogFamily::Notification],
+        "subtitle_provider" => vec![ProviderCatalogFamily::Subtitle],
+        _ => ProviderCatalogFamily::all().into_iter().collect(),
+    }
 }
 
 fn merged_plugin_type(registry_type: &str, installed_type: Option<&str>) -> String {
@@ -364,13 +401,34 @@ impl AppUseCase {
             .get_enabled_plugin_wasm_bytes()
             .await?;
 
-        // Collect WASM bytes for user-installed (non-builtin) enabled plugins
-        let external_bytes: Vec<Vec<u8>> = enabled
+        let registry = self
+            .services
+            .customization
+            .plugin_installations
+            .get_registry_cache()
+            .await?
+            .and_then(|json| serde_json::from_str::<RegistryManifest>(&json).ok());
+
+        // Collect WASM bytes for user-installed (non-builtin) enabled plugins.
+        let external_bytes: Vec<(Vec<u8>, bool)> = enabled
             .iter()
             .filter(|(inst, _)| !inst.is_builtin)
-            .filter_map(|(_, wasm)| wasm.clone())
+            .filter_map(|(inst, wasm)| {
+                wasm.clone().map(|bytes| {
+                    (
+                        bytes,
+                        installation_matches_official_registry(inst, registry.as_ref()),
+                    )
+                })
+            })
             .collect();
-        let external_refs: Vec<&[u8]> = external_bytes.iter().map(|b| b.as_slice()).collect();
+        let external_refs: Vec<ExternalPluginWasm<'_>> = external_bytes
+            .iter()
+            .map(|(bytes, first_party)| ExternalPluginWasm {
+                bytes: bytes.as_slice(),
+                first_party: *first_party,
+            })
+            .collect();
 
         // Collect provider_types of builtins the user has disabled
         // (must query all installations, not just enabled ones)
@@ -981,6 +1039,10 @@ impl AppUseCase {
             }
         }
 
+        self.publish_provider_catalog_changed(provider_catalog_families_for_plugin_type(
+            &entry.plugin_type,
+        ));
+
         Ok(result)
     }
 
@@ -1031,6 +1093,9 @@ impl AppUseCase {
             .await?;
 
         self.rebuild_plugin_provider().await?;
+        self.publish_provider_catalog_changed(provider_catalog_families_for_plugin_type(
+            &installation.plugin_type,
+        ));
         Ok(())
     }
 
@@ -1062,6 +1127,9 @@ impl AppUseCase {
             .await?;
 
         self.rebuild_plugin_provider().await?;
+        self.publish_provider_catalog_changed(provider_catalog_families_for_plugin_type(
+            &installation.plugin_type,
+        ));
         Ok(result)
     }
 
@@ -1164,6 +1232,9 @@ impl AppUseCase {
             .await?;
 
         self.rebuild_plugin_provider().await?;
+        self.publish_provider_catalog_changed(provider_catalog_families_for_plugin_type(
+            &updated.plugin_type,
+        ));
         Ok(result)
     }
 

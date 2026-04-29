@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { ActivitySquare, CalendarDays, Download, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
+import { ActivitySquare, AlertOctagon, AlertTriangle, CalendarDays, Download, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/hooks/use-auth";
 
@@ -21,12 +21,14 @@ import { backendClient } from "@/lib/graphql/urql-client";
 import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
+import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import type {
   ActivitySection,
   ViewId,
   SettingsSection,
   ContentSettingsSection,
   OverviewTitleTarget,
+  SmgVersionCompatibilityNotice,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
@@ -57,11 +59,13 @@ import {
   importQueueCountQuery,
   pendingImportsQuery,
   pendingImportCountsQuery,
+  smgVersionCompatibilityNoticeQuery,
 } from "@/lib/graphql/queries";
 import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
 
 const IMPORT_COUNT_FACETS = ["movie", "series", "anime"] as const;
+const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -106,6 +110,77 @@ const PendingImportsContainer = lazy(() =>
 );
 
 const INSTALL_BANNER_DISMISSED_KEY = "scryer.pwa.installBannerDismissed";
+
+type TranslateFn = (
+  key: string,
+  values?: Record<string, string | number | boolean | null | undefined>,
+) => string;
+
+function normalizeSmgVersionCompatibilityStatus(
+  status: string,
+): "deprecated" | "blocked" {
+  return status.trim().toLowerCase() === "deprecated" ? "deprecated" : "blocked";
+}
+
+function formatSmgUpgradeDeadline(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString();
+}
+
+function SmgUpgradeBanner({
+  notice,
+  t,
+}: {
+  notice: SmgVersionCompatibilityNotice;
+  t: TranslateFn;
+}) {
+  const status = normalizeSmgVersionCompatibilityStatus(notice.status);
+  const isDeprecated = status === "deprecated";
+  const Icon = isDeprecated ? AlertTriangle : AlertOctagon;
+  const deadline = formatSmgUpgradeDeadline(notice.upgradeDeadline);
+  const minimumVersion = notice.minimumVersion.trim();
+  const serverMessage = notice.message.trim();
+  const details = [
+    minimumVersion ? t("smgUpgrade.minimumVersion", { version: minimumVersion }) : null,
+    deadline ? t("smgUpgrade.deadline", { date: deadline }) : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return (
+    <div
+      className={isDeprecated
+        ? "border-b border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-900 dark:bg-amber-950/70 dark:text-amber-100"
+        : "border-b border-red-300 bg-red-100 text-red-950 dark:border-red-900 dark:bg-red-950/70 dark:text-red-100"}
+    >
+      <div className="mx-auto flex w-full max-w-[1480px] items-start gap-3 px-4 py-3">
+        <Icon className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
+        <div className="min-w-0">
+          <div className="font-semibold">
+            {isDeprecated ? t("smgUpgrade.deprecatedTitle") : t("smgUpgrade.blockedTitle")}
+          </div>
+          <div className="mt-0.5 text-sm">
+            {isDeprecated ? t("smgUpgrade.deprecatedBody") : t("smgUpgrade.blockedBody")}
+          </div>
+          {serverMessage ? (
+            <div className="mt-1 text-sm opacity-90">{serverMessage}</div>
+          ) : null}
+          {details.length > 0 ? (
+            <div className="mt-1 text-xs font-medium uppercase tracking-wide opacity-80">
+              {details.join(" • ")}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function OverviewContainerForView({
   view,
@@ -432,6 +507,8 @@ function AuthenticatedHomePage({
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
   const [ignoredImportCounts, setIgnoredImportCounts] = useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
+  const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
+    useState<SmgVersionCompatibilityNotice | null>(null);
   const [resolvedOverviewTarget, setResolvedOverviewTarget] = useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
 
@@ -467,6 +544,55 @@ function AuthenticatedHomePage({
       window.localStorage.setItem(INSTALL_BANNER_DISMISSED_KEY, "true");
     }
   }, []);
+
+  const refreshSmgVersionCompatibilityNotice = useCallback(async () => {
+    try {
+      const { data, error } = await backendClient
+        .query<{ smgVersionCompatibilityNotice?: SmgVersionCompatibilityNotice | null }>(
+          smgVersionCompatibilityNoticeQuery,
+          {},
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      setSmgVersionCompatibilityNotice(data?.smgVersionCompatibilityNotice ?? null);
+    } catch (error) {
+      console.warn("Failed to refresh SMG version compatibility notice", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSmgVersionCompatibilityNotice();
+  }, [refreshSmgVersionCompatibilityNotice]);
+
+  useSettingsSubscription(useCallback((changedKeys) => {
+    if (changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY)) {
+      void refreshSmgVersionCompatibilityNotice();
+    }
+  }, [refreshSmgVersionCompatibilityNotice]));
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+
+    const handleFocus = () => {
+      void refreshSmgVersionCompatibilityNotice();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshSmgVersionCompatibilityNotice();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshSmgVersionCompatibilityNotice]);
 
   const refreshSidebarCounts = useCallback(async () => {
     try {
@@ -893,6 +1019,13 @@ function AuthenticatedHomePage({
                   onOpenOverview={handleOpenOverview}
                   routeCommandPalette={routeCommandPaletteConfig}
                 />
+
+                {smgVersionCompatibilityNotice ? (
+                  <SmgUpgradeBanner
+                    notice={smgVersionCompatibilityNotice}
+                    t={t}
+                  />
+                ) : null}
 
                 {!isOnline ? (
                   <div className="flex items-center justify-center gap-2 bg-amber-900/80 px-4 py-2 text-sm text-amber-100">

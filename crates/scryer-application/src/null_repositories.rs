@@ -1096,10 +1096,10 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
         Ok(Vec::new())
     }
-    async fn list_blacklist_for_media_file(
+    async fn list_blocklist_for_media_file(
         &self,
         _media_file_id: &str,
-    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlocklistEntry>> {
         Ok(Vec::new())
     }
     async fn insert(&self, _download: &scryer_domain::SubtitleDownload) -> AppResult<()> {
@@ -1111,7 +1111,7 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
     async fn delete(&self, _id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
         Ok(None)
     }
-    async fn is_blacklisted(
+    async fn is_blocklisted(
         &self,
         _media_file_id: &str,
         _provider: &str,
@@ -1119,7 +1119,7 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
     ) -> AppResult<bool> {
         Ok(false)
     }
-    async fn blacklist(
+    async fn blocklist(
         &self,
         _media_file_id: &str,
         _provider: &str,

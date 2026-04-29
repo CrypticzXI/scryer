@@ -249,6 +249,16 @@
         "test_connection": {
           "default": false,
           "type": "boolean"
+        },
+        "torrent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DownloadTorrentCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -267,6 +277,8 @@
         "nzb",
         "nzb_url",
         "torrent_file",
+        "torrent_url",
+        "torrent_bytes",
         "magnet_uri"
       ]
     },
@@ -275,6 +287,8 @@
       "enum": [
         "category",
         "tag",
+        "label",
+        "view",
         "directory"
       ]
     },
@@ -295,12 +309,135 @@
         "seeding"
       ]
     },
+    "DownloadTorrentCapabilities": {
+      "type": "object",
+      "properties": {
+        "client_id_may_differ_from_info_hash": {
+          "default": false,
+          "type": "boolean"
+        },
+        "host_fs_required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "isolation_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DownloadIsolationMode"
+          }
+        },
+        "post_import_isolation_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DownloadIsolationMode"
+          }
+        },
+        "preferred_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DownloadInputKind"
+          }
+        },
+        "removes_on_seed_limit": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_content_paths": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_metadata_only": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supported_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DownloadInputKind"
+          }
+        },
+        "supports_anonymity_hops": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_auto_management": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_content_layout": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_first_last_piece_priority": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_force_start": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_post_import_isolation": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_priority_hint": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_queue_placement": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_safe_seeding": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_seed_ratio_limit": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_seed_time_limit": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_selected_files": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_sequential_download": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_skip_checking": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_start_paused": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_stopped": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
     "IndexerCapabilities": {
       "type": "object",
       "properties": {
         "anidb_search": {
           "default": false,
           "type": "boolean"
+        },
+        "category_model": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerCategoryModel"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "deduplicates_aliases": {
           "default": false,
@@ -312,14 +449,46 @@
             "null"
           ]
         },
+        "feed_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexerFeedMode"
+          }
+        },
         "imdb_search": {
           "default": false,
           "type": "boolean"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerLimitCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexerProtocol"
+          }
         },
         "query_param": {
           "type": [
             "string",
             "null"
+          ]
+        },
+        "response_features": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerResponseFeatures"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "rss": {
@@ -330,11 +499,23 @@
           "default": false,
           "type": "boolean"
         },
+        "search_inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexerSearchInput"
+          }
+        },
         "season_param": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "supported_external_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "supported_ids": {
           "default": {},
@@ -346,11 +527,209 @@
             }
           }
         },
+        "torrent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerTorrentCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tvdb_search": {
           "default": false,
           "type": "boolean"
         }
       }
+    },
+    "IndexerCategoryDescriptor": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "facets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "value_kind": {
+          "default": "string",
+          "allOf": [
+            {
+              "$ref": "#/definitions/IndexerCategoryValueKind"
+            }
+          ]
+        }
+      }
+    },
+    "IndexerCategoryModel": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexerCategoryDescriptor"
+          }
+        },
+        "provider_category_metadata": {
+          "default": false,
+          "type": "boolean"
+        },
+        "separate_anime_categories": {
+          "default": false,
+          "type": "boolean"
+        },
+        "value_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexerCategoryValueKind"
+          }
+        }
+      }
+    },
+    "IndexerCategoryValueKind": {
+      "type": "string",
+      "enum": [
+        "numeric",
+        "string"
+      ]
+    },
+    "IndexerFeedMode": {
+      "type": "string",
+      "enum": [
+        "recent",
+        "rss",
+        "automatic_search",
+        "interactive_search"
+      ]
+    },
+    "IndexerLimitCapabilities": {
+      "type": "object",
+      "properties": {
+        "api_quota_supported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "grab_quota_supported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_page_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_pages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "page_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "rate_limit_hint_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "IndexerProtocol": {
+      "type": "string",
+      "enum": [
+        "usenet",
+        "torrent",
+        "mixed",
+        "unknown"
+      ]
+    },
+    "IndexerResponseFeatures": {
+      "type": "object",
+      "properties": {
+        "comments": {
+          "default": false,
+          "type": "boolean"
+        },
+        "grabs": {
+          "default": false,
+          "type": "boolean"
+        },
+        "guid": {
+          "default": false,
+          "type": "boolean"
+        },
+        "info_url": {
+          "default": false,
+          "type": "boolean"
+        },
+        "languages": {
+          "default": false,
+          "type": "boolean"
+        },
+        "password_hint": {
+          "default": false,
+          "type": "boolean"
+        },
+        "protection_hint": {
+          "default": false,
+          "type": "boolean"
+        },
+        "raw_provider_metadata": {
+          "default": false,
+          "type": "boolean"
+        },
+        "subtitles": {
+          "default": false,
+          "type": "boolean"
+        },
+        "votes": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "IndexerSearchInput": {
+      "type": "string",
+      "enum": [
+        "text_query",
+        "title_query",
+        "id_query",
+        "aggregate_id_query",
+        "season",
+        "episode",
+        "absolute_episode",
+        "air_date",
+        "special_episode_title",
+        "category",
+        "offset",
+        "limit"
+      ]
     },
     "IndexerSourceKind": {
       "type": "string",
@@ -360,20 +739,131 @@
         "torrent"
       ]
     },
+    "IndexerTorrentCapabilities": {
+      "type": "object",
+      "properties": {
+        "reports_info_hash": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_leechers": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_magnet_uri": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_peers": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_seeders": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reports_volume_factors": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_private_tracker_flags": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_seed_requirements": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
     "NotificationCapabilities": {
       "type": "object",
       "properties": {
+        "delivery_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NotificationDeliveryMode"
+          }
+        },
+        "event_options": {
+          "default": {
+            "supports_upgrade_filter": false,
+            "supports_delete_for_upgrade_filter": false,
+            "supports_health_warning_filter": false
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotificationEventOptions"
+            }
+          ]
+        },
+        "payload_formats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NotificationPayloadFormat"
+          }
+        },
+        "requires_host_filesystem": {
+          "default": false,
+          "type": "boolean"
+        },
+        "requires_host_process": {
+          "default": false,
+          "type": "boolean"
+        },
         "supported_events": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/NotificationEventType"
           }
         },
+        "supports_batch": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_coalescing": {
+          "default": false,
+          "type": "boolean"
+        },
         "supports_images": {
           "default": false,
           "type": "boolean"
         },
         "supports_rich_text": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_test": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "NotificationDeliveryMode": {
+      "type": "string",
+      "enum": [
+        "webhook",
+        "custom_script",
+        "chat",
+        "email",
+        "push",
+        "media_server_update",
+        "external_sync",
+        "aggregator"
+      ]
+    },
+    "NotificationEventOptions": {
+      "type": "object",
+      "properties": {
+        "supports_delete_for_upgrade_filter": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_health_warning_filter": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_upgrade_filter": {
           "default": false,
           "type": "boolean"
         }
@@ -410,6 +900,25 @@
         "deleted"
       ]
     },
+    "NotificationPayloadFormat": {
+      "type": "string",
+      "enum": [
+        "structured_json",
+        "script_environment",
+        "plain_text",
+        "markdown",
+        "html",
+        "rich_embed"
+      ]
+    },
+    "NotificationSeverity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
     "PluginCompletedDownload": {
       "type": "object",
       "required": [
@@ -433,6 +942,12 @@
             "null"
           ]
         },
+        "content_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "dest_dir": {
           "type": "string"
         },
@@ -444,6 +959,16 @@
         },
         "name": {
           "type": "string"
+        },
+        "output_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginDownloadOutputKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "parameters": {
           "type": "array",
@@ -517,6 +1042,16 @@
         },
         "title": {
           "$ref": "#/definitions/PluginDownloadTitle"
+        },
+        "torrent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginTorrentOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -593,6 +1128,12 @@
             "null"
           ]
         },
+        "post_import_isolation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginDownloadIsolation"
+          }
+        },
         "title_id": {
           "type": [
             "string",
@@ -645,6 +1186,21 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "PluginDownloadIsolation": {
+      "type": "object",
+      "required": [
+        "mode",
+        "value"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/DownloadIsolationMode"
+        },
+        "value": {
+          "type": "string"
         }
       }
     },
@@ -741,6 +1297,16 @@
         "title": {
           "type": "string"
         },
+        "torrent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginTorrentItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "total_size_bytes": {
           "type": [
             "integer",
@@ -749,6 +1315,14 @@
           "format": "int64"
         }
       }
+    },
+    "PluginDownloadOutputKind": {
+      "type": "string",
+      "enum": [
+        "file",
+        "directory",
+        "unknown"
+      ]
     },
     "PluginDownloadRelease": {
       "type": "object",
@@ -760,6 +1334,18 @@
           ]
         },
         "info_hash_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash_v1": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash_v2": {
           "type": [
             "string",
             "null"
@@ -808,11 +1394,23 @@
             "null"
           ]
         },
+        "isolation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginDownloadIsolation"
+          }
+        },
         "isolation_value": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "post_import_isolation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginDownloadIsolation"
+          }
         },
         "queue_priority": {
           "type": [
@@ -856,6 +1454,24 @@
           ]
         },
         "torrent_bytes_base64": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torrent_content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torrent_file_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torrent_url": {
           "type": [
             "string",
             "null"
@@ -936,6 +1552,17 @@
         "smg.opensubtitles_api_key"
       ]
     },
+    "PluginNotificationActor": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "PluginNotificationApp": {
       "type": "object",
       "required": [
@@ -948,6 +1575,35 @@
         },
         "version": {
           "type": "string"
+        }
+      }
+    },
+    "PluginNotificationApplicationUpdate": {
+      "type": "object",
+      "properties": {
+        "current_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_version": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -977,12 +1633,74 @@
             "string",
             "null"
           ]
+        },
+        "output_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "progress_percent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
     "PluginNotificationEpisode": {
       "type": "object",
       "properties": {
+        "absolute_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "air_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "air_date_utc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "collection_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "display": {
           "type": [
             "string",
@@ -994,6 +1712,54 @@
           "items": {
             "type": "string"
           }
+        },
+        "episode_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "episode_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finale_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "season_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tvdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -1006,11 +1772,38 @@
             "null"
           ]
         },
+        "anilist_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "by_source": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "imdb_id": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "kitsu_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "tmdb_id": {
           "type": [
@@ -1019,6 +1812,12 @@
           ]
         },
         "tvdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tvmaze_id": {
           "type": [
             "string",
             "null"
@@ -1046,7 +1845,25 @@
     "PluginNotificationHealth": {
       "type": "object",
       "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
           "type": [
             "string",
             "null"
@@ -1063,6 +1880,12 @@
     "PluginNotificationImport": {
       "type": "object",
       "properties": {
+        "deleted_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "dest_path": {
           "type": [
             "string",
@@ -1076,6 +1899,26 @@
           ]
         },
         "imported_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "rejected_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "replaced_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skipped_count": {
           "type": [
             "integer",
             "null"
@@ -1111,6 +1954,162 @@
             "string",
             "null"
           ]
+        },
+        "upgrade": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "PluginNotificationManualInteraction": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationMediaFile": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "audio_channels": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audio_codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audio_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "container_format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "edition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "previous_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recycle_bin_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "subtitle_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "video_bit_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "video_codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_frame_rate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_hdr_format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "video_height": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "video_width": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
         }
       }
     },
@@ -1132,7 +2131,32 @@
     "PluginNotificationRelease": {
       "type": "object",
       "properties": {
+        "custom_scores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "indexer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protocol": {
           "type": [
             "string",
             "null"
@@ -1145,6 +2169,12 @@
           ]
         },
         "quality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_group": {
           "type": [
             "string",
             "null"
@@ -1173,8 +2203,34 @@
         "summary_title"
       ],
       "properties": {
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationActor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "app": {
           "$ref": "#/definitions/PluginNotificationApp"
+        },
+        "application_update": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationApplicationUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "download": {
           "anyOf": [
@@ -1194,6 +2250,18 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "episodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginNotificationEpisode"
+          }
+        },
+        "event_id": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "event_type": {
@@ -1229,10 +2297,52 @@
             }
           ]
         },
+        "is_test": {
+          "default": false,
+          "type": "boolean"
+        },
+        "manual_interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationManualInteraction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginNotificationMediaFile"
+          }
+        },
+        "occurred_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "release": {
           "anyOf": [
             {
               "$ref": "#/definitions/PluginNotificationRelease"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "default": 1,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NotificationSeverity"
             },
             {
               "type": "null"
@@ -1263,7 +2373,62 @@
         "success"
       ],
       "properties": {
+        "delivery_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "target_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginNotificationTargetResult"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PluginNotificationTargetResult": {
+      "type": "object",
+      "required": [
+        "success",
+        "target"
+      ],
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
           "type": [
             "string",
             "null"
@@ -1271,6 +2436,9 @@
         },
         "success": {
           "type": "boolean"
+        },
+        "target": {
+          "type": "string"
         }
       }
     },
@@ -1281,20 +2449,92 @@
         "name"
       ],
       "properties": {
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "background_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "banner_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "external_ids": {
           "$ref": "#/definitions/PluginNotificationExternalIds"
         },
         "facet": {
           "type": "string"
         },
+        "genres": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
+        },
+        "original_country": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "original_language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "poster_url": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "slug": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sort_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "year": {
           "type": [
@@ -1612,6 +2852,109 @@
         }
       }
     },
+    "PluginSearchContext": {
+      "type": "object",
+      "properties": {
+        "air_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clean_titles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "episode_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "query_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "query_kind": {
+          "default": "fallback",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginSearchQueryKind"
+            }
+          ]
+        },
+        "request_kind": {
+          "default": "search",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginSearchRequestKind"
+            }
+          ]
+        },
+        "scene_titles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "search_origin": {
+          "default": "interactive",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginSearchOrigin"
+            }
+          ]
+        },
+        "subject_kind": {
+          "default": "unknown",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginSearchSubjectKind"
+            }
+          ]
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      }
+    },
+    "PluginSearchOrigin": {
+      "type": "string",
+      "enum": [
+        "rss",
+        "automatic",
+        "interactive",
+        "manual"
+      ]
+    },
+    "PluginSearchQueryKind": {
+      "type": "string",
+      "enum": [
+        "text",
+        "title",
+        "id",
+        "aggregate_id",
+        "fallback"
+      ]
+    },
     "PluginSearchRequest": {
       "type": "object",
       "required": [
@@ -1636,6 +2979,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginSearchContext"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "episode": {
@@ -1682,6 +3035,13 @@
           }
         }
       }
+    },
+    "PluginSearchRequestKind": {
+      "type": "string",
+      "enum": [
+        "recent",
+        "search"
+      ]
     },
     "PluginSearchResponse": {
       "type": "object",
@@ -1733,11 +3093,48 @@
         "title"
       ],
       "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "download_url": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "download_volume_factor": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "external_ids": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "grabs": {
           "type": [
@@ -1747,6 +3144,24 @@
           "format": "int64"
         },
         "guid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "indexer_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "info_hash_v1": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash_v2": {
           "type": [
             "string",
             "null"
@@ -1764,7 +3179,40 @@
             "type": "string"
           }
         },
+        "leechers": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
         "link": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "magnet_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "minimum_seed_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "minimum_seed_time_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "origin": {
           "type": [
             "string",
             "null"
@@ -1776,11 +3224,34 @@
             "null"
           ]
         },
+        "peers": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
         "protected": {
           "type": [
             "boolean",
             "null"
           ]
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerProtocol"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "provider_extra": {
           "type": "object",
@@ -1792,12 +3263,55 @@
             "null"
           ]
         },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "season_pack_seed_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "season_pack_seed_time_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "seeders": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
         "size_bytes": {
           "type": [
             "integer",
             "null"
           ],
           "format": "int64"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IndexerSourceKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "subtitles": {
           "type": "array",
@@ -1821,8 +3335,298 @@
         },
         "title": {
           "type": "string"
+        },
+        "upload_volume_factor": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         }
       }
+    },
+    "PluginSearchSubjectKind": {
+      "type": "string",
+      "enum": [
+        "title",
+        "movie",
+        "episode",
+        "season",
+        "collection",
+        "anime_episode",
+        "special",
+        "unknown"
+      ]
+    },
+    "PluginTorrentContentLayout": {
+      "type": "string",
+      "enum": [
+        "default",
+        "original",
+        "subfolder",
+        "no_subfolder"
+      ]
+    },
+    "PluginTorrentInitialState": {
+      "type": "string",
+      "enum": [
+        "default",
+        "started",
+        "paused",
+        "stopped"
+      ]
+    },
+    "PluginTorrentItem": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_native_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "download_rate_bytes_per_second": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "downloaded_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "info_hash_v1": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash_v2": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_encrypted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "is_private": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "raw_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "save_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seed_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "seed_time_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "status_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upload_rate_bytes_per_second": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "uploaded_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PluginTorrentOptions": {
+      "type": "object",
+      "properties": {
+        "anonymity_hops": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "auto_management": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "content_layout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginTorrentContentLayout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first_last_piece_priority": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "force_start": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "initial_state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginTorrentInitialState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue_placement": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginTorrentQueuePlacement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "safe_seeding": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed_goal_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "seed_goal_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "selected_file_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        },
+        "sequential_download": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "skip_checking": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source_preference": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DownloadInputKind"
+          }
+        }
+      }
+    },
+    "PluginTorrentQueuePlacement": {
+      "type": "string",
+      "enum": [
+        "default",
+        "first",
+        "last"
+      ]
     },
     "ProviderDescriptor": {
       "oneOf": [
@@ -1998,7 +3802,17 @@
             "capabilities": {
               "default": {
                 "supports_rich_text": false,
-                "supports_images": false
+                "supports_images": false,
+                "supports_test": false,
+                "supports_batch": false,
+                "supports_coalescing": false,
+                "requires_host_filesystem": false,
+                "requires_host_process": false,
+                "event_options": {
+                  "supports_upgrade_filter": false,
+                  "supports_delete_for_upgrade_filter": false,
+                  "supports_health_warning_filter": false
+                }
               },
               "allOf": [
                 {

@@ -20,8 +20,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
+    AppServices, AppUseCase, DownloadClientPluginProvider, ExternalPluginWasm, FacetRegistry,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     NotificationPluginProvider, PluginInstallationRepository, SeriesFacetHandler,
     SubtitlePluginProvider, TitleImageKind, TitleImageRepository,
     start_background_acquisition_poller, start_background_banner_loop,
@@ -40,6 +40,7 @@ use scryer_infrastructure::{
     WeaverDownloadClient, start_weaver_subscription_bridge,
 };
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -79,6 +80,62 @@ enum VersionLifecycle {
     FirstRun,
     Unchanged,
     Upgraded,
+}
+
+fn log_smg_version_incompatibility(
+    incompat: &scryer_infrastructure::smg_enrollment::VersionIncompatible,
+) {
+    let env = if std::path::Path::new("/.dockerenv").exists() {
+        "docker"
+    } else {
+        "binary"
+    };
+    let blocked = incompat.status.eq_ignore_ascii_case("blocked");
+    let level_message = if blocked {
+        "SMG upgrade required"
+    } else {
+        "SMG upgrade recommended"
+    };
+
+    if blocked {
+        tracing::error!(
+            status = %incompat.status,
+            minimum_version = %incompat.minimum_version,
+            your_version = %incompat.your_version,
+            upgrade_deadline = ?incompat.upgrade_deadline,
+            "{level_message}: {}",
+            incompat.message
+        );
+    } else {
+        tracing::warn!(
+            status = %incompat.status,
+            minimum_version = %incompat.minimum_version,
+            your_version = %incompat.your_version,
+            upgrade_deadline = ?incompat.upgrade_deadline,
+            "{level_message}: {}",
+            incompat.message
+        );
+    }
+
+    if env == "docker" {
+        if blocked {
+            tracing::error!(
+                "To upgrade, pull the latest image and restart:\n  docker pull ghcr.io/scryer-media/scryer:latest\n  docker compose up -d"
+            );
+        } else {
+            tracing::warn!(
+                "To upgrade, pull the latest image and restart:\n  docker pull ghcr.io/scryer-media/scryer:latest\n  docker compose up -d"
+            );
+        }
+    } else if blocked {
+        tracing::error!(
+            "Download the latest release from:\n  https://github.com/scryer-media/scryer/releases/latest"
+        );
+    } else {
+        tracing::warn!(
+            "Download the latest release from:\n  https://github.com/scryer-media/scryer/releases/latest"
+        );
+    }
 }
 
 #[tokio::main]
@@ -438,9 +495,12 @@ async fn bootstrap_application(
         load_runtime_plugin_state(customization_store.as_ref())
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
-    let runtime_plugin_refs: Vec<&[u8]> = runtime_plugin_bytes
+    let runtime_plugin_refs: Vec<ExternalPluginWasm<'_>> = runtime_plugin_bytes
         .iter()
-        .map(|bytes| bytes.as_slice())
+        .map(|(bytes, first_party)| ExternalPluginWasm {
+            bytes: bytes.as_slice(),
+            first_party: *first_party,
+        })
         .collect();
     let download_client_plugin_provider: Arc<dyn DownloadClientPluginProvider> =
         Arc::new(scryer_plugins::DynamicDownloadClientPluginProvider::new(
@@ -545,25 +605,44 @@ async fn bootstrap_application(
     let metadata_gateway_for_warmup = metadata_gateway.clone();
     tokio::spawn(async move {
         if let Some(incompat) = metadata_gateway_for_warmup.warm_enrollment().await {
-            let env = if std::path::Path::new("/.dockerenv").exists() {
-                "docker"
-            } else {
-                "binary"
-            };
-            tracing::error!(
-                minimum_version = %incompat.minimum_version,
-                your_version = %incompat.your_version,
-                "INCOMPATIBLE VERSION: {}",
-                incompat.message
-            );
-            if env == "docker" {
-                tracing::error!(
-                    "To upgrade, pull the latest image and restart:\n  docker pull ghcr.io/scryer-media/scryer:latest\n  docker compose up -d"
-                );
-            } else {
-                tracing::error!(
-                    "Download the latest release from:\n  https://github.com/scryer-media/scryer/releases/latest"
-                );
+            log_smg_version_incompatibility(&incompat);
+        }
+        if !metadata_gateway_for_warmup.compatibility_polling_enabled() {
+            return;
+        }
+
+        let phase = loop {
+            match metadata_gateway_for_warmup
+                .version_compatibility_poll_phase()
+                .await
+            {
+                Ok(phase) => break phase,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to derive SMG version compatibility poll phase"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                }
+            }
+        };
+
+        let mut minimum_delay = MetadataGatewayClient::version_compatibility_startup_guard();
+        loop {
+            let delay =
+                MetadataGatewayClient::next_version_compatibility_poll_delay(phase, minimum_delay);
+            minimum_delay = std::time::Duration::from_secs(0);
+            tokio::time::sleep(delay).await;
+
+            match metadata_gateway_for_warmup
+                .refresh_version_compatibility(true)
+                .await
+            {
+                Ok(Some(incompat)) => log_smg_version_incompatibility(&incompat),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(error = %error, "SMG version compatibility refresh failed");
+                }
             }
         }
     });
@@ -1217,19 +1296,76 @@ async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<Strin
     Some((client.ws_url(), client.api_key().map(str::to_string)))
 }
 
+#[derive(Deserialize)]
+struct RuntimePluginRegistryManifest {
+    plugins: Vec<RuntimePluginRegistryEntry>,
+}
+
+#[derive(Deserialize)]
+struct RuntimePluginRegistryEntry {
+    id: String,
+    plugin_type: String,
+    provider_type: String,
+    version: String,
+    #[serde(default)]
+    official: bool,
+    #[serde(default)]
+    builtin: bool,
+    #[serde(default)]
+    wasm_sha256: Option<String>,
+}
+
+fn runtime_installation_matches_official_registry(
+    installation: &scryer_domain::PluginInstallation,
+    registry: Option<&RuntimePluginRegistryManifest>,
+) -> bool {
+    let Some(registry) = registry else {
+        return false;
+    };
+
+    registry.plugins.iter().any(|entry| {
+        entry.official
+            && !entry.builtin
+            && entry.id == installation.plugin_id
+            && entry.plugin_type == installation.plugin_type
+            && entry.provider_type == installation.provider_type
+            && entry.version == installation.version
+            && entry
+                .wasm_sha256
+                .as_deref()
+                .zip(installation.wasm_sha256.as_deref())
+                .is_some_and(|(expected, installed)| expected.eq_ignore_ascii_case(installed))
+    })
+}
+
 async fn load_runtime_plugin_state(
     customization_store: &SqliteCustomizationStore,
-) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
+) -> Result<(Vec<(Vec<u8>, bool)>, Vec<String>), String> {
     seed_builtin_plugin_installations(customization_store).await?;
 
     let enabled_plugins = customization_store
         .get_enabled_plugin_wasm_bytes()
         .await
         .map_err(|error| error.to_string())?;
+    let registry = customization_store
+        .get_registry_cache()
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|json| serde_json::from_str::<RuntimePluginRegistryManifest>(&json).ok());
     let runtime_plugin_bytes = enabled_plugins
         .into_iter()
         .filter(|(installation, _)| !installation.is_builtin)
-        .filter_map(|(_, wasm_bytes)| wasm_bytes)
+        .filter_map(|(installation, wasm_bytes)| {
+            wasm_bytes.map(|bytes| {
+                (
+                    bytes,
+                    runtime_installation_matches_official_registry(
+                        &installation,
+                        registry.as_ref(),
+                    ),
+                )
+            })
+        })
         .collect::<Vec<_>>();
 
     let disabled_builtin_plugins = customization_store

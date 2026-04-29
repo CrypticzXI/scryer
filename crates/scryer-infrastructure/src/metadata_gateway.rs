@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -400,6 +400,96 @@ const METADATA_GATEWAY_TRANSIENT_BASE_DELAY: Duration = Duration::from_secs(1);
 const METADATA_GATEWAY_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(5);
 const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 50;
 const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
+const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
+const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
+const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Deserialize)]
+struct VersionCompatibilitySuccessResponse {
+    compatibility: Option<VersionCompatibilityDecisionPayload>,
+}
+
+#[derive(Deserialize)]
+struct VersionCompatibilityDecisionPayload {
+    status: String,
+    #[serde(default)]
+    minimum_version: String,
+    #[serde(default)]
+    your_version: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    upgrade_deadline: Option<String>,
+}
+
+impl VersionCompatibilityDecisionPayload {
+    fn into_notice(self) -> Option<smg_enrollment::VersionIncompatible> {
+        if self.status.eq_ignore_ascii_case("supported") {
+            return None;
+        }
+
+        Some(smg_enrollment::VersionIncompatible {
+            status: self.status,
+            minimum_version: self.minimum_version,
+            your_version: self.your_version,
+            message: self.message,
+            upgrade_deadline: self
+                .upgrade_deadline
+                .filter(|value| !value.trim().is_empty()),
+        })
+    }
+}
+
+fn parse_version_compatibility_success(
+    body: &[u8],
+) -> AppResult<Option<smg_enrollment::VersionIncompatible>> {
+    let parsed: VersionCompatibilitySuccessResponse =
+        serde_json::from_slice(body).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to decode SMG version compatibility response: {error}"
+            ))
+        })?;
+    Ok(parsed
+        .compatibility
+        .and_then(VersionCompatibilityDecisionPayload::into_notice))
+}
+
+fn compatibility_poll_phase(instance_id: &str) -> Duration {
+    let digest = digest::digest(&digest::SHA256, instance_id.as_bytes());
+    let mut raw = [0_u8; 8];
+    raw.copy_from_slice(&digest.as_ref()[..8]);
+    let offset_secs =
+        u64::from_be_bytes(raw) % METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL.as_secs();
+    Duration::from_secs(offset_secs)
+}
+
+fn next_version_compatibility_poll_delay_at(
+    now: SystemTime,
+    phase: Duration,
+    minimum_delay: Duration,
+) -> Duration {
+    let now_secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let interval_secs = METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL.as_secs();
+    let phase_secs = phase.as_secs() % interval_secs;
+
+    let mut next_slot = (now_secs / interval_secs) * interval_secs + phase_secs;
+    if next_slot <= now_secs {
+        next_slot = next_slot.saturating_add(interval_secs);
+    }
+
+    let earliest = now_secs.saturating_add(minimum_delay.as_secs());
+    if next_slot < earliest {
+        let delta = earliest - next_slot;
+        let skips = delta.div_ceil(interval_secs);
+        next_slot = next_slot.saturating_add(skips * interval_secs);
+    }
+
+    Duration::from_secs(next_slot.saturating_sub(now_secs))
+}
 
 pub struct MetadataGatewayClient {
     http: Client,
@@ -411,6 +501,7 @@ pub struct MetadataGatewayClient {
     last_reenrollment: tokio::sync::Mutex<Option<Instant>>,
     pq_rotation: tokio::sync::Mutex<()>,
     rate_limit_until: tokio::sync::Mutex<Option<Instant>>,
+    compatibility_refresh: tokio::sync::Mutex<()>,
     version_incompatible: tokio::sync::Mutex<Option<smg_enrollment::VersionIncompatible>>,
     search_hash: String,
     search_rich_hash: String,
@@ -471,6 +562,7 @@ impl MetadataGatewayClient {
             last_reenrollment: tokio::sync::Mutex::new(None),
             pq_rotation: tokio::sync::Mutex::new(()),
             rate_limit_until: tokio::sync::Mutex::new(None),
+            compatibility_refresh: tokio::sync::Mutex::new(()),
             version_incompatible: tokio::sync::Mutex::new(None),
             db,
             mtls_state: tokio::sync::RwLock::new(MtlsState::NotAttempted),
@@ -560,22 +652,25 @@ impl MetadataGatewayClient {
         &self,
         registration_secret: &str,
     ) -> Result<(Client, InstanceAuth), smg_enrollment::EnrollmentError> {
-        let state = smg_enrollment::ensure_enrolled(
+        let state = match smg_enrollment::ensure_enrolled(
             &self.db,
             &self.registration_url,
             registration_secret,
             self.enrollment_config.ca_cert.as_deref(),
         )
         .await
-        .map_err(|e| {
-            if let smg_enrollment::EnrollmentError::VersionIncompatible(ref v) = e {
-                // Store for warm_enrollment to pick up — use try_lock to avoid blocking
-                if let Ok(mut guard) = self.version_incompatible.try_lock() {
-                    *guard = Some(v.clone());
+        {
+            Ok(state) => state,
+            Err(error) => {
+                if let smg_enrollment::EnrollmentError::VersionIncompatible(ref incompatibility) =
+                    error
+                {
+                    self.remember_enrollment_version_incompatible(incompatibility)
+                        .await;
                 }
+                return Err(error);
             }
-            e
-        })?;
+        };
 
         if let (Some(seed_b64), Some(key_id)) =
             (state.pq_seed_b64.as_ref(), state.pq_key_id.as_ref())
@@ -633,7 +728,7 @@ impl MetadataGatewayClient {
         *last = Some(Instant::now());
         drop(last);
 
-        warn!("SMG rejected certificate — clearing cached enrollment for re-registration");
+        warn!("SMG rejected instance auth — clearing cached enrollment for re-registration");
         if let Err(e) = smg_enrollment::clear_enrollment_cache(&self.db).await {
             warn!(error = %e, "failed to clear enrollment cache from SQLite");
         }
@@ -642,12 +737,180 @@ impl MetadataGatewayClient {
         true
     }
 
+    async fn store_version_compatibility_notice(
+        &self,
+        notice: Option<smg_enrollment::VersionIncompatible>,
+    ) -> AppResult<()> {
+        smg_enrollment::persist_version_compatibility_notice(&self.db, notice.as_ref())
+            .await
+            .map_err(AppError::Repository)?;
+        *self.version_incompatible.lock().await = notice;
+        Ok(())
+    }
+
+    async fn remember_enrollment_version_incompatible(
+        &self,
+        incompatibility: &smg_enrollment::VersionIncompatible,
+    ) {
+        if let Err(error) =
+            smg_enrollment::persist_version_compatibility_notice(&self.db, Some(incompatibility))
+                .await
+        {
+            warn!(
+                error = %error,
+                "failed to persist SMG version compatibility notice from enrollment"
+            );
+        }
+        if let Ok(mut guard) = self.version_incompatible.try_lock() {
+            *guard = Some(incompatibility.clone());
+        }
+    }
+
     /// Eagerly trigger enrollment in a background task so the mTLS client is ready before
     /// the first real metadata query arrives. Call this once after construction; it is
     /// safe to call concurrently with any other method.
     pub async fn warm_enrollment(&self) -> Option<smg_enrollment::VersionIncompatible> {
         let _ = self.get_http_client().await;
+        if self.compatibility_polling_enabled()
+            && let Err(error) = self.refresh_version_compatibility(false).await
+        {
+            warn!(error = %error, "SMG version compatibility warmup failed");
+        }
         self.version_incompatible.lock().await.clone()
+    }
+
+    pub fn compatibility_polling_enabled(&self) -> bool {
+        self.enrollment_config.registration_secret.is_some()
+    }
+
+    pub async fn version_compatibility_poll_phase(&self) -> AppResult<Duration> {
+        let instance_id = smg_enrollment::ensure_instance_id(&self.db)
+            .await
+            .map_err(AppError::Repository)?;
+        Ok(compatibility_poll_phase(&instance_id))
+    }
+
+    pub fn next_version_compatibility_poll_delay(
+        phase: Duration,
+        minimum_delay: Duration,
+    ) -> Duration {
+        next_version_compatibility_poll_delay_at(SystemTime::now(), phase, minimum_delay)
+    }
+
+    pub fn version_compatibility_startup_guard() -> Duration {
+        METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD
+    }
+
+    pub async fn refresh_version_compatibility(
+        &self,
+        skip_if_busy: bool,
+    ) -> AppResult<Option<smg_enrollment::VersionIncompatible>> {
+        let _guard = if skip_if_busy {
+            match self.compatibility_refresh.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => return Ok(None),
+            }
+        } else {
+            self.compatibility_refresh.lock().await
+        };
+
+        if !self.compatibility_polling_enabled() {
+            return Ok(None);
+        }
+
+        let url = smg_enrollment::derive_registration_endpoint(
+            &self.registration_url,
+            METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH,
+        )
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let payload = json!({ "version": SCRYER_RUNTIME_VERSION });
+        let body_bytes = serde_json::to_vec(&payload).map_err(|error| {
+            AppError::Repository(format!("failed to serialize payload: {error}"))
+        })?;
+        let endpoint_url = reqwest::Url::parse(&url)
+            .map_err(|error| AppError::Repository(format!("invalid compatibility URL: {error}")))?;
+
+        let mut retried_after_reenrollment = false;
+        loop {
+            let (client, auth) = self.get_http_client().await?;
+            let build_req = || -> AppResult<reqwest::RequestBuilder> {
+                let mut req = client
+                    .post(url.clone())
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body_bytes.clone());
+                if let Some(ref auth) = auth {
+                    req = apply_instance_auth_headers(
+                        req,
+                        auth,
+                        reqwest::Method::POST.as_str(),
+                        &endpoint_url,
+                        &body_bytes,
+                        &body_bytes,
+                    )?;
+                }
+                Ok(req)
+            };
+
+            let response = self
+                .send_request_with_retry(build_req, "SMG version compatibility check")
+                .await?;
+            self.reconcile_pq_enrollment_generation(auth.as_ref(), response.headers())
+                .await;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                && !retried_after_reenrollment
+                && self.enrollment_config.registration_secret.is_some()
+            {
+                let body = response.text().await.map_err(|error| {
+                    AppError::Repository(format!(
+                        "SMG version compatibility response read failed: {error}"
+                    ))
+                })?;
+                retried_after_reenrollment = true;
+                if !self.invalidate_enrollment().await {
+                    return Err(AppError::Repository(format!(
+                        "SMG version compatibility check auth rejected ({status}), re-enrollment on cooldown: {body}"
+                    )));
+                }
+                info!("retrying SMG version compatibility check after re-enrollment");
+                continue;
+            }
+
+            if status.is_success() {
+                let body = response.bytes().await.map_err(|error| {
+                    AppError::Repository(format!(
+                        "SMG version compatibility response read failed: {error}"
+                    ))
+                })?;
+                let notice = parse_version_compatibility_success(&body)?;
+                self.store_version_compatibility_notice(notice.clone())
+                    .await?;
+                return Ok(notice);
+            }
+
+            let error = smg_enrollment::registration_response_error(
+                response,
+                "SMG version compatibility check",
+            )
+            .await;
+            match error {
+                smg_enrollment::EnrollmentError::VersionIncompatible(incompatibility) => {
+                    self.store_version_compatibility_notice(Some(incompatibility.clone()))
+                        .await?;
+                    return Ok(Some(incompatibility));
+                }
+                smg_enrollment::EnrollmentError::RateLimited(rate_limited) => {
+                    return Err(AppError::Repository(format!(
+                        "SMG version compatibility check rate limited: {}",
+                        rate_limited.message
+                    )));
+                }
+                smg_enrollment::EnrollmentError::Other(message) => {
+                    return Err(AppError::Repository(message));
+                }
+            }
+        }
     }
 
     /// Execute a GraphQL query using APQ (Automatic Persisted Queries).
@@ -1530,10 +1793,12 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
 mod tests {
     use super::{
         MetadataSearchQuery, SEARCH_TVDB_BATCH_QUERY, build_bulk_mixed_query,
-        build_search_tvdb_batch_query, enrollment_retry_delay, metadata_gateway_rate_limit_delay,
+        build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
+        metadata_gateway_rate_limit_delay, next_version_compatibility_poll_delay_at,
         normalize_artwork_url, normalize_optional_artwork_url, parse_retry_after_header,
+        parse_version_compatibility_success,
     };
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use crate::smg_enrollment::{EnrollmentError, RateLimited};
 
@@ -1679,6 +1944,76 @@ mod tests {
         );
 
         assert_eq!(delay, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn compatibility_poll_phase_is_stable_and_bounded() {
+        let first = compatibility_poll_phase("instance-a");
+        let second = compatibility_poll_phase("instance-a");
+        let different = compatibility_poll_phase("instance-b");
+
+        assert_eq!(first, second);
+        assert!(first < Duration::from_secs(6 * 60 * 60));
+        assert!(different < Duration::from_secs(6 * 60 * 60));
+    }
+
+    #[test]
+    fn next_version_compatibility_poll_delay_skips_slots_inside_startup_guard() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(6 * 60 * 60 + 5 * 60);
+        let phase = Duration::from_secs(10 * 60);
+
+        let delay =
+            next_version_compatibility_poll_delay_at(now, phase, Duration::from_secs(30 * 60));
+
+        assert_eq!(delay, Duration::from_secs(6 * 60 * 60 + 5 * 60));
+    }
+
+    #[test]
+    fn next_version_compatibility_poll_delay_uses_next_ring_slot_without_guard() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(6 * 60 * 60 + 5 * 60);
+        let phase = Duration::from_secs(10 * 60);
+
+        let delay = next_version_compatibility_poll_delay_at(now, phase, Duration::from_secs(0));
+
+        assert_eq!(delay, Duration::from_secs(5 * 60));
+    }
+
+    #[test]
+    fn parse_version_compatibility_success_returns_none_for_supported() {
+        let body = br#"{
+            "compatibility": {
+                "status": "supported",
+                "minimum_version": "",
+                "your_version": "0.12.0",
+                "message": ""
+            }
+        }"#;
+
+        let notice = parse_version_compatibility_success(body).expect("parse supported response");
+
+        assert!(notice.is_none());
+    }
+
+    #[test]
+    fn parse_version_compatibility_success_preserves_deprecated_notice() {
+        let body = br#"{
+            "compatibility": {
+                "status": "deprecated",
+                "minimum_version": "0.12.1",
+                "your_version": "0.12.0",
+                "message": "Upgrade recommended soon.",
+                "upgrade_deadline": "2026-05-31"
+            }
+        }"#;
+
+        let notice = parse_version_compatibility_success(body).expect("parse deprecated response");
+        let notice = notice.expect("deprecated notice");
+
+        assert_eq!(notice.status, "deprecated");
+        assert_eq!(notice.minimum_version, "0.12.1");
+        assert_eq!(notice.your_version, "0.12.0");
+        assert_eq!(notice.message, "Upgrade recommended soon.");
+        assert_eq!(notice.upgrade_deadline.as_deref(), Some("2026-05-31"));
     }
 }
 

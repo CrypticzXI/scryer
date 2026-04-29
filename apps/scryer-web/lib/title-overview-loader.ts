@@ -15,7 +15,7 @@ export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist
   acquisitionDiagnostics: TDiagnostics | null;
   titleEvents: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
-  subtitleDownloads: TSubtitle[];
+  externalSubtitles: TSubtitle[];
   hasDownloadClients: boolean;
 };
 
@@ -65,7 +65,7 @@ export async function fetchTitleOverviewNativeSnapshot<
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
     titleEvents: (data?.titleEvents ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
-    subtitleDownloads: (data?.subtitleDownloads ?? []) as TSubtitle[],
+    externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
     hasDownloadClients: data?.setupStatus?.hasDownloadClients === true,
   };
 }

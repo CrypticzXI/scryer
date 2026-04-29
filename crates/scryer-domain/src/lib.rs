@@ -2165,6 +2165,133 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerProtocolCapability {
+    Usenet,
+    Torrent,
+    Mixed,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerFeedModeCapability {
+    Recent,
+    Rss,
+    AutomaticSearch,
+    InteractiveSearch,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerSearchInputCapability {
+    TextQuery,
+    TitleQuery,
+    IdQuery,
+    AggregateIdQuery,
+    Season,
+    Episode,
+    AbsoluteEpisode,
+    AirDate,
+    SpecialEpisodeTitle,
+    Category,
+    Offset,
+    Limit,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerCategoryValueKind {
+    Numeric,
+    #[default]
+    String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCategoryDescriptor {
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub value_kind: IndexerCategoryValueKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCategoryModel {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_kinds: Vec<IndexerCategoryValueKind>,
+    #[serde(default)]
+    pub separate_anime_categories: bool,
+    #[serde(default)]
+    pub provider_category_metadata: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<IndexerCategoryDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerLimitCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_page_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pages: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_hint_seconds: Option<u32>,
+    #[serde(default)]
+    pub api_quota_supported: bool,
+    #[serde(default)]
+    pub grab_quota_supported: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerTorrentCapabilities {
+    #[serde(default)]
+    pub reports_seeders: bool,
+    #[serde(default)]
+    pub reports_peers: bool,
+    #[serde(default)]
+    pub reports_leechers: bool,
+    #[serde(default)]
+    pub reports_info_hash: bool,
+    #[serde(default)]
+    pub reports_magnet_uri: bool,
+    #[serde(default)]
+    pub reports_volume_factors: bool,
+    #[serde(default)]
+    pub supports_private_tracker_flags: bool,
+    #[serde(default)]
+    pub supports_seed_requirements: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerResponseFeatures {
+    #[serde(default)]
+    pub languages: bool,
+    #[serde(default)]
+    pub subtitles: bool,
+    #[serde(default)]
+    pub grabs: bool,
+    #[serde(default)]
+    pub votes: bool,
+    #[serde(default)]
+    pub comments: bool,
+    #[serde(default)]
+    pub info_url: bool,
+    #[serde(default)]
+    pub guid: bool,
+    #[serde(default)]
+    pub raw_provider_metadata: bool,
+    #[serde(default)]
+    pub password_hint: bool,
+    #[serde(default)]
+    pub protection_hint: bool,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndexerProviderCapabilities {
     #[serde(default = "default_true")]
@@ -2214,6 +2341,22 @@ pub struct IndexerProviderCapabilities {
     pub tvdb_search: bool,
     #[serde(default)]
     pub anidb_search: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocols: Vec<IndexerProtocolCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feed_modes: Vec<IndexerFeedModeCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_inputs: Vec<IndexerSearchInputCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_external_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_model: Option<IndexerCategoryModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<IndexerLimitCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<IndexerTorrentCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_features: Option<IndexerResponseFeatures>,
 }
 
 impl IndexerProviderCapabilities {
@@ -2689,14 +2832,38 @@ mod tests {
 
 // ── Subtitle management ─────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ExternalSubtitleSourceKind {
+    Downloaded,
+    Discovered,
+}
+
+impl ExternalSubtitleSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Downloaded => "downloaded",
+            Self::Discovered => "discovered",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "downloaded" => Some(Self::Downloaded),
+            "discovered" => Some(Self::Discovered),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubtitleDownload {
     pub id: String,
     pub media_file_id: String,
     pub title_id: String,
     pub episode_id: Option<String>,
+    pub source_kind: ExternalSubtitleSourceKind,
     pub language: String,
-    pub provider: String,
+    pub provider: Option<String>,
     pub provider_file_id: Option<String>,
     pub file_path: String,
     pub score: Option<i32>,
@@ -2711,7 +2878,7 @@ pub struct SubtitleDownload {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SubtitleBlacklistEntry {
+pub struct SubtitleBlocklistEntry {
     pub id: String,
     pub media_file_id: String,
     pub provider: String,

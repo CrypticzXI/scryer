@@ -338,6 +338,11 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
+  const hasConfiguredRootFolders = rootFolders.some(
+    (folder) => folder.path.trim().length > 0,
+  );
+  const showInitialScanAction =
+    monitoredTitles.length === 0 && hasConfiguredRootFolders;
 
   const mediaLibrarySettingsTitle =
     view === "series" ? t("settings.seriesLibrarySettings") : t("settings.moviesLibrarySettings");
@@ -702,6 +707,10 @@ export function MediaContentView({
                       onBulkEdit={openBulkTitleEdit}
                       onBulkDelete={openBulkTitleDelete}
                       bulkActionBusy={bulkActionBusy}
+                      showScanLibraryAction={showInitialScanAction}
+                      onScanLibrary={scanLibrary}
+                      scanLibraryLoading={libraryScanLoading}
+                      scanLibraryDisabled={libraryScanDisabled}
                     />
                   );
                 }
@@ -722,6 +731,10 @@ export function MediaContentView({
                     onQueueFromInteractive={queueExistingFromRelease}
                     isDeletingById={isDeletingCatalogTitleById}
                     isTogglingMonitoredById={isTogglingTitleMonitoredById}
+                    showScanLibraryAction={showInitialScanAction}
+                    onScanLibrary={scanLibrary}
+                    scanLibraryLoading={libraryScanLoading}
+                    scanLibraryDisabled={libraryScanDisabled}
                   />
                 );
               })()}

@@ -1208,6 +1208,15 @@ pub struct SystemHealthPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct SmgVersionCompatibilityNoticePayload {
+    pub status: String,
+    pub minimum_version: String,
+    pub your_version: String,
+    pub message: String,
+    pub upgrade_deadline: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct IndexerQueryStatsPayload {
     pub indexer_id: String,
     pub indexer_name: String,
@@ -2291,6 +2300,7 @@ pub struct AddTitleInput {
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
     pub title_id: String,
+    pub collection_id: Option<String>,
     pub season: Option<String>,
     pub episode: Option<String>,
     pub limit: Option<i32>,
@@ -2905,8 +2915,8 @@ pub struct DeleteMediaFilePreviewInput {
 }
 
 #[derive(InputObject)]
-pub struct DeleteSubtitlePreviewInput {
-    pub subtitle_download_id: String,
+pub struct DeleteExternalSubtitlePreviewInput {
+    pub external_subtitle_id: String,
 }
 
 #[derive(InputObject)]
@@ -3663,13 +3673,15 @@ pub struct UpdatePostProcessingScriptInput {
 // ── Subtitle downloads ──────────────────────────────────────────────────────
 
 #[derive(async_graphql::SimpleObject)]
-pub struct SubtitleDownloadPayload {
+pub struct ExternalSubtitlePayload {
     pub id: String,
     pub media_file_id: String,
     pub title_id: String,
     pub episode_id: Option<String>,
+    pub source_kind: String,
     pub language: String,
-    pub provider: String,
+    pub provider: Option<String>,
+    pub provider_file_id: Option<String>,
     pub file_path: String,
     pub score: Option<i32>,
     pub hearing_impaired: bool,
@@ -3683,7 +3695,7 @@ pub struct SubtitleDownloadPayload {
 }
 
 #[derive(async_graphql::SimpleObject)]
-pub struct SubtitleBlacklistEntryPayload {
+pub struct ExternalSubtitleBlocklistEntryPayload {
     pub id: String,
     pub media_file_id: String,
     pub provider: String,
@@ -3740,6 +3752,7 @@ pub struct TitleHistoryFilterInput {
     pub title_ids: Option<Vec<String>>,
     pub title_search: Option<String>,
     pub download_id: Option<String>,
+    pub episode_id: Option<String>,
     pub group_by_event: Option<bool>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,

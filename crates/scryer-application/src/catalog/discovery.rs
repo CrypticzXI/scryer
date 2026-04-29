@@ -748,6 +748,7 @@ impl AppUseCase {
         title: &Title,
         subject: &ResolvedReleaseSearchSubject,
         results: &mut [IndexerSearchResult],
+        preserve_subject_scope: bool,
     ) {
         let signing_key = match self.release_candidate_signing_key_for_actor(actor).await {
             Ok(signing_key) => signing_key,
@@ -788,19 +789,23 @@ impl AppUseCase {
         );
 
         for result in results.iter_mut() {
-            let scope = result
-                .parsed_release_metadata
-                .as_ref()
-                .map(|parsed| {
-                    crate::acquisition_coverage::resolve_release_coverage(
-                        parsed,
-                        &catalog_episodes,
-                        &catalog_collections,
-                        requested_episode,
-                    )
-                    .submission_scope_or(&subject.submission_scope)
-                })
-                .unwrap_or_else(|| subject.submission_scope.clone());
+            let scope = if preserve_subject_scope {
+                subject.submission_scope.clone()
+            } else {
+                result
+                    .parsed_release_metadata
+                    .as_ref()
+                    .map(|parsed| {
+                        crate::acquisition_coverage::resolve_release_coverage(
+                            parsed,
+                            &catalog_episodes,
+                            &catalog_collections,
+                            requested_episode,
+                        )
+                        .submission_scope_or(&subject.submission_scope)
+                    })
+                    .unwrap_or_else(|| subject.submission_scope.clone())
+            };
             result.queue_scope = Some(scope.clone());
             let selection = QueuedReleaseSelection {
                 source_hint: result.download_url.clone().or(result.link.clone()),
@@ -863,7 +868,75 @@ impl AppUseCase {
         let mut results = self
             .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
-        self.attach_candidate_tokens(actor, &title, &subject, &mut results)
+        self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
+            .await;
+
+        self.emit_discovery_search_completed_event(
+            Some(actor.id.clone()),
+            subject.category.clone(),
+            subject.queries.first().cloned(),
+            results.len() as i64,
+        )
+        .await;
+
+        Ok(results)
+    }
+
+    pub async fn search_indexers_for_interstitial_movie(
+        &self,
+        actor: &User,
+        title_id: String,
+        collection_id: String,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
+        require(actor, &Entitlement::ViewCatalog)?;
+
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        let collection = self
+            .services
+            .catalog
+            .shows
+            .get_collection_by_id(&collection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
+        if collection.title_id != title.id {
+            return Err(AppError::Validation(
+                "collection does not belong to title".into(),
+            ));
+        }
+        if collection.interstitial_movie.is_none() {
+            return Err(AppError::Validation(
+                "collection does not have interstitial movie metadata".into(),
+            ));
+        }
+
+        let (search_title, subject) = self
+            .resolve_release_search_subject_for_collection(&title, &collection)
+            .await?;
+
+        info!(
+            actor = actor.id.as_str(),
+            title_id = title_id.as_str(),
+            collection_id = collection_id.as_str(),
+            query = subject.queries.first().map(String::as_str).unwrap_or(""),
+            category = subject.category.as_str(),
+            "searching indexers for interstitial movie"
+        );
+
+        let mut results = self
+            .search_and_evaluate_subject(
+                &search_title,
+                &subject,
+                &actor.id,
+                SearchMode::Interactive,
+            )
+            .await?;
+        self.attach_candidate_tokens(actor, &search_title, &subject, &mut results, true)
             .await;
 
         self.emit_discovery_search_completed_event(
@@ -911,7 +984,7 @@ impl AppUseCase {
         let mut results = self
             .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
             .await?;
-        self.attach_candidate_tokens(actor, &title, &subject, &mut results)
+        self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
 
         self.emit_discovery_search_completed_event(

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use scryer_application::IndexerPluginProvider;
+use scryer_application::{IndexerPluginProvider, SubtitlePluginProvider};
 use scryer_domain::IndexerConfig;
 
 fn test_config(provider_type: &str) -> IndexerConfig {
@@ -148,6 +148,25 @@ fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
         "newznab should not expose a default base URL"
     );
 
+    let nzbgeek_capabilities = provider.capabilities_for_provider("nzbgeek");
+    assert_eq!(
+        nzbgeek_capabilities.protocols,
+        vec![scryer_domain::IndexerProtocolCapability::Usenet]
+    );
+    assert!(
+        nzbgeek_capabilities
+            .feed_modes
+            .contains(&scryer_domain::IndexerFeedModeCapability::Recent),
+        "nzbgeek builtin should expose recent-feed capability metadata"
+    );
+    assert!(
+        nzbgeek_capabilities
+            .response_features
+            .as_ref()
+            .is_some_and(|features| features.grabs && features.comments),
+        "nzbgeek builtin should expose nested response feature metadata"
+    );
+
     let trimmed = provider.without_provider_type("nzbgeek");
     let trimmed_types = trimmed.available_provider_types();
     assert!(
@@ -225,6 +244,17 @@ fn dognzb_hides_generic_newznab_config_fields() {
         !field_keys.contains(&"additional_params"),
         "DogNZB should not expose additional_params"
     );
+}
+
+#[test]
+fn jimaku_builtin_hides_internal_archive_and_ai_config_fields() {
+    let provider = scryer_plugins::WasmSubtitlePluginProvider::empty()
+        .with_builtin(scryer_plugins::builtins::JIMAKU_WASM);
+
+    let fields = provider.config_fields_for_provider("jimaku");
+    let field_keys: Vec<&str> = fields.iter().map(|field| field.key.as_str()).collect();
+
+    assert_eq!(field_keys, vec!["api_key", "enable_name_search_fallback"]);
 }
 
 #[test]

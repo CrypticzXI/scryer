@@ -1162,8 +1162,12 @@ export const downloadSubtitleMutation = `mutation DownloadSubtitle($input: Downl
   downloadSubtitle(input: $input)
 }`;
 
-export const blacklistSubtitleMutation = `mutation BlacklistSubtitle($input: BlacklistSubtitleInput!) {
-  blacklistSubtitle(input: $input)
+export const deleteExternalSubtitleMutation = `mutation DeleteExternalSubtitle($input: DeleteExternalSubtitleInput!) {
+  deleteExternalSubtitle(input: $input)
+}`;
+
+export const blocklistExternalSubtitleMutation = `mutation BlocklistExternalSubtitle($input: BlocklistExternalSubtitleInput!) {
+  blocklistExternalSubtitle(input: $input)
 }`;
 
 // ── Import retry mutations ────────────────────────────────────────────────

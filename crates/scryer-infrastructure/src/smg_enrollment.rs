@@ -4,19 +4,22 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ml_dsa::{KeyGen, MlDsa65};
 use ring::{hmac, rand::SecureRandom};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 const PQ_CLIENT_FAMILY: &str = "scryer-stable";
+const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 
-/// Returned when SMG rejects registration due to version incompatibility.
-#[derive(Debug, Clone)]
+/// Returned when SMG reports a version compatibility issue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VersionIncompatible {
+    pub status: String,
     pub minimum_version: String,
     pub your_version: String,
     pub message: String,
+    pub upgrade_deadline: Option<String>,
 }
 
 /// Returned when SMG rejects registration due to a rate limit.
@@ -39,8 +42,8 @@ impl std::fmt::Display for EnrollmentError {
         match self {
             Self::VersionIncompatible(v) => write!(
                 f,
-                "version incompatible: minimum={}, yours={}, message={}",
-                v.minimum_version, v.your_version, v.message
+                "version compatibility issue: status={}, minimum={}, yours={}, deadline={:?}, message={}",
+                v.status, v.minimum_version, v.your_version, v.upgrade_deadline, v.message
             ),
             Self::RateLimited(rate_limited) => {
                 if let Some(retry_after) = rate_limited.retry_after {
@@ -430,6 +433,11 @@ async fn enroll_with_smg(
             && parsed.get("error").and_then(|v| v.as_str()) == Some("version_incompatible")
         {
             return Err(EnrollmentError::VersionIncompatible(VersionIncompatible {
+                status: parsed
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("blocked")
+                    .to_string(),
                 minimum_version: parsed
                     .get("minimum_version")
                     .and_then(|v| v.as_str())
@@ -445,6 +453,11 @@ async fn enroll_with_smg(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                upgrade_deadline: parsed
+                    .get("upgrade_deadline")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
             }));
         }
 
@@ -666,7 +679,7 @@ fn generate_pq_keypair() -> Result<PqKeypair, EnrollmentError> {
     })
 }
 
-fn derive_registration_endpoint(
+pub(crate) fn derive_registration_endpoint(
     registration_url: &str,
     endpoint_path: &str,
 ) -> Result<String, EnrollmentError> {
@@ -732,7 +745,7 @@ async fn send_authenticated_pq_registration_request(
         .map_err(|e| EnrollmentError::Other(format!("SMG PQ authenticated request failed: {e}")))
 }
 
-async fn registration_response_error(
+pub(crate) async fn registration_response_error(
     response: reqwest::Response,
     operation: &str,
 ) -> EnrollmentError {
@@ -746,6 +759,11 @@ async fn registration_response_error(
         && parsed.get("error").and_then(|v| v.as_str()) == Some("version_incompatible")
     {
         return EnrollmentError::VersionIncompatible(VersionIncompatible {
+            status: parsed
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("blocked")
+                .to_string(),
             minimum_version: parsed
                 .get("minimum_version")
                 .and_then(|v| v.as_str())
@@ -761,6 +779,11 @@ async fn registration_response_error(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
+            upgrade_deadline: parsed
+                .get("upgrade_deadline")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty()),
         });
     }
 
@@ -992,6 +1015,13 @@ pub async fn persist_pq_enrollment_generation(
     persist_setting(db, "smg.pq_enrollment_generation", &generation.to_string()).await
 }
 
+pub async fn persist_version_compatibility_notice(
+    db: &crate::SqliteServices,
+    notice: Option<&VersionIncompatible>,
+) -> Result<(), String> {
+    persist_setting_json(db, SMG_VERSION_COMPATIBILITY_NOTICE_KEY, &notice).await
+}
+
 async fn persist_pq_enrollment_state(
     db: &crate::SqliteServices,
     seed_b64: &str,
@@ -1006,12 +1036,22 @@ async fn persist_pq_enrollment_state(
 }
 
 async fn persist_setting(db: &crate::SqliteServices, key: &str, value: &str) -> Result<(), String> {
+    persist_setting_json(db, key, value).await
+}
+
+async fn persist_setting_json<T: Serialize + ?Sized>(
+    db: &crate::SqliteServices,
+    key: &str,
+    value: &T,
+) -> Result<(), String> {
+    let value_json =
+        serde_json::to_string(value).map_err(|e| format!("failed to encode {key}: {e}"))?;
     crate::SqliteSettingsStore::new(db)
         .upsert_setting_value(
             SETTINGS_SCOPE_SYSTEM,
             key,
             None,
-            serde_json::to_string(value).unwrap(),
+            value_json,
             "smg-enrollment",
             None,
         )

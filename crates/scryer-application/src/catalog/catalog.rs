@@ -1052,8 +1052,7 @@ impl AppUseCase {
             .catalog
             .shows
             .list_episodes_for_title(&title.id)
-            .await
-            .unwrap_or_default();
+            .await?;
 
         let mut conflicts = Vec::new();
         for submission in submissions {
@@ -2718,8 +2717,8 @@ impl AppUseCase {
         }
     }
 
-    /// Canonical owner for persisted title monitoring changes and title-level
-    /// side effects. All title monitoring writes must flow through this helper.
+    /// Low-level title monitoring persistence and side effects. This helper
+    /// intentionally does not emit domain events; canonical apply helpers do.
     async fn persist_title_monitoring(&self, title_id: &str, monitored: bool) -> AppResult<Title> {
         let title = self
             .services
@@ -2747,9 +2746,32 @@ impl AppUseCase {
         Ok(title)
     }
 
-    /// Canonical owner for persisted collection monitoring changes. All
-    /// collection monitoring writes, including `update_collection(... monitored
-    /// ...)`, must flow through this helper.
+    /// Canonical owner for direct title monitoring changes.
+    async fn apply_title_monitoring_change(
+        &self,
+        actor_user_id: Option<String>,
+        title_id: &str,
+        monitored: bool,
+    ) -> AppResult<Title> {
+        let current_title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        if current_title.monitored == monitored {
+            return Ok(current_title);
+        }
+
+        let title = self.persist_title_monitoring(title_id, monitored).await?;
+        self.emit_title_updated_activity(actor_user_id, &title)
+            .await;
+        Ok(title)
+    }
+
+    /// Low-level collection monitoring persistence. This helper intentionally
+    /// does not emit domain events; canonical apply helpers do.
     async fn persist_collection_monitoring(
         &self,
         collection_id: &str,
@@ -2795,9 +2817,8 @@ impl AppUseCase {
         Ok(collection)
     }
 
-    /// Canonical owner for persisted episode monitoring changes. All episode
-    /// monitoring writes, including `update_episode(... monitored ...)`, must
-    /// flow through this helper.
+    /// Low-level episode monitoring persistence. This helper intentionally
+    /// does not emit domain events; canonical apply helpers do.
     async fn persist_episode_monitoring(
         &self,
         episode_id: &str,
@@ -2868,7 +2889,7 @@ impl AppUseCase {
             let Some(title) = matched_title else { continue };
 
             let updated = self
-                .persist_title_monitoring(&title.id, entry.monitored)
+                .apply_title_monitoring_change(None, &title.id, entry.monitored)
                 .await?;
             touched_title_ids.insert(updated.id);
         }
@@ -2921,7 +2942,7 @@ impl AppUseCase {
             };
 
             let updated_title = self
-                .persist_title_monitoring(&title.id, entry.monitored)
+                .apply_title_monitoring_change(None, &title.id, entry.monitored)
                 .await?;
             touched_title_ids.insert(updated_title.id.clone());
 
@@ -2968,11 +2989,12 @@ impl AppUseCase {
             }
 
             for collection in &collections {
-                self.persist_collection_monitoring(&collection.id, false, false)
+                self.apply_collection_monitoring_change(None, &collection.id, false, false, false)
                     .await?;
             }
             for episode in &episodes {
-                self.persist_episode_monitoring(&episode.id, false).await?;
+                self.apply_episode_monitoring_change(None, &episode.id, false, false)
+                    .await?;
             }
 
             if updated_title.monitored {
@@ -2980,8 +3002,14 @@ impl AppUseCase {
                     if let Some(collection) =
                         collections_by_season.get(&season.season_number.to_string())
                     {
-                        self.persist_collection_monitoring(&collection.id, true, false)
-                            .await?;
+                        self.apply_collection_monitoring_change(
+                            None,
+                            &collection.id,
+                            true,
+                            false,
+                            false,
+                        )
+                        .await?;
                     }
                 }
 
@@ -2993,8 +3021,13 @@ impl AppUseCase {
                         episode.season_number,
                         episode.episode_number,
                     ) {
-                        self.persist_episode_monitoring(&matched_episode.id, true)
-                            .await?;
+                        self.apply_episode_monitoring_change(
+                            None,
+                            &matched_episode.id,
+                            true,
+                            false,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -3062,13 +3095,40 @@ impl AppUseCase {
     /// so propagation and immediate acquisition behavior cannot drift.
     async fn apply_collection_monitoring_change(
         &self,
+        actor_user_id: Option<String>,
         collection_id: &str,
         monitored: bool,
         propagate_to_episodes: bool,
+        sync_title_if_already_monitored: bool,
     ) -> AppResult<Collection> {
-        let collection = self
-            .persist_collection_monitoring(collection_id, monitored, propagate_to_episodes)
-            .await?;
+        let current_collection = self
+            .services
+            .catalog
+            .shows
+            .get_collection_by_id(collection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+        let collection_changed = current_collection.monitored != monitored;
+        let episode_propagation_changed = if propagate_to_episodes {
+            self.services
+                .catalog
+                .shows
+                .list_episodes_for_collection(collection_id)
+                .await?
+                .iter()
+                .any(|episode| episode.monitored != monitored)
+        } else {
+            false
+        };
+        let effective_collection_change = collection_changed || episode_propagation_changed;
+        let collection = if effective_collection_change {
+            self.persist_collection_monitoring(collection_id, monitored, propagate_to_episodes)
+                .await?
+        } else {
+            current_collection
+        };
+        let mut title_changed = false;
+        let mut final_title = None;
 
         if monitored {
             let title = self
@@ -3080,15 +3140,33 @@ impl AppUseCase {
                 .ok_or_else(|| AppError::NotFound(format!("title {}", collection.title_id)))?;
 
             if !title.monitored {
-                self.persist_title_monitoring(&title.id, true).await?;
+                final_title = Some(self.persist_title_monitoring(&title.id, true).await?);
+                title_changed = true;
                 tracing::info!(
                     title_id = %title.id,
                     title_name = %title.name,
                     "auto-monitored title because a collection was monitored"
                 );
             } else {
-                self.sync_title_for_immediate_acquisition(&title).await;
+                if effective_collection_change && sync_title_if_already_monitored {
+                    self.sync_title_for_immediate_acquisition(&title).await;
+                }
+                final_title = Some(title);
             }
+        }
+
+        if (effective_collection_change || title_changed) && final_title.is_none() {
+            final_title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&collection.title_id)
+                .await?;
+        }
+
+        if let Some(title) = final_title {
+            self.emit_title_updated_activity(actor_user_id, &title)
+                .await;
         }
 
         Ok(collection)
@@ -3099,12 +3177,28 @@ impl AppUseCase {
     /// propagation and immediate acquisition behavior stay single-sourced.
     async fn apply_episode_monitoring_change(
         &self,
+        actor_user_id: Option<String>,
         episode_id: &str,
         monitored: bool,
+        sync_title_if_already_monitored: bool,
     ) -> AppResult<Episode> {
-        let episode = self
-            .persist_episode_monitoring(episode_id, monitored)
-            .await?;
+        let current_episode = self
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
+        let episode_changed = current_episode.monitored != monitored;
+        let episode = if episode_changed {
+            self.persist_episode_monitoring(episode_id, monitored)
+                .await?
+        } else {
+            current_episode
+        };
+        let mut collection_changed = false;
+        let mut title_changed = false;
+        let mut final_title = None;
 
         if monitored {
             if let Some(collection_id) = episode.collection_id.as_deref() {
@@ -3119,6 +3213,7 @@ impl AppUseCase {
                 if !collection.monitored {
                     self.persist_collection_monitoring(collection_id, true, false)
                         .await?;
+                    collection_changed = true;
                     tracing::info!(
                         collection_id = %collection_id,
                         "auto-monitored collection because an episode was monitored"
@@ -3135,15 +3230,33 @@ impl AppUseCase {
                 .ok_or_else(|| AppError::NotFound(format!("title {}", episode.title_id)))?;
 
             if !title.monitored {
-                self.persist_title_monitoring(&title.id, true).await?;
+                final_title = Some(self.persist_title_monitoring(&title.id, true).await?);
+                title_changed = true;
                 tracing::info!(
                     title_id = %title.id,
                     title_name = %title.name,
                     "auto-monitored title because an episode was monitored"
                 );
             } else {
-                self.sync_title_for_immediate_acquisition(&title).await;
+                if (episode_changed || collection_changed) && sync_title_if_already_monitored {
+                    self.sync_title_for_immediate_acquisition(&title).await;
+                }
+                final_title = Some(title);
             }
+        }
+
+        if (episode_changed || collection_changed || title_changed) && final_title.is_none() {
+            final_title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&episode.title_id)
+                .await?;
+        }
+
+        if let Some(title) = final_title {
+            self.emit_title_updated_activity(actor_user_id, &title)
+                .await;
         }
 
         Ok(episode)
@@ -3157,10 +3270,8 @@ impl AppUseCase {
     ) -> AppResult<Title> {
         require(actor, &Entitlement::MonitorTitle)?;
 
-        let title = self.persist_title_monitoring(id, monitored).await?;
-        self.emit_title_updated_activity(Some(actor.id.clone()), &title)
-            .await;
-        Ok(title)
+        self.apply_title_monitoring_change(Some(actor.id.clone()), id, monitored)
+            .await
     }
 
     pub async fn set_collection_monitored(
@@ -3172,18 +3283,14 @@ impl AppUseCase {
         require(actor, &Entitlement::MonitorTitle)?;
 
         let collection = self
-            .apply_collection_monitoring_change(collection_id, monitored, true)
+            .apply_collection_monitoring_change(
+                Some(actor.id.clone()),
+                collection_id,
+                monitored,
+                true,
+                true,
+            )
             .await?;
-        if let Some(title) = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(&collection.title_id)
-            .await?
-        {
-            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
-                .await;
-        }
         Ok(collection)
     }
 
@@ -3196,18 +3303,8 @@ impl AppUseCase {
         require(actor, &Entitlement::MonitorTitle)?;
 
         let episode = self
-            .apply_episode_monitoring_change(episode_id, monitored)
+            .apply_episode_monitoring_change(Some(actor.id.clone()), episode_id, monitored, true)
             .await?;
-        if let Some(title) = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(&episode.title_id)
-            .await?
-        {
-            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
-                .await;
-        }
         Ok(episode)
     }
 
@@ -3467,6 +3564,25 @@ impl AppUseCase {
         Ok(())
     }
 
+    async fn apply_title_metadata_update(
+        &self,
+        actor_user_id: Option<String>,
+        id: &str,
+        name: Option<String>,
+        facet: Option<MediaFacet>,
+        tags: Option<Vec<String>>,
+    ) -> AppResult<Title> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .update_metadata(id, name, facet, tags)
+            .await?;
+        self.emit_title_updated_activity(actor_user_id, &title)
+            .await;
+        Ok(title)
+    }
+
     pub async fn update_title_metadata(
         &self,
         actor: &User,
@@ -3482,15 +3598,8 @@ impl AppUseCase {
         }
         require(actor, &Entitlement::ManageTitle)?;
 
-        let title = self
-            .services
-            .catalog
-            .titles
-            .update_metadata(id, name, facet, tags)
-            .await?;
-        self.emit_title_updated_activity(Some(actor.id.clone()), &title)
-            .await;
-        Ok(title)
+        self.apply_title_metadata_update(Some(actor.id.clone()), id, name, facet, tags)
+            .await
     }
 
     pub async fn fix_title_match(
@@ -3933,8 +4042,14 @@ impl AppUseCase {
 
         if let Some(monitored) = monitored {
             collection = Some(
-                self.apply_collection_monitoring_change(&collection_id, monitored, true)
-                    .await?,
+                self.apply_collection_monitoring_change(
+                    Some(actor.id.clone()),
+                    &collection_id,
+                    monitored,
+                    true,
+                    true,
+                )
+                .await?,
             );
         }
 
@@ -4072,8 +4187,13 @@ impl AppUseCase {
 
         if let Some(monitored) = monitored {
             episode = Some(
-                self.apply_episode_monitoring_change(&episode_id, monitored)
-                    .await?,
+                self.apply_episode_monitoring_change(
+                    Some(actor.id.clone()),
+                    &episode_id,
+                    monitored,
+                    true,
+                )
+                .await?,
             );
         }
 

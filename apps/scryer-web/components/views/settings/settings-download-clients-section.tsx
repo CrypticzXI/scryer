@@ -279,6 +279,31 @@ export function SettingsDownloadClientsSection({
     () => Object.fromEntries(settingsDownloadClients.map((c) => [c.id, c])),
     [settingsDownloadClients],
   );
+
+  const handleDownloadClientTypeChange = React.useCallback(
+    (value: string) => {
+      setDownloadClientDraft((prev: DownloadClientDraft) => {
+        const prevDefault = DEFAULT_PORT_FOR_CLIENT_TYPE[prev.clientType] ?? "8080";
+        const isDefaultPort = prev.port === "" || prev.port === prevDefault;
+        const previousLabel =
+          downloadClientTypeOptions.find(
+            (option) => option.value === prev.clientType.trim().toLowerCase(),
+          )?.label ?? prev.clientType.trim();
+        const nextLabel =
+          downloadClientTypeOptions.find((option) => option.value === value)?.label ??
+          value;
+        const shouldAutofillName =
+          prev.name.trim().length === 0 || prev.name === previousLabel;
+        return {
+          ...prev,
+          clientType: value,
+          name: shouldAutofillName ? nextLabel : prev.name,
+          port: isDefaultPort ? (DEFAULT_PORT_FOR_CLIENT_TYPE[value] ?? "8080") : prev.port,
+        };
+      });
+    },
+    [downloadClientTypeOptions, setDownloadClientDraft],
+  );
   const orderedClients = React.useMemo(() => {
     if (downloadClientOrder.length === 0) return settingsDownloadClients;
     const ordered: DownloadClientRecord[] = [];
@@ -417,34 +442,10 @@ export function SettingsDownloadClientsSection({
           <form className="space-y-3" onSubmit={submitDownloadClient}>
             <div className="grid gap-3 md:grid-cols-3">
               <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
-                <Input
-                  value={downloadClientDraft.name}
-                  onChange={(event) =>
-                    setDownloadClientDraft((prev: DownloadClientDraft) => ({
-                      ...prev,
-                      name: event.target.value,
-                    }))
-                  }
-                  required
-                  placeholder={t("settings.downloadClientNamePlaceholder")}
-                />
-              </label>
-              <label>
                 <Label className="mb-2 block">{t("label.type")}</Label>
                 <Select
                   value={downloadClientDraft.clientType}
-                  onValueChange={(value) => {
-                    setDownloadClientDraft((prev: DownloadClientDraft) => {
-                      const prevDefault = DEFAULT_PORT_FOR_CLIENT_TYPE[prev.clientType] ?? "8080";
-                      const isDefaultPort = prev.port === "" || prev.port === prevDefault;
-                      return {
-                        ...prev,
-                        clientType: value,
-                        port: isDefaultPort ? (DEFAULT_PORT_FOR_CLIENT_TYPE[value] ?? "8080") : prev.port,
-                      };
-                    });
-                  }}
+                  onValueChange={handleDownloadClientTypeChange}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue aria-label={selectedDownloadClientLabel}>
@@ -470,6 +471,20 @@ export function SettingsDownloadClientsSection({
                     ))}
                   </SelectContent>
                 </Select>
+              </label>
+              <label>
+                <Label className="mb-2 block">{t("label.name")}</Label>
+                <Input
+                  value={downloadClientDraft.name}
+                  onChange={(event) =>
+                    setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                      ...prev,
+                      name: event.target.value,
+                    }))
+                  }
+                  required
+                  placeholder={t("settings.downloadClientNamePlaceholder")}
+                />
               </label>
               <div className="md:col-span-3 grid grid-cols-1 gap-2 md:grid-cols-[220px_92px_128px_auto] md:items-end md:gap-2">
                 <label>

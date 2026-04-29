@@ -5,10 +5,10 @@ mod common;
 use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
-    AcquisitionStateRepository, AppError, DownloadSourceKind, DownloadSubmission,
-    DownloadSubmissionRepository, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
-    SuccessfulGrabCommit, TitleRepository, WantedCompleteTransition, WantedItemRepository,
-    WantedSearchTransition, WantedStatus,
+    AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
+    DownloadSubmission, DownloadSubmissionRepository, PendingReleaseRepository,
+    PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, TitleRepository,
+    WantedCompleteTransition, WantedItemRepository, WantedSearchTransition, WantedStatus,
 };
 use scryer_domain::{MediaFacet, Title};
 use sqlx::{Row, query};
@@ -342,6 +342,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     workflow_store
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
+            covered_wanted_item_ids: Vec::new(),
             search_count: 1,
             current_score: None,
             grabbed_release: grabbed_release.clone(),
@@ -380,7 +381,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     );
 
     let submission = workflow_store
-        .find_by_client_item_id(None, "nzbget", "job-1")
+        .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -440,6 +441,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     workflow_store
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
+            covered_wanted_item_ids: Vec::new(),
             search_count: 0,
             current_score: None,
             grabbed_release: serde_json::json!({
@@ -522,7 +524,11 @@ async fn download_submission_roundtrips_episode_scope() {
     .expect("load raw submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(None, "nzbget", "job-episode-scope")
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            None,
+            "nzbget",
+            "job-episode-scope",
+        ))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -579,7 +585,11 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     .expect("insert legacy submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(None, "nzbget", "job-legacy-scope")
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            None,
+            "nzbget",
+            "job-legacy-scope",
+        ))
         .await
         .expect("find legacy submission")
         .expect("legacy submission exists");
@@ -599,12 +609,9 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
 
     let (first_items, first_total) = app
         .list_wanted_items(scryer_application::WantedItemsQuery {
-            status: None,
-            media_type: None,
-            title_id: None,
-            latest_decision_code: None,
             limit: 50,
             offset: 0,
+            ..scryer_application::WantedItemsQuery::default()
         })
         .await
         .expect("first wanted list");
@@ -614,12 +621,9 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
 
     let (second_items, second_total) = app
         .list_wanted_items(scryer_application::WantedItemsQuery {
-            status: None,
-            media_type: None,
-            title_id: None,
-            latest_decision_code: None,
             limit: 50,
             offset: 0,
+            ..scryer_application::WantedItemsQuery::default()
         })
         .await
         .expect("second wanted list");

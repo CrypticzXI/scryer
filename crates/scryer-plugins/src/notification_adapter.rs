@@ -2,18 +2,19 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, NotificationClient, NotificationMediaUpdateTypePayload,
-    NotificationPayload,
+    AppError, AppResult, NotificationClient, NotificationEpisodePayload,
+    NotificationMediaUpdateTypePayload, NotificationPayload, NotificationSeverityPayload,
 };
 use scryer_domain::NotificationEventType as DomainNotificationEventType;
 use tracing::warn;
 
 use crate::types::{
-    EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationApp,
-    PluginNotificationDownload, PluginNotificationEpisode, PluginNotificationExternalIds,
-    PluginNotificationFile, PluginNotificationHealth, PluginNotificationImport,
-    PluginNotificationMediaUpdate, PluginNotificationRequest, PluginNotificationResponse,
-    PluginNotificationTitle, decode_plugin_result,
+    EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationActor,
+    PluginNotificationApp, PluginNotificationApplicationUpdate, PluginNotificationDownload,
+    PluginNotificationEpisode, PluginNotificationExternalIds, PluginNotificationFile,
+    PluginNotificationHealth, PluginNotificationImport, PluginNotificationManualInteraction,
+    PluginNotificationMediaFile, PluginNotificationMediaUpdate, PluginNotificationRequest,
+    PluginNotificationResponse, PluginNotificationTitle, decode_plugin_result,
 };
 
 pub struct WasmNotificationClient {
@@ -36,7 +37,16 @@ impl WasmNotificationClient {
 impl NotificationClient for WasmNotificationClient {
     async fn send_notification(&self, payload: &NotificationPayload) -> AppResult<()> {
         let request = PluginNotificationRequest {
+            schema_version: payload.schema_version,
             event_type: map_event_type(payload.event_type),
+            event_id: payload.event_id.clone(),
+            occurred_at: payload.occurred_at.clone(),
+            correlation_id: payload.correlation_id.clone(),
+            actor: payload.actor.as_ref().map(|actor| PluginNotificationActor {
+                user_id: actor.user_id.clone(),
+            }),
+            severity: payload.severity.map(map_severity),
+            is_test: payload.is_test,
             summary_title: payload.summary_title.clone(),
             summary_message: payload.summary_message.clone(),
             app: PluginNotificationApp {
@@ -44,48 +54,93 @@ impl NotificationClient for WasmNotificationClient {
                 version: payload.app.version.clone(),
             },
             title: payload.title.as_ref().map(|title| PluginNotificationTitle {
+                id: title.id.clone(),
                 name: title.name.clone(),
                 facet: title.facet.clone(),
                 year: title.year,
+                slug: title.slug.clone(),
+                path: title.path.clone(),
+                overview: title.overview.clone(),
+                sort_title: title.sort_title.clone(),
+                banner_url: title.banner_url.clone(),
+                background_url: title.background_url.clone(),
                 poster_url: title.poster_url.clone(),
+                genres: title.genres.clone(),
+                tags: title.tags.clone(),
+                aliases: title.aliases.clone(),
+                original_language: title.original_language.clone(),
+                original_country: title.original_country.clone(),
                 external_ids: PluginNotificationExternalIds {
                     tmdb_id: title.external_ids.tmdb_id.clone(),
                     imdb_id: title.external_ids.imdb_id.clone(),
                     tvdb_id: title.external_ids.tvdb_id.clone(),
                     anidb_id: title.external_ids.anidb_id.clone(),
+                    tvmaze_id: title.external_ids.tvmaze_id.clone(),
+                    anilist_ids: title.external_ids.anilist_ids.clone(),
+                    mal_ids: title.external_ids.mal_ids.clone(),
+                    kitsu_ids: title.external_ids.kitsu_ids.clone(),
+                    by_source: title.external_ids.by_source.clone(),
                 },
             }),
-            episode: payload.episode.as_ref().map(|episode| PluginNotificationEpisode {
-                episode_ids: episode.episode_ids.clone(),
-                display: episode.display.clone(),
+            episode: payload.episode.as_ref().map(map_episode),
+            episodes: payload.episodes.iter().map(map_episode).collect(),
+            release: payload.release.as_ref().map(|release| {
+                crate::types::PluginNotificationRelease {
+                    source_title: release.source_title.clone(),
+                    source_hint: release.source_hint.clone(),
+                    quality: release.quality.clone(),
+                    provider: release.provider.clone(),
+                    language: release.language.clone(),
+                    release_group: release.release_group.clone(),
+                    protocol: release.protocol.clone(),
+                    indexer: release.indexer.clone(),
+                    languages: release.languages.clone(),
+                    custom_scores: release.custom_scores.clone(),
+                }
             }),
-            release: payload.release.as_ref().map(|release| crate::types::PluginNotificationRelease {
-                source_title: release.source_title.clone(),
-                source_hint: release.source_hint.clone(),
-                quality: release.quality.clone(),
-                provider: release.provider.clone(),
-                language: release.language.clone(),
-            }),
-            download: payload.download.as_ref().map(|download| PluginNotificationDownload {
-                download_id: download.download_id.clone(),
-                client_id: download.client_id.clone(),
-                client_name: download.client_name.clone(),
-                client_type: download.client_type.clone(),
-            }),
-            import: payload.import.as_ref().map(|import| PluginNotificationImport {
-                import_id: import.import_id.clone(),
-                source_system: import.source_system.clone(),
-                source_ref: import.source_ref.clone(),
-                source_title: import.source_title.clone(),
-                source_path: import.source_path.clone(),
-                dest_path: import.dest_path.clone(),
-                imported_count: import.imported_count,
-                status: import.status.clone(),
-            }),
-            health: payload.health.as_ref().map(|health| PluginNotificationHealth {
-                status: health.status.clone(),
-                message: health.message.clone(),
-            }),
+            download: payload
+                .download
+                .as_ref()
+                .map(|download| PluginNotificationDownload {
+                    download_id: download.download_id.clone(),
+                    client_id: download.client_id.clone(),
+                    client_name: download.client_name.clone(),
+                    client_type: download.client_type.clone(),
+                    title: download.title.clone(),
+                    status: download.status.clone(),
+                    status_message: download.status_message.clone(),
+                    size_bytes: download.size_bytes,
+                    progress_percent: download.progress_percent,
+                    output_path: download.output_path.clone(),
+                }),
+            import: payload
+                .import
+                .as_ref()
+                .map(|import| PluginNotificationImport {
+                    import_id: import.import_id.clone(),
+                    source_system: import.source_system.clone(),
+                    source_ref: import.source_ref.clone(),
+                    source_title: import.source_title.clone(),
+                    source_path: import.source_path.clone(),
+                    dest_path: import.dest_path.clone(),
+                    imported_count: import.imported_count,
+                    status: import.status.clone(),
+                    skipped_count: import.skipped_count,
+                    rejected_count: import.rejected_count,
+                    upgrade: import.upgrade,
+                    deleted_paths: import.deleted_paths.clone(),
+                    replaced_paths: import.replaced_paths.clone(),
+                }),
+            health: payload
+                .health
+                .as_ref()
+                .map(|health| PluginNotificationHealth {
+                    status: health.status.clone(),
+                    message: health.message.clone(),
+                    severity: health.severity.clone(),
+                    code: health.code.clone(),
+                    details: health.details.clone(),
+                }),
             file: payload.file.as_ref().map(|file| PluginNotificationFile {
                 primary_path: file.primary_path.clone(),
                 media_updates: file
@@ -106,6 +161,47 @@ impl NotificationClient for WasmNotificationClient {
                         },
                     })
                     .collect(),
+            }),
+            media_files: payload
+                .media_files
+                .iter()
+                .map(|media_file| PluginNotificationMediaFile {
+                    id: media_file.id.clone(),
+                    path: media_file.path.clone(),
+                    previous_path: media_file.previous_path.clone(),
+                    recycle_bin_path: media_file.recycle_bin_path.clone(),
+                    size_bytes: media_file.size_bytes,
+                    quality: media_file.quality.clone(),
+                    release_group: media_file.release_group.clone(),
+                    scene_name: media_file.scene_name.clone(),
+                    audio_languages: media_file.audio_languages.clone(),
+                    subtitle_languages: media_file.subtitle_languages.clone(),
+                    video_codec: media_file.video_codec.clone(),
+                    audio_codec: media_file.audio_codec.clone(),
+                    audio_channels: media_file.audio_channels.clone(),
+                    video_width: media_file.video_width,
+                    video_height: media_file.video_height,
+                    video_bit_depth: media_file.video_bit_depth,
+                    video_hdr_format: media_file.video_hdr_format.clone(),
+                    video_frame_rate: media_file.video_frame_rate.clone(),
+                    container_format: media_file.container_format.clone(),
+                    edition: media_file.edition.clone(),
+                })
+                .collect(),
+            application_update: payload.application_update.as_ref().map(|update| {
+                PluginNotificationApplicationUpdate {
+                    current_version: update.current_version.clone(),
+                    target_version: update.target_version.clone(),
+                    status: update.status.clone(),
+                    summary: update.summary.clone(),
+                }
+            }),
+            manual_interaction: payload.manual_interaction.as_ref().map(|manual| {
+                PluginNotificationManualInteraction {
+                    kind: manual.kind.clone(),
+                    reason: manual.reason.clone(),
+                    link: manual.link.clone(),
+                }
             }),
         };
 
@@ -133,14 +229,30 @@ impl NotificationClient for WasmNotificationClient {
         let response: PluginNotificationResponse =
             decode_plugin_result(&output, EXPORT_NOTIFICATION_SEND)?;
 
+        for warning_message in &response.warnings {
+            warn!(
+                plugin = plugin_name.as_str(),
+                channel = channel_name.as_str(),
+                warning = warning_message.as_str(),
+                "notification plugin returned warning"
+            );
+        }
+
         if !response.success {
-            let err_msg = response
-                .error
-                .unwrap_or_else(|| "unknown error".to_string());
+            let err_msg = match (&response.error, &response.provider_status) {
+                (Some(error), Some(provider_status)) => {
+                    format!("{error} ({provider_status})")
+                }
+                (Some(error), None) => error.clone(),
+                (None, Some(provider_status)) => provider_status.clone(),
+                (None, None) => "unknown error".to_string(),
+            };
             warn!(
                 plugin = plugin_name.as_str(),
                 channel = channel_name.as_str(),
                 error = err_msg.as_str(),
+                delivery_id = ?response.delivery_id,
+                retry_after_seconds = ?response.retry_after_seconds,
                 "notification plugin reported failure"
             );
             return Err(AppError::Repository(format!(
@@ -149,6 +261,33 @@ impl NotificationClient for WasmNotificationClient {
         }
 
         Ok(())
+    }
+}
+
+fn map_episode(episode: &NotificationEpisodePayload) -> PluginNotificationEpisode {
+    PluginNotificationEpisode {
+        id: episode.id.clone(),
+        episode_ids: episode.episode_ids.clone(),
+        display: episode.display.clone(),
+        collection_id: episode.collection_id.clone(),
+        season_number: episode.season_number.clone(),
+        episode_number: episode.episode_number.clone(),
+        absolute_number: episode.absolute_number.clone(),
+        title: episode.title.clone(),
+        overview: episode.overview.clone(),
+        air_date: episode.air_date.clone(),
+        air_date_utc: episode.air_date_utc.clone(),
+        episode_type: episode.episode_type.clone(),
+        finale_type: episode.finale_type.clone(),
+        tvdb_id: episode.tvdb_id.clone(),
+    }
+}
+
+fn map_severity(severity: NotificationSeverityPayload) -> crate::types::NotificationSeverity {
+    match severity {
+        NotificationSeverityPayload::Info => crate::types::NotificationSeverity::Info,
+        NotificationSeverityPayload::Warning => crate::types::NotificationSeverity::Warning,
+        NotificationSeverityPayload::Error => crate::types::NotificationSeverity::Error,
     }
 }
 

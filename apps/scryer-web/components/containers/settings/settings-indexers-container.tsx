@@ -12,7 +12,9 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type { IndexerRecord, ProviderTypeInfo } from "@/lib/types";
+import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
+  indexerProviderTypesQuery,
   indexersInitQuery,
   indexersQuery,
 } from "@/lib/graphql/queries";
@@ -62,7 +64,13 @@ function parseConfigJson(configJson: string | null): Record<string, string> {
   }
 }
 
-export function SettingsIndexersContainer() {
+type SettingsIndexersContainerProps = {
+  providerCatalogVersion?: number;
+};
+
+export function SettingsIndexersContainer({
+  providerCatalogVersion = 0,
+}: SettingsIndexersContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
@@ -80,6 +88,7 @@ export function SettingsIndexersContainer() {
     SettingsIndexersSectionProps["indexerDraft"]
   >(() => ({ ...INDEXER_INITIAL_DRAFT }));
   const didMountRef = useRef(false);
+  const providerCatalogVersionRef = useRef(providerCatalogVersion);
 
   const resetIndexerDraft = useCallback(() => {
     setEditingIndexerId(null);
@@ -91,6 +100,8 @@ export function SettingsIndexersContainer() {
       const { data, error } = await client
         .query(indexersQuery, {
           providerType: settingsIndexerFilter || undefined,
+        }, {
+          requestPolicy: "network-only",
         })
         .toPromise();
       if (error) throw error;
@@ -102,11 +113,21 @@ export function SettingsIndexersContainer() {
     }
   }, [client, settingsIndexerFilter, setGlobalStatus, t]);
 
+  const refreshProviderTypes = useCallback(async () => {
+    const { data, error } = await client
+      .query(indexerProviderTypesQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setProviderTypes(data?.indexerProviderTypes || []);
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const { data, error } = await client.query(indexersInitQuery, {}).toPromise();
+        const { data, error } = await client
+          .query(indexersInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
         if (error && !data?.indexers) throw error;
         if (cancelled) return;
         setSettingsIndexers(data?.indexers || []);
@@ -122,6 +143,60 @@ export function SettingsIndexersContainer() {
       cancelled = true;
     };
   }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    if (providerCatalogVersion === providerCatalogVersionRef.current) {
+      return;
+    }
+
+    providerCatalogVersionRef.current = providerCatalogVersion;
+    void Promise.all([refreshProviderTypes(), refreshIndexers()]).catch((error: unknown) => {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToLoad"),
+      );
+    });
+  }, [
+    providerCatalogVersion,
+    refreshIndexers,
+    refreshProviderTypes,
+    setGlobalStatus,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (editingIndexerId || providerTypes.length === 0) {
+      return;
+    }
+
+    setIndexerDraft((prev) => {
+      const configuredProvider =
+        providerTypes.find(
+          (providerType) => providerType.providerType === prev.providerType,
+        ) ?? null;
+      const nextProvider = configuredProvider ?? providerTypes[0] ?? null;
+      if (!nextProvider) {
+        return prev;
+      }
+
+      const shouldAutofillName =
+        prev.name.trim().length === 0 ||
+        prev.name === (configuredProvider?.name ?? prev.providerType);
+      const nextProviderType = configuredProvider
+        ? prev.providerType
+        : nextProvider.providerType;
+      const nextName = shouldAutofillName ? nextProvider.name : prev.name;
+
+      if (nextProviderType === prev.providerType && nextName === prev.name) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        providerType: nextProviderType,
+        name: nextName,
+      };
+    });
+  }, [editingIndexerId, providerTypes]);
 
   useEffect(() => {
     if (!didMountRef.current) {
@@ -313,21 +388,23 @@ export function SettingsIndexersContainer() {
 
     setIsTestingConnection(true);
     try {
-      setGlobalStatus(t("status.testingIndexerConnection"));
-      const { data: testData, error: testError } = await client
-        .mutation(testIndexerConnectionMutation, { input: payload })
-        .toPromise();
-      if (testError) throw testError;
-      if (!testData.testIndexerConnection) {
-        throw new Error(t("status.indexerConnectionTestFailed"));
-      }
-      setGlobalStatus(t("status.indexerConnectionTestPassed"));
-    } catch (error) {
-      setGlobalStatus(
-        error instanceof Error
-          ? error.message
-          : t("status.indexerConnectionTestFailed"),
-      );
+      await runConnectionFeedback({
+        setGlobalStatus,
+        startMessage: t("status.testingIndexerConnection"),
+        successMessage: t("status.indexerConnectionTestPassed"),
+        failureFallbackMessage: t("status.indexerConnectionTestFailed"),
+        run: async () => {
+          const { data: testData, error: testError } = await client
+            .mutation(testIndexerConnectionMutation, { input: payload })
+            .toPromise();
+          if (testError) throw testError;
+          if (!testData.testIndexerConnection) {
+            throw new Error(t("status.indexerConnectionTestFailed"));
+          }
+        },
+      });
+    } catch {
+      // Connection feedback is already surfaced through the shared helper.
     } finally {
       setIsTestingConnection(false);
     }

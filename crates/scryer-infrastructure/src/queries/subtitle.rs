@@ -1,5 +1,5 @@
 use scryer_application::{AppError, AppResult};
-use scryer_domain::{SubtitleBlacklistEntry, SubtitleDownload};
+use scryer_domain::{ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -10,7 +10,7 @@ pub async fn list_subtitle_downloads_for_title(
     title_id: &str,
 ) -> AppResult<Vec<SubtitleDownload>> {
     let rows = sqlx::query(
-        "SELECT id, media_file_id, title_id, episode_id, language, provider,
+        "SELECT id, media_file_id, title_id, episode_id, source_kind, language, provider,
                 provider_file_id, file_path, score, hearing_impaired, forced,
                 ai_translated, machine_translated, uploader, release_info,
                 synced, downloaded_at
@@ -35,7 +35,7 @@ pub async fn list_subtitle_downloads_for_media_file(
     media_file_id: &str,
 ) -> AppResult<Vec<SubtitleDownload>> {
     let rows = sqlx::query(
-        "SELECT id, media_file_id, title_id, episode_id, language, provider,
+        "SELECT id, media_file_id, title_id, episode_id, source_kind, language, provider,
                 provider_file_id, file_path, score, hearing_impaired, forced,
                 ai_translated, machine_translated, uploader, release_info,
                 synced, downloaded_at
@@ -60,7 +60,7 @@ pub async fn get_subtitle_download(
     id: &str,
 ) -> AppResult<Option<SubtitleDownload>> {
     let row = sqlx::query(
-        "SELECT id, media_file_id, title_id, episode_id, language, provider,
+        "SELECT id, media_file_id, title_id, episode_id, source_kind, language, provider,
                 provider_file_id, file_path, score, hearing_impaired, forced,
                 ai_translated, machine_translated, uploader, release_info,
                 synced, downloaded_at
@@ -80,19 +80,20 @@ pub async fn insert_subtitle_download(
     download: &SubtitleDownload,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO subtitle_downloads
-         (id, media_file_id, title_id, episode_id, language, provider,
+        "INSERT OR REPLACE INTO subtitle_downloads
+         (id, media_file_id, title_id, episode_id, source_kind, language, provider,
           provider_file_id, file_path, score, hearing_impaired, forced,
           ai_translated, machine_translated, uploader, release_info,
           synced, downloaded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&download.id)
     .bind(&download.media_file_id)
     .bind(&download.title_id)
     .bind(&download.episode_id)
+    .bind(download.source_kind.as_str())
     .bind(&download.language)
-    .bind(&download.provider)
+    .bind(download.provider.as_deref().unwrap_or(""))
     .bind(&download.provider_file_id)
     .bind(&download.file_path)
     .bind(download.score)
@@ -129,7 +130,7 @@ pub async fn delete_subtitle_download(
     id: &str,
 ) -> AppResult<Option<SubtitleDownload>> {
     let row = sqlx::query(
-        "SELECT id, media_file_id, title_id, episode_id, language, provider,
+        "SELECT id, media_file_id, title_id, episode_id, source_kind, language, provider,
                 provider_file_id, file_path, score, hearing_impaired, forced,
                 ai_translated, machine_translated, uploader, release_info,
                 synced, downloaded_at
@@ -167,12 +168,21 @@ fn row_to_subtitle_download(row: &sqlx::sqlite::SqliteRow) -> AppResult<Subtitle
             .try_get("title_id")
             .map_err(|e| AppError::Repository(e.to_string()))?,
         episode_id: row.try_get("episode_id").unwrap_or(None),
+        source_kind: ExternalSubtitleSourceKind::parse(
+            &row.try_get::<String, _>("source_kind")
+                .map_err(|e| AppError::Repository(e.to_string()))?,
+        )
+        .ok_or_else(|| AppError::Repository("invalid external subtitle source kind".into()))?,
         language: row
             .try_get("language")
             .map_err(|e| AppError::Repository(e.to_string()))?,
         provider: row
             .try_get("provider")
-            .map_err(|e| AppError::Repository(e.to_string()))?,
+            .map_err(|e| AppError::Repository(e.to_string()))
+            .map(|value: String| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })?,
         provider_file_id: row.try_get("provider_file_id").unwrap_or(None),
         file_path: row
             .try_get("file_path")
@@ -191,16 +201,16 @@ fn row_to_subtitle_download(row: &sqlx::sqlite::SqliteRow) -> AppResult<Subtitle
     })
 }
 
-// ── Subtitle blacklist ──────────────────────────────────────────────────────
+// ── Subtitle blocklist ──────────────────────────────────────────────────────
 
-pub async fn is_blacklisted(
+pub async fn is_blocklisted(
     pool: &SqlitePool,
     media_file_id: &str,
     provider: &str,
     provider_file_id: &str,
 ) -> AppResult<bool> {
     let count: i32 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM subtitle_blacklist
+        "SELECT COUNT(*) FROM subtitle_blocklist
          WHERE media_file_id = ? AND provider = ? AND provider_file_id = ?",
     )
     .bind(media_file_id)
@@ -213,7 +223,7 @@ pub async fn is_blacklisted(
     Ok(count > 0)
 }
 
-pub async fn insert_blacklist_entry(
+pub async fn insert_blocklist_entry(
     pool: &SqlitePool,
     media_file_id: &str,
     provider: &str,
@@ -223,7 +233,7 @@ pub async fn insert_blacklist_entry(
 ) -> AppResult<String> {
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT OR IGNORE INTO subtitle_blacklist
+        "INSERT OR IGNORE INTO subtitle_blocklist
          (id, media_file_id, provider, provider_file_id, language, reason)
          VALUES (?, ?, ?, ?, ?, ?)",
     )
@@ -240,13 +250,13 @@ pub async fn insert_blacklist_entry(
     Ok(id)
 }
 
-pub async fn list_blacklist_for_media_file(
+pub async fn list_blocklist_for_media_file(
     pool: &SqlitePool,
     media_file_id: &str,
-) -> AppResult<Vec<SubtitleBlacklistEntry>> {
+) -> AppResult<Vec<SubtitleBlocklistEntry>> {
     let rows = sqlx::query(
         "SELECT id, media_file_id, provider, provider_file_id, language, reason, created_at
-         FROM subtitle_blacklist
+         FROM subtitle_blocklist
          WHERE media_file_id = ?
          ORDER BY created_at DESC",
     )
@@ -258,7 +268,7 @@ pub async fn list_blacklist_for_media_file(
     use sqlx::Row;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(SubtitleBlacklistEntry {
+        out.push(SubtitleBlocklistEntry {
             id: row
                 .try_get("id")
                 .map_err(|e| AppError::Repository(e.to_string()))?,

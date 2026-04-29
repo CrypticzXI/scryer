@@ -249,11 +249,15 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     errorMessage
     attemptedAt`;
 
-const SUBTITLE_DOWNLOAD_FIELDS = `
+const EXTERNAL_SUBTITLE_FIELDS = `
     id
     mediaFileId
+    titleId
+    episodeId
+    sourceKind
     language
     provider
+    providerFileId
     filePath
     score
     hearingImpaired
@@ -265,7 +269,7 @@ const SUBTITLE_DOWNLOAD_FIELDS = `
     synced
     downloadedAt`;
 
-const SUBTITLE_BLACKLIST_FIELDS = `
+const EXTERNAL_SUBTITLE_BLOCKLIST_FIELDS = `
     id
     mediaFileId
     provider
@@ -434,7 +438,7 @@ export const titleOverviewNativeQuery = `query TitleOverviewNative($id: String!,
   }
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
-  subtitleDownloads(titleId: $id) {${SUBTITLE_DOWNLOAD_FIELDS}
+  externalSubtitles(titleId: $id) {${EXTERNAL_SUBTITLE_FIELDS}
   }
   setupStatus {
     hasDownloadClients
@@ -483,13 +487,13 @@ export const deleteMediaFilePreviewQuery = `query DeleteMediaFilePreview($input:
   }
 }`;
 
-export const deleteSubtitlePreviewQuery = `query DeleteSubtitlePreview($input: DeleteSubtitlePreviewInput!) {
-  deleteSubtitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+export const deleteExternalSubtitlePreviewQuery = `query DeleteExternalSubtitlePreview($input: DeleteExternalSubtitlePreviewInput!) {
+  deleteExternalSubtitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
   }
 }`;
 
-export const subtitleBlacklistEntriesQuery = `query SubtitleBlacklistEntries($mediaFileId: String!) {
-  subtitleBlacklistEntries(mediaFileId: $mediaFileId) {${SUBTITLE_BLACKLIST_FIELDS}
+export const externalSubtitleBlocklistEntriesQuery = `query ExternalSubtitleBlocklistEntries($mediaFileId: String!) {
+  externalSubtitleBlocklistEntries(mediaFileId: $mediaFileId) {${EXTERNAL_SUBTITLE_BLOCKLIST_FIELDS}
   }
 }`;
 
@@ -558,6 +562,69 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
     titleId: $titleId,
     season: $season,
     episode: $episode
+  }) {
+    source
+    title
+    link
+    downloadUrl
+    candidateToken
+    queueScope {
+      kind
+      episodeId
+      episodeIds
+      collectionId
+    }
+    sourceKind
+    sizeBytes
+    publishedAt
+    thumbsUp
+    thumbsDown
+    parsedRelease {
+      rawTitle
+      normalizedTitle
+      releaseGroup
+      quality
+      source
+      videoCodec
+      videoEncoding
+      audio
+      isDualAudio
+      isAtmos
+      isDolbyVision
+      detectedHdr
+      parseConfidence
+      isProperUpload
+      isRemux
+      isBdDisk
+      isAiEnhanced
+    }
+    qualityProfileDecision {
+      allowed
+      blockCodes
+      releaseScore
+      preferenceScore
+      scoringLog {
+        code
+        delta
+        source
+        ruleSetName
+      }
+    }
+    seeders
+    peers
+    infoHash
+    freeleech
+    downloadVolumeFactor
+    autoEligible
+    autoDecisionCode
+    autoDecisionSummary
+  }
+}`;
+
+export const searchForInterstitialMovieQuery = `query SearchIndexersForInterstitialMovie($titleId: String!, $collectionId: String!) {
+  searchReleases(input: {
+    titleId: $titleId,
+    collectionId: $collectionId
   }) {
     source
     title
@@ -706,7 +773,7 @@ export type ReactiveRefreshQueryActionPlan =
       titleAcquisitionDiagnosticsAlias: string;
       titleEventsAlias: string;
       titleReleaseBlocklistAlias: string;
-      subtitleDownloadsAlias: string;
+      externalSubtitlesAlias: string;
       setupStatusAlias: string;
     }
   | {
@@ -762,8 +829,8 @@ export function buildReactiveRefreshQuery(
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
         const titleReleaseBlocklistAlias =
           `titleOverviewBlocklistAction${index}`;
-        const subtitleDownloadsAlias =
-          `titleOverviewSubtitleDownloadsAction${index}`;
+        const externalSubtitlesAlias =
+          `titleOverviewExternalSubtitlesAction${index}`;
         const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
@@ -781,7 +848,7 @@ export function buildReactiveRefreshQuery(
           `  ${titleReleaseBlocklistAlias}: titleReleaseBlocklist(titleId: $${titleIdVariableName}, limit: $${blocklistLimitVariableName}) {\n${TITLE_RELEASE_BLOCKLIST_FIELDS}\n  }`,
         );
         fields.push(
-          `  ${subtitleDownloadsAlias}: subtitleDownloads(titleId: $${titleIdVariableName}) {\n${SUBTITLE_DOWNLOAD_FIELDS}\n  }`,
+          `  ${externalSubtitlesAlias}: externalSubtitles(titleId: $${titleIdVariableName}) {\n${EXTERNAL_SUBTITLE_FIELDS}\n  }`,
         );
         fields.push(
           `  ${setupStatusAlias}: setupStatus {\n    hasDownloadClients\n  }`,
@@ -795,7 +862,7 @@ export function buildReactiveRefreshQuery(
           titleAcquisitionDiagnosticsAlias,
           titleEventsAlias,
           titleReleaseBlocklistAlias,
-          subtitleDownloadsAlias,
+          externalSubtitlesAlias,
           setupStatusAlias,
         });
         break;
@@ -1461,6 +1528,10 @@ export const importHistoryChangedSubscription = `subscription ImportHistoryChang
   importHistoryChanged
 }`;
 
+export const providerCatalogChangedSubscription = `subscription ProviderCatalogChanged {
+  providerCatalogChanged
+}`;
+
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
@@ -1494,6 +1565,16 @@ export const systemHealthQuery = `query SystemHealth {
       grabCurrent
       grabMax
     }
+  }
+}`;
+
+export const smgVersionCompatibilityNoticeQuery = `query SmgVersionCompatibilityNotice {
+  smgVersionCompatibilityNotice {
+    status
+    minimumVersion
+    yourVersion
+    message
+    upgradeDeadline
   }
 }`;
 
@@ -1925,8 +2006,8 @@ export const postProcessingScriptRunsQuery = `query PostProcessingScriptRuns($sc
   }
 }`;
 
-export const subtitleDownloadsQuery = `query SubtitleDownloads($titleId: String!) {
-  subtitleDownloads(titleId: $titleId) {${SUBTITLE_DOWNLOAD_FIELDS}
+export const externalSubtitlesQuery = `query ExternalSubtitles($titleId: String!) {
+  externalSubtitles(titleId: $titleId) {${EXTERNAL_SUBTITLE_FIELDS}
   }
 }`;
 

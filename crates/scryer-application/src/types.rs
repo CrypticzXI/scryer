@@ -792,7 +792,7 @@ impl DownloadSourceKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "nzb" | "nzb_file" => Some(Self::NzbFile),
             "nzb_url" => Some(Self::NzbUrl),
-            "torrent" | "torrent_file" => Some(Self::TorrentFile),
+            "torrent" | "torrent_file" | "torrent_url" | "torrent_bytes" => Some(Self::TorrentFile),
             "magnet" | "magnet_uri" => Some(Self::MagnetUri),
             _ => None,
         }
@@ -1085,6 +1085,15 @@ pub struct SystemHealth {
     pub smg_cert_expires_at: Option<String>,
     pub smg_cert_days_remaining: Option<i64>,
     pub indexer_stats: Vec<IndexerQueryStats>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SmgVersionCompatibilityNotice {
+    pub status: String,
+    pub minimum_version: String,
+    pub your_version: String,
+    pub message: String,
+    pub upgrade_deadline: Option<String>,
 }
 
 #[derive(Clone, Debug)]

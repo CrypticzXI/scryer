@@ -6,8 +6,7 @@ use scryer_application::{
     PendingImportStatus, PendingRelease, PendingReleaseRepository, ReleaseDecision,
     SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WantedItemsQuery,
+    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository, WantedItemsQuery,
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
@@ -21,8 +20,8 @@ use crate::queries::media_file::{
     list_title_quality_summaries_query,
 };
 use crate::queries::subtitle::{
-    get_subtitle_download, is_blacklisted as is_subtitle_blacklisted,
-    list_blacklist_for_media_file, list_subtitle_downloads_for_media_file,
+    get_subtitle_download, is_blocklisted as is_subtitle_blocklisted,
+    list_blocklist_for_media_file, list_subtitle_downloads_for_media_file,
     list_subtitle_downloads_for_title,
 };
 use crate::queries::workflow::get_library_probe_signature_query;
@@ -564,11 +563,11 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         list_subtitle_downloads_for_media_file(self.db.pool(), media_file_id).await
     }
 
-    async fn list_blacklist_for_media_file(
+    async fn list_blocklist_for_media_file(
         &self,
         media_file_id: &str,
-    ) -> AppResult<Vec<scryer_domain::SubtitleBlacklistEntry>> {
-        list_blacklist_for_media_file(self.db.pool(), media_file_id).await
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlocklistEntry>> {
+        list_blocklist_for_media_file(self.db.pool(), media_file_id).await
     }
 
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()> {
@@ -583,16 +582,16 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         self.db.delete_subtitle_download(id).await
     }
 
-    async fn is_blacklisted(
+    async fn is_blocklisted(
         &self,
         media_file_id: &str,
         provider: &str,
         provider_file_id: &str,
     ) -> AppResult<bool> {
-        is_subtitle_blacklisted(self.db.pool(), media_file_id, provider, provider_file_id).await
+        is_subtitle_blocklisted(self.db.pool(), media_file_id, provider, provider_file_id).await
     }
 
-    async fn blacklist(
+    async fn blocklist(
         &self,
         media_file_id: &str,
         provider: &str,
@@ -601,7 +600,7 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         reason: Option<&str>,
     ) -> AppResult<()> {
         self.db
-            .blacklist_subtitle_download(
+            .blocklist_subtitle_download(
                 media_file_id,
                 provider,
                 provider_file_id,

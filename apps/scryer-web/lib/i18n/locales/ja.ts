@@ -434,6 +434,8 @@ const ja: LocaleDictionary = {
   "settings.historyRetentionExternalHelp":
     "取得処理用の一時データに対する運用上のクリーンアップは引き続き実行され、この設定は SABnzbd、NZBGet、Weaver が保持する履歴には適用されません。",
   "settings.keepHistoryForever": "履歴を無期限に保持",
+  "settings.historyRetentionDaysHeader": "履歴を保持する期間",
+  "settings.historyRetentionDaysSuffix": "日",
   "settings.historyRetentionDaysLabel": "履歴を N 日間保持",
   "settings.historyRetentionSaved": "履歴保持設定を保存しました。",
   "settings.historyRetentionValidation":
@@ -566,6 +568,7 @@ const ja: LocaleDictionary = {
   "title.inheritDefault": "デフォルトを継承",
   "title.monitoredSection": "モニタリング中の{{facet}}",
   "title.noWantedItem": "アクティブなウォンテッドアイテムはありません。",
+  "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "最新をキューに追加",
   "title.requiredAudioLanguages": "必須オーディオ言語",
   "title.requiredAudioLanguagesFacetInfo":
@@ -843,183 +846,6 @@ const ja: LocaleDictionary = {
   "settings.ruleGlobal": "グローバル",
   "settings.ruleNoFacetRules":
     "利用可能なカスタムルールがありません。設定 > カスタムルールでルールを作成してください。",
-  "settings.refTitle": "入力コンテキストリファレンス",
-  "settings.refSubtitle":
-    "Regoルールで利用可能な全フィールドのリファレンスを展開するにはクリックしてください。",
-  "settings.refIntro":
-    "すべてのルールは5つのトップレベルドキュメントを含むinputオブジェクトを受け取ります。Regoコードからinput.release、input.profile、input.context、input.builtin_score、input.fileでアクセスします。input.fileはダウンロード前のスコアリング時はnullで、ダウンロード後のインポート評価時にのみ設定されます。",
-  "settings.refColField": "フィールド",
-  "settings.refColType": "タイプ",
-  "settings.refColDescription": "説明",
-  "settings.refColFunction": "関数",
-  "settings.refColReturns": "戻り値",
-  "settings.refSectionRelease": "— パースされたリリースメタデータ",
-  "settings.refReleaseRawTitle": "インデクサーからの未パースのリリースタイトル",
-  "settings.refReleaseQuality":
-    "検出された品質ティア（例: 2160P, 1080P, 720P）",
-  "settings.refReleaseSource": "メディアソース（例: WEB-DL, BLURAY, HDTV）",
-  "settings.refReleaseVideoCodec": "映像コーデック（例: H.265, H.264, AV1）",
-  "settings.refReleaseAudio": "主音声コーデック（例: DDP, AAC, TrueHD）",
-  "settings.refReleaseAudioCodecs": "検出された全音声コーデックの配列",
-  "settings.refReleaseAudioChannels": "音声チャンネル構成（例: 5.1, 7.1, 2.0）",
-  "settings.refReleaseLangsAudio": "ISO 639-3 音声言語コード（例: eng, jpn）",
-  "settings.refReleaseLangsSub": "ISO 639-3 字幕言語コード",
-  "settings.refReleaseIsDualAudio": "複数音声トラックが検出された場合true",
-  "settings.refReleaseIsAtmos": "Dolby Atmosオーディオがある場合true",
-  "settings.refReleaseIsDV": "Dolby Visionメタデータが検出された場合true",
-  "settings.refReleaseDetectedHdr": "HDRが検出された場合true（非DV）",
-  "settings.refReleaseIsRemux":
-    "フルリマックスの場合true（トランスコードなし）",
-  "settings.refReleaseIsBdDisk": "ブルーレイディスクソースの場合true",
-  "settings.refReleaseIsProper": "Properとタグ付けされた場合true",
-  "settings.refReleaseIsRepack": "Repackとタグ付けされた場合true",
-  "settings.refReleaseIsAiEnhanced":
-    "AIエンハンスドエンコードマーカーが検出された場合true",
-  "settings.refReleaseIsHardcodedSubs":
-    "リリース名にハードコード字幕が検出された場合true",
-  "settings.refReleaseIsHdr10Plus":
-    "リリースメタデータからHDR10+が検出された場合true",
-  "settings.refReleaseIsHlg": "リリースメタデータからHLGが検出された場合true",
-  "settings.refReleaseStreamingService":
-    "検出されたストリーミングサービスタグ（ある場合）",
-  "settings.refReleaseEdition":
-    "extended、IMAX、criterionなどのエディションタグ",
-  "settings.refReleaseAnimeVersion":
-    "v2、v3などのアニメバージョン番号（ある場合）",
-  "settings.refReleaseGroup": "リリースグループまたはアップローダー名",
-  "settings.refReleaseYear": "公開年",
-  "settings.refReleaseParseConf": "パース信頼度スコア（0.0〜1.0）",
-  "settings.refReleaseSizeBytes":
-    "ファイルサイズ（バイト）（scryer.size_gib()で変換可能）",
-  "settings.refReleaseAgeDays": "リリースからの経過日数",
-  "settings.refReleaseThumbsUp": "インデクサーの高評価/投票数",
-  "settings.refReleaseThumbsDown": "インデクサーの低評価/否定投票数",
-  "settings.refReleaseExtra":
-    "プラグイン提供メタデータオブジェクト、input.release.extra.<key>でアクセス可能",
-  "settings.refSectionProfile": "— アクティブ品質プロファイル設定",
-  "settings.refProfileId": "プロファイル一意識別子",
-  "settings.refProfileName": "プロファイル表示名",
-  "settings.refProfileQualityTiers": "許可品質ティアの順序付きリスト",
-  "settings.refProfileArchivalQuality": "アーカイブと見なされる最高品質ティア",
-  "settings.refProfileAllowUnknown": "認識できない品質を受け入れるかどうか",
-  "settings.refProfileSourceAllow": "許可ソース（空の場合すべて許可）",
-  "settings.refProfileSourceBlock": "ブロックソース",
-  "settings.refProfileVCodecAllow": "許可映像コーデック（空の場合すべて許可）",
-  "settings.refProfileVCodecBlock": "ブロック映像コーデック",
-  "settings.refProfileACodecAllow": "許可音声コーデック（空の場合すべて許可）",
-  "settings.refProfileACodecBlock": "ブロック音声コーデック",
-  "settings.refProfileDVAllowed": "Dolby Visionリリースを許可",
-  "settings.refProfileHdrAllowed": "HDRリリースを許可",
-  "settings.refProfilePreferRemux": "プロファイルがフルリマックスを優先",
-  "settings.refProfileAllowBdDisk": "ブルーレイディスクソースを許可",
-  "settings.refProfileAllowUpgrades": "既存ファイルのアップグレードを許可",
-  "settings.refProfileRequiredLangs": "必須音声言語（ISO 639-3コード）",
-  "settings.refSectionContext": "— タイトルと検索コンテキスト",
-  "settings.refCtxTitleId":
-    "具体的なタイトルが既知の場合の内部ScryerタイトルID",
-  "settings.refCtxMediaType":
-    "評価中のメディアタイプ、通常movie、series、またはanime",
-  "settings.refCtxCategory":
-    "スコアリングとルール評価に使用されるカテゴリヒント",
-  "settings.refCtxTags": "タイトルのユーザー定義タグ",
-  "settings.refCtxHasExisting": "このタイトルのファイルが既に存在する場合true",
-  "settings.refCtxExistingScore": "既存ファイルの組み込みスコア（ある場合）",
-  "settings.refCtxSearchMode": "評価モード。現在の値はautoとpost_download",
-  "settings.refCtxRuntimeMin": "コンテンツの再生時間（分）",
-  "settings.refCtxIsAnime": "タイトルがアニメに分類された場合true",
-  "settings.refCtxIsFiller": "エピソードがフィラーとマークされた場合true",
-  "settings.refSectionBuiltinScore": "— 組み込みスコアリングエンジンの結果",
-  "settings.refBuiltinTotal": "組み込みスコアリングエンジンの合計スコア",
-  "settings.refBuiltinBlocked":
-    "組み込みルールがこのリリースをブロックした場合true",
-  "settings.refBuiltinCodes":
-    "適用されたスコアリングコードのリスト（例: quality_tier_0）",
-  "settings.refSectionFile":
-    "— 実際に分析されたファイルメタデータ（ダウンロード前はnull）",
-  "settings.refFileVideoCodec": "メディア分析による検証済み映像コーデック",
-  "settings.refFileVideoWidth": "検証済み映像幅（ピクセル）",
-  "settings.refFileVideoHeight": "検証済み映像高さ（ピクセル）",
-  "settings.refFileVideoBitrateKbps": "検証済み映像ビットレート（kbps）",
-  "settings.refFileVideoBitDepth": "検証済み映像ビット深度",
-  "settings.refFileVideoHdrFormat":
-    "Dolby Vision、HDR10、HDR10+、HLGなどの検証済みHDRフォーマット",
-  "settings.refFileDoviProfile": "Dolby Visionプロファイル番号（ある場合）",
-  "settings.refFileDoviBlCompatId":
-    "Dolby Visionベースレイヤー互換性ID（ある場合）",
-  "settings.refFileVideoFrameRate": "メディア分析による検証済みフレームレート",
-  "settings.refFileVideoProfile":
-    "Main 10やHighなどの検証済みコーデックプロファイル",
-  "settings.refFileAudioCodec": "検証済み主音声コーデック",
-  "settings.refFileAudioProfile":
-    "プライマリ検証済みオーディオ プロファイルまたは拡張ラベル（LC、Dolby TrueHD + Dolby Atmos、DTS-HD MA + DTS:X IMAX など）",
-  "settings.refFileAudioChannels": "検証済み主音声チャンネル数",
-  "settings.refFileAudioBitrateKbps": "検証済み主音声ビットレート（kbps）",
-  "settings.refFileAudioLanguages":
-    "実際のファイルから検出されたすべての音声言語",
-  "settings.refFileAudioStreams":
-    "音声ストリームごとの詳細; input.file.audio_streams[]を参照",
-  "settings.refFileSubtitleLanguages":
-    "実際のファイルから検出されたすべての字幕言語",
-  "settings.refFileSubtitleCodecs":
-    "実際のファイルから検出されたすべての字幕コーデック",
-  "settings.refFileSubtitleStreams":
-    "字幕ストリームごとの詳細; input.file.subtitle_streams[]を参照",
-  "settings.refFileHasMultiAudio":
-    "実際のファイルに複数の音声ストリームがある場合true",
-  "settings.refFileDurationSeconds": "検証済み再生時間（秒）",
-  "settings.refFileNumChapters":
-    "コンテナがチャプターを公開している場合の検証済みチャプター数",
-  "settings.refFileContainerFormat":
-    "matroskaやmp4などの検証済みコンテナフォーマット",
-  "settings.refSectionAudioStreams": "— ネストされた音声ストリームエントリ",
-  "settings.refAudioStreamCodec": "ストリームごとの音声コーデック",
-  "settings.refAudioStreamProfile":
-    "ストリームごとに検証されたオーディオ プロファイルまたは拡張ラベル",
-  "settings.refAudioStreamChannels": "ストリームごとのチャンネル数",
-  "settings.refAudioStreamLanguage": "ストリームごとの言語コード",
-  "settings.refAudioStreamBitrateKbps": "ストリームごとのビットレート（kbps）",
-  "settings.refSectionSubtitleStreams": "— ネストされた字幕ストリームエントリ",
-  "settings.refSubtitleStreamCodec": "ストリームごとの字幕コーデック",
-  "settings.refSubtitleStreamLanguage": "ストリームごとの言語コード",
-  "settings.refSubtitleStreamName":
-    "ストリームごとの字幕トラックタイトル（ある場合）",
-  "settings.refSubtitleStreamForced":
-    "字幕ストリームが強制としてマークされた場合true",
-  "settings.refSubtitleStreamDefault":
-    "字幕ストリームがデフォルトとしてマークされた場合true",
-  "settings.refSectionBuiltins": "カスタムScryer関数",
-  "settings.refBuiltinsIntro":
-    "これらのヘルパー関数は、すべての標準OPA組み込み関数に加えてRegoルールで使用できます。",
-  "settings.refFnBlockScore":
-    "リリースを完全にブロックするために使用される定数-10000を返します",
-  "settings.refFnSizeGib":
-    "バイトをGiBに変換（例: scryer.size_gib(input.release.size_bytes) > 50）",
-  "settings.refFnLangMatches":
-    'ISO 639-3 コードとエイリアスを照合します (例: scryer.lang_matches("jpn", "ja") は true)',
-  "settings.refFnNormalizeSource":
-    "ソース名を正規化します (例: 「webdl」は「WEB-DL」になります)",
-  "settings.refFnNormalizeCodec":
-    "コーデック名を正規化します（例：「h264」は「H.264」になります）",
-  "settings.refSectionSandbox": "サンドボックスと制限事項",
-  "settings.refSandboxIntro":
-    "すべてのユーザールールは以下の制限を持つサンドボックス化されたRego評価器内で実行されます:",
-  "settings.refSandboxNoIO":
-    "ネットワークまたはファイルシステムアクセス不可 — ルールはHTTPリクエスト、ファイル読み取り、その他のI/Oを実行できません。http.sendなどの標準OPA組み込み関数は利用できません。",
-  "settings.refSandboxPkgIsolation":
-    "パッケージ分離 — 各ルールは自動的に独自のパッケージに名前空間化されます。他のルールのデータを読み取りまたは変更することはできません。",
-  "settings.refSandboxReadOnly":
-    "読み取り専用入力 — ルールはinputドキュメントのみ読み取り可能です。アプリケーション状態の変更や評価間のデータ永続化はできません。",
-  "settings.refSandboxOutputRestricted":
-    "score_entryへの出力制限 — 各ルールからscore_entryマップのみが抽出されます。その他の定義や代入は無視されます。",
-  "settings.refSandboxIntegerOnly":
-    "整数のみのスコアデルタ — score_entryの値はi32範囲内の整数でなければなりません。浮動小数点は検証時に拒否されます（round()またはceil()で変換してください）。",
-  "settings.refSandboxValidation":
-    "保存前検証 — ルールは保存前に合成入力に対してコンパイルおよびテスト実行されます。無効なルールは拒否されます。",
-  "settings.refSandboxErrorIsolation":
-    "エラー分離 — 1つのルールがランタイムで失敗しても、他のすべてのルールは正常に評価を続けます。失敗はログに記録されますがスコアリングを中断しません。",
-  "settings.refSectionOutput": "ルール出力フォーマット",
-  "settings.refOutputIntro":
-    "ルールは文字列キー（スコアコード）を整数値（ポイントデルタ）にマッピングするscore_entryルールを定義する必要があります。正の値はリリースをブーストし、負の値はペナルティを与え、scryer.block_score()は完全にブロックします。ファイルベースのルールはinput.fileがダウンロード後の評価時までnullであるため、ダウンロード前は自然にノーオペレーションです。",
   "settings.subtitles": "字幕",
   "settings.subtitlesSaved": "字幕設定が保存されました。",
   "settings.sub.enabled": "字幕管理を有効にする",
@@ -1354,8 +1180,10 @@ const ja: LocaleDictionary = {
   "subtitle.credentialsRequiredTitle": "字幕の認証情報が必要です",
   "subtitle.credentialsRequiredBody": "このファイルの字幕を検索する前に、設定 > 字幕で字幕のユーザー名とパスワードを設定してください。",
   "subtitle.credentialsRequiredAction": "字幕設定を開く",
-  "subtitle.blacklist": "ブロックリスト",
-  "subtitle.blacklisted": "字幕をブロックリストに追加しました",
+  "subtitle.blocklist": "ブロックリスト",
+  "subtitle.blocklisted": "字幕をブロックリストに追加しました",
+  "subtitle.deleted": "字幕を削除しました",
+  "subtitle.onDisk": "ディスク上",
   "subtitle.releaseInfo": "リリース",
   "subtitle.provider": "プロバイダー",
   "subtitle.language": "言語",

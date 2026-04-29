@@ -279,9 +279,7 @@ pub(crate) fn title_history_records_from_domain_event(
 pub(crate) fn title_history_record_from_domain_event(
     event: &DomainEvent,
 ) -> Option<TitleHistoryRecord> {
-    let Some(title_id) = event.title_id.clone() else {
-        return None;
-    };
+    let title_id = event.title_id.clone()?;
 
     let (
         title_name,

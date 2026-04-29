@@ -4,8 +4,7 @@ use crate::{
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
-        created_media_update, deleted_media_update, new_title_domain_event,
-        title_context_snapshot,
+        created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
     },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
@@ -1300,6 +1299,19 @@ async fn import_movie_download(
                 prepared.accepted.as_ref(),
             )
             .await;
+            if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+                app, &title.id, &file_id, None, &dest_path,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    title_id = %title.id,
+                    file_id = %file_id,
+                    dest_path = %dest_path.display(),
+                    "failed to reconcile external subtitles after import"
+                );
+            }
             maybe_trigger_subtitle_search(app, &title.id, &file_id);
             Some(file_id)
         }
@@ -1843,6 +1855,19 @@ async fn import_interstitial_movie_download(
             prepared.accepted.as_ref(),
         )
         .await;
+        if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+            app, &title.id, &file_id, None, &dest_path,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                title_id = %title.id,
+                file_id = %file_id,
+                dest_path = %dest_path.display(),
+                "failed to reconcile external subtitles after import"
+            );
+        }
         maybe_trigger_subtitle_search(app, &title.id, &file_id);
         Some(file_id)
     } else {
@@ -2858,6 +2883,27 @@ async fn execute_resolved_episode_import(
         prepared.accepted.as_ref(),
     )
     .await;
+    if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+        app,
+        &title.id,
+        &media_file_id,
+        if target_episodes.len() == 1 {
+            target_episodes.first().map(|episode| episode.id.as_str())
+        } else {
+            None
+        },
+        &dest_path,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            title_id = %title.id,
+            file_id = %media_file_id,
+            dest_path = %dest_path.display(),
+            "failed to reconcile external subtitles after import"
+        );
+    }
     maybe_trigger_subtitle_search(app, &title.id, &media_file_id);
 
     for episode in target_episodes {

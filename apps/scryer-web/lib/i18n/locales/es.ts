@@ -450,6 +450,8 @@ const es: LocaleDictionary = {
   "settings.historyRetentionExternalHelp":
     "La limpieza operativa de datos temporales de adquisición seguirá ejecutándose, y esto no controla el historial conservado por SABnzbd, NZBGet o Weaver.",
   "settings.keepHistoryForever": "Conservar historial para siempre",
+  "settings.historyRetentionDaysHeader": "Conservar historial durante",
+  "settings.historyRetentionDaysSuffix": "días",
   "settings.historyRetentionDaysLabel": "Conservar historial durante N días",
   "settings.historyRetentionSaved":
     "Ajustes de retención del historial guardados.",
@@ -589,6 +591,7 @@ const es: LocaleDictionary = {
   "title.inheritDefault": "Heredar predeterminado",
   "title.monitoredSection": "{{facet}} monitorizados",
   "title.noWantedItem": "Sin elemento buscado activo.",
+  "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Descargar último",
   "title.requiredAudioLanguages": "Idiomas de audio requeridos",
   "title.requiredAudioLanguagesFacetInfo":
@@ -871,211 +874,6 @@ const es: LocaleDictionary = {
   "settings.ruleGlobal": "Global",
   "settings.ruleNoFacetRules":
     "No hay reglas personalizadas disponibles. Crea reglas en Ajustes > Reglas personalizadas.",
-  "settings.refTitle": "Referencia del contexto de entrada",
-  "settings.refSubtitle":
-    "Haz clic para expandir la referencia completa de todos los campos disponibles para tus reglas Rego.",
-  "settings.refIntro":
-    "Cada regla recibe un objeto input con cinco documentos de nivel superior. Tu código Rego accede a estos mediante input.release, input.profile, input.context, input.builtin_score e input.file. input.file es null durante la puntuación previa a la descarga y solo se rellena durante la evaluación post-descarga.",
-  "settings.refColField": "Campo",
-  "settings.refColType": "Tipo",
-  "settings.refColDescription": "Descripción",
-  "settings.refColFunction": "Función",
-  "settings.refColReturns": "Devuelve",
-  "settings.refSectionRelease": "— Metadatos del lanzamiento parseado",
-  "settings.refReleaseRawTitle": "Título original sin parsear del indexador",
-  "settings.refReleaseQuality":
-    "Nivel de calidad detectado (ej. 2160P, 1080P, 720P)",
-  "settings.refReleaseSource": "Fuente del medio (ej. WEB-DL, BLURAY, HDTV)",
-  "settings.refReleaseVideoCodec": "Códec de video (ej. H.265, H.264, AV1)",
-  "settings.refReleaseAudio": "Códec de audio principal (ej. DDP, AAC, TrueHD)",
-  "settings.refReleaseAudioCodecs":
-    "Todos los códecs de audio detectados como array",
-  "settings.refReleaseAudioChannels":
-    "Configuración de canales de audio (ej. 5.1, 7.1, 2.0)",
-  "settings.refReleaseLangsAudio":
-    "Códigos de idioma de audio ISO 639-3 (ej. eng, jpn)",
-  "settings.refReleaseLangsSub": "Códigos de idioma de subtítulos ISO 639-3",
-  "settings.refReleaseIsDualAudio":
-    "Verdadero cuando se detectan múltiples pistas de audio",
-  "settings.refReleaseIsAtmos": "Verdadero cuando hay audio Dolby Atmos",
-  "settings.refReleaseIsDV":
-    "Verdadero cuando se detectan metadatos de Dolby Vision",
-  "settings.refReleaseDetectedHdr": "Verdadero cuando se detecta HDR (no DV)",
-  "settings.refReleaseIsRemux":
-    "Verdadero para remux completo (sin transcodificación)",
-  "settings.refReleaseIsBdDisk": "Verdadero para fuente de disco Blu-ray",
-  "settings.refReleaseIsProper":
-    "Verdadero cuando el lanzamiento está etiquetado como Proper",
-  "settings.refReleaseIsRepack":
-    "Verdadero cuando el lanzamiento está etiquetado como Repack",
-  "settings.refReleaseIsAiEnhanced":
-    "Verdadero cuando el parser detecta un marcador de encode mejorado por IA",
-  "settings.refReleaseIsHardcodedSubs":
-    "Verdadero cuando se detectan subtítulos incrustados en el nombre",
-  "settings.refReleaseIsHdr10Plus":
-    "Verdadero cuando se detecta HDR10+ en los metadatos",
-  "settings.refReleaseIsHlg":
-    "Verdadero cuando se detecta HLG en los metadatos",
-  "settings.refReleaseStreamingService":
-    "Etiqueta de servicio de streaming detectada, si existe",
-  "settings.refReleaseEdition":
-    "Etiqueta de edición como extended, IMAX o criterion",
-  "settings.refReleaseAnimeVersion":
-    "Número de versión de anime como v2 o v3, cuando existe",
-  "settings.refReleaseGroup": "Grupo de lanzamiento o nombre del uploader",
-  "settings.refReleaseYear": "Año de lanzamiento",
-  "settings.refReleaseParseConf":
-    "Puntuación de confianza del parseo (0.0 a 1.0)",
-  "settings.refReleaseSizeBytes":
-    "Tamaño del archivo en bytes (usar scryer.size_gib() para convertir)",
-  "settings.refReleaseAgeDays": "Días desde la publicación del lanzamiento",
-  "settings.refReleaseThumbsUp": "Votos positivos del indexador",
-  "settings.refReleaseThumbsDown": "Votos negativos del indexador",
-  "settings.refReleaseExtra":
-    "Objeto de metadatos proporcionado por el plugin, legible como input.release.extra.<key>",
-  "settings.refSectionProfile": "— Configuración del perfil de calidad activo",
-  "settings.refProfileId": "Identificador único del perfil",
-  "settings.refProfileName": "Nombre visible del perfil",
-  "settings.refProfileQualityTiers":
-    "Lista ordenada de niveles de calidad aceptables",
-  "settings.refProfileArchivalQuality":
-    "Nivel de calidad más alto considerado como archivo",
-  "settings.refProfileAllowUnknown": "Si se aceptan calidades no reconocidas",
-  "settings.refProfileSourceAllow":
-    "Fuentes permitidas (vacío = todas permitidas)",
-  "settings.refProfileSourceBlock": "Fuentes bloqueadas",
-  "settings.refProfileVCodecAllow":
-    "Códecs de video permitidos (vacío = todos permitidos)",
-  "settings.refProfileVCodecBlock": "Códecs de video bloqueados",
-  "settings.refProfileACodecAllow":
-    "Códecs de audio permitidos (vacío = todos permitidos)",
-  "settings.refProfileACodecBlock": "Códecs de audio bloqueados",
-  "settings.refProfileDVAllowed": "Se aceptan lanzamientos Dolby Vision",
-  "settings.refProfileHdrAllowed": "Se aceptan lanzamientos HDR",
-  "settings.refProfilePreferRemux":
-    "El perfil prefiere lanzamientos remux completos",
-  "settings.refProfileAllowBdDisk": "Se aceptan fuentes de disco Blu-ray",
-  "settings.refProfileAllowUpgrades": "Se permite mejorar archivos existentes",
-  "settings.refProfileRequiredLangs":
-    "Idiomas de audio obligatorios (códigos ISO 639-3)",
-  "settings.refSectionContext": "— Contexto del título y la búsqueda",
-  "settings.refCtxTitleId":
-    "ID interno de scryer del título cuando ya se conoce un título concreto",
-  "settings.refCtxMediaType":
-    "Tipo de medio evaluado, típicamente movie, series o anime",
-  "settings.refCtxCategory":
-    "Indicación de categoría usada para puntuación y evaluación de reglas",
-  "settings.refCtxTags": "Etiquetas definidas por el usuario en el título",
-  "settings.refCtxHasExisting":
-    "Verdadero cuando ya existe un archivo para este título",
-  "settings.refCtxExistingScore":
-    "Puntuación incorporada del archivo existente (si hay)",
-  "settings.refCtxSearchMode":
-    "Modo de evaluación. Valores actuales: auto y post_download",
-  "settings.refCtxRuntimeMin": "Duración del contenido en minutos",
-  "settings.refCtxIsAnime":
-    "Verdadero cuando el título está categorizado como anime",
-  "settings.refCtxIsFiller":
-    "Verdadero cuando el episodio está marcado como relleno",
-  "settings.refSectionBuiltinScore":
-    "— Resultados del motor de puntuación incorporado",
-  "settings.refBuiltinTotal":
-    "Puntuación total del motor de puntuación incorporado",
-  "settings.refBuiltinBlocked":
-    "Verdadero cuando las reglas incorporadas bloquearon este lanzamiento",
-  "settings.refBuiltinCodes":
-    "Lista de códigos de puntuación aplicados (ej. quality_tier_0)",
-  "settings.refSectionFile":
-    "— Metadatos reales del archivo analizado (null antes de la descarga)",
-  "settings.refFileVideoCodec": "Códec de video verificado del análisis",
-  "settings.refFileVideoWidth": "Ancho de video verificado en píxeles",
-  "settings.refFileVideoHeight": "Alto de video verificado en píxeles",
-  "settings.refFileVideoBitrateKbps":
-    "Tasa de bits de video verificada en kbps",
-  "settings.refFileVideoBitDepth": "Profundidad de bits de video verificada",
-  "settings.refFileVideoHdrFormat":
-    "Formato HDR verificado como Dolby Vision, HDR10, HDR10+ o HLG",
-  "settings.refFileDoviProfile": "Número de perfil Dolby Vision cuando existe",
-  "settings.refFileDoviBlCompatId":
-    "ID de compatibilidad de capa base Dolby Vision cuando existe",
-  "settings.refFileVideoFrameRate":
-    "Cadencia de fotogramas verificada del análisis",
-  "settings.refFileVideoProfile":
-    "Perfil de códec verificado como Main 10 o High",
-  "settings.refFileAudioCodec": "Códec de audio principal verificado",
-  "settings.refFileAudioProfile":
-    "Perfil de audio verificado principal o etiqueta de extensión, como LC, Dolby TrueHD + Dolby Atmos o DTS-HD MA + DTS:X IMAX",
-  "settings.refFileAudioChannels":
-    "Cantidad de canales de audio principal verificada",
-  "settings.refFileAudioBitrateKbps":
-    "Tasa de bits de audio principal verificada en kbps",
-  "settings.refFileAudioLanguages":
-    "Todos los idiomas de audio detectados en el archivo",
-  "settings.refFileAudioStreams":
-    "Detalles por pista de audio; ver input.file.audio_streams[] abajo",
-  "settings.refFileSubtitleLanguages":
-    "Todos los idiomas de subtítulos detectados en el archivo",
-  "settings.refFileSubtitleCodecs":
-    "Todos los códecs de subtítulos detectados en el archivo",
-  "settings.refFileSubtitleStreams":
-    "Detalles por pista de subtítulos; ver input.file.subtitle_streams[] abajo",
-  "settings.refFileHasMultiAudio":
-    "Verdadero cuando hay múltiples pistas de audio en el archivo",
-  "settings.refFileDurationSeconds": "Duración verificada en segundos",
-  "settings.refFileNumChapters":
-    "Cantidad de capítulos verificada cuando el contenedor los expone",
-  "settings.refFileContainerFormat":
-    "Formato de contenedor verificado como matroska o mp4",
-  "settings.refSectionAudioStreams": "— Entradas de pistas de audio anidadas",
-  "settings.refAudioStreamCodec": "Códec de audio por pista",
-  "settings.refAudioStreamProfile":
-    "Perfil de audio verificado por transmisión o etiqueta de extensión",
-  "settings.refAudioStreamChannels": "Cantidad de canales por pista",
-  "settings.refAudioStreamLanguage": "Código de idioma por pista",
-  "settings.refAudioStreamBitrateKbps": "Tasa de bits por pista en kbps",
-  "settings.refSectionSubtitleStreams":
-    "— Entradas de pistas de subtítulos anidadas",
-  "settings.refSubtitleStreamCodec": "Códec de subtítulos por pista",
-  "settings.refSubtitleStreamLanguage": "Código de idioma por pista",
-  "settings.refSubtitleStreamName":
-    "Nombre de la pista de subtítulos, si está disponible",
-  "settings.refSubtitleStreamForced":
-    "Verdadero cuando la pista de subtítulos está marcada como forzada",
-  "settings.refSubtitleStreamDefault":
-    "Verdadero cuando la pista de subtítulos está marcada como predeterminada",
-  "settings.refSectionBuiltins": "Funciones personalizadas de Scryer",
-  "settings.refBuiltinsIntro":
-    "Estas funciones auxiliares están disponibles en tus reglas Rego además de todas las funciones estándar de OPA.",
-  "settings.refFnBlockScore":
-    "Devuelve -10000, la constante usada para bloquear un lanzamiento",
-  "settings.refFnSizeGib":
-    "Convierte bytes a GiB (ej. scryer.size_gib(input.release.size_bytes) > 50)",
-  "settings.refFnLangMatches":
-    'Coincide con códigos ISO 639-3 con alias (por ejemplo, scryer.lang_matches("jpn", "ja") es verdadero)',
-  "settings.refFnNormalizeSource":
-    'Normaliza los nombres de las fuentes (por ejemplo, "webdl" se convierte en "WEB-DL")',
-  "settings.refFnNormalizeCodec":
-    'Normaliza los nombres de los códecs (por ejemplo, "h264" se convierte en "H.264")',
-  "settings.refSectionSandbox": "Sandbox y restricciones",
-  "settings.refSandboxIntro":
-    "Todas las reglas de usuario se ejecutan dentro de un evaluador Rego aislado con las siguientes restricciones:",
-  "settings.refSandboxNoIO":
-    "Sin acceso a red o sistema de archivos — las reglas no pueden hacer peticiones HTTP, leer archivos o realizar ninguna E/S. Las funciones estándar de OPA como http.send no están disponibles.",
-  "settings.refSandboxPkgIsolation":
-    "Aislamiento de paquetes — cada regla tiene su propio espacio de nombres. Las reglas no pueden leer ni modificar datos de otras reglas.",
-  "settings.refSandboxReadOnly":
-    "Entrada de solo lectura — las reglas solo pueden leer el documento input. No pueden modificar el estado de la aplicación ni persistir datos entre evaluaciones.",
-  "settings.refSandboxOutputRestricted":
-    "Salida restringida a score_entry — solo el mapa score_entry se extrae de cada regla. Cualquier otra definición o asignación se ignora.",
-  "settings.refSandboxIntegerOnly":
-    "Deltas de puntuación solo enteros — los valores en score_entry deben ser enteros dentro del rango i32. Los decimales se rechazan durante la validación (usa round() o ceil() para convertir).",
-  "settings.refSandboxValidation":
-    "Validación previa al guardado — las reglas se compilan y prueban con entradas sintéticas antes de poder guardarse. Las reglas inválidas se rechazan.",
-  "settings.refSandboxErrorIsolation":
-    "Aislamiento de errores — si una regla falla en tiempo de ejecución, las demás reglas continúan evaluándose normalmente. Los fallos se registran pero nunca abortan la puntuación.",
-  "settings.refSectionOutput": "Formato de salida de la regla",
-  "settings.refOutputIntro":
-    "Las reglas deben definir una regla score_entry que devuelva un mapa de claves string (códigos de puntuación) a valores enteros (deltas de puntos). Los valores positivos bonifican el lanzamiento, los negativos lo penalizan, y scryer.block_score() lo bloquea. Las reglas basadas en archivos no operan antes de la descarga porque input.file es null hasta la evaluación post-descarga.",
   "settings.subtitles": "Subtítulos",
   "settings.subtitlesSaved": "Configuración de subtítulos guardada.",
   "settings.sub.enabled": "Habilitar la gestión de subtítulos",
@@ -1415,8 +1213,10 @@ const es: LocaleDictionary = {
   "subtitle.credentialsRequiredTitle": "Se requieren credenciales de subtítulos",
   "subtitle.credentialsRequiredBody": "Configura tu nombre de usuario y contraseña de subtítulos en Configuración > Subtítulos antes de buscar subtítulos para este archivo.",
   "subtitle.credentialsRequiredAction": "Abrir configuración de subtítulos",
-  "subtitle.blacklist": "Lista de bloqueo",
-  "subtitle.blacklisted": "Subtítulo añadido a la lista de bloqueo",
+  "subtitle.blocklist": "Lista de bloqueo",
+  "subtitle.blocklisted": "Subtítulo añadido a la lista de bloqueo",
+  "subtitle.deleted": "Subtítulo eliminado",
+  "subtitle.onDisk": "En disco",
   "subtitle.releaseInfo": "Lanzamiento",
   "subtitle.provider": "Proveedor",
   "subtitle.language": "Idioma",

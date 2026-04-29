@@ -1646,8 +1646,7 @@ mod tests {
                 .rev()
                 .filter_map(crate::event_views::title_history_record_from_domain_event)
                 .filter(|record| {
-                    event_types
-                        .is_none_or(|values| values.contains(&record.event_type))
+                    event_types.is_none_or(|values| values.contains(&record.event_type))
                         && title_ids.is_none_or(|values| values.contains(&record.title_id))
                         && download_id
                             .is_none_or(|value| record.download_id.as_deref() == Some(value))
@@ -1669,15 +1668,15 @@ mod tests {
                 .iter()
                 .rev()
                 .filter(|event| {
-                    crate::event_views::title_history_record_from_domain_event(event)
-                        .is_some_and(|record| {
-                            event_types
-                                .is_none_or(|values| values.contains(&record.event_type))
+                    crate::event_views::title_history_record_from_domain_event(event).is_some_and(
+                        |record| {
+                            event_types.is_none_or(|values| values.contains(&record.event_type))
                                 && title_ids.is_none_or(|values| values.contains(&record.title_id))
                                 && download_id.is_none_or(|value| {
                                     record.download_id.as_deref() == Some(value)
                                 })
-                        })
+                        },
+                    )
                 })
                 .skip(offset)
                 .take(page_size)

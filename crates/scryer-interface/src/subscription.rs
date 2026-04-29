@@ -657,6 +657,58 @@ impl SubscriptionRoot {
         Box::pin(stream)
     }
 
+    async fn provider_catalog_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!("provider_catalog_changed: app_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(e) => {
+                tracing::warn!("provider_catalog_changed: actor_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let receiver = match app.subscribe_provider_catalog_changed(&actor) {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                tracing::warn!("provider_catalog_changed: subscribe failed: {e}");
+                return empty_box_stream();
+            }
+        };
+
+        let stream = unfold(receiver, move |mut receiver| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(families) => {
+                        let payload = families
+                            .into_iter()
+                            .map(|family| family.as_str().to_string())
+                            .collect::<Vec<_>>();
+                        return Some((payload, receiver));
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!(
+                            "provider_catalog_changed: receiver lagged, skipped {n} messages"
+                        );
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        tracing::debug!("provider_catalog_changed: broadcast channel closed");
+                        return None;
+                    }
+                }
+            }
+        });
+
+        Box::pin(stream)
+    }
+
     async fn settings_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,

@@ -79,3 +79,11 @@ export type SystemHealth = {
   smgCertDaysRemaining: number | null;
   indexerStats: IndexerQueryStats[];
 };
+
+export type SmgVersionCompatibilityNotice = {
+  status: string;
+  minimumVersion: string;
+  yourVersion: string;
+  message: string;
+  upgradeDeadline: string | null;
+};

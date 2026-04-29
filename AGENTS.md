@@ -3,13 +3,13 @@
 Architecture documentation lives in a separate repo: `github.com/scryer-media/scryer-docs`.
 
 For code discovery in this repo, use the `agent-context` MCP first if your
-environment provides it. Start with `list_scopes`, use
-`scope = "/Users/jeremy/dev/scryer-media/scryer"` for this repo, and use
-`scope = "workspace"` for cross-repo searches. Use `search_symbols` for exact
-definitions and `search_code` for broader semantic/hybrid discovery. Treat shell
-search as follow-up refinement only after MCP has identified the relevant files,
-unless you are doing a narrow exact-string confirmation. If MCP is unavailable
-in your environment, fall back to `rg` or other local search tools.
+environment provides it. Start with `list_scopes`, select the repo scope that
+corresponds to this repository, and use a workspace/group scope for cross-repo
+searches when available. Use `search_symbols` for exact definitions and
+`search_code` for broader semantic/hybrid discovery. Treat shell search as
+follow-up refinement only after MCP has identified the relevant files, unless
+you are doing a narrow exact-string confirmation. If MCP is unavailable in your
+environment, fall back to `rg` or other local search tools.
 
 Use this order when making architectural decisions:
 

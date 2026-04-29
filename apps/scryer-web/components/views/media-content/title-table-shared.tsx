@@ -1,5 +1,8 @@
 import * as React from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { TableCell, TableRow } from "@/components/ui/table";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
@@ -65,19 +68,162 @@ export function bytesToReadable(raw: number | null | undefined) {
 
 export function formatEpisodeProgress(
   ownedEpisodes: number | null | undefined,
-  monitoredEpisodes: number | null | undefined,
+  targetEpisodes: number | null | undefined,
 ) {
-  if (typeof monitoredEpisodes !== "number") {
+  if (typeof targetEpisodes !== "number") {
     return "—";
   }
 
-  if (monitoredEpisodes <= 0) {
+  if (targetEpisodes <= 0) {
     return "0 / 0";
   }
 
   const owned =
     typeof ownedEpisodes === "number" && ownedEpisodes >= 0 ? ownedEpisodes : 0;
-  return `${owned} / ${monitoredEpisodes}`;
+  return `${owned} / ${targetEpisodes}`;
+}
+
+export type EpisodeProgressPresentation = {
+  text: string;
+  percent: number;
+  indicatorClassName: string;
+  assistiveText: string;
+};
+
+function normalizeEpisodeProgressCounts(item: TitleRecord) {
+  const monitored =
+    typeof item.episodesMonitored === "number"
+      ? Math.max(0, item.episodesMonitored)
+      : null;
+  const total =
+    typeof item.episodesTotal === "number" && item.episodesTotal >= 0
+      ? item.episodesTotal
+      : null;
+
+  if (monitored == null && total == null) {
+    return null;
+  }
+
+  const owned =
+    typeof item.episodesOwned === "number" && item.episodesOwned > 0
+      ? item.episodesOwned
+      : 0;
+  const target = total ?? monitored ?? 0;
+
+  return {
+    monitored: monitored ?? 0,
+    owned,
+    total,
+    target,
+    displayedOwned: target > 0 ? Math.min(owned, target) : 0,
+  };
+}
+
+function episodeProgressIndicatorClass(item: TitleRecord, percent: number) {
+  if (percent >= 100) {
+    return item.contentStatus?.trim().toLowerCase() === "ended"
+      ? "bg-emerald-600 dark:bg-emerald-600"
+      : "bg-sky-600 dark:bg-sky-500";
+  }
+
+  return item.monitored
+    ? "bg-rose-500 dark:bg-rose-400"
+    : "bg-slate-500 dark:bg-slate-500";
+}
+
+function collectionEpisodeProgressIndicatorClass(
+  monitored: boolean,
+  percent: number,
+) {
+  if (percent >= 100) {
+    return "bg-emerald-600 dark:bg-emerald-600";
+  }
+
+  return monitored
+    ? "bg-rose-500 dark:bg-rose-400"
+    : "bg-slate-500 dark:bg-slate-500";
+}
+
+function buildEpisodeProgressAssistiveText(item: TitleRecord, t: Translate) {
+  const counts = normalizeEpisodeProgressCounts(item);
+  if (!counts) {
+    return null;
+  }
+
+  return counts.total == null
+    ? t("title.table.episodeProgressTooltip", {
+        owned: counts.displayedOwned,
+        total: counts.target,
+      })
+    : t("title.table.episodeProgressTooltipWithTotal", {
+        owned: counts.displayedOwned,
+        total: counts.total,
+        monitored: counts.monitored,
+      });
+}
+
+export function getEpisodeProgressPresentation(
+  item: TitleRecord,
+  t: Translate,
+): EpisodeProgressPresentation | null {
+  const counts = normalizeEpisodeProgressCounts(item);
+  if (!counts) {
+    return null;
+  }
+
+  const text = formatEpisodeProgress(counts.displayedOwned, counts.target);
+  const percent = counts.target > 0 ? (counts.displayedOwned / counts.target) * 100 : 0;
+  const assistiveText = buildEpisodeProgressAssistiveText(item, t) ?? text;
+
+  return {
+    text,
+    percent,
+    indicatorClassName: episodeProgressIndicatorClass(item, percent),
+    assistiveText,
+  };
+}
+
+export function getCollectionEpisodeProgressPresentation({
+  ownedEpisodes,
+  totalEpisodes,
+  monitoredEpisodes,
+  monitored,
+  t,
+}: {
+  ownedEpisodes: number | null | undefined;
+  totalEpisodes: number | null | undefined;
+  monitoredEpisodes?: number | null | undefined;
+  monitored: boolean;
+  t: Translate;
+}): EpisodeProgressPresentation | null {
+  if (typeof totalEpisodes !== "number") {
+    return null;
+  }
+
+  const target = Math.max(0, totalEpisodes);
+  const owned =
+    typeof ownedEpisodes === "number" && ownedEpisodes >= 0 ? ownedEpisodes : 0;
+  const displayedOwned = target > 0 ? Math.min(owned, target) : 0;
+  const text = formatEpisodeProgress(displayedOwned, target);
+  const percent = target > 0 ? (displayedOwned / target) * 100 : 0;
+  const assistiveText = t("title.table.episodeProgressTooltipWithTotal", {
+    owned: displayedOwned,
+    total: target,
+    monitored:
+      typeof monitoredEpisodes === "number" && monitoredEpisodes >= 0
+        ? monitoredEpisodes
+        : 0,
+  });
+
+  return {
+    text,
+    percent,
+    indicatorClassName: collectionEpisodeProgressIndicatorClass(
+      monitored,
+      percent,
+    ),
+    assistiveText,
+  };
 }
 
 function normalizeTitleForUiSort(value: string) {
@@ -140,8 +286,8 @@ function compareNumbers(
 function compareEpisodeProgressValues(left: TitleRecord, right: TitleRecord) {
   const leftOwned = left.episodesOwned ?? 0;
   const rightOwned = right.episodesOwned ?? 0;
-  const leftTarget = left.episodesMonitored ?? left.episodesTotal ?? 0;
-  const rightTarget = right.episodesMonitored ?? right.episodesTotal ?? 0;
+  const leftTarget = left.episodesTotal ?? left.episodesMonitored ?? 0;
+  const rightTarget = right.episodesTotal ?? right.episodesMonitored ?? 0;
   const leftRatio =
     leftTarget > 0 ? leftOwned / leftTarget : Number.NEGATIVE_INFINITY;
   const rightRatio =
@@ -158,6 +304,66 @@ function compareEpisodeProgressValues(left: TitleRecord, right: TitleRecord) {
   }
 
   return leftTarget - rightTarget;
+}
+
+export function EpisodeProgressBar({
+  progress,
+  compact = false,
+  className,
+}: {
+  progress: EpisodeProgressPresentation | null;
+  compact?: boolean;
+  className?: string;
+}) {
+  if (!progress) {
+    return <span className="tabular-nums text-muted-foreground">—</span>;
+  }
+
+  return (
+    <div className={cn("relative", compact ? "w-[8rem]" : "w-[10rem]", className)}>
+      <Progress
+        value={progress.percent}
+        className={cn(
+          "border border-border/60 bg-muted/90 shadow-sm",
+          compact ? "h-5 rounded-md" : "h-7 rounded-md",
+        )}
+        indicatorClassName={progress.indicatorClassName}
+        aria-label={progress.assistiveText}
+        aria-valuetext={progress.assistiveText}
+        title={progress.assistiveText}
+      />
+      <span
+        aria-hidden="true"
+        className={cn(
+          "pointer-events-none absolute inset-0 flex items-center justify-center tabular-nums font-semibold text-white [text-shadow:0_1px_1px_rgba(0,0,0,0.55)]",
+          compact ? "text-[11px]" : "text-sm",
+        )}
+      >
+        {progress.text}
+      </span>
+    </div>
+  );
+}
+
+export function TitleEpisodeProgressBar({
+  item,
+  t,
+  compact = false,
+  className,
+}: {
+  item: TitleRecord;
+  t: Translate;
+  compact?: boolean;
+  className?: string;
+}) {
+  const progress = getEpisodeProgressPresentation(item, t);
+  return (
+    <EpisodeProgressBar
+      progress={progress}
+      compact={compact}
+      className={className}
+    />
+  );
 }
 
 function resolveTitleProfileName(
@@ -339,5 +545,48 @@ export function TitleTableActionButton({
     >
       {children}
     </Button>
+  );
+}
+
+export function TitleTableEmptyState({
+  colSpan,
+  t,
+  showScanAction = false,
+  scanLoading = false,
+  scanDisabled = false,
+  onScan,
+}: {
+  colSpan: number;
+  t: Translate;
+  showScanAction?: boolean;
+  scanLoading?: boolean;
+  scanDisabled?: boolean;
+  onScan?: () => Promise<void> | void;
+}) {
+  return (
+    <TableRow>
+      <TableCell colSpan={colSpan} className="py-8">
+        {showScanAction && onScan ? (
+          <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
+            <p className="text-sm font-medium text-foreground">{t("title.noManaged")}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{t("title.noFilesTrackedHint")}</p>
+            <Button
+              type="button"
+              variant="primary"
+              className="mt-4"
+              onClick={() => {
+                void onScan();
+              }}
+              disabled={scanDisabled || scanLoading}
+            >
+              {scanLoading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+              {t("settings.libraryScanButton")}
+            </Button>
+          </div>
+        ) : (
+          <p className="text-muted-foreground">{t("title.noManaged")}</p>
+        )}
+      </TableCell>
+    </TableRow>
   );
 }

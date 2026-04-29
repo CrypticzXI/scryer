@@ -54,7 +54,7 @@ import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
 } from "@/lib/title-overview-loader";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 
 export type TitleDetail = {
   id: string;
@@ -241,7 +241,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [mediaFiles, setMediaFiles] = React.useState<TitleMediaFile[]>([]);
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
   const [downloadFeedbackSettled, setDownloadFeedbackSettled] = React.useState(false);
-  const [subtitleDownloads, setSubtitleDownloads] = React.useState<SubtitleDownloadRecord[]>([]);
+  const [subtitleDownloads, setSubtitleDownloads] = React.useState<ExternalSubtitleRecord[]>([]);
   const [wantedItem, setWantedItem] = React.useState<WantedItem | null>(null);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
   const [downloadFeedbackWarning, setDownloadFeedbackWarning] = React.useState<string | null>(null);
@@ -321,7 +321,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         TitleAcquisitionDiagnostics,
         TitleHistoryEvent,
         TitleReleaseBlocklistEntry,
-        SubtitleDownloadRecord
+        ExternalSubtitleRecord
       >,
     ) => {
       const nextTitle = snapshot.title;
@@ -333,7 +333,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setEvents(snapshot.titleEvents);
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
-      setSubtitleDownloads(snapshot.subtitleDownloads);
+      setSubtitleDownloads(snapshot.externalSubtitles);
       setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
       setHasDownloadClients(snapshot.hasDownloadClients);
       if (!nextTitle || !snapshot.hasDownloadClients) {
@@ -403,7 +403,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       TitleAcquisitionDiagnostics,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
-      SubtitleDownloadRecord
+      ExternalSubtitleRecord
     >(client, requestedTitleId, 200);
     if (currentTitleIdRef.current !== requestedTitleId) {
       return;

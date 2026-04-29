@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { Search, Download, Loader2, Hash, Ban, CircleAlert } from "lucide-react";
+import { Search, ArrowDownToLine, Loader2, Hash, CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,14 +18,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  blacklistSubtitleMutation,
   type SubtitleSearchResult,
   downloadSubtitleMutation,
   searchSubtitlesMutation,
 } from "@/lib/graphql/mutations";
 import {
-  deleteSubtitlePreviewQuery,
-  subtitleBlacklistEntriesQuery,
+  externalSubtitleBlocklistEntriesQuery,
   subtitleSettingsInitQuery,
 } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -33,19 +31,16 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type {
-  SubtitleBlacklistEntryRecord,
-  SubtitleDownloadRecord,
+  ExternalSubtitleBlocklistEntryRecord,
+  ExternalSubtitleRecord,
 } from "@/lib/types/subtitles";
-import { ConfirmDialog } from "@/components/common/confirm-dialog";
-import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
-import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mediaFileId: string;
   filePath: string;
-  downloads: SubtitleDownloadRecord[];
+  downloads: ExternalSubtitleRecord[];
   onChanged: () => void | Promise<void>;
 };
 
@@ -71,35 +66,14 @@ export function SubtitleSearchModal({
     React.useState<boolean | null>(null);
   const [hasOpenSubtitlesApiKey, setHasOpenSubtitlesApiKey] = React.useState<boolean | null>(null);
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null);
-  const [blacklistEntries, setBlacklistEntries] = React.useState<
-    SubtitleBlacklistEntryRecord[]
+  const [blocklistEntries, setBlacklistEntries] = React.useState<
+    ExternalSubtitleBlocklistEntryRecord[]
   >([]);
-  const [subtitleToBlacklist, setSubtitleToBlacklist] =
-    React.useState<SubtitleDownloadRecord | null>(null);
-  const [blacklisting, setBlacklisting] = React.useState(false);
-  const [typedConfirmation, setTypedConfirmation] = React.useState("");
-  const subtitleDeletePreviewVariables = React.useMemo(
-    () =>
-      subtitleToBlacklist
-        ? { input: { subtitleDownloadId: subtitleToBlacklist.id } }
-        : null,
-    [subtitleToBlacklist],
-  );
-  const {
-    preview: subtitleDeletePreview,
-    loading: subtitleDeletePreviewLoading,
-    error: subtitleDeletePreviewError,
-  } = useDeletePreview(
-    deleteSubtitlePreviewQuery,
-    "deleteSubtitlePreview",
-    subtitleDeletePreviewVariables,
-    subtitleToBlacklist !== null,
-  );
 
-  const loadBlacklistEntries = React.useCallback(async () => {
+  const loadBlocklistEntries = React.useCallback(async () => {
     const { data, error } = await client
       .query(
-        subtitleBlacklistEntriesQuery,
+        externalSubtitleBlocklistEntriesQuery,
         { mediaFileId },
         { requestPolicy: "network-only" },
       )
@@ -108,7 +82,7 @@ export function SubtitleSearchModal({
       throw error;
     }
     setBlacklistEntries(
-      (data?.subtitleBlacklistEntries ?? []) as SubtitleBlacklistEntryRecord[],
+      (data?.externalSubtitleBlocklistEntries ?? []) as ExternalSubtitleBlocklistEntryRecord[],
     );
   }, [client, mediaFileId]);
 
@@ -158,27 +132,25 @@ export function SubtitleSearchModal({
     setHasEnabledOpenSubtitlesProvider(null);
     setHasEnabledNonOpenSubtitlesProvider(null);
     setHasOpenSubtitlesApiKey(null);
-    setSubtitleToBlacklist(null);
-    setTypedConfirmation("");
     void Promise.all([
       client.query(subtitleSettingsInitQuery, {}, { requestPolicy: "network-only" }).toPromise(),
       client
         .query(
-          subtitleBlacklistEntriesQuery,
+          externalSubtitleBlocklistEntriesQuery,
           { mediaFileId },
           { requestPolicy: "network-only" },
         )
         .toPromise(),
     ])
-      .then(([settingsResult, blacklistResult]) => {
+      .then(([settingsResult, blocklistResult]) => {
         if (cancelled) {
           return;
         }
         if (settingsResult.error) {
           throw settingsResult.error;
         }
-        if (blacklistResult.error) {
-          throw blacklistResult.error;
+        if (blocklistResult.error) {
+          throw blocklistResult.error;
         }
         const preferredLanguage =
           settingsResult.data?.subtitleSettings?.languages?.[0]?.code ?? "eng";
@@ -207,7 +179,7 @@ export function SubtitleSearchModal({
         );
         setLanguage(preferredLanguage);
         setBlacklistEntries(
-          (blacklistResult.data?.subtitleBlacklistEntries ?? []) as SubtitleBlacklistEntryRecord[],
+          (blocklistResult.data?.externalSubtitleBlocklistEntries ?? []) as ExternalSubtitleBlocklistEntryRecord[],
         );
         const hasApiKey = availableHostBindings.has("smg.opensubtitles_api_key");
         const canAutoSearch =
@@ -269,53 +241,6 @@ export function SubtitleSearchModal({
     [client, mediaFileId, onChanged, setGlobalStatus, t],
   );
 
-  const handleConfirmBlacklist = React.useCallback(async () => {
-    if (!subtitleToBlacklist || !subtitleDeletePreview) {
-      return;
-    }
-    setBlacklisting(true);
-    try {
-      const { error } = await client
-        .mutation(blacklistSubtitleMutation, {
-          input: {
-            subtitleDownloadId: subtitleToBlacklist.id,
-            previewFingerprint: subtitleDeletePreview.fingerprint,
-            typedConfirmation: typedConfirmation.trim() || undefined,
-          },
-        })
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setGlobalStatus(t("subtitle.blacklisted"));
-      setSubtitleToBlacklist(null);
-      setTypedConfirmation("");
-      await Promise.all([onChanged(), loadBlacklistEntries()]);
-    } catch (error) {
-      setGlobalStatus(
-        error instanceof Error ? error.message : t("status.apiError"),
-      );
-    } finally {
-      setBlacklisting(false);
-    }
-  }, [
-    client,
-    loadBlacklistEntries,
-    onChanged,
-    setGlobalStatus,
-    subtitleDeletePreview,
-    subtitleToBlacklist,
-    t,
-    typedConfirmation,
-  ]);
-
-  const blacklistConfirmDisabled =
-    blacklisting ||
-    subtitleDeletePreviewLoading ||
-    !!subtitleDeletePreviewError ||
-    !subtitleDeletePreview ||
-    (subtitleDeletePreview.requiresTypedConfirmation &&
-      typedConfirmation.trim() !== "DELETE");
   const canSearchSubtitles =
     hasEnabledProviders === true &&
     (hasEnabledNonOpenSubtitlesProvider === true ||
@@ -407,32 +332,22 @@ export function SubtitleSearchModal({
             <div className="grid gap-4 lg:grid-cols-2">
               <ExternalSubtitleSection
                 downloads={downloads}
-                renderActions={(download) => (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      setSubtitleToBlacklist(download);
-                      setTypedConfirmation("");
-                    }}
-                  >
-                    <Ban className="mr-1 h-3.5 w-3.5" />
-                    {t("subtitle.blacklist")}
-                  </Button>
-                )}
+                allowBlocklist
+                onChanged={async () => {
+                  await Promise.all([onChanged(), loadBlocklistEntries()]);
+                }}
               />
               <div className="space-y-2">
                 <p className="text-xs font-medium text-muted-foreground">
-                  {t("subtitle.blacklist")}
+                  {t("subtitle.blocklist")}
                 </p>
-                {blacklistEntries.length === 0 ? (
+                {blocklistEntries.length === 0 ? (
                   <p className="text-xs text-muted-foreground/70">
                     {t("subtitle.noResults")}
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {blacklistEntries.map((entry) => (
+                    {blocklistEntries.map((entry) => (
                       <div
                         key={entry.id}
                         className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
@@ -534,19 +449,18 @@ export function SubtitleSearchModal({
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right">
                         <Button
-                          size="sm"
-                          variant="secondary"
+                          size="icon-sm"
+                          variant="default"
                           disabled={downloadingId === r.providerFileId}
                           onClick={() => void handleDownload(r)}
+                          title={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
+                          aria-label={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
                         >
                           {downloadingId === r.providerFileId ? (
-                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
-                            <Download className="mr-1 h-3 w-3" />
+                            <ArrowDownToLine className="h-4 w-4" />
                           )}
-                          {downloadingId === r.providerFileId
-                            ? t("subtitle.downloading")
-                            : t("subtitle.download")}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -561,31 +475,6 @@ export function SubtitleSearchModal({
           </div>
         </DialogContent>
       </Dialog>
-      <ConfirmDialog
-        open={subtitleToBlacklist !== null}
-        title={t("subtitle.blacklist")}
-        description={subtitleToBlacklist?.filePath ?? t("subtitle.blacklist")}
-        confirmLabel={t("subtitle.blacklist")}
-        cancelLabel={t("label.cancel")}
-        isBusy={blacklisting}
-        confirmDisabled={blacklistConfirmDisabled}
-        onConfirm={handleConfirmBlacklist}
-        onCancel={() => {
-          if (blacklisting) {
-            return;
-          }
-          setSubtitleToBlacklist(null);
-          setTypedConfirmation("");
-        }}
-      >
-        <DeletePreviewSummary
-          preview={subtitleDeletePreview}
-          loading={subtitleDeletePreviewLoading}
-          error={subtitleDeletePreviewError}
-          typedConfirmation={typedConfirmation}
-          onTypedConfirmationChange={setTypedConfirmation}
-        />
-      </ConfirmDialog>
     </>
   );
 }

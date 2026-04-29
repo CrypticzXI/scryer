@@ -45,6 +45,34 @@ impl DownloadSubmissionGuardTable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ProviderCatalogFamily {
+    Subtitle,
+    Notification,
+    Indexer,
+    DownloadClient,
+}
+
+impl ProviderCatalogFamily {
+    pub const fn all() -> [Self; 4] {
+        [
+            Self::Subtitle,
+            Self::Notification,
+            Self::Indexer,
+            Self::DownloadClient,
+        ]
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subtitle => "subtitle",
+            Self::Notification => "notification",
+            Self::Indexer => "indexer",
+            Self::DownloadClient => "download_client",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeEventState {
     pub domain_event_broadcast: broadcast::Sender<i64>,
@@ -52,6 +80,7 @@ pub struct AppRuntimeEventState {
     /// operational bursts from waking it, while persisted filtered replay remains authoritative.
     pub notification_event_broadcast: broadcast::Sender<i64>,
     pub import_history_broadcast: broadcast::Sender<()>,
+    pub provider_catalog_changed_broadcast: broadcast::Sender<Vec<ProviderCatalogFamily>>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
 }
 
@@ -110,6 +139,7 @@ impl Default for AppRuntimeState {
         // while the dispatcher catches up from persisted offsets.
         let (notification_event_tx, _notification_event_rx) = broadcast::channel(256);
         let (import_history_tx, _) = broadcast::channel::<()>(16);
+        let (provider_catalog_changed_tx, _) = broadcast::channel::<Vec<ProviderCatalogFamily>>(16);
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
@@ -117,6 +147,7 @@ impl Default for AppRuntimeState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
                 import_history_broadcast: import_history_tx,
+                provider_catalog_changed_broadcast: provider_catalog_changed_tx,
                 settings_changed_broadcast: settings_changed_tx,
             },
             catalog: AppRuntimeCatalogState {
@@ -1175,6 +1206,18 @@ impl AppUseCase {
             .send(changed_keys);
     }
 
+    pub fn publish_provider_catalog_changed(&self, families: Vec<ProviderCatalogFamily>) {
+        if families.is_empty() {
+            return;
+        }
+
+        let _ = self
+            .runtime
+            .events
+            .provider_catalog_changed_broadcast
+            .send(families);
+    }
+
     pub fn indexer_query_stats(&self, actor: &User) -> AppResult<Vec<IndexerQueryStats>> {
         require(actor, &Entitlement::ManageConfig)?;
         Ok(self.services.integrations.indexer_stats.all_stats())
@@ -1528,7 +1571,9 @@ mod tests {
     #[tokio::test]
     async fn acquire_scope_serializes_overlapping_scopes_for_same_title() {
         let guards = DownloadSubmissionGuardTable::default();
-        let title_guard = guards.acquire_scope("title-1", &SubmissionScope::Title).await;
+        let title_guard = guards
+            .acquire_scope("title-1", &SubmissionScope::Title)
+            .await;
 
         let guards_clone = guards.clone();
         let waiting_guard = tokio::spawn(async move {

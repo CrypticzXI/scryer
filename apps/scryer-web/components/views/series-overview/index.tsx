@@ -10,7 +10,10 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
-import { searchForEpisodeQuery } from "@/lib/graphql/queries";
+import {
+  searchForEpisodeQuery,
+  searchForInterstitialMovieQuery,
+} from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
 import {
   assertNoReplaceConflict,
@@ -44,7 +47,7 @@ import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -123,7 +126,7 @@ type Props = {
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   downloadQueueItems?: DownloadQueueItem[];
-  subtitleDownloads?: SubtitleDownloadRecord[];
+  subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   onTitleChanged?: () => Promise<void>;
@@ -230,9 +233,21 @@ export function SeriesOverviewView({
 
   const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [historyEpisodeScope, setHistoryEpisodeScope] = React.useState<{
+    episodeId: string;
+    episodeLabel: string;
+  } | null>(null);
   const [episodePanel, dispatchEpisodePanel] = React.useReducer(episodePanelReducer, initialEpisodePanelState);
   const [searchBlockedByEpisode, setSearchBlockedByEpisode] = React.useState<Record<string, boolean>>({});
   const [searchBlockedByCollection, setSearchBlockedByCollection] = React.useState<Record<string, boolean>>({});
+  const [interstitialSearchResultsByCollection, setInterstitialSearchResultsByCollection] =
+    React.useState<Record<string, Release[]>>({});
+  const [interstitialSearchLoadingByCollection, setInterstitialSearchLoadingByCollection] =
+    React.useState<Record<string, boolean>>({});
+  const [interstitialSearchAttemptedByCollection, setInterstitialSearchAttemptedByCollection] =
+    React.useState<Record<string, boolean>>({});
+  const [autoSearchInterstitialMovieLoadingByCollection, setAutoSearchInterstitialMovieLoadingByCollection] =
+    React.useState<Record<string, boolean>>({});
   const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
@@ -260,6 +275,10 @@ export function SeriesOverviewView({
   React.useEffect(() => {
     setSearchBlockedByEpisode({});
     setSearchBlockedByCollection({});
+    setInterstitialSearchResultsByCollection({});
+    setInterstitialSearchLoadingByCollection({});
+    setInterstitialSearchAttemptedByCollection({});
+    setAutoSearchInterstitialMovieLoadingByCollection({});
   }, [title?.id]);
 
   React.useEffect(() => {
@@ -268,6 +287,20 @@ export function SeriesOverviewView({
       setSearchBlockedByCollection({});
     }
   }, [hasDownloadClients]);
+
+  const handleOpenTitleHistory = React.useCallback(() => {
+    setHistoryEpisodeScope(null);
+    setHistoryOpen(true);
+  }, []);
+
+  const handleOpenEpisodeHistory = React.useCallback((episode: CollectionEpisode) => {
+    setHistoryEpisodeScope({
+      episodeId: episode.id,
+      episodeLabel:
+        episode.title ?? episode.episodeLabel ?? episode.episodeNumber ?? episode.id,
+    });
+    setHistoryOpen(true);
+  }, []);
 
   // Initialize expanded state when data arrives
   const initializedRef = React.useRef(false);
@@ -425,7 +458,108 @@ export function SeriesOverviewView({
     [hasDownloadClients, onAutoSearchEpisode, setGlobalStatus, t],
   );
 
-  const [interstitialSearchLoading, setInterstitialSearchLoading] = React.useState(false);
+  const handleRunInterstitialMovieSearch = React.useCallback(
+    (collection: TitleCollection) => {
+      if (!title || !collection.interstitialMovie) return;
+
+      if (!hasDownloadClients) {
+        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
+        setInterstitialSearchLoadingByCollection((prev) => ({
+          ...prev,
+          [collection.id]: false,
+        }));
+        return;
+      }
+
+      setSearchBlockedByCollection((prev) => {
+        if (!prev[collection.id]) return prev;
+        const next = { ...prev };
+        delete next[collection.id];
+        return next;
+      });
+      setInterstitialSearchLoadingByCollection((prev) => ({
+        ...prev,
+        [collection.id]: true,
+      }));
+      setInterstitialSearchAttemptedByCollection((prev) => ({
+        ...prev,
+        [collection.id]: true,
+      }));
+
+      client
+        .query(searchForInterstitialMovieQuery, {
+          titleId: title.id,
+          collectionId: collection.id,
+        })
+        .toPromise()
+        .then(({ data, error: queryError }) => {
+          if (queryError) throw queryError;
+          setInterstitialSearchResultsByCollection((prev) => ({
+            ...prev,
+            [collection.id]: data?.searchReleases ?? [],
+          }));
+        })
+        .catch(() => {
+          setInterstitialSearchResultsByCollection((prev) => ({
+            ...prev,
+            [collection.id]: [],
+          }));
+        })
+        .finally(() => {
+          setInterstitialSearchLoadingByCollection((prev) => ({
+            ...prev,
+            [collection.id]: false,
+          }));
+        });
+    },
+    [client, hasDownloadClients, title],
+  );
+
+  const handleQueueFromInterstitialMovieSearch = React.useCallback(
+    (collection: TitleCollection, release: Release) => {
+      if (!title || !collection.interstitialMovie) return Promise.resolve();
+
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return Promise.resolve();
+      }
+
+      const input = {
+        titleId: title.id,
+        scope: releaseQueueScopeInput(release, { collection: collection.id }),
+        candidateToken: release.candidateToken,
+      };
+      return retryWithReplaceOnConflict(
+        input,
+        async (nextInput) => {
+          const { data, error: mutationError } = await client
+            .mutation(queueExistingMutation, {
+              input: nextInput,
+            })
+            .toPromise();
+          if (mutationError) throw mutationError;
+          return data?.queueExistingTitleDownload;
+        },
+        "A download is already in progress for this collection.",
+        confirmReplaceConflict,
+      )
+        .then(async (payload) => {
+          assertNoReplaceConflict(
+            payload,
+            "A download is already in progress for this collection.",
+          );
+          setGlobalStatus(
+            t("status.queuedLatest", { name: collection.interstitialMovie?.name ?? title.name }),
+          );
+          await onTitleChanged?.();
+        })
+        .catch((error: unknown) => {
+          setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        });
+    },
+    [client, confirmReplaceConflict, onTitleChanged, setGlobalStatus, t, title],
+  );
+
   const handleAutoSearchInterstitialMovie = React.useCallback(
     (collection: TitleCollection) => {
       if (!hasDownloadClients) {
@@ -439,12 +573,20 @@ export function SeriesOverviewView({
         delete next[collection.id];
         return next;
       });
-      setInterstitialSearchLoading(true);
+      setAutoSearchInterstitialMovieLoadingByCollection((prev) => ({
+        ...prev,
+        [collection.id]: true,
+      }));
       Promise.resolve(onAutoSearchInterstitialMovie(collection))
         .catch((error: unknown) => {
           setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
         })
-        .finally(() => setInterstitialSearchLoading(false));
+        .finally(() => {
+          setAutoSearchInterstitialMovieLoadingByCollection((prev) => ({
+            ...prev,
+            [collection.id]: false,
+          }));
+        });
     },
     [hasDownloadClients, onAutoSearchInterstitialMovie, setGlobalStatus, t],
   );
@@ -676,7 +818,7 @@ export function SeriesOverviewView({
         onSearchMonitored={onSearchMonitored ? () => void onSearchMonitored() : undefined}
         onRefreshAndScan={onRefreshAndScan ? () => void onRefreshAndScan() : undefined}
         onRequestDelete={onRequestDeleteTitle}
-        onHistory={() => setHistoryOpen(true)}
+        onHistory={handleOpenTitleHistory}
         searchNotice={searchPrerequisiteNotice}
         settingsPanel={
           onUpdateTitleOptions && qualityProfiles && defaultRootFolder ? (
@@ -744,6 +886,7 @@ export function SeriesOverviewView({
                     searchBlockedByEpisode={searchBlockedByEpisode}
                     autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}
                     onRunEpisodeSearch={handleRunEpisodeSearch}
+                    onOpenEpisodeHistory={handleOpenEpisodeHistory}
                     onQueueFromEpisodeSearch={handleQueueFromEpisodeSearch}
                     onAutoSearchEpisode={handleAutoSearchEpisode}
                     onSetCollectionMonitored={onSetCollectionMonitored}
@@ -766,8 +909,13 @@ export function SeriesOverviewView({
                     searchBlocked={searchBlockedByCollection[collection.id] === true}
                     onQueueFromSeasonSearch={onQueueFromSeasonSearch}
                     onDeleteFile={onDeleteFile}
+                    interstitialSearchResults={interstitialSearchResultsByCollection[collection.id]}
+                    interstitialSearchLoading={interstitialSearchLoadingByCollection[collection.id] === true}
+                    interstitialSearchAttempted={interstitialSearchAttemptedByCollection[collection.id] === true}
+                    onRunInterstitialMovieSearch={handleRunInterstitialMovieSearch}
+                    onQueueFromInterstitialMovieSearch={handleQueueFromInterstitialMovieSearch}
                     onAutoSearchInterstitialMovie={onAutoSearchInterstitialMovie ? handleAutoSearchInterstitialMovie : undefined}
-                    autoSearchInterstitialMovieLoading={interstitialSearchLoading}
+                    autoSearchInterstitialMovieLoading={autoSearchInterstitialMovieLoadingByCollection[collection.id] === true}
                   />
                 );
               })
@@ -794,6 +942,7 @@ export function SeriesOverviewView({
           onOpenChange={setHistoryOpen}
           titleId={title.id}
           titleName={title.name}
+          scopedEpisode={historyEpisodeScope}
         />
       ) : null}
       {replaceConflictDialog}

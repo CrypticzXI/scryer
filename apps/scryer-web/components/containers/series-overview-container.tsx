@@ -52,7 +52,7 @@ import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
 } from "@/lib/title-overview-loader";
-import type { SubtitleDownloadRecord } from "@/lib/types/subtitles";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 
 export type TitleDetail = {
   id: string;
@@ -270,7 +270,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
   const [downloadFeedbackSettled, setDownloadFeedbackSettled] = React.useState(false);
   const [subtitleDownloads, setSubtitleDownloads] = React.useState<
-    SubtitleDownloadRecord[]
+    ExternalSubtitleRecord[]
   >([]);
   const [completedDownloads, setCompletedDownloads] = React.useState<DownloadQueueItem[]>([]);
   const [manualImportItem, setManualImportItem] = React.useState<DownloadQueueItem | null>(null);
@@ -355,7 +355,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         unknown,
         TitleHistoryEvent,
         TitleReleaseBlocklistEntry,
-        SubtitleDownloadRecord
+        ExternalSubtitleRecord
       >,
     ) => {
       const nextTitle = snapshot.title;
@@ -377,7 +377,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
-      setSubtitleDownloads(snapshot.subtitleDownloads);
+      setSubtitleDownloads(snapshot.externalSubtitles);
       setHasDownloadClients(snapshot.hasDownloadClients);
       if (!nextTitle || !snapshot.hasDownloadClients) {
         applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());
@@ -447,7 +447,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       unknown,
       TitleHistoryEvent,
       TitleReleaseBlocklistEntry,
-      SubtitleDownloadRecord
+      ExternalSubtitleRecord
     >(client, requestedTitleId, 300);
     if (currentTitleIdRef.current !== requestedTitleId) {
       return;
