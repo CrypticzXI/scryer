@@ -1,0 +1,2568 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PluginSdkSchemaDocument",
+  "type": "object",
+  "required": [
+    "descriptor",
+    "download_add_request",
+    "download_add_result",
+    "download_completed_result",
+    "download_control_request",
+    "download_control_result",
+    "download_history_result",
+    "download_mark_imported_request",
+    "download_mark_imported_result",
+    "download_queue_result",
+    "download_status_result",
+    "indexer_search_request",
+    "indexer_search_response",
+    "notification_request",
+    "notification_result",
+    "subtitle_download_request",
+    "subtitle_download_result",
+    "subtitle_generate_request",
+    "subtitle_generate_result",
+    "subtitle_search_request",
+    "subtitle_search_result",
+    "subtitle_validate_config_request",
+    "subtitle_validate_config_result"
+  ],
+  "properties": {
+    "descriptor": {
+      "$ref": "#/definitions/PluginDescriptor"
+    },
+    "download_add_request": {
+      "$ref": "#/definitions/PluginDownloadClientAddRequest"
+    },
+    "download_add_result": {
+      "$ref": "#/definitions/PluginResult_for_PluginDownloadClientAddResponse"
+    },
+    "download_completed_result": {
+      "$ref": "#/definitions/PluginResult_for_Array_of_PluginCompletedDownload"
+    },
+    "download_control_request": {
+      "$ref": "#/definitions/PluginDownloadClientControlRequest"
+    },
+    "download_control_result": {
+      "$ref": "#/definitions/PluginResult_for_Null"
+    },
+    "download_history_result": {
+      "$ref": "#/definitions/PluginResult_for_Array_of_PluginCompletedDownload"
+    },
+    "download_mark_imported_request": {
+      "$ref": "#/definitions/PluginDownloadClientMarkImportedRequest"
+    },
+    "download_mark_imported_result": {
+      "$ref": "#/definitions/PluginResult_for_Null"
+    },
+    "download_queue_result": {
+      "$ref": "#/definitions/PluginResult_for_Array_of_PluginDownloadItem"
+    },
+    "download_status_result": {
+      "$ref": "#/definitions/PluginResult_for_PluginDownloadClientStatus"
+    },
+    "indexer_search_request": {
+      "$ref": "#/definitions/PluginSearchRequest"
+    },
+    "indexer_search_response": {
+      "$ref": "#/definitions/PluginSearchResponse"
+    },
+    "notification_request": {
+      "$ref": "#/definitions/PluginNotificationRequest"
+    },
+    "notification_result": {
+      "$ref": "#/definitions/PluginResult_for_PluginNotificationResponse"
+    },
+    "subtitle_download_request": {
+      "$ref": "#/definitions/SubtitlePluginDownloadRequest"
+    },
+    "subtitle_download_result": {
+      "$ref": "#/definitions/PluginResult_for_SubtitlePluginDownloadResponse"
+    },
+    "subtitle_generate_request": {
+      "$ref": "#/definitions/SubtitlePluginGenerateRequest"
+    },
+    "subtitle_generate_result": {
+      "$ref": "#/definitions/PluginResult_for_SubtitlePluginGenerateResponse"
+    },
+    "subtitle_search_request": {
+      "$ref": "#/definitions/SubtitlePluginSearchRequest"
+    },
+    "subtitle_search_result": {
+      "$ref": "#/definitions/PluginResult_for_SubtitlePluginSearchResponse"
+    },
+    "subtitle_validate_config_request": {
+      "$ref": "#/definitions/SubtitlePluginValidateConfigRequest"
+    },
+    "subtitle_validate_config_result": {
+      "$ref": "#/definitions/PluginResult_for_SubtitlePluginValidateConfigResponse"
+    }
+  },
+  "definitions": {
+    "ConfigFieldDef": {
+      "type": "object",
+      "required": [
+        "field_type",
+        "key",
+        "label"
+      ],
+      "properties": {
+        "default_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field_type": {
+          "$ref": "#/definitions/ConfigFieldType"
+        },
+        "help_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginHostBindingId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConfigFieldOption"
+          }
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "value_source": {
+          "default": "user",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ConfigFieldValueSource"
+            }
+          ]
+        }
+      }
+    },
+    "ConfigFieldOption": {
+      "type": "object",
+      "required": [
+        "label",
+        "value"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "ConfigFieldType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "password",
+        "multiline",
+        "bool",
+        "select",
+        "number"
+      ]
+    },
+    "ConfigFieldValueSource": {
+      "type": "string",
+      "enum": [
+        "user",
+        "host_binding"
+      ]
+    },
+    "DownloadClientCapabilities": {
+      "type": "object",
+      "properties": {
+        "client_status": {
+          "default": false,
+          "type": "boolean"
+        },
+        "force_start": {
+          "default": false,
+          "type": "boolean"
+        },
+        "host_fs_required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mark_imported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "pause": {
+          "default": false,
+          "type": "boolean"
+        },
+        "per_download_directory": {
+          "default": false,
+          "type": "boolean"
+        },
+        "prepare_for_import": {
+          "default": false,
+          "type": "boolean"
+        },
+        "queue_priority": {
+          "default": false,
+          "type": "boolean"
+        },
+        "remove": {
+          "default": false,
+          "type": "boolean"
+        },
+        "remove_with_data": {
+          "default": false,
+          "type": "boolean"
+        },
+        "resume": {
+          "default": false,
+          "type": "boolean"
+        },
+        "seed_limits": {
+          "default": false,
+          "type": "boolean"
+        },
+        "start_paused": {
+          "default": false,
+          "type": "boolean"
+        },
+        "test_connection": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "DownloadControlAction": {
+      "type": "string",
+      "enum": [
+        "pause",
+        "resume",
+        "remove",
+        "force_start"
+      ]
+    },
+    "DownloadInputKind": {
+      "type": "string",
+      "enum": [
+        "nzb",
+        "nzb_url",
+        "torrent_file",
+        "magnet_uri"
+      ]
+    },
+    "DownloadIsolationMode": {
+      "type": "string",
+      "enum": [
+        "category",
+        "tag",
+        "directory"
+      ]
+    },
+    "DownloadItemState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "downloading",
+        "verifying",
+        "repairing",
+        "extracting",
+        "paused",
+        "completed",
+        "import_pending",
+        "failed",
+        "error",
+        "warning",
+        "seeding"
+      ]
+    },
+    "IndexerCapabilities": {
+      "type": "object",
+      "properties": {
+        "anidb_search": {
+          "default": false,
+          "type": "boolean"
+        },
+        "deduplicates_aliases": {
+          "default": false,
+          "type": "boolean"
+        },
+        "episode_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imdb_search": {
+          "default": false,
+          "type": "boolean"
+        },
+        "query_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rss": {
+          "default": true,
+          "type": "boolean"
+        },
+        "search": {
+          "default": false,
+          "type": "boolean"
+        },
+        "season_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "supported_ids": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "tvdb_search": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "IndexerSourceKind": {
+      "type": "string",
+      "enum": [
+        "generic",
+        "usenet",
+        "torrent"
+      ]
+    },
+    "NotificationCapabilities": {
+      "type": "object",
+      "properties": {
+        "supported_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NotificationEventType"
+          }
+        },
+        "supports_images": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_rich_text": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "NotificationEventType": {
+      "type": "string",
+      "enum": [
+        "grab",
+        "download",
+        "upgrade",
+        "import_complete",
+        "import_rejected",
+        "rename",
+        "title_added",
+        "title_deleted",
+        "file_deleted",
+        "file_deleted_for_upgrade",
+        "post_processing_completed",
+        "subtitle_downloaded",
+        "subtitle_search_failed",
+        "health_issue",
+        "health_restored",
+        "application_update",
+        "manual_interaction_required",
+        "test"
+      ]
+    },
+    "NotificationMediaUpdateType": {
+      "type": "string",
+      "enum": [
+        "created",
+        "modified",
+        "deleted"
+      ]
+    },
+    "PluginCompletedDownload": {
+      "type": "object",
+      "required": [
+        "client_item_id",
+        "dest_dir",
+        "name"
+      ],
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_item_id": {
+          "type": "string"
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dest_dir": {
+          "type": "string"
+        },
+        "info_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "maxItems": 2,
+            "minItems": 2
+          }
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      }
+    },
+    "PluginDescriptor": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "provider",
+        "sdk_version",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderDescriptor"
+        },
+        "sdk_version": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "PluginDownloadClientAddRequest": {
+      "type": "object",
+      "required": [
+        "release",
+        "routing",
+        "source",
+        "title"
+      ],
+      "properties": {
+        "release": {
+          "$ref": "#/definitions/PluginDownloadRelease"
+        },
+        "routing": {
+          "$ref": "#/definitions/PluginDownloadRouting"
+        },
+        "source": {
+          "$ref": "#/definitions/PluginDownloadSource"
+        },
+        "title": {
+          "$ref": "#/definitions/PluginDownloadTitle"
+        }
+      }
+    },
+    "PluginDownloadClientAddResponse": {
+      "type": "object",
+      "required": [
+        "client_item_id"
+      ],
+      "properties": {
+        "client_item_id": {
+          "type": "string"
+        },
+        "info_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginDownloadClientControlRequest": {
+      "type": "object",
+      "required": [
+        "action",
+        "client_item_id"
+      ],
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/DownloadControlAction"
+        },
+        "client_item_id": {
+          "type": "string"
+        },
+        "is_history": {
+          "default": false,
+          "type": "boolean"
+        },
+        "remove_data": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "PluginDownloadClientMarkImportedRequest": {
+      "type": "object",
+      "required": [
+        "client_item_id"
+      ],
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_item_id": {
+          "type": "string"
+        },
+        "download_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imported_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginDownloadClientStatus": {
+      "type": "object",
+      "properties": {
+        "is_localhost": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "remote_output_roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "removes_completed_downloads": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sorting_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PluginDownloadItem": {
+      "type": "object",
+      "required": [
+        "client_item_id",
+        "state",
+        "title"
+      ],
+      "properties": {
+        "can_move_files": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "can_remove": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_item_id": {
+          "type": "string"
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eta_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "info_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "progress_percent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "raw_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remaining_size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "remote_output_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "removed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/DownloadItemState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "total_size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      }
+    },
+    "PluginDownloadRelease": {
+      "type": "object",
+      "properties": {
+        "indexer_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_hash_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_recent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "release_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "season_pack": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "seed_goal_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "seed_goal_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      }
+    },
+    "PluginDownloadRouting": {
+      "type": "object",
+      "properties": {
+        "download_directory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isolation_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue_priority": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginDownloadSource": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "download_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/DownloadInputKind"
+        },
+        "magnet_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "torrent_bytes_base64": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginDownloadTitle": {
+      "type": "object",
+      "required": [
+        "media_facet",
+        "title_name"
+      ],
+      "properties": {
+        "media_facet": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "title_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_name": {
+          "type": "string"
+        }
+      }
+    },
+    "PluginError": {
+      "type": "object",
+      "required": [
+        "code",
+        "public_message"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/PluginErrorCode"
+        },
+        "debug_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_message": {
+          "type": "string"
+        },
+        "retry_after_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      }
+    },
+    "PluginErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_config",
+        "auth_failed",
+        "rate_limited",
+        "upstream_unavailable",
+        "unsupported",
+        "temporary",
+        "permanent"
+      ]
+    },
+    "PluginHostBindingId": {
+      "type": "string",
+      "enum": [
+        "smg.opensubtitles_api_key"
+      ]
+    },
+    "PluginNotificationApp": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "PluginNotificationDownload": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationEpisode": {
+      "type": "object",
+      "properties": {
+        "display": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "episode_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PluginNotificationExternalIds": {
+      "type": "object",
+      "properties": {
+        "anidb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tmdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tvdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationFile": {
+      "type": "object",
+      "properties": {
+        "media_updates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginNotificationMediaUpdate"
+          }
+        },
+        "primary_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationHealth": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationImport": {
+      "type": "object",
+      "properties": {
+        "dest_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imported_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "source_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationMediaUpdate": {
+      "type": "object",
+      "required": [
+        "path",
+        "update_type"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "update_type": {
+          "$ref": "#/definitions/NotificationMediaUpdateType"
+        }
+      }
+    },
+    "PluginNotificationRelease": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationRequest": {
+      "type": "object",
+      "required": [
+        "app",
+        "event_type",
+        "summary_message",
+        "summary_title"
+      ],
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/PluginNotificationApp"
+        },
+        "download": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationDownload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "episode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationEpisode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type": {
+          "$ref": "#/definitions/NotificationEventType"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "health": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationHealth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "import": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationImport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationRelease"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary_message": {
+          "type": "string"
+        },
+        "summary_title": {
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginNotificationTitle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "PluginNotificationResponse": {
+      "type": "object",
+      "required": [
+        "success"
+      ],
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PluginNotificationTitle": {
+      "type": "object",
+      "required": [
+        "facet",
+        "name"
+      ],
+      "properties": {
+        "external_ids": {
+          "$ref": "#/definitions/PluginNotificationExternalIds"
+        },
+        "facet": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "poster_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      }
+    },
+    "PluginResult_for_Array_of_PluginCompletedDownload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/PluginCompletedDownload"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_Array_of_PluginDownloadItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/PluginDownloadItem"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_Null": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "null"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_PluginDownloadClientAddResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/PluginDownloadClientAddResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_PluginDownloadClientStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/PluginDownloadClientStatus"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_PluginNotificationResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/PluginNotificationResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_SubtitlePluginDownloadResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/SubtitlePluginDownloadResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_SubtitlePluginGenerateResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/SubtitlePluginGenerateResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_SubtitlePluginSearchResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/SubtitlePluginSearchResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginResult_for_SubtitlePluginValidateConfigResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "$ref": "#/definitions/SubtitlePluginValidateConfigResponse"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "err"
+          ],
+          "properties": {
+            "err": {
+              "$ref": "#/definitions/PluginError"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginScoringPolicy": {
+      "type": "object",
+      "required": [
+        "name",
+        "rego_source"
+      ],
+      "properties": {
+        "applied_facets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "rego_source": {
+          "type": "string"
+        }
+      }
+    },
+    "PluginSearchRequest": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "absolute_episode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "episode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "facet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ids": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "limit": {
+          "default": 0,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "query": {
+          "type": "string"
+        },
+        "season": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "tagged_aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TaggedAlias"
+          }
+        }
+      }
+    },
+    "PluginSearchResponse": {
+      "type": "object",
+      "properties": {
+        "api_current": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "api_max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "grab_current": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "grab_max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "results": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginSearchResult"
+          }
+        }
+      }
+    },
+    "PluginSearchResult": {
+      "type": "object",
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "download_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grabs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "guid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "info_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "link": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "provider_extra": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "published_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "subtitles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "thumbs_down": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "thumbs_up": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "ProviderDescriptor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "provider_type"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "capabilities": {
+              "default": {
+                "rss": true,
+                "supported_ids": {},
+                "deduplicates_aliases": false,
+                "search": false,
+                "imdb_search": false,
+                "tvdb_search": false,
+                "anidb_search": false
+              },
+              "allOf": [
+                {
+                  "$ref": "#/definitions/IndexerCapabilities"
+                }
+              ]
+            },
+            "config_fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ConfigFieldDef"
+              }
+            },
+            "default_base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "indexer"
+              ]
+            },
+            "provider_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "provider_type": {
+              "type": "string"
+            },
+            "rate_limit_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "scoring_policies": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/PluginScoringPolicy"
+              }
+            },
+            "source_kind": {
+              "default": "generic",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/IndexerSourceKind"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "provider_type"
+          ],
+          "properties": {
+            "accepted_inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DownloadInputKind"
+              }
+            },
+            "allowed_hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "capabilities": {
+              "default": {
+                "pause": false,
+                "resume": false,
+                "remove": false,
+                "remove_with_data": false,
+                "mark_imported": false,
+                "prepare_for_import": false,
+                "client_status": false,
+                "queue_priority": false,
+                "seed_limits": false,
+                "start_paused": false,
+                "force_start": false,
+                "per_download_directory": false,
+                "host_fs_required": false,
+                "test_connection": false
+              },
+              "allOf": [
+                {
+                  "$ref": "#/definitions/DownloadClientCapabilities"
+                }
+              ]
+            },
+            "config_fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ConfigFieldDef"
+              }
+            },
+            "default_base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "isolation_modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DownloadIsolationMode"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "download_client"
+              ]
+            },
+            "provider_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "provider_type": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "provider_type"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "capabilities": {
+              "default": {
+                "supports_rich_text": false,
+                "supports_images": false
+              },
+              "allOf": [
+                {
+                  "$ref": "#/definitions/NotificationCapabilities"
+                }
+              ]
+            },
+            "config_fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ConfigFieldDef"
+              }
+            },
+            "default_base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "notification"
+              ]
+            },
+            "provider_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "provider_type": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "provider_type"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "capabilities": {
+              "default": {
+                "mode": "catalog",
+                "supports_hash_lookup": false,
+                "supports_forced": false,
+                "supports_hearing_impaired": false,
+                "supports_ai_translated": false,
+                "supports_machine_translated": false
+              },
+              "allOf": [
+                {
+                  "$ref": "#/definitions/SubtitleCapabilities"
+                }
+              ]
+            },
+            "config_fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ConfigFieldDef"
+              }
+            },
+            "default_base_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "subtitle"
+              ]
+            },
+            "provider_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "provider_type": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "SubtitleCapabilities": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/SubtitleProviderMode"
+        },
+        "recommended_facets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supported_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supported_media_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SubtitleQueryMediaKind"
+          }
+        },
+        "supports_ai_translated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_forced": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_hash_lookup": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_hearing_impaired": {
+          "default": false,
+          "type": "boolean"
+        },
+        "supports_machine_translated": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "SubtitleGeneratorInputRef": {
+      "type": "object",
+      "required": [
+        "checksum",
+        "duration_seconds",
+        "mime_type",
+        "path",
+        "size_bytes"
+      ],
+      "properties": {
+        "checksum": {
+          "type": "string"
+        },
+        "duration_seconds": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "SubtitleMatchHint": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/SubtitleMatchHintKind"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SubtitleMatchHintKind": {
+      "type": "string",
+      "enum": [
+        "hash",
+        "imdb_id",
+        "series_imdb_id",
+        "external_id",
+        "absolute_episode",
+        "release",
+        "title",
+        "season_episode",
+        "language"
+      ]
+    },
+    "SubtitlePluginCandidate": {
+      "type": "object",
+      "required": [
+        "language",
+        "provider_file_id"
+      ],
+      "properties": {
+        "ai_translated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "download_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "forced": {
+          "default": false,
+          "type": "boolean"
+        },
+        "hearing_impaired": {
+          "default": false,
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string"
+        },
+        "machine_translated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "match_hints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SubtitleMatchHint"
+          }
+        },
+        "provider_file_id": {
+          "type": "string"
+        },
+        "release_info": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uploader": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SubtitlePluginDownloadRequest": {
+      "type": "object",
+      "required": [
+        "provider_file_id"
+      ],
+      "properties": {
+        "provider_file_id": {
+          "type": "string"
+        }
+      }
+    },
+    "SubtitlePluginDownloadResponse": {
+      "type": "object",
+      "required": [
+        "content_base64",
+        "format"
+      ],
+      "properties": {
+        "content_base64": {
+          "type": "string"
+        },
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "type": "string"
+        }
+      }
+    },
+    "SubtitlePluginGenerateRequest": {
+      "type": "object",
+      "required": [
+        "input",
+        "media_kind"
+      ],
+      "properties": {
+        "facet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/definitions/SubtitleGeneratorInputRef"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "media_kind": {
+          "$ref": "#/definitions/SubtitleQueryMediaKind"
+        }
+      }
+    },
+    "SubtitlePluginGenerateResponse": {
+      "type": "object",
+      "required": [
+        "content_base64",
+        "format"
+      ],
+      "properties": {
+        "content_base64": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        }
+      }
+    },
+    "SubtitlePluginSearchRequest": {
+      "type": "object",
+      "required": [
+        "media_kind",
+        "title"
+      ],
+      "properties": {
+        "absolute_episode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "audio_codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "episode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "external_ids": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "facet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hearing_impaired": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "imdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_ai_translated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "include_machine_translated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "media_kind": {
+          "$ref": "#/definitions/SubtitleQueryMediaKind"
+        },
+        "release_group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "season": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "series_imdb_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "title_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "title_candidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "video_codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      }
+    },
+    "SubtitlePluginSearchResponse": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SubtitlePluginCandidate"
+          }
+        }
+      }
+    },
+    "SubtitlePluginValidateConfigRequest": {
+      "type": "object",
+      "properties": {
+        "config_instance_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SubtitlePluginValidateConfigResponse": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "status": {
+          "$ref": "#/definitions/SubtitleValidateConfigStatus"
+        }
+      }
+    },
+    "SubtitleProviderMode": {
+      "type": "string",
+      "enum": [
+        "catalog",
+        "generator"
+      ]
+    },
+    "SubtitleQueryMediaKind": {
+      "type": "string",
+      "enum": [
+        "movie",
+        "episode"
+      ]
+    },
+    "SubtitleValidateConfigStatus": {
+      "type": "string",
+      "enum": [
+        "valid",
+        "invalid_config",
+        "auth_failed",
+        "rate_limited",
+        "unreachable",
+        "unsupported",
+        "missing_host_binding"
+      ]
+    },
+    "TaggedAlias": {
+      "type": "object",
+      "required": [
+        "language",
+        "name"
+      ],
+      "properties": {
+        "language": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

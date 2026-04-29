@@ -1,13 +1,7 @@
-import { Info } from "lucide-react";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import type { TitleHistoryEvent } from "@/lib/types";
-import { HistoryEventIcon, getEventTypeLabel } from "./history-event-icon";
 
 const friendlyKeys: Record<string, string> = {
+  import_id: "Import ID",
   client_id: "Client ID",
   client_name: "Client Name",
   client_type: "Client Type",
@@ -20,6 +14,8 @@ const friendlyKeys: Record<string, string> = {
   release_group: "Release Group",
   size: "Size",
   source_path: "Source Path",
+  source_ref: "Source Ref",
+  source_hint: "Source Hint",
   dest_path: "Destination",
   dropped_path: "Dropped Path",
   imported_path: "Imported Path",
@@ -30,14 +26,22 @@ const friendlyKeys: Record<string, string> = {
   indexer_flags: "Indexer Flags",
   release_type: "Release Type",
   source_system: "Source System",
+  skip_reason: "Skip Reason",
   error_message: "Error",
   blocklist_reason: "Blocklist Reason",
 };
 
 const structuredDataKeys = new Set([
+  "import_id",
   "download_id",
   "client_id",
   "client_name",
+  "source_system",
+  "source_ref",
+  "source_hint",
+  "skip_reason",
+  "source_path",
+  "dest_path",
   "reason",
   "blocklist_reason",
 ]);
@@ -67,57 +71,68 @@ function parseDataJson(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-export function HistoryEventDetailHover({ event }: { event: TitleHistoryEvent }) {
+type HistoryEventDetailEntry = {
+  key: string;
+  value: string;
+};
+
+export function buildHistoryEventDetail(event: TitleHistoryEvent): {
+  structuredDetails: HistoryEventDetailEntry[];
+  rawDetails: Array<[string, unknown]>;
+  hasDetail: boolean;
+} {
   const data = parseDataJson(event.dataJson);
   const structuredDetails = [
+    event.importId ? { key: "import_id", value: event.importId } : null,
     event.downloadId
       ? { key: "download_id", value: event.downloadId }
       : null,
     event.clientId ? { key: "client_id", value: event.clientId } : null,
     event.clientName ? { key: "client_name", value: event.clientName } : null,
+    event.sourceSystem ? { key: "source_system", value: event.sourceSystem } : null,
+    event.sourceRef ? { key: "source_ref", value: event.sourceRef } : null,
+    event.sourceHint ? { key: "source_hint", value: event.sourceHint } : null,
+    event.skipReason ? { key: "skip_reason", value: event.skipReason } : null,
+    event.sourcePath ? { key: "source_path", value: event.sourcePath } : null,
+    event.destPath ? { key: "dest_path", value: event.destPath } : null,
     event.failureReason ? { key: "reason", value: event.failureReason } : null,
     event.blocklistReason
       ? { key: "blocklist_reason", value: event.blocklistReason }
       : null,
-  ].filter((entry): entry is { key: string; value: string } => entry !== null);
+  ].filter((entry): entry is HistoryEventDetailEntry => entry !== null);
   const rawDetails = Object.entries(data ?? {}).filter(
     ([key]) => !structuredDataKeys.has(key),
   );
   const hasDetail = structuredDetails.length > 0 || rawDetails.length > 0;
 
-  if (!hasDetail) return null;
+  return {
+    structuredDetails,
+    rawDetails,
+    hasDetail,
+  };
+}
+
+export function HistoryEventDetailContent({ event }: { event: TitleHistoryEvent }) {
+  const { structuredDetails, rawDetails, hasDetail } = buildHistoryEventDetail(event);
+
+  if (!hasDetail) {
+    return null;
+  }
 
   return (
-    <HoverCard openDelay={250} closeDelay={75}>
-      <HoverCardTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground"
-          aria-label="Event details"
-        >
-          <Info className="h-4 w-4" />
-        </button>
-      </HoverCardTrigger>
-      <HoverCardContent side="left" sideOffset={8} className="w-80 max-h-96 overflow-y-auto">
-        <div className="mb-2 flex items-center gap-2">
-          <HistoryEventIcon eventType={event.eventType} size={14} />
-          <span className="text-xs font-medium">{getEventTypeLabel(event.eventType)}</span>
+    <div className="space-y-1.5">
+      {structuredDetails.map(({ key, value }) => (
+        <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+          <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
+          <span className="break-all text-foreground">{formatValue(value)}</span>
         </div>
-        <div className="space-y-1.5">
-          {structuredDetails.map(({ key, value }) => (
-            <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-              <span className="text-muted-foreground whitespace-nowrap">{formatKey(key)}</span>
-              <span className="break-all text-foreground">{formatValue(value)}</span>
-            </div>
-          ))}
-          {rawDetails.map(([key, value]) => (
-            <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-              <span className="text-muted-foreground whitespace-nowrap">{formatKey(key)}</span>
-              <span className="break-all text-foreground">{formatValue(value)}</span>
-            </div>
-          ))}
+      ))}
+      {rawDetails.map(([key, value]) => (
+        <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+          <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
+          <span className="break-all text-foreground">{formatValue(value)}</span>
         </div>
-      </HoverCardContent>
-    </HoverCard>
+      ))}
+    </div>
   );
 }

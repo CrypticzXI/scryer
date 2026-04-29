@@ -64,6 +64,8 @@ export const router = createBrowserRouter(
         { path: "/wanted/wanted-items", element: <ShellRoute /> },
         { path: "/wanted/cutoff-unmet", element: <ShellRoute /> },
         { path: "/wanted/pending", element: <ShellRoute /> },
+        { path: "/wanted/history", element: <ShellRoute /> },
+        { path: "/history", element: <ShellRoute /> },
         { path: "/settings", element: <ShellRoute /> },
         { path: "/settings/profile", element: <ShellRoute /> },
         { path: "/settings/indexers", element: <ShellRoute /> },

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { ActivitySquare, CalendarDays, Download, History, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
+import { ActivitySquare, CalendarDays, Download, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/hooks/use-auth";
 
@@ -97,8 +97,8 @@ const CalendarContainer = lazy(() =>
   import("@/components/containers/calendar-container").then((m) => ({ default: m.CalendarContainer })),
 );
 
-const ImportHistoryContainer = lazy(() =>
-  import("@/components/containers/import-history-container").then((m) => ({ default: m.ImportHistoryContainer })),
+const WantedHistoryContainer = lazy(() =>
+  import("@/components/containers/title-history-container").then((m) => ({ default: m.TitleHistoryContainer })),
 );
 
 const PendingImportsContainer = lazy(() =>
@@ -218,10 +218,13 @@ function MainContent({
     return <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />;
   }
   if (view === "wanted") {
+    if (wantedSection === "history") {
+      return <WantedHistoryContainer key="wanted-history" />;
+    }
     return <WantedContainer key={`wanted-${wantedSection}`} wantedSection={wantedSection} />;
   }
   if (view === "history") {
-    return <ImportHistoryContainer key="history" />;
+    return <WantedHistoryContainer key="history" />;
   }
   if (view === "system") {
     return <SystemContainer key={`system-${systemSection}`} systemSection={systemSection} />;
@@ -390,6 +393,21 @@ function AuthenticatedHomePage({
     if (!isMediaView(view) || contentSettingsSection !== "overview" || parsedOverviewSlug) return null;
     return searchParams.get("id")?.trim() || null;
   }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
+
+  useEffect(() => {
+    if (view !== "history") {
+      return;
+    }
+
+    const nextPath = buildViewPath("wanted", undefined, undefined, undefined, "history");
+    const nextQuery = searchParams.toString();
+    const nextPathWithQuery = `${nextPath}${nextQuery ? `?${nextQuery}` : ""}`;
+    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+
+    if (nextPathWithQuery !== currentPathWithQuery) {
+      navigate(nextPathWithQuery, { replace: true });
+    }
+  }, [navigate, pathname, searchParams, view]);
 
   const navigationOverviewTarget = useMemo(
     () => readOverviewTargetFromLocationState(location.state, view, parsedOverviewSlug),
@@ -783,7 +801,6 @@ function AuthenticatedHomePage({
       { id: "activity" as ViewId, label: t("nav.activity"), icon: ActivitySquare },
       { id: "calendar" as ViewId, label: t("nav.calendar"), icon: CalendarDays },
       { id: "wanted" as ViewId, label: t("nav.wanted"), icon: ListChecks },
-      { id: "history" as ViewId, label: t("nav.history"), icon: History },
       { id: "settings" as ViewId, label: t("nav.settings"), icon: Settings },
       { id: "system" as ViewId, label: t("nav.system"), icon: MonitorCog },
     ],

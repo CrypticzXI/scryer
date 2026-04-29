@@ -1102,10 +1102,12 @@ impl AppUseCase {
                     .map(|title| crate::domain_events::title_context_snapshot(&title)),
                 None => None,
             };
-            let reason = result
-                .error_message
-                .clone()
-                .or_else(|| result.skip_reason.map(|reason| reason.as_str().to_string()));
+            let reason = result.error_message.clone().or_else(|| {
+                result
+                    .skip_reason
+                    .as_ref()
+                    .map(|reason| reason.as_str().to_string())
+            });
 
             let event = if let Some(title_id) = result.title_id.as_ref() {
                 let facet = title.as_ref().map(|snapshot| snapshot.facet.clone());
@@ -1125,9 +1127,16 @@ impl AppUseCase {
                         scryer_domain::ImportRejectedEventData {
                             title,
                             status,
+                            import_id: Some(result.import_id.clone()),
+                            source_system: result.source_system.clone(),
+                            source_ref: result.source_ref.clone(),
+                            source_title: result.source_title.clone(),
                             source_path: Some(result.source_path.clone()),
+                            dest_path: result.dest_path.clone(),
+                            quality: result.quality.clone(),
                             reason,
-                            episode_ids: Vec::new(),
+                            skip_reason: result.skip_reason.clone(),
+                            episode_ids: result.episode_ids.clone(),
                         },
                     ),
                 }
@@ -1138,9 +1147,16 @@ impl AppUseCase {
                         scryer_domain::ImportRejectedEventData {
                             title: None,
                             status,
+                            import_id: Some(result.import_id.clone()),
+                            source_system: result.source_system.clone(),
+                            source_ref: result.source_ref.clone(),
+                            source_title: result.source_title.clone(),
                             source_path: Some(result.source_path.clone()),
+                            dest_path: result.dest_path.clone(),
+                            quality: result.quality.clone(),
                             reason,
-                            episode_ids: Vec::new(),
+                            skip_reason: result.skip_reason.clone(),
+                            episode_ids: result.episode_ids.clone(),
                         },
                     ),
                 )
@@ -1507,5 +1523,33 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[tokio::test]
+    async fn acquire_scope_serializes_overlapping_scopes_for_same_title() {
+        let guards = DownloadSubmissionGuardTable::default();
+        let title_guard = guards.acquire_scope("title-1", &SubmissionScope::Title).await;
+
+        let guards_clone = guards.clone();
+        let waiting_guard = tokio::spawn(async move {
+            guards_clone
+                .acquire_scope(
+                    "title-1",
+                    &SubmissionScope::Episode {
+                        episode_id: "episode-1".to_string(),
+                    },
+                )
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!waiting_guard.is_finished());
+
+        drop(title_guard);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting_guard)
+            .await
+            .expect("overlapping scope guard should acquire after release")
+            .expect("scope task should complete");
     }
 }

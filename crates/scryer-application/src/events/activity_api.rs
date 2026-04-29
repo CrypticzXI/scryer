@@ -5,7 +5,7 @@ use crate::domain_events::{
 };
 use crate::event_views::{
     activity_event_from_domain_event, history_event_from_domain_event,
-    title_history_records_from_domain_event,
+    title_history_record_from_domain_event, title_history_records_from_domain_event,
 };
 use crate::events::retention::user_facing_domain_event_types;
 use scryer_domain::{
@@ -17,6 +17,7 @@ use scryer_domain::{
     PostProcessingResult, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
     TitleUpdatedEventData,
 };
+use std::collections::HashSet;
 async fn load_recent_projected_domain_events<T, F>(
     app: &AppUseCase,
     mut filter: DomainEventFilter,
@@ -120,11 +121,76 @@ async fn project_title_history_page(
     // Title and episode history are projected exclusively from durable domain events.
     // The legacy `title_history` table is deprecated compatibility state and must not
     // be used for live reads or writes.
+    let matched_title_ids = resolve_title_history_title_ids(app, filter).await?;
+    if filter.title_search.is_some() && matched_title_ids.is_empty() {
+        return Ok(TitleHistoryPage {
+            records: Vec::new(),
+            total_count: 0,
+        });
+    }
+    let effective_title_ids = match (&filter.title_ids, filter.title_search.as_ref()) {
+        (Some(_), Some(_)) | (None, Some(_)) => Some(matched_title_ids.clone()),
+        (Some(title_ids), None) => Some(title_ids.clone()),
+        (None, None) => None,
+    };
+    if effective_title_ids
+        .as_ref()
+        .is_some_and(|title_ids| title_ids.is_empty())
+    {
+        return Ok(TitleHistoryPage {
+            records: Vec::new(),
+            total_count: 0,
+        });
+    }
+
+    if filter.group_by_event && episode_id.is_none() {
+        let limit = filter.limit.max(1);
+        let total_count = app
+            .services
+            .events
+            .domain_events
+            .count_title_history_page_events(
+                filter.event_types.as_deref(),
+                effective_title_ids.as_deref(),
+                filter.download_id.as_deref(),
+            )
+            .await?;
+        if total_count == 0 {
+            return Ok(TitleHistoryPage {
+                records: Vec::new(),
+                total_count: 0,
+            });
+        }
+
+        let page_events = app
+            .services
+            .events
+            .domain_events
+            .list_title_history_page_events(
+                filter.event_types.as_deref(),
+                effective_title_ids.as_deref(),
+                filter.download_id.as_deref(),
+                limit,
+                filter.offset,
+            )
+            .await?;
+        let mut records = page_events
+            .iter()
+            .filter_map(title_history_record_from_domain_event)
+            .collect::<Vec<_>>();
+        hydrate_title_history_record_contexts(app, &mut records).await?;
+        return Ok(TitleHistoryPage {
+            records,
+            total_count,
+        });
+    }
+
     let mut domain_filter = DomainEventFilter {
         title_id: filter
             .title_ids
             .as_ref()
-            .and_then(|title_ids| (title_ids.len() == 1).then(|| title_ids[0].clone())),
+            .and_then(|title_ids| (title_ids.len() == 1).then(|| title_ids[0].clone()))
+            .or_else(|| (matched_title_ids.len() == 1).then(|| matched_title_ids[0].clone())),
         event_types: Some(TITLE_HISTORY_DOMAIN_EVENT_TYPES.to_vec()),
         ..DomainEventFilter::default()
     };
@@ -150,7 +216,18 @@ async fn project_title_history_page(
 
         before_sequence = batch.last().map(|event| event.sequence);
         for event in &batch {
-            for record in title_history_records_from_domain_event(event) {
+            let event_records = if filter.group_by_event {
+                crate::event_views::title_history_record_from_domain_event(event)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                title_history_records_from_domain_event(event)
+            };
+
+            for record in event_records {
+                if !matched_title_ids.is_empty() && !matched_title_ids.contains(&record.title_id) {
+                    continue;
+                }
                 if !title_history_record_matches(&record, filter, episode_id) {
                     continue;
                 }
@@ -168,10 +245,75 @@ async fn project_title_history_page(
         }
     }
 
+    hydrate_title_history_record_contexts(app, &mut records).await?;
+
     Ok(TitleHistoryPage {
         records,
         total_count,
     })
+}
+
+async fn resolve_title_history_title_ids(
+    app: &AppUseCase,
+    filter: &TitleHistoryFilter,
+) -> AppResult<Vec<String>> {
+    let search_ids = if let Some(search) = filter.title_search.as_deref() {
+        app.services
+            .catalog
+            .titles
+            .list(None, Some(search.to_string()))
+            .await?
+            .into_iter()
+            .map(|title| title.id)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    Ok(match (&filter.title_ids, filter.title_search.as_ref()) {
+        (Some(title_ids), Some(_)) => {
+            let search_set = search_ids.iter().cloned().collect::<HashSet<_>>();
+            title_ids
+                .iter()
+                .filter(|title_id| search_set.contains(*title_id))
+                .cloned()
+                .collect()
+        }
+        (Some(title_ids), None) => title_ids.clone(),
+        (None, Some(_)) => search_ids,
+        (None, None) => Vec::new(),
+    })
+}
+
+async fn hydrate_title_history_record_contexts(
+    app: &AppUseCase,
+    records: &mut [TitleHistoryRecord],
+) -> AppResult<()> {
+    let missing_title_ids = records
+        .iter()
+        .filter(|record| record.title_name.is_none() || record.facet.is_none())
+        .map(|record| record.title_id.clone())
+        .collect::<HashSet<_>>();
+
+    for title_id in missing_title_ids {
+        let Some(title) = app.services.catalog.titles.get_by_id(&title_id).await? else {
+            continue;
+        };
+
+        for record in records
+            .iter_mut()
+            .filter(|record| record.title_id == title_id)
+        {
+            if record.title_name.is_none() {
+                record.title_name = Some(title.name.clone());
+            }
+            if record.facet.is_none() {
+                record.facet = Some(title.facet.clone());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn project_episode_title_history(
@@ -805,7 +947,9 @@ impl AppUseCase {
             &TitleHistoryFilter {
                 event_types: event_types.map(|types| types.to_vec()),
                 title_ids: Some(vec![title_id.to_string()]),
+                title_search: None,
                 download_id: None,
+                group_by_event: false,
                 limit,
                 offset,
             },

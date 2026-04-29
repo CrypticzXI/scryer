@@ -9,9 +9,9 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     ConfigurationChangeAction, DomainEvent, DomainEventPayload, DownloadQueueItemRemovedEventData,
     DownloadQueueItemUpsertedEventData, DownloadQueueState, EventType, HistoryEvent,
-    ImportRejectedEventData, ImportStatus, JobNextRunUpdatedEventData, MediaFacet,
-    MediaFileDeletedReason, MetadataHydrationState, PostProcessingResult, TitleHistoryEventType,
-    TitleHistoryRecord,
+    ImportRejectedEventData, ImportSkipReason, ImportStatus, JobNextRunUpdatedEventData,
+    MediaFacet, MediaFileDeletedReason, MetadataHydrationState, PostProcessingResult,
+    TitleHistoryEventType, TitleHistoryRecord,
 };
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -256,90 +256,218 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
 pub(crate) fn title_history_records_from_domain_event(
     event: &DomainEvent,
 ) -> Vec<TitleHistoryRecord> {
-    let Some(title_id) = event.title_id.clone() else {
+    let Some(base_record) = title_history_record_from_domain_event(event) else {
         return Vec::new();
     };
 
+    if base_record.episode_ids.is_empty() {
+        return vec![base_record];
+    }
+
+    base_record
+        .episode_ids
+        .iter()
+        .cloned()
+        .map(|episode_id| {
+            let mut record = base_record.clone();
+            record.episode_id = Some(episode_id);
+            record
+        })
+        .collect()
+}
+
+pub(crate) fn title_history_record_from_domain_event(
+    event: &DomainEvent,
+) -> Option<TitleHistoryRecord> {
+    let Some(title_id) = event.title_id.clone() else {
+        return None;
+    };
+
     let (
+        title_name,
+        facet,
         event_type,
         source_title,
+        display_title,
+        source_system,
+        source_ref,
+        source_hint,
         quality,
         download_id,
         client_id,
         client_name,
+        import_id,
+        skip_reason,
+        retry_requires_password,
         failure_reason,
         blocklist_reason,
+        source_path,
+        dest_path,
     ) = match &event.payload {
         DomainEventPayload::ReleaseGrabbed(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
             TitleHistoryEventType::Grabbed,
             data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_hint.clone()),
+            None,
+            None,
+            data.source_hint.clone(),
             None,
             data.download_id.clone(),
+            None,
+            None,
+            None,
+            None,
+            false,
             None,
             None,
             None,
             None,
         ),
         DomainEventPayload::DownloadFailed(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
             TitleHistoryEventType::DownloadFailed,
             data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_hint.clone()),
+            None,
+            None,
+            data.source_hint.clone(),
             data.quality.clone(),
             data.download_id.clone(),
             data.client_id.clone(),
             data.client_name.clone(),
+            None,
+            None,
+            false,
             data.reason.clone(),
+            None,
+            None,
             None,
         ),
         DomainEventPayload::ReleaseBlocklisted(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
             TitleHistoryEventType::Blocklisted,
             data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_hint.clone()),
+            None,
+            None,
+            data.source_hint.clone(),
             data.quality.clone(),
             data.download_id.clone(),
             data.client_id.clone(),
             data.client_name.clone(),
             None,
+            None,
+            false,
+            None,
             data.reason.clone(),
+            None,
+            None,
         ),
         DomainEventPayload::ImportCompleted(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
             TitleHistoryEventType::Imported,
-            (data.media_updates.len() == 1)
-                .then(|| data.media_updates.first().map(|update| update.path.clone()))
-                .flatten(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_path.clone())
+                .or_else(|| {
+                    (data.media_updates.len() == 1)
+                        .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                        .flatten()
+                }),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_path.clone())
+                .or_else(|| data.dest_path.clone()),
+            data.source_system.clone(),
+            data.source_ref.clone(),
+            None,
+            data.quality.clone(),
             None,
             None,
             None,
+            data.import_id.clone(),
+            None,
+            false,
             None,
             None,
-            None,
+            data.source_path.clone(),
+            data.dest_path.clone(),
         ),
         DomainEventPayload::ImportRejected(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
             match data.status {
                 ImportStatus::Failed => TitleHistoryEventType::ImportFailed,
                 ImportStatus::Skipped => TitleHistoryEventType::ImportSkipped,
-                _ => return Vec::new(),
+                _ => return None,
             },
+            data.source_title
+                .clone()
+                .or_else(|| data.source_path.clone()),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_path.clone())
+                .or_else(|| data.dest_path.clone()),
+            data.source_system.clone(),
+            data.source_ref.clone(),
+            None,
+            data.quality.clone(),
+            None,
+            None,
+            None,
+            data.import_id.clone(),
+            data.skip_reason
+                .as_ref()
+                .map(|reason| reason.as_str().to_string()),
+            data.skip_reason == Some(ImportSkipReason::PasswordRequired),
+            data.reason.clone(),
+            None,
             data.source_path.clone(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            data.dest_path.clone(),
         ),
         DomainEventPayload::MediaFileDeleted(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
             TitleHistoryEventType::FileDeleted,
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
             None,
             None,
             None,
             None,
         ),
         DomainEventPayload::MediaFileRenamed(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
             TitleHistoryEventType::FileRenamed,
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
@@ -349,8 +477,18 @@ pub(crate) fn title_history_records_from_domain_event(
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
         ),
         DomainEventPayload::TitleRematched(_) => (
+            None,
+            event.facet.clone(),
             TitleHistoryEventType::Rematched,
             None,
             None,
@@ -359,11 +497,18 @@ pub(crate) fn title_history_records_from_domain_event(
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
         ),
-        DomainEventPayload::TitleUpdated(_) => {
-            return Vec::new();
-        }
-        _ => return Vec::new(),
+        DomainEventPayload::TitleUpdated(_) => return None,
+        _ => return None,
     };
 
     let data_json = match &event.payload {
@@ -372,46 +517,36 @@ pub(crate) fn title_history_records_from_domain_event(
     };
     let episode_ids = event_episode_ids(event);
     let collection_id = event_collection_id(event);
-    if episode_ids.is_empty() {
-        return vec![TitleHistoryRecord {
-            id: event.event_id.clone(),
-            title_id,
-            episode_id: None,
-            collection_id,
-            event_type,
-            source_title,
-            quality,
-            download_id,
-            client_id,
-            client_name,
-            failure_reason,
-            blocklist_reason,
-            data_json,
-            occurred_at: event.occurred_at.to_rfc3339(),
-            created_at: event.occurred_at.to_rfc3339(),
-        }];
-    }
 
-    episode_ids
-        .into_iter()
-        .map(|episode_id| TitleHistoryRecord {
-            id: event.event_id.clone(),
-            title_id: title_id.clone(),
-            episode_id: Some(episode_id),
-            collection_id: collection_id.clone(),
-            event_type,
-            source_title: source_title.clone(),
-            quality: quality.clone(),
-            download_id: download_id.clone(),
-            client_id: client_id.clone(),
-            client_name: client_name.clone(),
-            failure_reason: failure_reason.clone(),
-            blocklist_reason: blocklist_reason.clone(),
-            data_json: data_json.clone(),
-            occurred_at: event.occurred_at.to_rfc3339(),
-            created_at: event.occurred_at.to_rfc3339(),
-        })
-        .collect()
+    Some(TitleHistoryRecord {
+        id: event.event_id.clone(),
+        title_id,
+        title_name,
+        facet,
+        episode_id: None,
+        episode_ids,
+        collection_id,
+        event_type,
+        source_title,
+        display_title,
+        source_system,
+        source_ref,
+        source_hint,
+        quality,
+        download_id,
+        client_id,
+        client_name,
+        import_id,
+        skip_reason,
+        retry_requires_password,
+        failure_reason,
+        blocklist_reason,
+        source_path,
+        dest_path,
+        data_json,
+        occurred_at: event.occurred_at.to_rfc3339(),
+        created_at: event.occurred_at.to_rfc3339(),
+    })
 }
 
 pub(crate) fn history_event_from_domain_event(event: &DomainEvent) -> Option<HistoryEvent> {
@@ -986,6 +1121,13 @@ mod tests {
                         update_type: MediaUpdateType::Created,
                     }],
                     imported_count: 1,
+                    import_id: None,
+                    source_system: None,
+                    source_ref: None,
+                    source_title: Some("Example.S01E01.1080p".to_string()),
+                    source_path: Some("/downloads/Example.S01E01.1080p.mkv".to_string()),
+                    dest_path: Some("/data/old.mkv".to_string()),
+                    quality: Some("1080p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
                 }),
             ),
@@ -999,6 +1141,13 @@ mod tests {
                         update_type: MediaUpdateType::Created,
                     }],
                     imported_count: 1,
+                    import_id: None,
+                    source_system: None,
+                    source_ref: None,
+                    source_title: Some("Example.S01E01.2160p".to_string()),
+                    source_path: Some("/downloads/Example.S01E01.2160p.mkv".to_string()),
+                    dest_path: Some("/data/new.mkv".to_string()),
+                    quality: Some("2160p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
                 }),
             ),
@@ -1007,8 +1156,14 @@ mod tests {
         let records = title_history_records_for_episode_from_domain_events(&events, "ep-1", 10);
 
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].source_title.as_deref(), Some("/data/new.mkv"));
-        assert_eq!(records[1].source_title.as_deref(), Some("/data/old.mkv"));
+        assert_eq!(
+            records[0].source_title.as_deref(),
+            Some("Example.S01E01.2160p")
+        );
+        assert_eq!(
+            records[1].source_title.as_deref(),
+            Some("Example.S01E01.1080p")
+        );
     }
 
     #[test]

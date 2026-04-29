@@ -642,13 +642,25 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setSearchMonitoredLoading(true);
     try {
-      const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
-        input: { titleId: title.id },
-      }).toPromise();
-      if (error) throw error;
+      const payload = await retryWithReplaceOnConflict(
+        { titleId: title.id },
+        async (input) => {
+          const { data, error } = await client.mutation(triggerTitleWantedSearchMutation, {
+            input,
+          }).toPromise();
+          if (error) throw error;
+          return data?.triggerTitleWantedSearch;
+        },
+        "A monitored title search is already in progress for this title.",
+        confirmReplaceConflict,
+      );
+      assertNoReplaceConflict(
+        payload,
+        "A monitored title search is already in progress for this title.",
+      );
 
-      const queued = data?.triggerTitleWantedSearch?.queuedCount ?? 0;
-      const skipped = data?.triggerTitleWantedSearch?.skippedInProgressCount ?? 0;
+      const queued = payload?.queuedCount ?? 0;
+      const skipped = payload?.skippedInProgressCount ?? 0;
       const baseStatus =
         queued > 0
           ? t("status.searchMonitoredQueued", { count: queued })
@@ -663,7 +675,14 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     } finally {
       setSearchMonitoredLoading(false);
     }
-  }, [client, hasDownloadClients, setGlobalStatus, t, title]);
+  }, [
+    client,
+    confirmReplaceConflict,
+    hasDownloadClients,
+    setGlobalStatus,
+    t,
+    title,
+  ]);
 
   const handleDeleteMediaFile = React.useCallback((fileId: string) => {
     const nextFile =

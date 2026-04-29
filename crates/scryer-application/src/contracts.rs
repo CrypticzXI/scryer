@@ -520,7 +520,9 @@ pub struct InsertMediaFileInput {
 pub struct TitleHistoryFilter {
     pub event_types: Option<Vec<TitleHistoryEventType>>,
     pub title_ids: Option<Vec<String>>,
+    pub title_search: Option<String>,
     pub download_id: Option<String>,
+    pub group_by_event: bool,
     pub limit: usize,
     pub offset: usize,
 }

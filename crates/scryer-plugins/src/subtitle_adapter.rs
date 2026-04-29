@@ -15,15 +15,16 @@ use scryer_application::{
     SubtitleProviderValidationResult, parse_release_metadata,
 };
 use scryer_domain::{PluginHostBindingId, SubtitleProviderConfig};
-use tracing::warn;
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
 use crate::types::{
-    PluginDescriptor, SubtitleMatchHint, SubtitleMatchHintKind, SubtitlePluginCandidate,
-    SubtitlePluginDownloadRequest, SubtitlePluginDownloadResponse, SubtitlePluginGenerateRequest,
-    SubtitlePluginGenerateResponse, SubtitlePluginSearchRequest, SubtitlePluginSearchResponse,
-    SubtitlePluginValidateConfigRequest, SubtitlePluginValidateConfigResponse,
-    SubtitleProviderMode, SubtitleQueryMediaKind, SubtitleValidateConfigStatus,
+    EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH,
+    EXPORT_VALIDATE_CONFIG, PluginDescriptor, SubtitleMatchHint, SubtitleMatchHintKind,
+    SubtitlePluginCandidate, SubtitlePluginDownloadRequest, SubtitlePluginDownloadResponse,
+    SubtitlePluginGenerateRequest, SubtitlePluginGenerateResponse, SubtitlePluginSearchRequest,
+    SubtitlePluginSearchResponse, SubtitlePluginValidateConfigRequest,
+    SubtitlePluginValidateConfigResponse, SubtitleProviderMode, SubtitleQueryMediaKind,
+    SubtitleValidateConfigStatus, decode_plugin_result, host_binding_to_domain,
 };
 
 const GENERATOR_MAX_INPUT_SIZE_BYTES: i64 = 512 * 1024 * 1024;
@@ -137,27 +138,19 @@ impl SubtitleProviderClient for WasmSubtitleClient {
         })?;
 
         let plugin = Arc::clone(&self.plugin);
-        let provider_name = self.provider_name.clone();
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>("search_subtitles", &input)
-                .map_err(|error| plugin_call_error("search_subtitles()", error))
+                .call::<&str, String>(EXPORT_SUBTITLE_SEARCH, &input)
+                .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_SEARCH}()"), error))
         })
         .await
         .map_err(|error| AppError::Repository(format!("plugin task panicked: {error}")))??;
 
         let response: SubtitlePluginSearchResponse =
-            serde_json::from_str(&output).map_err(|error| {
-                warn!(
-                    provider = provider_name.as_str(),
-                    error = %error,
-                    "subtitle plugin returned invalid search JSON"
-                );
-                AppError::Repository(format!("subtitle plugin returned invalid JSON: {error}"))
-            })?;
+            decode_plugin_result(&output, EXPORT_SUBTITLE_SEARCH)?;
 
         let mut results = response
             .results
@@ -183,27 +176,19 @@ impl SubtitleProviderClient for WasmSubtitleClient {
         })?;
 
         let plugin = Arc::clone(&self.plugin);
-        let provider_name = self.provider_name.clone();
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>("download_subtitle", &input)
-                .map_err(|error| plugin_call_error("download_subtitle()", error))
+                .call::<&str, String>(EXPORT_SUBTITLE_DOWNLOAD, &input)
+                .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_DOWNLOAD}()"), error))
         })
         .await
         .map_err(|error| AppError::Repository(format!("plugin task panicked: {error}")))??;
 
         let response: SubtitlePluginDownloadResponse =
-            serde_json::from_str(&output).map_err(|error| {
-                warn!(
-                    provider = provider_name.as_str(),
-                    error = %error,
-                    "subtitle plugin returned invalid download JSON"
-                );
-                AppError::Repository(format!("subtitle plugin returned invalid JSON: {error}"))
-            })?;
+            decode_plugin_result(&output, EXPORT_SUBTITLE_DOWNLOAD)?;
 
         Ok(SubtitleFile {
             content: BASE64.decode(response.content_base64).map_err(|error| {
@@ -232,27 +217,19 @@ impl SubtitleProviderClient for WasmSubtitleClient {
         })?;
 
         let plugin = Arc::clone(&self.plugin);
-        let provider_name = self.provider_name.clone();
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|error| AppError::Repository(format!("plugin mutex poisoned: {error}")))?;
             guard
-                .call::<&str, String>("validate_config", &input)
-                .map_err(|error| plugin_call_error("validate_config()", error))
+                .call::<&str, String>(EXPORT_VALIDATE_CONFIG, &input)
+                .map_err(|error| plugin_call_error(&format!("{EXPORT_VALIDATE_CONFIG}()"), error))
         })
         .await
         .map_err(|error| AppError::Repository(format!("plugin task panicked: {error}")))??;
 
-        let response: SubtitlePluginValidateConfigResponse = serde_json::from_str(&output)
-            .map_err(|error| {
-                warn!(
-                    provider = provider_name.as_str(),
-                    error = %error,
-                    "subtitle plugin returned invalid validate JSON"
-                );
-                AppError::Repository(format!("subtitle plugin returned invalid JSON: {error}"))
-            })?;
+        let response: SubtitlePluginValidateConfigResponse =
+            decode_plugin_result(&output, EXPORT_VALIDATE_CONFIG)?;
 
         Ok(SubtitleProviderValidationResult {
             status: subtitle_validate_status_string(response.status),
@@ -266,13 +243,13 @@ impl SubtitleProviderClient for WasmSubtitleClient {
             return Err(self.missing_host_binding_error());
         }
 
-        let Some(capabilities) = self.descriptor.subtitle_capabilities.as_ref() else {
+        let Some(subtitle) = self.descriptor.subtitle() else {
             return Err(AppError::Repository(format!(
                 "subtitle provider '{}' does not declare subtitle capabilities",
                 self.provider_name
             )));
         };
-        if capabilities.mode != SubtitleProviderMode::Generator {
+        if subtitle.capabilities.mode != SubtitleProviderMode::Generator {
             return Err(AppError::Repository(format!(
                 "subtitle provider '{}' does not support subtitle generation",
                 self.provider_name
@@ -320,7 +297,6 @@ impl SubtitleProviderClient for WasmSubtitleClient {
             ))
         })?;
 
-        let provider_name = self.provider_name.clone();
         let output = tokio::task::spawn_blocking(move || {
             let mut plugin = build_plugin(manifest).map_err(|error| {
                 AppError::Repository(format!(
@@ -328,21 +304,14 @@ impl SubtitleProviderClient for WasmSubtitleClient {
                 ))
             })?;
             plugin
-                .call::<&str, String>("generate_subtitle", &input)
-                .map_err(|error| plugin_call_error("generate_subtitle()", error))
+                .call::<&str, String>(EXPORT_SUBTITLE_GENERATE, &input)
+                .map_err(|error| plugin_call_error(&format!("{EXPORT_SUBTITLE_GENERATE}()"), error))
         })
         .await
         .map_err(|error| AppError::Repository(format!("plugin task panicked: {error}")))??;
 
         let response: SubtitlePluginGenerateResponse =
-            serde_json::from_str(&output).map_err(|error| {
-                warn!(
-                    provider = provider_name.as_str(),
-                    error = %error,
-                    "subtitle plugin returned invalid generate JSON"
-                );
-                AppError::Repository(format!("subtitle plugin returned invalid JSON: {error}"))
-            })?;
+            decode_plugin_result(&output, EXPORT_SUBTITLE_GENERATE)?;
 
         Ok(SubtitleFile {
             content: BASE64.decode(response.content_base64).map_err(|error| {
@@ -385,9 +354,9 @@ fn build_subtitle_manifest(
         }
     }
 
-    for field in &descriptor.config_fields {
+    for field in descriptor.config_fields() {
         if let Some(binding) = field.host_binding
-            && let Some(value) = host_bindings.get(&binding)
+            && let Some(value) = host_bindings.get(&host_binding_to_domain(binding))
         {
             manifest = manifest.with_config_key(field.key.clone(), value.clone());
         }
@@ -406,14 +375,15 @@ fn missing_host_bindings(
 ) -> Vec<PluginHostBindingId> {
     let mut seen = HashSet::new();
     let mut missing = Vec::new();
-    for field in &descriptor.config_fields {
+    for field in descriptor.config_fields() {
         let Some(binding) = field.host_binding else {
             continue;
         };
-        if host_bindings.contains_key(&binding) || !seen.insert(binding) {
+        let domain_binding = host_binding_to_domain(binding);
+        if host_bindings.contains_key(&domain_binding) || !seen.insert(domain_binding) {
             continue;
         }
-        missing.push(binding);
+        missing.push(domain_binding);
     }
     missing
 }

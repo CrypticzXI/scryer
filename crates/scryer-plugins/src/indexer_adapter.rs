@@ -3,13 +3,15 @@ use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerRoutingPlan,
     IndexerSearchResponse, IndexerSearchResult, SearchMode,
 };
-use scryer_domain::IndexerConfig;
-use scryer_domain::TaggedAlias;
+use scryer_domain::{IndexerConfig, TaggedAlias};
 use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
-use crate::types::{PluginDescriptor, PluginSearchRequest, PluginSearchResponse};
+use crate::types::{
+    EXPORT_INDEXER_SEARCH, PluginDescriptor, PluginSearchRequest, PluginSearchResponse,
+    decode_plugin_result, tagged_alias_to_sdk,
+};
 
 /// Wrapper to allow `extism::Plugin` inside `Send + Sync` structs.
 ///
@@ -121,7 +123,10 @@ impl IndexerClient for WasmIndexerClient {
             season,
             episode,
             absolute_episode,
-            tagged_aliases,
+            tagged_aliases: tagged_aliases
+                .into_iter()
+                .map(tagged_alias_to_sdk)
+                .collect(),
         };
 
         let input = serde_json::to_string(&request).map_err(|e| {
@@ -142,8 +147,10 @@ impl IndexerClient for WasmIndexerClient {
             let start = std::time::Instant::now();
             let result = guard
                 .0
-                .call::<&str, String>("search", &input)
-                .map_err(|e| AppError::Repository(format!("plugin search() failed: {e}")));
+                .call::<&str, String>(EXPORT_INDEXER_SEARCH, &input)
+                .map_err(|e| {
+                    AppError::Repository(format!("plugin {EXPORT_INDEXER_SEARCH}() failed: {e}"))
+                });
             let elapsed = start.elapsed();
 
             tracing::debug!(
@@ -158,46 +165,22 @@ impl IndexerClient for WasmIndexerClient {
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let response: PluginSearchResponse = serde_json::from_str(&output).map_err(|e| {
-            warn!(
-                plugin = self.descriptor.name.as_str(),
-                indexer = self.indexer_name.as_str(),
-                error = %e,
-                "plugin returned invalid search response JSON"
-            );
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let response: PluginSearchResponse = decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)?;
 
-        let source = format!("{} ({})", self.indexer_name, self.descriptor.provider_type);
+        let source = format!(
+            "{} ({})",
+            self.indexer_name,
+            self.descriptor.provider_type()
+        );
         let results = response
             .results
             .into_iter()
             .map(|r| {
-                let thumbs_up = r
-                    .extra
-                    .get("thumbs_up")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32);
-                let thumbs_down = r
-                    .extra
-                    .get("thumbs_down")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32);
-                let subtitles: Option<Vec<String>> = r
-                    .extra
-                    .get("subtitles")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let password_protected = r
-                    .extra
-                    .get("password")
-                    .or_else(|| r.extra.get("password_protected"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
                 let source_kind = DownloadSourceKind::infer_from_indexer_result(
-                    Some(&self.descriptor.plugin_type),
+                    Some(self.descriptor.plugin_type()),
                     r.download_url.as_deref(),
                     r.link.as_deref(),
-                    &r.extra,
+                    &r.provider_extra,
                 );
 
                 IndexerSearchResult {
@@ -208,20 +191,24 @@ impl IndexerClient for WasmIndexerClient {
                     source_kind,
                     size_bytes: r.size_bytes,
                     published_at: r.published_at,
-                    thumbs_up,
-                    thumbs_down,
+                    thumbs_up: r.thumbs_up,
+                    thumbs_down: r.thumbs_down,
                     indexer_languages: if r.languages.is_empty() {
                         None
                     } else {
                         Some(r.languages)
                     },
-                    indexer_subtitles: subtitles,
+                    indexer_subtitles: if r.subtitles.is_empty() {
+                        None
+                    } else {
+                        Some(r.subtitles)
+                    },
                     indexer_grabs: r.grabs,
-                    password_hint: password_protected,
+                    password_hint: r.password_hint,
                     candidate_token: None,
                     parsed_release_metadata: None,
                     quality_profile_decision: None,
-                    extra: r.extra,
+                    extra: r.provider_extra,
                     guid: r.guid,
                     info_url: r.info_url,
                     provenance: None,

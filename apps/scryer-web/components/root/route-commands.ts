@@ -5,7 +5,6 @@ import {
   CalendarDays,
   Captions,
   FolderCog,
-  History,
   MonitorCog,
   Puzzle,
   Search,
@@ -165,6 +164,14 @@ export function buildRouteCommands({
       onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
     },
     {
+      id: "wanted-history",
+      label: `${t("nav.wanted")} / ${t("history.title")}`,
+      description: t("history.title"),
+      keywords: ["wanted", "history", "imports", "downloads", "blocklist", "failures"],
+      icon: ActivitySquare,
+      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "history"),
+    },
+    {
       id: "activity-overview",
       label: `${t("nav.activity")} / ${t("activity.activity")}`,
       description: t("activity.activity"),
@@ -197,14 +204,6 @@ export function buildRouteCommands({
       keywords: ["calendar", "episodes", "airing", "schedule", "upcoming"],
       icon: CalendarDays,
       onSelect: buildNavigate(onNavigate, "calendar"),
-    },
-    {
-      id: "history",
-      label: t("nav.history"),
-      description: t("nav.history"),
-      keywords: ["history", "imports", "import", "log", "records"],
-      icon: History,
-      onSelect: buildNavigate(onNavigate, "history"),
     },
     {
       id: "settings-general",

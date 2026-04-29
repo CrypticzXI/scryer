@@ -6,6 +6,10 @@ pub const NZBGEEK_WASM: &[u8] = include_bytes!("../builtins/nzbgeek_indexer.wasm
 /// protocol for compatible indexers.
 pub const NEWZNAB_WASM: &[u8] = include_bytes!("../builtins/newznab_indexer.wasm");
 
+/// Built-in DogNZB indexer WASM plugin. Handles DogNZB-specific metadata and
+/// the Newznab protocol.
+pub const DOGNZB_WASM: &[u8] = include_bytes!("../builtins/dognzb_indexer.wasm");
+
 /// Built-in AnimeTosho indexer WASM plugin. Searches via AniDB ID + freetext
 /// against the AnimeTosho JSON API.
 pub const ANIMETOSHO_WASM: &[u8] = include_bytes!("../builtins/animetosho_indexer.wasm");

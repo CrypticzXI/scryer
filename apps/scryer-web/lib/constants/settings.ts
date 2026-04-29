@@ -136,6 +136,7 @@ export const WANTED_SECTION_PATH_TO_ID: Record<string, WantedSection> = {
   "cutoff-unmet": "cutoff",
   cutoff: "cutoff",
   pending: "pending",
+  history: "history",
 };
 
 export const viewToFacet: Record<string, Facet> = Object.fromEntries(

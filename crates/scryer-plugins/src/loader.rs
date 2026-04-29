@@ -10,8 +10,8 @@ use scryer_application::{
     NotificationClient, NotificationPluginProvider, SubtitlePluginProvider, SubtitleProviderClient,
 };
 use scryer_domain::{
-    ConfigFieldValueSource, DownloadClientConfig, IndexerConfig, NotificationChannelConfig,
-    PluginHostBindingId, SubtitleProviderConfig,
+    DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
+    SubtitleProviderConfig,
 };
 use tracing::{info, warn};
 
@@ -19,19 +19,19 @@ use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
 use crate::subtitle_adapter::WasmSubtitleClient;
-use crate::types::{PluginDescriptor, SubtitleProviderMode};
+use crate::types::{
+    ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL,
+    EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE,
+    EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION,
+    EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND, EXPORT_SUBTITLE_DOWNLOAD,
+    EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
+    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SubtitleProviderMode,
+    config_fields_to_domain, indexer_capabilities_to_domain,
+};
 
-const SUPPORTED_SDK_MAJOR: &str = "0";
+const SUPPORTED_SDK_MAJOR: &str = "1";
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
 const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
-const SUPPORTED_PLUGIN_TYPES: &[&str] = &[
-    "indexer",
-    "usenet_indexer",
-    "torrent_indexer",
-    "notification",
-    "download_client",
-    "subtitle_provider",
-];
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
 
 type SubtitleClientCacheKey = (String, String, String, String);
@@ -64,8 +64,8 @@ fn builtin_provider_types_from_bytes(
                 .map(|(descriptor, _)| descriptor)
         })
         .map(apply_overrides)
-        .filter(|descriptor| plugin_type_filter(descriptor.plugin_type.as_str()))
-        .map(|descriptor| descriptor.provider_type.trim().to_ascii_lowercase())
+        .filter(|descriptor| plugin_type_filter(descriptor.plugin_type()))
+        .map(|descriptor| descriptor.provider_type().trim().to_ascii_lowercase())
         .collect()
 }
 
@@ -75,6 +75,7 @@ fn builtin_indexer_provider_types() -> Vec<String> {
             &[
                 crate::builtins::NZBGEEK_WASM,
                 crate::builtins::NEWZNAB_WASM,
+                crate::builtins::DOGNZB_WASM,
                 crate::builtins::ANIMETOSHO_WASM,
                 crate::builtins::TORZNAB_WASM,
             ],
@@ -119,9 +120,9 @@ impl WasmIndexerPluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 let aliases: Vec<String> = descriptor
-                    .provider_aliases
+                    .provider_aliases()
                     .iter()
                     .map(|a| a.trim().to_ascii_lowercase())
                     .collect();
@@ -170,7 +171,7 @@ impl WasmIndexerPluginProvider {
             // Also remove any aliases that point to the same descriptor
             let aliases: Vec<String> = loaded
                 .descriptor
-                .provider_aliases
+                .provider_aliases()
                 .iter()
                 .map(|a| a.trim().to_ascii_lowercase())
                 .collect();
@@ -198,9 +199,9 @@ impl WasmIndexerPluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 let aliases: Vec<String> = descriptor
-                    .provider_aliases
+                    .provider_aliases()
                     .iter()
                     .map(|a| a.trim().to_ascii_lowercase())
                     .collect();
@@ -255,13 +256,13 @@ impl WasmIndexerPluginProvider {
 }
 
 fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
-    if descriptor.provider_type.eq_ignore_ascii_case("nzbgeek") {
-        descriptor.default_base_url = Some(NZBGEEK_DEFAULT_BASE_URL.to_string());
+    if descriptor.provider_type().eq_ignore_ascii_case("nzbgeek") {
+        descriptor.set_default_base_url(Some(NZBGEEK_DEFAULT_BASE_URL.to_string()));
     }
-    if descriptor.provider_type.eq_ignore_ascii_case("dognzb") {
-        descriptor.default_base_url = Some(DOGNZB_DEFAULT_BASE_URL.to_string());
+    if descriptor.provider_type().eq_ignore_ascii_case("dognzb") {
+        descriptor.set_default_base_url(Some(DOGNZB_DEFAULT_BASE_URL.to_string()));
         descriptor
-            .config_fields
+            .config_fields_mut()
             .retain(|field| field.key != "api_path" && field.key != "additional_params");
     }
 
@@ -274,7 +275,12 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         self.plugins
             .iter()
             .filter(|(key, loaded)| {
-                **key == loaded.descriptor.provider_type.trim().to_ascii_lowercase()
+                **key
+                    == loaded
+                        .descriptor
+                        .provider_type()
+                        .trim()
+                        .to_ascii_lowercase()
             })
             .map(|(key, _)| key.clone())
             .collect()
@@ -295,7 +301,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .map(|loaded| loaded.descriptor.plugin_type.clone())
+            .map(|loaded| loaded.descriptor.plugin_type().to_string())
     }
 
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
@@ -304,22 +310,24 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         let mut seen = std::collections::HashSet::new();
         self.plugins
             .values()
-            .filter(|loaded| seen.insert(loaded.descriptor.provider_type.clone()))
+            .filter(|loaded| seen.insert(loaded.descriptor.provider_type().to_string()))
             .flat_map(|loaded| {
-                loaded.descriptor.scoring_policies.iter().map(|sp| {
-                    // ID must be a valid Rego path segment (letters, digits, underscores).
-                    let safe_provider = loaded
-                        .descriptor
-                        .provider_type
-                        .replace(['-', ':', '.'], "_");
-                    let safe_name = sp.name.replace(['-', ':', '.'], "_");
-                    let id = format!("plugin_{safe_provider}_{safe_name}");
-                    scryer_rules::UserPolicy {
-                        id,
-                        name: sp.name.clone(),
-                        rego_source: sp.rego_source.clone(),
-                        applied_facets: sp.applied_facets.clone(),
-                    }
+                loaded.descriptor.indexer().into_iter().flat_map(|indexer| {
+                    indexer.scoring_policies.iter().map(|sp| {
+                        // ID must be a valid Rego path segment (letters, digits, underscores).
+                        let safe_provider = loaded
+                            .descriptor
+                            .provider_type()
+                            .replace(['-', ':', '.'], "_");
+                        let safe_name = sp.name.replace(['-', ':', '.'], "_");
+                        let id = format!("plugin_{safe_provider}_{safe_name}");
+                        scryer_rules::UserPolicy {
+                            id,
+                            name: sp.name.clone(),
+                            rego_source: sp.rego_source.clone(),
+                            applied_facets: sp.applied_facets.clone(),
+                        }
+                    })
                 })
             })
             .collect()
@@ -332,7 +340,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .map(|loaded| loaded.descriptor.config_fields.clone())
+            .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
@@ -347,14 +355,17 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .and_then(|loaded| loaded.descriptor.default_base_url.clone())
+            .and_then(|loaded| loaded.descriptor.default_base_url().map(ToOwned::to_owned))
     }
 
     fn rate_limit_seconds_for_provider(&self, provider_type: &str) -> Option<i64> {
         let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
-            .and_then(|loaded| loaded.descriptor.rate_limit_seconds)
+        self.plugins.get(&key).and_then(|loaded| {
+            loaded
+                .descriptor
+                .indexer()
+                .and_then(|indexer| indexer.rate_limit_seconds)
+        })
     }
 
     fn capabilities_for_provider(
@@ -365,19 +376,11 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         self.plugins
             .get(&key)
             .map(|loaded| {
-                let caps = &loaded.descriptor.capabilities;
-                scryer_domain::IndexerProviderCapabilities {
-                    rss: caps.rss,
-                    supported_ids: caps.supported_ids.clone(),
-                    deduplicates_aliases: caps.deduplicates_aliases,
-                    season_param: caps.season_param.clone(),
-                    episode_param: caps.episode_param.clone(),
-                    query_param: caps.query_param.clone(),
-                    search: caps.search,
-                    imdb_search: caps.imdb_search,
-                    tvdb_search: caps.tvdb_search,
-                    anidb_search: caps.anidb_search,
-                }
+                loaded
+                    .descriptor
+                    .indexer()
+                    .map(|indexer| indexer_capabilities_to_domain(&indexer.capabilities))
+                    .unwrap_or_default()
             })
             .unwrap_or(scryer_domain::IndexerProviderCapabilities {
                 rss: true,
@@ -599,7 +602,7 @@ impl WasmDownloadClientPluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 info!(
                     plugin = descriptor.name.as_str(),
                     version = descriptor.version.as_str(),
@@ -694,7 +697,12 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
         self.plugins
             .iter()
             .filter(|(key, loaded)| {
-                **key == loaded.descriptor.provider_type.trim().to_ascii_lowercase()
+                **key
+                    == loaded
+                        .descriptor
+                        .provider_type()
+                        .trim()
+                        .to_ascii_lowercase()
             })
             .map(|(key, _)| key.clone())
             .collect()
@@ -718,7 +726,7 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .map(|loaded| loaded.descriptor.config_fields.clone())
+            .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
@@ -733,7 +741,23 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .and_then(|loaded| loaded.descriptor.default_base_url.clone())
+            .and_then(|loaded| loaded.descriptor.default_base_url().map(ToOwned::to_owned))
+    }
+
+    fn accepted_inputs_for_provider(&self, provider_type: &str) -> Vec<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .and_then(|loaded| loaded.descriptor.download_client())
+            .map(|download_client| {
+                download_client
+                    .accepted_inputs
+                    .iter()
+                    .map(|kind| serde_json::to_value(kind).unwrap_or_default())
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn reload_plugins(
@@ -872,84 +896,56 @@ fn validate_descriptor_for_type(
         return false;
     }
 
-    if !SUPPORTED_PLUGIN_TYPES.contains(&descriptor.plugin_type.as_str()) {
-        info!(
-            plugin = descriptor.name.as_str(),
-            plugin_type = descriptor.plugin_type.as_str(),
-            "skipping plugin: type '{}' not supported",
-            descriptor.plugin_type
-        );
-        return false;
-    }
-
     if let Some(expected) = expected_type
-        && descriptor.plugin_type != expected
+        && descriptor.plugin_type() != expected
     {
         return false;
     }
 
-    let mut capability_blocks = 0;
-    if descriptor.notification_capabilities.is_some() {
-        capability_blocks += 1;
-    }
-    if descriptor.download_client_capabilities.is_some() {
-        capability_blocks += 1;
-    }
-    if descriptor.subtitle_capabilities.is_some() {
-        capability_blocks += 1;
-    }
-
-    match descriptor.plugin_type.as_str() {
-        plugin_type if is_indexer_plugin_type(plugin_type) => {
-            if capability_blocks != 0 {
-                warn!(
-                    plugin = descriptor.name.as_str(),
-                    plugin_type = descriptor.plugin_type.as_str(),
-                    "skipping plugin: indexer plugins must not declare non-indexer capability blocks"
-                );
-                return false;
-            }
+    for host in descriptor.allowed_hosts() {
+        if !allowed_host_pattern_is_valid(host) {
+            warn!(
+                plugin = descriptor.name.as_str(),
+                provider_type = descriptor.provider_type(),
+                host,
+                "skipping plugin: invalid network permission pattern"
+            );
+            return false;
         }
-        "notification" => {
-            if capability_blocks != 1 || descriptor.notification_capabilities.is_none() {
-                warn!(
-                    plugin = descriptor.name.as_str(),
-                    plugin_type = descriptor.plugin_type.as_str(),
-                    "skipping plugin: notification plugins must declare exactly one notification capability block"
-                );
-                return false;
-            }
-        }
-        "download_client" => {
-            if capability_blocks != 1 || descriptor.download_client_capabilities.is_none() {
-                warn!(
-                    plugin = descriptor.name.as_str(),
-                    plugin_type = descriptor.plugin_type.as_str(),
-                    "skipping plugin: download client plugins must declare exactly one download-client capability block"
-                );
-                return false;
-            }
-        }
-        "subtitle_provider" => {
-            if capability_blocks != 1 || descriptor.subtitle_capabilities.is_none() {
-                warn!(
-                    plugin = descriptor.name.as_str(),
-                    plugin_type = descriptor.plugin_type.as_str(),
-                    "skipping plugin: subtitle plugins must declare exactly one subtitle capability block"
-                );
-                return false;
-            }
-        }
-        _ => {}
     }
 
-    for field in &descriptor.config_fields {
+    let provider_matches_kind = matches!(
+        (descriptor.kind(), &descriptor.provider),
+        (PluginKind::Indexer, ProviderDescriptor::Indexer(_))
+            | (
+                PluginKind::Notification,
+                ProviderDescriptor::Notification(_)
+            )
+            | (
+                PluginKind::DownloadClient,
+                ProviderDescriptor::DownloadClient(_)
+            )
+            | (
+                PluginKind::SubtitleProvider,
+                ProviderDescriptor::Subtitle(_)
+            )
+    );
+    if !provider_matches_kind {
+        warn!(
+            plugin = descriptor.name.as_str(),
+            plugin_type = descriptor.plugin_type(),
+            "skipping plugin: descriptor kind and provider block do not match"
+        );
+        return false;
+    }
+
+    for field in descriptor.config_fields() {
         match field.value_source {
             ConfigFieldValueSource::User => {
                 if field.host_binding.is_some() {
                     warn!(
                         plugin = descriptor.name.as_str(),
-                        provider_type = descriptor.provider_type.as_str(),
+                        provider_type = descriptor.provider_type(),
                         field_key = field.key.as_str(),
                         "skipping plugin: user-sourced config field must not declare host_binding"
                     );
@@ -960,7 +956,7 @@ fn validate_descriptor_for_type(
                 let Some(binding) = field.host_binding else {
                     warn!(
                         plugin = descriptor.name.as_str(),
-                        provider_type = descriptor.provider_type.as_str(),
+                        provider_type = descriptor.provider_type(),
                         field_key = field.key.as_str(),
                         "skipping plugin: host-binding field must declare host_binding"
                     );
@@ -970,7 +966,7 @@ fn validate_descriptor_for_type(
                 if !binding_allowed_for_plugin(binding, descriptor, load_source) {
                     warn!(
                         plugin = descriptor.name.as_str(),
-                        provider_type = descriptor.provider_type.as_str(),
+                        provider_type = descriptor.provider_type(),
                         binding = binding.as_str(),
                         "skipping plugin: host_binding is not permitted for this plugin"
                     );
@@ -992,23 +988,46 @@ fn validate_indexer_descriptor(
     load_source: PluginLoadSource,
 ) -> bool {
     validate_descriptor_for_type(descriptor, None, load_source)
-        && is_indexer_plugin_type(&descriptor.plugin_type)
+        && is_indexer_plugin_type(descriptor.plugin_type())
 }
 
 fn binding_allowed_for_plugin(
-    binding: PluginHostBindingId,
+    binding: SdkHostBinding,
     descriptor: &PluginDescriptor,
     load_source: PluginLoadSource,
 ) -> bool {
     match binding {
-        PluginHostBindingId::SmgOpenSubtitlesApiKey => {
-            load_source == PluginLoadSource::Builtin
-                && descriptor.plugin_type == "subtitle_provider"
+        SdkHostBinding::SmgOpenSubtitlesApiKey => {
+            let _ = load_source;
+            descriptor.plugin_type() == "subtitle_provider"
+                && descriptor.id.eq_ignore_ascii_case("opensubtitles")
                 && descriptor
-                    .provider_type
+                    .provider_type()
                     .eq_ignore_ascii_case("opensubtitles")
         }
     }
+}
+
+fn allowed_host_pattern_is_valid(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty()
+        || host == "*"
+        || host.contains("://")
+        || host.contains('/')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains(':')
+    {
+        return false;
+    }
+
+    if let Some(suffix) = host.strip_prefix("*.") {
+        return !suffix.is_empty()
+            && !suffix.contains('*')
+            && url::Host::parse(suffix).is_ok();
+    }
+
+    !host.contains('*') && url::Host::parse(host).is_ok()
 }
 
 pub fn build_indexer_plugin_provider(
@@ -1024,6 +1043,7 @@ pub fn build_indexer_plugin_provider(
     for loaded in load_builtin_bytes_parallel(&[
         crate::builtins::NZBGEEK_WASM,
         crate::builtins::NEWZNAB_WASM,
+        crate::builtins::DOGNZB_WASM,
         crate::builtins::ANIMETOSHO_WASM,
         crate::builtins::TORZNAB_WASM,
     ]) {
@@ -1078,7 +1098,7 @@ impl WasmSubtitlePluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 info!(
                     plugin = descriptor.name.as_str(),
                     version = descriptor.version.as_str(),
@@ -1115,7 +1135,7 @@ impl WasmSubtitlePluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 if self.plugins.contains_key(&provider_type) {
                     return self;
                 }
@@ -1179,7 +1199,12 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
         self.plugins
             .iter()
             .filter(|(key, loaded)| {
-                **key == loaded.descriptor.provider_type.trim().to_ascii_lowercase()
+                **key
+                    == loaded
+                        .descriptor
+                        .provider_type()
+                        .trim()
+                        .to_ascii_lowercase()
             })
             .map(|(key, _)| key.clone())
             .collect()
@@ -1200,16 +1225,16 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .and_then(|loaded| loaded.descriptor.subtitle_capabilities.as_ref())
-            .is_some_and(|capabilities| capabilities.mode == SubtitleProviderMode::Catalog)
+            .and_then(|loaded| loaded.descriptor.subtitle())
+            .is_some_and(|subtitle| subtitle.capabilities.mode == SubtitleProviderMode::Catalog)
     }
 
     fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String> {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .and_then(|loaded| loaded.descriptor.subtitle_capabilities.as_ref())
-            .map(|capabilities| capabilities.recommended_facets.clone())
+            .and_then(|loaded| loaded.descriptor.subtitle())
+            .map(|subtitle| subtitle.capabilities.recommended_facets.clone())
             .unwrap_or_default()
     }
 
@@ -1220,7 +1245,7 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .map(|loaded| loaded.descriptor.config_fields.clone())
+            .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
@@ -1430,7 +1455,7 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
                     continue;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
 
                 // Check for duplicates
                 if plugins.contains_key(&provider_type) {
@@ -1451,7 +1476,7 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
 
                 // Register aliases
                 let aliases: Vec<String> = descriptor
-                    .provider_aliases
+                    .provider_aliases()
                     .iter()
                     .map(|a| a.trim().to_ascii_lowercase())
                     .collect();
@@ -1561,7 +1586,6 @@ fn compute_base_url_from_config_json(json_str: &str) -> Option<String> {
 ///
 /// The allowed hosts are derived from:
 /// 1. The plugin's `allowed_hosts` descriptor field (static declarations).
-///    Use `["*"]` for unrestricted access.
 /// 2. The hostname from `base_url` (indexer plugins).
 /// 3. Hostnames from `config_json` values that parse as URLs (notification plugins).
 ///
@@ -1572,12 +1596,7 @@ pub(crate) fn apply_allowed_hosts(
     base_url: Option<&str>,
     config_json: Option<&str>,
 ) -> Manifest {
-    // Short-circuit: explicit wildcard in descriptor
-    if descriptor.allowed_hosts.iter().any(|h| h == "*") {
-        return manifest.with_allowed_host("*");
-    }
-
-    let mut hosts: Vec<String> = descriptor.allowed_hosts.clone();
+    let mut hosts: Vec<String> = descriptor.allowed_hosts().to_vec();
 
     // Add hostname from base_url (indexer plugins)
     if let Some(url_str) = base_url
@@ -1603,22 +1622,10 @@ pub(crate) fn apply_allowed_hosts(
     manifest
 }
 
-/// Extract hostname from a URL string without pulling in the `url` crate.
 fn host_from_url(url: &str) -> Option<String> {
-    // Expect "scheme://host..." — strip scheme, then take until '/' or ':'
-    let after_scheme = url.split("://").nth(1)?;
-    let host = after_scheme.split('/').next()?;
-    // Strip port if present
-    let host = if host.contains('[') {
-        // IPv6: [::1]:8080 — take everything including brackets
-        host.split(']')
-            .next()
-            .map(|h| format!("{}]", h))
-            .unwrap_or_default()
-    } else {
-        host.split(':').next().unwrap_or(host).to_string()
-    };
-    if host.is_empty() { None } else { Some(host) }
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
 }
 
 pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
@@ -1636,6 +1643,63 @@ pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism:
         .build()
 }
 
+fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
+    let mut exports = vec![EXPORT_DESCRIBE];
+    match &descriptor.provider {
+        ProviderDescriptor::Indexer(_) => {
+            exports.push(EXPORT_INDEXER_SEARCH);
+        }
+        ProviderDescriptor::DownloadClient(_) => {
+            exports.extend([
+                EXPORT_DOWNLOAD_ADD,
+                EXPORT_DOWNLOAD_LIST_QUEUE,
+                EXPORT_DOWNLOAD_LIST_HISTORY,
+                EXPORT_DOWNLOAD_LIST_COMPLETED,
+                EXPORT_DOWNLOAD_CONTROL,
+                EXPORT_DOWNLOAD_MARK_IMPORTED,
+                EXPORT_DOWNLOAD_STATUS,
+                EXPORT_DOWNLOAD_TEST_CONNECTION,
+            ]);
+        }
+        ProviderDescriptor::Notification(_) => {
+            exports.push(EXPORT_NOTIFICATION_SEND);
+        }
+        ProviderDescriptor::Subtitle(subtitle) => {
+            exports.push(EXPORT_VALIDATE_CONFIG);
+            match subtitle.capabilities.mode {
+                SubtitleProviderMode::Catalog => {
+                    exports.extend([EXPORT_SUBTITLE_SEARCH, EXPORT_SUBTITLE_DOWNLOAD]);
+                }
+                SubtitleProviderMode::Generator => {
+                    exports.push(EXPORT_SUBTITLE_GENERATE);
+                }
+            }
+        }
+    }
+    exports
+}
+
+fn validate_required_exports(
+    plugin: &extism::Plugin,
+    descriptor: &PluginDescriptor,
+) -> Result<(), String> {
+    let missing = required_exports_for_descriptor(descriptor)
+        .into_iter()
+        .filter(|export| !plugin.function_exists(export))
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} ({}) is missing required export(s): {}",
+            descriptor.id,
+            descriptor.plugin_type(),
+            missing.join(", ")
+        ))
+    }
+}
+
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
     let bytes = wasm_bytes.to_vec();
     // No allowed hosts needed — describe() is a pure function that returns JSON.
@@ -1646,11 +1710,13 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
         build_plugin(manifest).map_err(|e| format!("failed to instantiate WASM: {e}"))?;
 
     let output: String = plugin
-        .call::<&str, String>("describe", "")
-        .map_err(|e| format!("describe() failed: {e}"))?;
+        .call::<&str, String>(EXPORT_DESCRIBE, "")
+        .map_err(|e| format!("{EXPORT_DESCRIBE}() failed: {e}"))?;
 
     let descriptor: PluginDescriptor = serde_json::from_str(&output)
         .map_err(|e| format!("describe() returned invalid JSON: {e}"))?;
+
+    validate_required_exports(&plugin, &descriptor)?;
 
     Ok((descriptor, bytes))
 }
@@ -1698,7 +1764,7 @@ impl WasmNotificationPluginProvider {
                     return self;
                 }
 
-                let provider_type = descriptor.provider_type.trim().to_ascii_lowercase();
+                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
                 info!(
                     plugin = descriptor.name.as_str(),
                     version = descriptor.version.as_str(),
@@ -1790,7 +1856,12 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
         self.plugins
             .iter()
             .filter(|(key, loaded)| {
-                **key == loaded.descriptor.provider_type.trim().to_ascii_lowercase()
+                **key
+                    == loaded
+                        .descriptor
+                        .provider_type()
+                        .trim()
+                        .to_ascii_lowercase()
             })
             .map(|(key, _)| key.clone())
             .collect()
@@ -1814,7 +1885,7 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
             .get(&key)
-            .map(|loaded| loaded.descriptor.config_fields.clone())
+            .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
@@ -1951,26 +2022,108 @@ pub fn build_notification_plugin_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
+        DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
+        NotificationDescriptor, PluginHostBindingId, SubtitleCapabilities, SubtitleDescriptor,
+    };
 
     fn descriptor(plugin_type: &str) -> PluginDescriptor {
+        let provider = match plugin_type {
+            "indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                source_kind: IndexerSourceKind::Generic,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            }),
+            "usenet_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                source_kind: IndexerSourceKind::Usenet,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            }),
+            "torrent_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                source_kind: IndexerSourceKind::Torrent,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            }),
+            "notification" => ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: NotificationCapabilities::default(),
+            }),
+            "download_client" => ProviderDescriptor::DownloadClient(DownloadClientDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                accepted_inputs: vec![],
+                isolation_modes: vec![],
+                capabilities: DownloadClientCapabilities::default(),
+            }),
+            "subtitle_provider" => ProviderDescriptor::Subtitle(SubtitleDescriptor {
+                provider_type: "test".to_string(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: SubtitleCapabilities::default(),
+            }),
+            other => panic!("unsupported test plugin type: {other}"),
+        };
+
         PluginDescriptor {
+            id: "test".to_string(),
             name: "Test".to_string(),
             version: "0.1.0".to_string(),
-            sdk_version: "0.1".to_string(),
-            plugin_type: plugin_type.to_string(),
-            provider_type: "test".to_string(),
-            provider_aliases: vec![],
-            capabilities: crate::types::IndexerCapabilities::default(),
-            scoring_policies: vec![],
-            config_fields: vec![],
-            default_base_url: None,
-            allowed_hosts: vec![],
-            rate_limit_seconds: None,
-            notification_capabilities: None,
-            accepted_inputs: vec![],
-            isolation_modes: vec![],
-            download_client_capabilities: None,
-            subtitle_capabilities: None,
+            sdk_version: "1.0.0".to_string(),
+            provider,
+        }
+    }
+
+    fn set_provider_type(descriptor: &mut PluginDescriptor, provider_type: &str) {
+        match &mut descriptor.provider {
+            ProviderDescriptor::Indexer(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
+            ProviderDescriptor::Notification(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
+            ProviderDescriptor::DownloadClient(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
+            ProviderDescriptor::Subtitle(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
+        }
+    }
+
+    fn set_allowed_hosts(descriptor: &mut PluginDescriptor, allowed_hosts: Vec<String>) {
+        match &mut descriptor.provider {
+            ProviderDescriptor::Indexer(provider) => provider.allowed_hosts = allowed_hosts,
+            ProviderDescriptor::Notification(provider) => provider.allowed_hosts = allowed_hosts,
+            ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts = allowed_hosts,
+            ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts = allowed_hosts,
         }
     }
 
@@ -2005,11 +2158,10 @@ mod tests {
     #[test]
     fn provider_type_collision_is_allowed_across_plugin_families() {
         let mut indexer = descriptor("indexer");
-        indexer.provider_type = "animetosho".to_string();
+        set_provider_type(&mut indexer, "animetosho");
 
         let mut subtitle = descriptor("subtitle_provider");
-        subtitle.provider_type = "animetosho".to_string();
-        subtitle.subtitle_capabilities = Some(crate::types::SubtitleCapabilities::default());
+        set_provider_type(&mut subtitle, "animetosho");
 
         assert!(validate_indexer_descriptor(
             &indexer,
@@ -2023,31 +2175,120 @@ mod tests {
     }
 
     #[test]
-    fn subtitle_provider_rejects_extra_capability_blocks() {
+    fn subtitle_provider_rejects_notification_expected_type() {
+        let descriptor = descriptor("subtitle_provider");
+        assert!(!validate_descriptor_for_type(
+            &descriptor,
+            Some("notification"),
+            PluginLoadSource::Builtin
+        ));
+    }
+
+    #[test]
+    fn constrained_allowed_host_glob_is_accepted() {
         let mut descriptor = descriptor("subtitle_provider");
-        descriptor.subtitle_capabilities = Some(crate::types::SubtitleCapabilities::default());
-        descriptor.notification_capabilities =
-            Some(crate::types::NotificationCapabilities::default());
+        set_allowed_hosts(
+            &mut descriptor,
+            vec!["*.opensubtitles.com".to_string()],
+        );
+
+        assert!(validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::External
+        ));
+    }
+
+    #[test]
+    fn malformed_allowed_host_patterns_are_rejected() {
+        for pattern in [
+            "*",
+            "http://*.example.com",
+            "*.*.example.com",
+            "foo*bar.com",
+            "example.com/path",
+            "example.com:443",
+        ] {
+            let mut descriptor = descriptor("subtitle_provider");
+            set_allowed_hosts(&mut descriptor, vec![pattern.to_string()]);
+            assert!(
+                !validate_descriptor_for_type(
+                    &descriptor,
+                    Some("subtitle_provider"),
+                    PluginLoadSource::External
+                ),
+                "pattern should be rejected: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn official_external_opensubtitles_plugin_may_request_api_key_binding() {
+        let mut descriptor = descriptor("subtitle_provider");
+        descriptor.id = "opensubtitles".to_string();
+        set_provider_type(&mut descriptor, "opensubtitles");
+        let ProviderDescriptor::Subtitle(subtitle) = &mut descriptor.provider else {
+            panic!("expected subtitle descriptor");
+        };
+        subtitle.config_fields = vec![ConfigFieldDef {
+            key: "api_key".to_string(),
+            label: "API Key".to_string(),
+            field_type: ConfigFieldType::Password,
+            required: true,
+            default_value: None,
+            value_source: ConfigFieldValueSource::HostBinding,
+            host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
+            options: vec![],
+            help_text: None,
+        }];
+
+        assert!(validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::External
+        ));
+    }
+
+    #[test]
+    fn non_official_external_plugins_cannot_request_opensubtitles_api_key_binding() {
+        let mut descriptor = descriptor("subtitle_provider");
+        set_provider_type(&mut descriptor, "opensubtitles");
+        let ProviderDescriptor::Subtitle(subtitle) = &mut descriptor.provider else {
+            panic!("expected subtitle descriptor");
+        };
+        subtitle.config_fields = vec![ConfigFieldDef {
+            key: "api_key".to_string(),
+            label: "API Key".to_string(),
+            field_type: ConfigFieldType::Password,
+            required: true,
+            default_value: None,
+            value_source: ConfigFieldValueSource::HostBinding,
+            host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
+            options: vec![],
+            help_text: None,
+        }];
+
         assert!(!validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
-            PluginLoadSource::Builtin
+            PluginLoadSource::External
         ));
     }
 
     #[test]
     fn non_subtitle_plugins_cannot_request_subtitle_host_bindings() {
         let mut descriptor = descriptor("notification");
-        descriptor.notification_capabilities =
-            Some(crate::types::NotificationCapabilities::default());
-        descriptor.config_fields = vec![scryer_domain::ConfigFieldDef {
+        let ProviderDescriptor::Notification(notification) = &mut descriptor.provider else {
+            panic!("expected notification descriptor");
+        };
+        notification.config_fields = vec![ConfigFieldDef {
             key: "api_key".to_string(),
             label: "API Key".to_string(),
-            field_type: scryer_domain::ConfigFieldType::Password,
+            field_type: ConfigFieldType::Password,
             required: true,
             default_value: None,
-            value_source: scryer_domain::ConfigFieldValueSource::HostBinding,
-            host_binding: Some(scryer_domain::PluginHostBindingId::SmgOpenSubtitlesApiKey),
+            value_source: ConfigFieldValueSource::HostBinding,
+            host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
             options: vec![],
             help_text: None,
         }];

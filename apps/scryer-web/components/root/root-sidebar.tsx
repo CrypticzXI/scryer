@@ -162,6 +162,7 @@ const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
   { id: "wanted", labelKey: "wanted.tabWanted" },
   { id: "cutoff", labelKey: "wanted.tabCutoff" },
   { id: "pending", labelKey: "wanted.tabPending" },
+  { id: "history", labelKey: "history.title" },
 ];
 
 const LEAF_NAV_BADGE_BASE_CLASS =

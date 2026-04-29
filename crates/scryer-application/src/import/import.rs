@@ -1,12 +1,11 @@
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition,
-    WantedItemsQuery,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition, WantedItemsQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
-        created_media_update, deleted_media_update, new_global_domain_event,
-        new_title_domain_event, title_context_snapshot,
+        created_media_update, deleted_media_update, new_title_domain_event,
+        title_context_snapshot,
     },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
@@ -19,8 +18,8 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
     DownloadQueueState, Entitlement, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportRejectedEventData, ImportResult, ImportSkipReason, ImportStatus,
-    ImportType, MediaFacet, User, is_video_file,
+    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, User,
+    is_video_file,
 };
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -47,6 +46,31 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
 const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
 const SERIES_PATH_KEY: &str = "series.path";
+
+fn base_completed_import_result(
+    import_id: &str,
+    completed: &CompletedDownload,
+    started_at: DateTime<Utc>,
+) -> ImportResult {
+    ImportResult {
+        import_id: import_id.to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: None,
+        title_id: None,
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
+        source_path: completed.dest_dir.clone(),
+        dest_path: None,
+        quality: None,
+        episode_ids: Vec::new(),
+        file_size_bytes: None,
+        link_type: None,
+        error_message: None,
+        started_at,
+        completed_at: Utc::now(),
+    }
+}
 
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
@@ -211,17 +235,10 @@ pub async fn retry_failed_import(
                 None
             };
             let result = ImportResult {
-                import_id: import_id.to_string(),
                 decision: ImportDecision::Failed,
                 skip_reason,
-                title_id: None,
-                source_path: completed.dest_dir.clone(),
-                dest_path: None,
-                file_size_bytes: None,
-                link_type: None,
                 error_message: Some(error.to_string()),
-                started_at,
-                completed_at: Utc::now(),
+                ..base_completed_import_result(import_id, &completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)
@@ -605,17 +622,9 @@ pub async fn import_completed_download(
         .await?
     {
         return Ok(ImportResult {
-            import_id: String::new(),
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::AlreadyImported),
-            title_id: None,
-            source_path: completed.dest_dir.clone(),
-            dest_path: None,
-            file_size_bytes: None,
-            link_type: None,
-            error_message: None,
-            started_at,
-            completed_at: Utc::now(),
+            ..base_completed_import_result("", completed, started_at)
         });
     }
 
@@ -655,17 +664,9 @@ pub async fn import_completed_download(
             "import: source directory no longer exists, no files to import"
         );
         let result = ImportResult {
-            import_id: import_id.to_string(),
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
-            title_id: None,
-            source_path: completed.dest_dir.clone(),
-            dest_path: None,
-            file_size_bytes: None,
-            link_type: None,
-            error_message: None,
-            started_at,
-            completed_at: Utc::now(),
+            ..base_completed_import_result(&import_id, completed, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         let _ = app
@@ -689,17 +690,10 @@ pub async fn import_completed_download(
                 None
             };
             let result = ImportResult {
-                import_id: import_id.to_string(),
                 decision: ImportDecision::Failed,
                 skip_reason,
-                title_id: None,
-                source_path: completed.dest_dir.clone(),
-                dest_path: None,
-                file_size_bytes: None,
-                link_type: None,
                 error_message: Some(error.to_string()),
-                started_at,
-                completed_at: Utc::now(),
+                ..base_completed_import_result(&import_id, completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             let _ = app
@@ -812,41 +806,17 @@ async fn run_import(
         Some(t) => t,
         None => {
             let result = ImportResult {
-                import_id: import_id.to_string(),
                 decision: ImportDecision::Unmatched,
                 skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
-                title_id: None,
-                source_path: completed.dest_dir.clone(),
-                dest_path: None,
-                file_size_bytes: None,
-                link_type: None,
                 error_message: Some(format!(
                     "could not match download '{}' to any monitored title",
                     completed.name
                 )),
-                started_at,
-                completed_at: Utc::now(),
+                ..base_completed_import_result(import_id, completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
-
-            let unmatched_msg = format!(
-                "Could not match download '{}' to any monitored title",
-                completed.name
-            );
-
-            app.append_domain_event(new_global_domain_event(
-                Some(actor.id.clone()),
-                DomainEventPayload::ImportRejected(ImportRejectedEventData {
-                    title: None,
-                    status: ImportStatus::Skipped,
-                    source_path: Some(completed.dest_dir.clone()),
-                    reason: Some(unmatched_msg),
-                    episode_ids: Vec::new(),
-                }),
-            ))
-            .await?;
 
             return Ok(result);
         }
@@ -858,20 +828,14 @@ async fn run_import(
         MediaFacet::Movie | MediaFacet::Series | MediaFacet::Anime
     ) {
         let result = ImportResult {
-            import_id: import_id.to_string(),
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::PolicyMismatch),
             title_id: Some(title.id.clone()),
-            source_path: completed.dest_dir.clone(),
-            dest_path: None,
-            file_size_bytes: None,
-            link_type: None,
             error_message: Some(format!(
                 "title '{}' has unsupported facet '{:?}', skipping import",
                 title.name, title.facet
             )),
-            started_at,
-            completed_at: Utc::now(),
+            ..base_completed_import_result(import_id, completed, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -889,17 +853,11 @@ async fn run_import(
 
     if video_files.is_empty() {
         let result = ImportResult {
-            import_id: import_id.to_string(),
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
             title_id: Some(title.id.clone()),
-            source_path: completed.dest_dir.clone(),
-            dest_path: None,
-            file_size_bytes: None,
-            link_type: None,
             error_message: Some(format!("no video files found in {}", completed.dest_dir)),
-            started_at,
-            completed_at: Utc::now(),
+            ..base_completed_import_result(import_id, completed, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -1032,8 +990,13 @@ async fn import_movie_download(
                 decision: ImportDecision::Rejected,
                 skip_reason: rejection.skip_reason.clone(),
                 title_id: Some(title.id.clone()),
+                source_system: Some(completed.client_type.clone()),
+                source_ref: Some(completed.download_client_item_id.clone()),
+                source_title: Some(completed.name.clone()),
                 source_path: source_video.to_string_lossy().to_string(),
                 dest_path: None,
+                quality: parsed.quality.clone(),
+                episode_ids: Vec::new(),
                 file_size_bytes: Some(source_size),
                 link_type: None,
                 error_message: Some(rejection.message),
@@ -1110,8 +1073,13 @@ async fn import_movie_download(
             decision: ImportDecision::Skipped,
             skip_reason,
             title_id: Some(title.id.clone()),
+            source_system: Some(completed.client_type.clone()),
+            source_ref: Some(completed.download_client_item_id.clone()),
+            source_title: Some(completed.name.clone()),
             source_path: source_video.to_string_lossy().to_string(),
             dest_path: Some(dest_path.to_string_lossy().to_string()),
+            quality: prepared.parsed.quality.clone(),
+            episode_ids: Vec::new(),
             file_size_bytes: Some(source_size),
             link_type: None,
             error_message: Some(reason),
@@ -1184,8 +1152,13 @@ async fn import_movie_download(
                             decision: ImportDecision::Imported,
                             skip_reason: None,
                             title_id: Some(title.id.clone()),
+                            source_system: Some(completed.client_type.clone()),
+                            source_ref: Some(completed.download_client_item_id.clone()),
+                            source_title: Some(completed.name.clone()),
                             source_path: source_video.to_string_lossy().to_string(),
                             dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            quality: prepared.parsed.quality.clone(),
+                            episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
                             link_type: None,
                             error_message: None,
@@ -1227,8 +1200,13 @@ async fn import_movie_download(
                             decision: ImportDecision::Rejected,
                             skip_reason: rejection.skip_reason.clone(),
                             title_id: Some(title.id.clone()),
+                            source_system: Some(completed.client_type.clone()),
+                            source_ref: Some(completed.download_client_item_id.clone()),
+                            source_title: Some(completed.name.clone()),
                             source_path: source_video.to_string_lossy().to_string(),
                             dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            quality: prepared.parsed.quality.clone(),
+                            episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
                             link_type: None,
                             error_message: Some(rejection.message),
@@ -1410,8 +1388,13 @@ async fn import_movie_download(
         decision: ImportDecision::Imported,
         skip_reason: None,
         title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
         source_path: source_video.to_string_lossy().to_string(),
         dest_path: Some(dest_path.to_string_lossy().to_string()),
+        quality: prepared.parsed.quality.clone(),
+        episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(file_result.strategy),
         error_message: None,
@@ -1432,6 +1415,13 @@ async fn import_movie_download(
                     dest_path.to_string_lossy().to_string(),
                 )],
                 imported_count: 1,
+                import_id: Some(import_id.to_string()),
+                source_system: Some(completed.client_type.clone()),
+                source_ref: Some(completed.download_client_item_id.clone()),
+                source_title: Some(completed.name.clone()),
+                source_path: Some(source_video.to_string_lossy().to_string()),
+                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                quality: prepared.parsed.quality.clone(),
                 episode_ids: Vec::new(),
             }),
         ))
@@ -1465,17 +1455,11 @@ async fn import_interstitial_movie_download(
         Some(c) => c,
         None => {
             let result = ImportResult {
-                import_id: import_id.to_string(),
                 decision: ImportDecision::Failed,
                 skip_reason: None,
                 title_id: Some(title.id.clone()),
-                source_path: completed.dest_dir.clone(),
-                dest_path: None,
-                file_size_bytes: None,
-                link_type: None,
                 error_message: Some(format!("interstitial collection {collection_id} not found")),
-                started_at,
-                completed_at: Utc::now(),
+                ..base_completed_import_result(import_id, completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -1488,17 +1472,11 @@ async fn import_interstitial_movie_download(
         Some(m) => m,
         None => {
             let result = ImportResult {
-                import_id: import_id.to_string(),
                 decision: ImportDecision::Failed,
                 skip_reason: None,
                 title_id: Some(title.id.clone()),
-                source_path: completed.dest_dir.clone(),
-                dest_path: None,
-                file_size_bytes: None,
-                link_type: None,
                 error_message: Some("interstitial collection has no movie metadata".to_string()),
-                started_at,
-                completed_at: Utc::now(),
+                ..base_completed_import_result(import_id, completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -1609,8 +1587,13 @@ async fn import_interstitial_movie_download(
                 decision: ImportDecision::Rejected,
                 skip_reason: rejection.skip_reason.clone(),
                 title_id: Some(title.id.clone()),
+                source_system: Some(completed.client_type.clone()),
+                source_ref: Some(completed.download_client_item_id.clone()),
+                source_title: Some(completed.name.clone()),
                 source_path: source_video.to_string_lossy().to_string(),
                 dest_path: Some(dest_path.to_string_lossy().to_string()),
+                quality: parsed.quality.clone(),
+                episode_ids: Vec::new(),
                 file_size_bytes: Some(source_size),
                 link_type: None,
                 error_message: Some(rejection.message),
@@ -1693,8 +1676,13 @@ async fn import_interstitial_movie_download(
                             decision: ImportDecision::Imported,
                             skip_reason: None,
                             title_id: Some(title.id.clone()),
+                            source_system: Some(completed.client_type.clone()),
+                            source_ref: Some(completed.download_client_item_id.clone()),
+                            source_title: Some(completed.name.clone()),
                             source_path: source_video.to_string_lossy().to_string(),
                             dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            quality: prepared.parsed.quality.clone(),
+                            episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
                             link_type: None,
                             error_message: None,
@@ -1729,8 +1717,13 @@ async fn import_interstitial_movie_download(
                             decision: ImportDecision::Rejected,
                             skip_reason: rejection.skip_reason.clone(),
                             title_id: Some(title.id.clone()),
+                            source_system: Some(completed.client_type.clone()),
+                            source_ref: Some(completed.download_client_item_id.clone()),
+                            source_title: Some(completed.name.clone()),
                             source_path: source_video.to_string_lossy().to_string(),
                             dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            quality: prepared.parsed.quality.clone(),
+                            episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
                             link_type: None,
                             error_message: Some(rejection.message),
@@ -1773,8 +1766,13 @@ async fn import_interstitial_movie_download(
                     decision: ImportDecision::Skipped,
                     skip_reason: Some(ImportSkipReason::PolicyMismatch),
                     title_id: Some(title.id.clone()),
+                    source_system: Some(completed.client_type.clone()),
+                    source_ref: Some(completed.download_client_item_id.clone()),
+                    source_title: Some(completed.name.clone()),
                     source_path: source_video.to_string_lossy().to_string(),
                     dest_path: Some(dest_path.to_string_lossy().to_string()),
+                    quality: prepared.parsed.quality.clone(),
+                    episode_ids: Vec::new(),
                     file_size_bytes: Some(source_size),
                     link_type: None,
                     error_message: Some(format!(
@@ -1942,8 +1940,13 @@ async fn import_interstitial_movie_download(
         decision: ImportDecision::Imported,
         skip_reason: None,
         title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
         source_path: source_video.to_string_lossy().to_string(),
         dest_path: Some(dest_path.to_string_lossy().to_string()),
+        quality: prepared.parsed.quality.clone(),
+        episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(file_result.strategy),
         error_message: None,
@@ -1963,6 +1966,13 @@ async fn import_interstitial_movie_download(
                 dest_path.to_string_lossy().to_string(),
             )],
             imported_count: 1,
+            import_id: Some(import_id.to_string()),
+            source_system: Some(completed.client_type.clone()),
+            source_ref: Some(completed.download_client_item_id.clone()),
+            source_title: Some(completed.name.clone()),
+            source_path: Some(source_video.to_string_lossy().to_string()),
+            dest_path: Some(dest_path.to_string_lossy().to_string()),
+            quality: prepared.parsed.quality.clone(),
             episode_ids: Vec::new(),
         }),
     ))
@@ -2154,8 +2164,13 @@ async fn import_series_download(
         decision,
         skip_reason,
         title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
         source_path: completed.dest_dir.clone(),
         dest_path: None,
+        quality: None,
+        episode_ids: imported_episode_ids.clone(),
         file_size_bytes: None,
         link_type: None,
         error_message,
@@ -2177,6 +2192,13 @@ async fn import_series_download(
                     .map(|update| created_media_update(update.path))
                     .collect(),
                 imported_count: imported_count as i32,
+                import_id: Some(import_id.to_string()),
+                source_system: Some(completed.client_type.clone()),
+                source_ref: Some(completed.download_client_item_id.clone()),
+                source_title: Some(completed.name.clone()),
+                source_path: Some(completed.dest_dir.clone()),
+                dest_path: None,
+                quality: None,
                 episode_ids: imported_episode_ids,
             }),
         ))
@@ -4362,6 +4384,18 @@ pub async fn execute_manual_import(
                 .map(|update| created_media_update(update.path))
                 .collect(),
             imported_count: success_count as i32,
+            import_id: None,
+            source_system: completed.map(|download| download.client_type.clone()),
+            source_ref: completed.map(|download| download.download_client_item_id.clone()),
+            source_title: completed
+                .map(|download| download.name.clone())
+                .or_else(|| (files.len() == 1).then(|| files[0].file_path.clone())),
+            source_path: (files.len() == 1).then(|| files[0].file_path.clone()),
+            dest_path: results
+                .iter()
+                .find(|result| result.success)
+                .and_then(|result| result.dest_path.clone()),
+            quality: None,
             episode_ids,
         }),
     ))

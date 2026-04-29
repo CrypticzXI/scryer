@@ -51,6 +51,7 @@ export const WANTED_SECTION_PATH: Record<WantedSection, string> = {
   wanted: "wanted-items",
   cutoff: "cutoff-unmet",
   pending: "pending",
+  history: "history",
 };
 
 export const ACTIVITY_SECTION_PATH: Record<ActivitySection, string> = {

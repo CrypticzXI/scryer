@@ -550,7 +550,9 @@ impl QueryRoot {
             let filter = TitleHistoryFilter {
                 event_types: parsed_types,
                 title_ids: None,
+                title_search: None,
                 download_id: None,
+                group_by_event: false,
                 limit: limit.unwrap_or(100).max(1) as usize,
                 offset: offset.unwrap_or(0).max(0) as usize,
             };
@@ -579,7 +581,9 @@ impl QueryRoot {
         let f = TitleHistoryFilter {
             event_types: parsed_types,
             title_ids: filter.title_ids,
+            title_search: filter.title_search,
             download_id: filter.download_id,
+            group_by_event: filter.group_by_event.unwrap_or(false),
             limit: filter.limit.unwrap_or(50).max(1) as usize,
             offset: filter.offset.unwrap_or(0).max(0) as usize,
         };

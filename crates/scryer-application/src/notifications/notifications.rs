@@ -2,9 +2,11 @@ use chrono::Utc;
 use scryer_domain::{
     Id, NotificationChannelConfig, NotificationEventType, NotificationSubscription,
 };
-use std::collections::HashMap;
 
-use crate::{AppError, AppResult, AppUseCase, NotificationScopeIdUpdate};
+use crate::{
+    AppError, AppResult, AppUseCase, NotificationAppPayload, NotificationPayload,
+    NotificationScopeIdUpdate,
+};
 
 impl AppUseCase {
     pub async fn list_notification_channels(
@@ -127,14 +129,23 @@ impl AppUseCase {
             ))
         })?;
 
-        let metadata = HashMap::new();
         client
-            .send_notification(
-                "test",
-                "Scryer Test Notification",
-                "This is a test notification from Scryer.",
-                &metadata,
-            )
+            .send_notification(&NotificationPayload {
+                event_type: NotificationEventType::Test,
+                summary_title: "Scryer Test Notification".to_string(),
+                summary_message: "This is a test notification from Scryer.".to_string(),
+                app: NotificationAppPayload {
+                    name: "Scryer".to_string(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+                title: None,
+                episode: None,
+                release: None,
+                download: None,
+                import: None,
+                health: None,
+                file: None,
+            })
             .await
     }
 

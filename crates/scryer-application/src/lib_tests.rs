@@ -1019,6 +1019,56 @@ impl DomainEventRepository for MockDomainEventRepo {
             .collect())
     }
 
+    async fn count_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+    ) -> AppResult<i64> {
+        let events = self.events.lock().await;
+        Ok(events
+            .iter()
+            .rev()
+            .filter_map(crate::event_views::title_history_record_from_domain_event)
+            .filter(|record| {
+                event_types
+                    .is_none_or(|values| values.contains(&record.event_type))
+                    && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                    && download_id
+                        .is_none_or(|value| record.download_id.as_deref() == Some(value))
+            })
+            .count() as i64)
+    }
+
+    async fn list_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        let page_size = if limit == 0 { usize::MAX } else { limit };
+        let events = self.events.lock().await;
+        Ok(events
+            .iter()
+            .rev()
+            .filter(|event| {
+                crate::event_views::title_history_record_from_domain_event(event)
+                    .is_some_and(|record| {
+                        event_types
+                            .is_none_or(|values| values.contains(&record.event_type))
+                            && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                            && download_id
+                                .is_none_or(|value| record.download_id.as_deref() == Some(value))
+                    })
+            })
+            .skip(offset)
+            .take(page_size)
+            .cloned()
+            .collect())
+    }
+
     async fn list_after_sequence(
         &self,
         after_sequence: i64,
@@ -2795,7 +2845,9 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status.as_deref().is_none_or(|status| item.status.as_str() == status)
+                status
+                    .as_deref()
+                    .is_none_or(|status| item.status.as_str() == status)
                     && media_type
                         .as_deref()
                         .is_none_or(|media_type| item.media_type == media_type)
@@ -2841,7 +2893,9 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status.as_deref().is_none_or(|status| item.status.as_str() == status)
+                status
+                    .as_deref()
+                    .is_none_or(|status| item.status.as_str() == status)
                     && media_type
                         .as_deref()
                         .is_none_or(|media_type| item.media_type == media_type)
@@ -3258,14 +3312,26 @@ impl DownloadClient for StubDownloadClient {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
+        let job_id = format!("job-for-{}", request.title.id);
         self.submitted_release_titles.lock().await.push(
             request
                 .release_title
                 .clone()
                 .unwrap_or_else(|| request.title.name.clone()),
         );
+        let mut queue_items = self.queue_items.lock().await;
+        if !queue_items
+            .iter()
+            .any(|item| item.download_client_item_id == job_id)
+        {
+            let mut queued = queue_history_fixture_item(&job_id, DownloadQueueState::Queued, 0);
+            queued.title_id = Some(request.title.id.clone());
+            queued.title_name = request.title.name.clone();
+            queued.facet = Some(request.title.facet.as_str().to_string());
+            queue_items.push(queued);
+        }
         Ok(DownloadGrabResult {
-            job_id: format!("job-for-{}", request.title.id),
+            job_id,
             client_id: None,
             client_type: "nzbget".to_string(),
         })
@@ -4602,6 +4668,7 @@ fn build_test_unmatched_item(
         id: id.to_string(),
         facet,
         status: PendingImportStatus::Pending,
+        title_id: None,
         scan_session_id: "scan-session-1".to_string(),
         scan_root: scan_root.to_string(),
         item_path: item_path.to_string(),
@@ -7504,6 +7571,114 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
 }
 
 #[tokio::test]
+async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Blocked Wanted Series".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("1".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id.clone()),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "episode-job".to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Blocked.Wanted.Series.S01E01.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Episode {
+                episode_id: episode.id.clone(),
+            },
+        })
+        .await
+        .expect("record submission");
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "episode-job",
+        DownloadQueueState::Downloading,
+        0,
+    )];
+
+    let outcome = app
+        .trigger_title_wanted_search(&title.id, SubmissionConflictPolicy::Abort)
+        .await
+        .expect("wanted search should skip blocked episode");
+
+    assert_eq!(outcome.queued_count, 0);
+    assert_eq!(outcome.skipped_in_progress_count, 1);
+    assert_eq!(
+        outcome
+            .conflict
+            .as_ref()
+            .map(|conflict| conflict.download_client_item_id.as_str()),
+        Some("episode-job")
+    );
+    let wanted_items = app
+        .services
+        .workflow
+        .wanted_items
+        .list_wanted_items(WantedItemsQuery {
+            title_id: Some(title.id.clone()),
+            limit: 100,
+            ..WantedItemsQuery::default()
+        })
+        .await
+        .expect("list wanted items");
+    assert!(wanted_items.is_empty());
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_from_candidate_token_accepts_authenticated_actor() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -9744,8 +9919,15 @@ async fn notification_broadcast_wakes_once_for_notification_batches() {
                         external_ids: scryer_domain::DomainExternalIds::default(),
                     }),
                     status: ImportStatus::Failed,
+                    import_id: None,
+                    source_system: Some("download_client".to_string()),
+                    source_ref: Some("queue-2".to_string()),
+                    source_title: Some("Second.Notification.1080p".to_string()),
                     source_path: Some("/downloads/example.mkv".to_string()),
+                    dest_path: None,
+                    quality: Some("1080p".to_string()),
                     reason: Some("not parsable".to_string()),
+                    skip_reason: None,
                     episode_ids: Vec::new(),
                 }),
             ),
@@ -10346,7 +10528,9 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
                     TitleHistoryEventType::Blocklisted,
                 ]),
                 title_ids: Some(vec![title.id.clone()]),
+                title_search: None,
                 download_id: Some("failed-season-pack".to_string()),
+                group_by_event: false,
                 limit: 10,
                 offset: 0,
             },

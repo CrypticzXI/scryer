@@ -717,7 +717,8 @@ mod tests {
     use chrono::Utc;
     use scryer_domain::{
         CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Entitlement, Id,
-        ImportRecord, ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, User,
+        ImportRecord, ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title,
+        TitleHistoryEventType, User,
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -1035,6 +1036,57 @@ mod tests {
                                 .any(|event_type| &event.payload.event_type() == event_type)
                         })
                 })
+                .cloned()
+                .collect())
+        }
+
+        async fn count_title_history_page_events(
+            &self,
+            event_types: Option<&[TitleHistoryEventType]>,
+            title_ids: Option<&[String]>,
+            download_id: Option<&str>,
+        ) -> AppResult<i64> {
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .rev()
+                .filter_map(crate::event_views::title_history_record_from_domain_event)
+                .filter(|record| {
+                    event_types
+                        .is_none_or(|values| values.contains(&record.event_type))
+                        && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                        && download_id
+                            .is_none_or(|value| record.download_id.as_deref() == Some(value))
+                })
+                .count() as i64)
+        }
+
+        async fn list_title_history_page_events(
+            &self,
+            event_types: Option<&[TitleHistoryEventType]>,
+            title_ids: Option<&[String]>,
+            download_id: Option<&str>,
+            limit: usize,
+            offset: usize,
+        ) -> AppResult<Vec<DomainEvent>> {
+            let page_size = if limit == 0 { usize::MAX } else { limit };
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .rev()
+                .filter(|event| {
+                    crate::event_views::title_history_record_from_domain_event(event)
+                        .is_some_and(|record| {
+                            event_types
+                                .is_none_or(|values| values.contains(&record.event_type))
+                                && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                                && download_id.is_none_or(|value| {
+                                    record.download_id.as_deref() == Some(value)
+                                })
+                        })
+                })
+                .skip(offset)
+                .take(page_size)
                 .cloned()
                 .collect())
         }

@@ -1,8 +1,8 @@
 use chrono::Utc;
 use scryer_application::{AppError, AppResult};
 use scryer_domain::{
-    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventStream, MediaFacet,
-    NewDomainEvent,
+    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventStream, DomainEventType,
+    ImportStatus, MediaFacet, NewDomainEvent, TitleHistoryEventType,
 };
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
@@ -87,6 +87,189 @@ fn row_to_domain_event(row: &sqlx::sqlite::SqliteRow) -> AppResult<DomainEvent> 
         stream: stream_from_parts(&stream_kind, stream_id)?,
         payload,
     })
+}
+
+const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
+    DomainEventType::TitleRematched,
+    DomainEventType::ReleaseGrabbed,
+    DomainEventType::ImportCompleted,
+    DomainEventType::ImportRejected,
+    DomainEventType::DownloadFailed,
+    DomainEventType::ReleaseBlocklisted,
+    DomainEventType::MediaFileDeleted,
+    DomainEventType::MediaFileRenamed,
+];
+
+fn push_title_history_page_filters<'a>(
+    builder: &mut QueryBuilder<'a, Sqlite>,
+    event_types: Option<&[TitleHistoryEventType]>,
+    title_ids: Option<&'a [String]>,
+    download_id: Option<&'a str>,
+) {
+    let mut has_where = false;
+    let mut push_where = |builder: &mut QueryBuilder<'_, Sqlite>| {
+        if has_where {
+            builder.push(" AND ");
+        } else {
+            builder.push(" WHERE ");
+            has_where = true;
+        }
+    };
+
+    push_where(builder);
+    builder.push("title_id IS NOT NULL");
+
+    match event_types {
+        None => {
+            push_where(builder);
+            builder.push("event_type IN (");
+            let mut separated = builder.separated(", ");
+            for event_type in TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES {
+                separated.push_bind(event_type.as_str());
+            }
+            separated.push_unseparated(")");
+        }
+        Some([]) => {
+            push_where(builder);
+            builder.push("0");
+        }
+        Some(event_types) => {
+            push_where(builder);
+            builder.push("(");
+            for (index, event_type) in event_types.iter().enumerate() {
+                if index > 0 {
+                    builder.push(" OR ");
+                }
+                match event_type {
+                    TitleHistoryEventType::Grabbed => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::ReleaseGrabbed.as_str());
+                    }
+                    TitleHistoryEventType::DownloadFailed => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::DownloadFailed.as_str());
+                    }
+                    TitleHistoryEventType::Blocklisted => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::ReleaseBlocklisted.as_str());
+                    }
+                    TitleHistoryEventType::Imported => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::ImportCompleted.as_str());
+                    }
+                    TitleHistoryEventType::ImportFailed => {
+                        builder
+                            .push("(event_type = ")
+                            .push_bind(DomainEventType::ImportRejected.as_str())
+                            .push(" AND json_extract(payload_json, '$.data.status') = ")
+                            .push_bind(ImportStatus::Failed.as_str())
+                            .push(")");
+                    }
+                    TitleHistoryEventType::ImportSkipped => {
+                        builder
+                            .push("(event_type = ")
+                            .push_bind(DomainEventType::ImportRejected.as_str())
+                            .push(" AND json_extract(payload_json, '$.data.status') = ")
+                            .push_bind(ImportStatus::Skipped.as_str())
+                            .push(")");
+                    }
+                    TitleHistoryEventType::FileDeleted => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::MediaFileDeleted.as_str());
+                    }
+                    TitleHistoryEventType::FileRenamed => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::MediaFileRenamed.as_str());
+                    }
+                    TitleHistoryEventType::Rematched => {
+                        builder
+                            .push("event_type = ")
+                            .push_bind(DomainEventType::TitleRematched.as_str());
+                    }
+                    TitleHistoryEventType::DownloadCompleted
+                    | TitleHistoryEventType::DownloadIgnored => {
+                        builder.push("0");
+                    }
+                }
+            }
+            builder.push(")");
+        }
+    }
+
+    if let Some(title_ids) = title_ids {
+        if title_ids.is_empty() {
+            push_where(builder);
+            builder.push("0");
+        } else if title_ids.len() == 1 {
+            push_where(builder);
+            builder.push("title_id = ").push_bind(&title_ids[0]);
+        } else {
+            push_where(builder);
+            builder.push("title_id IN (");
+            let mut separated = builder.separated(", ");
+            for title_id in title_ids {
+                separated.push_bind(title_id);
+            }
+            separated.push_unseparated(")");
+        }
+    }
+
+    if let Some(download_id) = download_id {
+        push_where(builder);
+        builder
+            .push("json_extract(payload_json, '$.data.download_id') = ")
+            .push_bind(download_id);
+    }
+}
+
+pub(crate) async fn count_title_history_page_events_query(
+    pool: &SqlitePool,
+    event_types: Option<&[TitleHistoryEventType]>,
+    title_ids: Option<&[String]>,
+    download_id: Option<&str>,
+) -> AppResult<i64> {
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM domain_events");
+    push_title_history_page_filters(&mut builder, event_types, title_ids, download_id);
+
+    builder
+        .build_query_scalar()
+        .fetch_one(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))
+}
+
+pub(crate) async fn list_title_history_page_events_query(
+    pool: &SqlitePool,
+    event_types: Option<&[TitleHistoryEventType]>,
+    title_ids: Option<&[String]>,
+    download_id: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> AppResult<Vec<DomainEvent>> {
+    let page_size = if limit == 0 { 50 } else { limit.min(500) };
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id,
+                causation_id, schema_version, stream_kind, stream_id, payload_json
+         FROM domain_events",
+    );
+    push_title_history_page_filters(&mut builder, event_types, title_ids, download_id);
+    builder.push(" ORDER BY sequence DESC");
+    builder.push(" LIMIT ").push_bind(page_size as i64);
+    builder.push(" OFFSET ").push_bind(offset as i64);
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    rows.iter().map(row_to_domain_event).collect()
 }
 
 pub(crate) async fn get_domain_event_by_sequence_tx(

@@ -9,7 +9,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DownloadQueueDeleteStatus, ImportRecord, ImportStatus,
-    ImportType, NewDomainEvent,
+    ImportType, NewDomainEvent, TitleHistoryEventType,
 };
 
 use crate::SqliteServices;
@@ -92,6 +92,40 @@ impl DomainEventRepository for SqliteWorkflowStore {
 
     async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
         crate::queries::domain_event::list_domain_events_query(&self.pool, filter).await
+    }
+
+    async fn count_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+    ) -> AppResult<i64> {
+        crate::queries::domain_event::count_title_history_page_events_query(
+            &self.pool,
+            event_types,
+            title_ids,
+            download_id,
+        )
+        .await
+    }
+
+    async fn list_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        crate::queries::domain_event::list_title_history_page_events_query(
+            &self.pool,
+            event_types,
+            title_ids,
+            download_id,
+            limit,
+            offset,
+        )
+        .await
     }
 
     async fn list_after_sequence(

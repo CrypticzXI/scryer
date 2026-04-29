@@ -1,10 +1,20 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use scryer_application::{AppError, AppResult, NotificationClient};
+use scryer_application::{
+    AppError, AppResult, NotificationClient, NotificationMediaUpdateTypePayload,
+    NotificationPayload,
+};
+use scryer_domain::NotificationEventType as DomainNotificationEventType;
 use tracing::warn;
 
-use crate::types::{PluginDescriptor, PluginNotificationRequest, PluginNotificationResponse};
+use crate::types::{
+    EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationApp,
+    PluginNotificationDownload, PluginNotificationEpisode, PluginNotificationExternalIds,
+    PluginNotificationFile, PluginNotificationHealth, PluginNotificationImport,
+    PluginNotificationMediaUpdate, PluginNotificationRequest, PluginNotificationResponse,
+    PluginNotificationTitle, decode_plugin_result,
+};
 
 pub struct WasmNotificationClient {
     plugin: Arc<Mutex<extism::Plugin>>,
@@ -24,62 +34,79 @@ impl WasmNotificationClient {
 
 #[async_trait]
 impl NotificationClient for WasmNotificationClient {
-    async fn send_notification(
-        &self,
-        event_type: &str,
-        title: &str,
-        message: &str,
-        metadata: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> AppResult<()> {
+    async fn send_notification(&self, payload: &NotificationPayload) -> AppResult<()> {
         let request = PluginNotificationRequest {
-            event_type: event_type.to_string(),
-            title: title.to_string(),
-            message: message.to_string(),
-            title_name: metadata
-                .get("title_name")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            title_year: metadata
-                .get("title_year")
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32),
-            title_facet: metadata
-                .get("title_facet")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            poster_url: metadata
-                .get("poster_url")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            episode_info: metadata
-                .get("episode_info")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            quality: metadata
-                .get("quality")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            release_title: metadata
-                .get("release_title")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            download_client: metadata
-                .get("download_client")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            file_path: metadata
-                .get("file_path")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            health_message: metadata
-                .get("health_message")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            application_version: metadata
-                .get("application_version")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            metadata: metadata.clone(),
+            event_type: map_event_type(payload.event_type),
+            summary_title: payload.summary_title.clone(),
+            summary_message: payload.summary_message.clone(),
+            app: PluginNotificationApp {
+                name: payload.app.name.clone(),
+                version: payload.app.version.clone(),
+            },
+            title: payload.title.as_ref().map(|title| PluginNotificationTitle {
+                name: title.name.clone(),
+                facet: title.facet.clone(),
+                year: title.year,
+                poster_url: title.poster_url.clone(),
+                external_ids: PluginNotificationExternalIds {
+                    tmdb_id: title.external_ids.tmdb_id.clone(),
+                    imdb_id: title.external_ids.imdb_id.clone(),
+                    tvdb_id: title.external_ids.tvdb_id.clone(),
+                    anidb_id: title.external_ids.anidb_id.clone(),
+                },
+            }),
+            episode: payload.episode.as_ref().map(|episode| PluginNotificationEpisode {
+                episode_ids: episode.episode_ids.clone(),
+                display: episode.display.clone(),
+            }),
+            release: payload.release.as_ref().map(|release| crate::types::PluginNotificationRelease {
+                source_title: release.source_title.clone(),
+                source_hint: release.source_hint.clone(),
+                quality: release.quality.clone(),
+                provider: release.provider.clone(),
+                language: release.language.clone(),
+            }),
+            download: payload.download.as_ref().map(|download| PluginNotificationDownload {
+                download_id: download.download_id.clone(),
+                client_id: download.client_id.clone(),
+                client_name: download.client_name.clone(),
+                client_type: download.client_type.clone(),
+            }),
+            import: payload.import.as_ref().map(|import| PluginNotificationImport {
+                import_id: import.import_id.clone(),
+                source_system: import.source_system.clone(),
+                source_ref: import.source_ref.clone(),
+                source_title: import.source_title.clone(),
+                source_path: import.source_path.clone(),
+                dest_path: import.dest_path.clone(),
+                imported_count: import.imported_count,
+                status: import.status.clone(),
+            }),
+            health: payload.health.as_ref().map(|health| PluginNotificationHealth {
+                status: health.status.clone(),
+                message: health.message.clone(),
+            }),
+            file: payload.file.as_ref().map(|file| PluginNotificationFile {
+                primary_path: file.primary_path.clone(),
+                media_updates: file
+                    .media_updates
+                    .iter()
+                    .map(|update| PluginNotificationMediaUpdate {
+                        path: update.path.clone(),
+                        update_type: match update.update_type {
+                            NotificationMediaUpdateTypePayload::Created => {
+                                crate::types::NotificationMediaUpdateType::Created
+                            }
+                            NotificationMediaUpdateTypePayload::Modified => {
+                                crate::types::NotificationMediaUpdateType::Modified
+                            }
+                            NotificationMediaUpdateTypePayload::Deleted => {
+                                crate::types::NotificationMediaUpdateType::Deleted
+                            }
+                        },
+                    })
+                    .collect(),
+            }),
         };
 
         let input = serde_json::to_string(&request).map_err(|e| {
@@ -95,23 +122,16 @@ impl NotificationClient for WasmNotificationClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("send_notification", &input)
+                .call::<&str, String>(EXPORT_NOTIFICATION_SEND, &input)
                 .map_err(|e| {
-                    AppError::Repository(format!("plugin send_notification() failed: {e}"))
+                    AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_SEND}() failed: {e}"))
                 })
         })
         .await
         .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;
 
-        let response: PluginNotificationResponse = serde_json::from_str(&output).map_err(|e| {
-            warn!(
-                plugin = plugin_name.as_str(),
-                channel = channel_name.as_str(),
-                error = %e,
-                "notification plugin returned invalid response JSON"
-            );
-            AppError::Repository(format!("notification plugin returned invalid JSON: {e}"))
-        })?;
+        let response: PluginNotificationResponse =
+            decode_plugin_result(&output, EXPORT_NOTIFICATION_SEND)?;
 
         if !response.success {
             let err_msg = response
@@ -129,5 +149,38 @@ impl NotificationClient for WasmNotificationClient {
         }
 
         Ok(())
+    }
+}
+
+fn map_event_type(event_type: DomainNotificationEventType) -> NotificationEventType {
+    match event_type {
+        DomainNotificationEventType::Grab => NotificationEventType::Grab,
+        DomainNotificationEventType::Download => NotificationEventType::Download,
+        DomainNotificationEventType::Upgrade => NotificationEventType::Upgrade,
+        DomainNotificationEventType::ImportComplete => NotificationEventType::ImportComplete,
+        DomainNotificationEventType::ImportRejected => NotificationEventType::ImportRejected,
+        DomainNotificationEventType::Rename => NotificationEventType::Rename,
+        DomainNotificationEventType::TitleAdded => NotificationEventType::TitleAdded,
+        DomainNotificationEventType::TitleDeleted => NotificationEventType::TitleDeleted,
+        DomainNotificationEventType::FileDeleted => NotificationEventType::FileDeleted,
+        DomainNotificationEventType::FileDeletedForUpgrade => {
+            NotificationEventType::FileDeletedForUpgrade
+        }
+        DomainNotificationEventType::PostProcessingCompleted => {
+            NotificationEventType::PostProcessingCompleted
+        }
+        DomainNotificationEventType::SubtitleDownloaded => {
+            NotificationEventType::SubtitleDownloaded
+        }
+        DomainNotificationEventType::SubtitleSearchFailed => {
+            NotificationEventType::SubtitleSearchFailed
+        }
+        DomainNotificationEventType::HealthIssue => NotificationEventType::HealthIssue,
+        DomainNotificationEventType::HealthRestored => NotificationEventType::HealthRestored,
+        DomainNotificationEventType::ApplicationUpdate => NotificationEventType::ApplicationUpdate,
+        DomainNotificationEventType::ManualInteractionRequired => {
+            NotificationEventType::ManualInteractionRequired
+        }
+        DomainNotificationEventType::Test => NotificationEventType::Test,
     }
 }

@@ -590,8 +590,15 @@ async fn finalize_import_rejection(
             DomainEventPayload::ImportRejected(ImportRejectedEventData {
                 title: Some(title_context_snapshot(title)),
                 status: ImportStatus::Skipped,
+                import_id: None,
+                source_system: None,
+                source_ref: None,
+                source_title: Some(completed_name.to_string()),
                 source_path: Some(path.display().to_string()),
+                dest_path: None,
+                quality: None,
                 reason,
+                skip_reason: Some(ImportSkipReason::PostDownloadRuleBlocked),
                 episode_ids: episode_ids.to_vec(),
             }),
         ))

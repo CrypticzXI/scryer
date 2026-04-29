@@ -902,8 +902,13 @@ pub struct ImportResult {
     pub decision: ImportDecision,
     pub skip_reason: Option<ImportSkipReason>,
     pub title_id: Option<String>,
+    pub source_system: Option<String>,
+    pub source_ref: Option<String>,
+    pub source_title: Option<String>,
     pub source_path: String,
     pub dest_path: Option<String>,
+    pub quality: Option<String>,
+    pub episode_ids: Vec<String>,
     pub file_size_bytes: Option<i64>,
     pub link_type: Option<ImportStrategy>,
     pub error_message: Option<String>,
@@ -1038,16 +1043,40 @@ impl HistoryEventType {
 pub struct TitleHistoryRecord {
     pub id: String,
     pub title_id: String,
+    #[serde(default)]
+    pub title_name: Option<String>,
+    #[serde(default)]
+    pub facet: Option<MediaFacet>,
     pub episode_id: Option<String>,
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
     pub collection_id: Option<String>,
     pub event_type: TitleHistoryEventType,
     pub source_title: Option<String>,
+    #[serde(default)]
+    pub display_title: Option<String>,
+    #[serde(default)]
+    pub source_system: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub source_hint: Option<String>,
     pub quality: Option<String>,
     pub download_id: Option<String>,
     pub client_id: Option<String>,
     pub client_name: Option<String>,
+    #[serde(default)]
+    pub import_id: Option<String>,
+    #[serde(default)]
+    pub skip_reason: Option<String>,
+    #[serde(default)]
+    pub retry_requires_password: bool,
     pub failure_reason: Option<String>,
     pub blocklist_reason: Option<String>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub dest_path: Option<String>,
     pub data_json: Option<String>,
     pub occurred_at: String,
     pub created_at: String,
@@ -1446,6 +1475,20 @@ pub struct ImportCompletedEventData {
     pub media_updates: Vec<MediaPathUpdate>,
     pub imported_count: i32,
     #[serde(default)]
+    pub import_id: Option<String>,
+    #[serde(default)]
+    pub source_system: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub source_title: Option<String>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub dest_path: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default)]
     pub episode_ids: Vec<String>,
 }
 
@@ -1453,8 +1496,22 @@ pub struct ImportCompletedEventData {
 pub struct ImportRejectedEventData {
     pub title: Option<TitleContextSnapshot>,
     pub status: ImportStatus,
+    #[serde(default)]
+    pub import_id: Option<String>,
+    #[serde(default)]
+    pub source_system: Option<String>,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub source_title: Option<String>,
     pub source_path: Option<String>,
+    #[serde(default)]
+    pub dest_path: Option<String>,
+    #[serde(default)]
+    pub quality: Option<String>,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub skip_reason: Option<ImportSkipReason>,
     #[serde(default)]
     pub episode_ids: Vec<String>,
 }

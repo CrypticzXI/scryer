@@ -208,6 +208,20 @@ pub trait DomainEventRepository: Send + Sync {
     async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent>;
     async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>>;
     async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>>;
+    async fn count_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+    ) -> AppResult<i64>;
+    async fn list_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<Vec<DomainEvent>>;
     async fn list_after_sequence(
         &self,
         after_sequence: i64,
@@ -1153,15 +1167,107 @@ pub trait DownloadClientPluginProvider: Send + Sync {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationAppPayload {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationExternalIdsPayload {
+    pub tmdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub anidb_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationTitlePayload {
+    pub name: String,
+    pub facet: String,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub external_ids: NotificationExternalIdsPayload,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationEpisodePayload {
+    pub episode_ids: Vec<String>,
+    pub display: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationReleasePayload {
+    pub source_title: Option<String>,
+    pub source_hint: Option<String>,
+    pub quality: Option<String>,
+    pub provider: Option<String>,
+    pub language: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationDownloadPayload {
+    pub download_id: Option<String>,
+    pub client_id: Option<String>,
+    pub client_name: Option<String>,
+    pub client_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationImportPayload {
+    pub import_id: Option<String>,
+    pub source_system: Option<String>,
+    pub source_ref: Option<String>,
+    pub source_title: Option<String>,
+    pub source_path: Option<String>,
+    pub dest_path: Option<String>,
+    pub imported_count: Option<i32>,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationHealthPayload {
+    pub status: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationMediaUpdateTypePayload {
+    Created,
+    Modified,
+    Deleted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationMediaUpdatePayload {
+    pub path: String,
+    pub update_type: NotificationMediaUpdateTypePayload,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationFilePayload {
+    pub primary_path: Option<String>,
+    pub media_updates: Vec<NotificationMediaUpdatePayload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationPayload {
+    pub event_type: scryer_domain::NotificationEventType,
+    pub summary_title: String,
+    pub summary_message: String,
+    pub app: NotificationAppPayload,
+    pub title: Option<NotificationTitlePayload>,
+    pub episode: Option<NotificationEpisodePayload>,
+    pub release: Option<NotificationReleasePayload>,
+    pub download: Option<NotificationDownloadPayload>,
+    pub import: Option<NotificationImportPayload>,
+    pub health: Option<NotificationHealthPayload>,
+    pub file: Option<NotificationFilePayload>,
+}
+
 #[async_trait]
 pub trait NotificationClient: Send + Sync {
-    async fn send_notification(
-        &self,
-        event_type: &str,
-        title: &str,
-        message: &str,
-        metadata: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> AppResult<()>;
+    async fn send_notification(&self, payload: &NotificationPayload) -> AppResult<()>;
 }
 
 #[async_trait]

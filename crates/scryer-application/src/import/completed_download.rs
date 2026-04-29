@@ -857,8 +857,18 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
                 scryer_domain::DomainEventPayload::ImportRejected(ImportRejectedEventData {
                     title: Some(title_context_snapshot(&title)),
                     status: ImportStatus::Skipped,
-                    source_path: Some(td.client_item.title_name.clone()),
-                    reason: Some(message),
+                    import_id: None,
+                    source_system: Some(td.client_type.clone()),
+                    source_ref: Some(td.client_item.download_client_item_id.clone()),
+                    source_title: td
+                        .source_title
+                        .clone()
+                        .or_else(|| Some(td.client_item.title_name.clone())),
+                    source_path: None,
+                    dest_path: None,
+                    quality: None,
+                    reason: Some(message.clone()),
+                    skip_reason: None,
                     episode_ids: Vec::new(),
                 }),
             ),
@@ -867,8 +877,18 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
                 scryer_domain::DomainEventPayload::ImportRejected(ImportRejectedEventData {
                     title: None,
                     status: ImportStatus::Skipped,
-                    source_path: Some(td.client_item.title_name.clone()),
-                    reason: Some(message),
+                    import_id: None,
+                    source_system: Some(td.client_type.clone()),
+                    source_ref: Some(td.client_item.download_client_item_id.clone()),
+                    source_title: td
+                        .source_title
+                        .clone()
+                        .or_else(|| Some(td.client_item.title_name.clone())),
+                    source_path: None,
+                    dest_path: None,
+                    quality: None,
+                    reason: Some(message.clone()),
+                    skip_reason: None,
                     episode_ids: Vec::new(),
                 }),
             ),
@@ -878,8 +898,18 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
             scryer_domain::DomainEventPayload::ImportRejected(ImportRejectedEventData {
                 title: None,
                 status: ImportStatus::Skipped,
-                source_path: Some(td.client_item.title_name.clone()),
+                import_id: None,
+                source_system: Some(td.client_type.clone()),
+                source_ref: Some(td.client_item.download_client_item_id.clone()),
+                source_title: td
+                    .source_title
+                    .clone()
+                    .or_else(|| Some(td.client_item.title_name.clone())),
+                source_path: None,
+                dest_path: None,
+                quality: None,
                 reason: Some(message),
+                skip_reason: None,
                 episode_ids: Vec::new(),
             }),
         ),
@@ -939,7 +969,8 @@ mod tests {
     use scryer_domain::{
         CalendarEpisode, Collection, CollectionType, DomainEvent, DomainEventFilter,
         DownloadQueueItem, DownloadQueueState, Episode, EpisodeType, Id, MediaFacet,
-        NewDomainEvent, Title, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus, User,
+        NewDomainEvent, Title, TitleHistoryEventType, TitleMatchType, TrackedDownloadState,
+        TrackedDownloadStatus, User,
     };
     use std::sync::{
         Arc,
@@ -1599,6 +1630,57 @@ mod tests {
                         })
                 })
                 .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn count_title_history_page_events(
+            &self,
+            event_types: Option<&[TitleHistoryEventType]>,
+            title_ids: Option<&[String]>,
+            download_id: Option<&str>,
+        ) -> AppResult<i64> {
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .rev()
+                .filter_map(crate::event_views::title_history_record_from_domain_event)
+                .filter(|record| {
+                    event_types
+                        .is_none_or(|values| values.contains(&record.event_type))
+                        && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                        && download_id
+                            .is_none_or(|value| record.download_id.as_deref() == Some(value))
+                })
+                .count() as i64)
+        }
+
+        async fn list_title_history_page_events(
+            &self,
+            event_types: Option<&[TitleHistoryEventType]>,
+            title_ids: Option<&[String]>,
+            download_id: Option<&str>,
+            limit: usize,
+            offset: usize,
+        ) -> AppResult<Vec<DomainEvent>> {
+            let page_size = if limit == 0 { usize::MAX } else { limit };
+            let events = self.events.lock().await;
+            Ok(events
+                .iter()
+                .rev()
+                .filter(|event| {
+                    crate::event_views::title_history_record_from_domain_event(event)
+                        .is_some_and(|record| {
+                            event_types
+                                .is_none_or(|values| values.contains(&record.event_type))
+                                && title_ids.is_none_or(|values| values.contains(&record.title_id))
+                                && download_id.is_none_or(|value| {
+                                    record.download_id.as_deref() == Some(value)
+                                })
+                        })
+                })
+                .skip(offset)
+                .take(page_size)
                 .cloned()
                 .collect())
         }

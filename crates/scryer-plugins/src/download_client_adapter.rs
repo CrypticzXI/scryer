@@ -9,13 +9,17 @@ use scryer_application::{
     DownloadSourceKind,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::types::{
+    DownloadControlAction, DownloadInputKind, DownloadItemState, EXPORT_DOWNLOAD_ADD,
+    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
+    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
     PluginCompletedDownload, PluginDescriptor, PluginDownloadClientAddRequest,
     PluginDownloadClientAddResponse, PluginDownloadClientControlRequest,
     PluginDownloadClientMarkImportedRequest, PluginDownloadClientStatus, PluginDownloadItem,
     PluginDownloadRelease, PluginDownloadRouting, PluginDownloadSource, PluginDownloadTitle,
+    decode_plugin_result,
 };
 
 pub struct WasmDownloadClient {
@@ -51,26 +55,35 @@ fn parse_timestamp(raw: Option<String>) -> Option<DateTime<Utc>> {
         .map(|value| value.with_timezone(&Utc))
 }
 
-fn map_state(raw: &str) -> DownloadQueueState {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "queued" => DownloadQueueState::Queued,
-        "downloading" => DownloadQueueState::Downloading,
-        "verifying" => DownloadQueueState::Verifying,
-        "repairing" => DownloadQueueState::Repairing,
-        "extracting" => DownloadQueueState::Extracting,
-        "paused" => DownloadQueueState::Paused,
-        "completed" => DownloadQueueState::Completed,
-        "import_pending" => DownloadQueueState::ImportPending,
-        "failed" | "error" => DownloadQueueState::Failed,
-        "seeding" => DownloadQueueState::Completed,
-        _ => DownloadQueueState::Queued,
+fn map_source_kind(kind: DownloadSourceKind) -> DownloadInputKind {
+    match kind {
+        DownloadSourceKind::NzbFile => DownloadInputKind::Nzb,
+        DownloadSourceKind::NzbUrl => DownloadInputKind::NzbUrl,
+        DownloadSourceKind::TorrentFile => DownloadInputKind::TorrentFile,
+        DownloadSourceKind::MagnetUri => DownloadInputKind::MagnetUri,
+    }
+}
+
+fn map_state(state: DownloadItemState) -> DownloadQueueState {
+    match state {
+        DownloadItemState::Queued => DownloadQueueState::Queued,
+        DownloadItemState::Downloading => DownloadQueueState::Downloading,
+        DownloadItemState::Verifying => DownloadQueueState::Verifying,
+        DownloadItemState::Repairing => DownloadQueueState::Repairing,
+        DownloadItemState::Extracting => DownloadQueueState::Extracting,
+        DownloadItemState::Paused => DownloadQueueState::Paused,
+        DownloadItemState::Completed | DownloadItemState::Seeding => DownloadQueueState::Completed,
+        DownloadItemState::ImportPending => DownloadQueueState::ImportPending,
+        DownloadItemState::Failed | DownloadItemState::Error | DownloadItemState::Warning => {
+            DownloadQueueState::Failed
+        }
     }
 }
 
 fn attention_required(item: &PluginDownloadItem) -> bool {
     matches!(
-        item.state.trim().to_ascii_lowercase().as_str(),
-        "failed" | "error" | "warning"
+        item.state,
+        DownloadItemState::Failed | DownloadItemState::Error | DownloadItemState::Warning
     )
 }
 
@@ -91,7 +104,7 @@ fn map_queue_item(
         client_id: client_id.to_string(),
         client_name: client_name.to_string(),
         client_type: client_type.to_string(),
-        state: map_state(&item.state),
+        state: map_state(item.state),
         progress_percent: item.progress_percent.unwrap_or(0),
         size_bytes: item.total_size_bytes,
         remaining_seconds: item.eta_seconds,
@@ -153,9 +166,7 @@ impl DownloadClient for WasmDownloadClient {
         let source_kind = request
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()))
-            .unwrap_or(DownloadSourceKind::TorrentFile)
-            .as_str()
-            .to_string();
+            .unwrap_or(DownloadSourceKind::TorrentFile);
 
         // When the source is a .torrent HTTP URL and we have no info_hash_hint,
         // pre-fetch the torrent file so the plugin can compute the hash directly.
@@ -223,7 +234,7 @@ impl DownloadClient for WasmDownloadClient {
 
         let plugin_request = PluginDownloadClientAddRequest {
             source: PluginDownloadSource {
-                kind: source_kind,
+                kind: map_source_kind(source_kind),
                 download_url: source_hint.clone(),
                 magnet_uri,
                 torrent_bytes_base64,
@@ -259,56 +270,53 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize plugin request: {e}"))
         })?;
 
-        let plugin_name = self.descriptor.name.clone();
         let plugin = Arc::clone(&self.plugin);
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("add_download", &input)
-                .map_err(|e| plugin_call_error("add_download()", e))
+                .call::<&str, String>(EXPORT_DOWNLOAD_ADD, &input)
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
         })
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let response: PluginDownloadClientAddResponse = serde_json::from_str(&output).map_err(|e| {
-            warn!(plugin = plugin_name.as_str(), error = %e, "plugin returned invalid add_download response JSON");
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let response: PluginDownloadClientAddResponse =
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_ADD)?;
 
         Ok(DownloadGrabResult {
             job_id: response.client_item_id,
             client_id: None,
-            client_type: self.descriptor.provider_type.clone(),
+            client_type: self.descriptor.provider_type().to_string(),
         })
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let plugin_name = self.descriptor.name.clone();
         let plugin = Arc::clone(&self.plugin);
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>("list_downloads", ())
-                .map_err(|e| plugin_call_error("list_downloads()", e))
+                .call::<(), String>(EXPORT_DOWNLOAD_LIST_QUEUE, ())
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
         })
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let items: Vec<PluginDownloadItem> = serde_json::from_str(&output).map_err(|e| {
-            warn!(plugin = plugin_name.as_str(), error = %e, "plugin returned invalid list_downloads JSON");
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let items: Vec<PluginDownloadItem> =
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_QUEUE)?;
 
         Ok(items
             .into_iter()
             .filter(|item| {
                 !matches!(
-                    item.state.trim().to_ascii_lowercase().as_str(),
-                    "completed" | "seeding" | "failed" | "error"
+                    item.state,
+                    DownloadItemState::Completed
+                        | DownloadItemState::Seeding
+                        | DownloadItemState::Failed
+                        | DownloadItemState::Error
                 )
             })
             .map(|item| {
@@ -316,37 +324,37 @@ impl DownloadClient for WasmDownloadClient {
                     item,
                     &self.client_id,
                     &self.client_name,
-                    &self.descriptor.provider_type,
+                    self.descriptor.provider_type(),
                 )
             })
             .collect())
     }
 
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let plugin_name = self.descriptor.name.clone();
         let plugin = Arc::clone(&self.plugin);
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>("list_downloads", ())
-                .map_err(|e| plugin_call_error("list_downloads()", e))
+                .call::<(), String>(EXPORT_DOWNLOAD_LIST_HISTORY, ())
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
         })
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let items: Vec<PluginDownloadItem> = serde_json::from_str(&output).map_err(|e| {
-            warn!(plugin = plugin_name.as_str(), error = %e, "plugin returned invalid list_downloads JSON");
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let items: Vec<PluginDownloadItem> =
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_HISTORY)?;
 
         Ok(items
             .into_iter()
             .filter(|item| {
                 matches!(
-                    item.state.trim().to_ascii_lowercase().as_str(),
-                    "completed" | "seeding" | "failed" | "error"
+                    item.state,
+                    DownloadItemState::Completed
+                        | DownloadItemState::Seeding
+                        | DownloadItemState::Failed
+                        | DownloadItemState::Error
                 )
             })
             .map(|item| {
@@ -354,42 +362,39 @@ impl DownloadClient for WasmDownloadClient {
                     item,
                     &self.client_id,
                     &self.client_name,
-                    &self.descriptor.provider_type,
+                    self.descriptor.provider_type(),
                 )
             })
             .collect())
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
-        let plugin_name = self.descriptor.name.clone();
         let plugin = Arc::clone(&self.plugin);
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>("list_completed_downloads", ())
-                .map_err(|e| plugin_call_error("list_completed_downloads()", e))
+                .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e))
         })
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let items: Vec<PluginCompletedDownload> = serde_json::from_str(&output).map_err(|e| {
-            warn!(plugin = plugin_name.as_str(), error = %e, "plugin returned invalid completed download JSON");
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let items: Vec<PluginCompletedDownload> =
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_COMPLETED)?;
 
         Ok(items
             .into_iter()
             .map(|item| {
-                map_completed_download(item, &self.client_id, &self.descriptor.provider_type)
+                map_completed_download(item, &self.client_id, self.descriptor.provider_type())
             })
             .collect())
     }
 
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         let request = PluginDownloadClientControlRequest {
-            action: "pause".to_string(),
+            action: DownloadControlAction::Pause,
             client_item_id: id.to_string(),
             remove_data: false,
             is_history: false,
@@ -403,8 +408,8 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("control", &input)
-                .map_err(|e| plugin_call_error("control()", e))
+                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))
                 .map(|_| ())
         })
         .await
@@ -413,7 +418,7 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn resume_queue_item(&self, id: &str) -> AppResult<()> {
         let request = PluginDownloadClientControlRequest {
-            action: "resume".to_string(),
+            action: DownloadControlAction::Resume,
             client_item_id: id.to_string(),
             remove_data: false,
             is_history: false,
@@ -427,8 +432,8 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("control", &input)
-                .map_err(|e| plugin_call_error("control()", e))
+                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))
                 .map(|_| ())
         })
         .await
@@ -437,7 +442,7 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
         let request = PluginDownloadClientControlRequest {
-            action: "remove".to_string(),
+            action: DownloadControlAction::Remove,
             client_item_id: id.to_string(),
             remove_data: false,
             is_history,
@@ -451,8 +456,8 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("control", &input)
-                .map_err(|e| plugin_call_error("control()", e))
+                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))
                 .map(|_| ())
         })
         .await
@@ -478,8 +483,8 @@ impl DownloadClient for WasmDownloadClient {
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<&str, String>("mark_imported", &input)
-                .map_err(|e| plugin_call_error("mark_imported()", e))
+                .call::<&str, String>(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e))
                 .map(|_| ())
         })
         .await
@@ -487,23 +492,20 @@ impl DownloadClient for WasmDownloadClient {
     }
 
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
-        let plugin_name = self.descriptor.name.clone();
         let plugin = Arc::clone(&self.plugin);
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>("get_client_status", ())
-                .map_err(|e| plugin_call_error("get_client_status()", e))
+                .call::<(), String>(EXPORT_DOWNLOAD_STATUS, ())
+                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
         })
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let status: PluginDownloadClientStatus = serde_json::from_str(&output).map_err(|e| {
-            warn!(plugin = plugin_name.as_str(), error = %e, "plugin returned invalid client status JSON");
-            AppError::Repository(format!("plugin returned invalid JSON: {e}"))
-        })?;
+        let status: PluginDownloadClientStatus =
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_STATUS)?;
 
         Ok(DownloadClientStatus {
             version: status.version,
@@ -517,15 +519,22 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn test_connection(&self) -> AppResult<String> {
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
+        let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
             guard
-                .call::<(), String>("test_connection", ())
-                .map_err(|e| plugin_call_error("test_connection()", e))
+                .call::<(), String>(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION, ())
+                .map_err(|e| {
+                    plugin_call_error(
+                        &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),
+                        e,
+                    )
+                })
         })
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
+        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+
+        decode_plugin_result(&output, crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus, ImportType,
-    MediaFacet, NewDomainEvent,
+    MediaFacet, NewDomainEvent, TitleHistoryEventType,
 };
 
 use scryer_domain::RuleSet;
@@ -761,6 +761,26 @@ impl DomainEventRepository for NullDomainEventRepository {
     }
 
     async fn list(&self, _: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+        Ok(vec![])
+    }
+
+    async fn count_title_history_page_events(
+        &self,
+        _: Option<&[TitleHistoryEventType]>,
+        _: Option<&[String]>,
+        _: Option<&str>,
+    ) -> AppResult<i64> {
+        Ok(0)
+    }
+
+    async fn list_title_history_page_events(
+        &self,
+        _: Option<&[TitleHistoryEventType]>,
+        _: Option<&[String]>,
+        _: Option<&str>,
+        _: usize,
+        _: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
         Ok(vec![])
     }
 

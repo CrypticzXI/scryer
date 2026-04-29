@@ -1935,16 +1935,28 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
     records {
       id
       titleId
+      titleName
+      facet
       episodeId
+      episodeIds
       collectionId
       eventType
       sourceTitle
+      displayTitle
+      sourceSystem
+      sourceRef
+      sourceHint
       quality
       downloadId
       clientId
       clientName
+      importId
+      skipReason
+      retryRequiresPassword
       failureReason
       blocklistReason
+      sourcePath
+      destPath
       dataJson
       occurredAt
       createdAt
