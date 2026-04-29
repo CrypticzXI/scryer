@@ -1487,7 +1487,7 @@ fn wait_for_scryer() -> Result<()> {
     let timeout = std::env::var("SCRYER_DOCKER_SCRYER_READY_TIMEOUT_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(300);
+        .unwrap_or(600);
     let poll = std::env::var("SCRYER_DOCKER_READY_POLL_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
