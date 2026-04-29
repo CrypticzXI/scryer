@@ -1,5 +1,5 @@
 use chrono::Utc;
-use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem};
+use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem, WantedItemsQuery};
 use scryer_domain::MediaFacet;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
@@ -524,16 +524,21 @@ pub(crate) async fn get_wanted_item_by_id_query(
 
 pub(crate) async fn list_wanted_items_query(
     pool: &SqlitePool,
-    status: Option<&str>,
-    media_type: Option<&str>,
-    title_id: Option<&str>,
-    title_search: Option<&str>,
-    latest_decision_code: Option<&str>,
-    limit: i64,
-    offset: i64,
+    query: &WantedItemsQuery,
 ) -> AppResult<Vec<WantedItem>> {
+    let WantedItemsQuery {
+        status,
+        media_type,
+        title_id,
+        title_search,
+        latest_decision_code,
+        limit,
+        offset,
+    } = query;
     let search_plan =
-        title_search.and_then(|search| super::title_search::build_title_search_plan(None, search));
+        title_search.as_deref().and_then(|search| {
+            super::title_search::build_title_search_plan(None, search)
+        });
     let mut builder = QueryBuilder::<Sqlite>::new("");
     if let Some(plan) = search_plan.as_ref() {
         super::title_search::push_ranked_title_matches_cte(&mut builder, plan);
@@ -592,19 +597,19 @@ pub(crate) async fn list_wanted_items_query(
 
     builder.push("WHERE 1=1");
 
-    if let Some(s) = status {
+    if let Some(s) = status.as_deref() {
         builder.push(" AND w.status = ");
         builder.push_bind(s.to_string());
     }
-    if let Some(mt) = media_type {
+    if let Some(mt) = media_type.as_deref() {
         builder.push(" AND w.media_type = ");
         builder.push_bind(mt.to_string());
     }
-    if let Some(tid) = title_id {
+    if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
         builder.push_bind(tid.to_string());
     }
-    if let Some(code) = latest_decision_code {
+    if let Some(code) = latest_decision_code.as_deref() {
         builder.push(" AND latest_decision.decision_code = ");
         builder.push_bind(code.to_string());
     }
@@ -629,14 +634,20 @@ pub(crate) async fn list_wanted_items_query(
 
 pub(crate) async fn count_wanted_items_query(
     pool: &SqlitePool,
-    status: Option<&str>,
-    media_type: Option<&str>,
-    title_id: Option<&str>,
-    title_search: Option<&str>,
-    latest_decision_code: Option<&str>,
+    query: &WantedItemsQuery,
 ) -> AppResult<i64> {
+    let WantedItemsQuery {
+        status,
+        media_type,
+        title_id,
+        title_search,
+        latest_decision_code,
+        ..
+    } = query;
     let search_plan =
-        title_search.and_then(|search| super::title_search::build_title_search_plan(None, search));
+        title_search.as_deref().and_then(|search| {
+            super::title_search::build_title_search_plan(None, search)
+        });
     let mut builder = QueryBuilder::<Sqlite>::new("");
     if let Some(plan) = search_plan.as_ref() {
         super::title_search::push_ranked_title_matches_cte(&mut builder, plan);
@@ -662,19 +673,19 @@ pub(crate) async fn count_wanted_items_query(
 
     builder.push("WHERE 1=1");
 
-    if let Some(s) = status {
+    if let Some(s) = status.as_deref() {
         builder.push(" AND w.status = ");
         builder.push_bind(s.to_string());
     }
-    if let Some(mt) = media_type {
+    if let Some(mt) = media_type.as_deref() {
         builder.push(" AND w.media_type = ");
         builder.push_bind(mt.to_string());
     }
-    if let Some(tid) = title_id {
+    if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
         builder.push_bind(tid.to_string());
     }
-    if let Some(code) = latest_decision_code {
+    if let Some(code) = latest_decision_code.as_deref() {
         builder.push(" AND latest_decision.decision_code = ");
         builder.push_bind(code.to_string());
     }

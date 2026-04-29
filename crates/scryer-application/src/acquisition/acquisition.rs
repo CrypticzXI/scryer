@@ -542,7 +542,11 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(&title.id), None, None, 5000, 0)
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(title.id.clone()),
+                limit: 5000,
+                ..WantedItemsQuery::default()
+            })
             .await
         {
             Ok(items) => items,
@@ -1115,7 +1119,11 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, None, None, None, 200, 0)
+        .list_wanted_items(WantedItemsQuery {
+            status: Some("grabbed".into()),
+            limit: 200,
+            ..WantedItemsQuery::default()
+        })
         .await
     {
         Ok(items) => items,
@@ -1264,15 +1272,12 @@ async fn resolve_failed_collection_episode_wanted_items(
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(
-            None,
-            Some("episode"),
-            Some(&submission.title_id),
-            None,
-            None,
-            500,
-            0,
-        )
+        .list_wanted_items(WantedItemsQuery {
+            media_type: Some("episode".into()),
+            title_id: Some(submission.title_id.clone()),
+            limit: 500,
+            ..WantedItemsQuery::default()
+        })
         .await?;
 
     Ok(wanted_items
@@ -1568,7 +1573,12 @@ async fn resolve_failure_wanted_item(
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(Some("grabbed"), None, Some(title_id), None, None, 25, 0)
+        .list_wanted_items(WantedItemsQuery {
+            status: Some("grabbed".into()),
+            title_id: Some(title_id.to_string()),
+            limit: 25,
+            ..WantedItemsQuery::default()
+        })
         .await
         .ok()?;
 
@@ -3144,27 +3154,28 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(
-                status.as_deref(),
-                media_type.as_deref(),
-                title_id.as_deref(),
-                title_search.as_deref(),
-                latest_decision_code.as_deref(),
+            .list_wanted_items(WantedItemsQuery {
+                status: status.clone(),
+                media_type: media_type.clone(),
+                title_id: title_id.clone(),
+                title_search: title_search.clone(),
+                latest_decision_code: latest_decision_code.clone(),
                 limit,
                 offset,
-            )
+            })
             .await?;
         let total = self
             .services
             .workflow
             .wanted_items
-            .count_wanted_items(
-                status.as_deref(),
-                media_type.as_deref(),
-                title_id.as_deref(),
-                title_search.as_deref(),
-                latest_decision_code.as_deref(),
-            )
+            .count_wanted_items(WantedItemsQuery {
+                status,
+                media_type,
+                title_id,
+                title_search,
+                latest_decision_code,
+                ..WantedItemsQuery::default()
+            })
             .await?;
         Ok((items, total))
     }
@@ -3274,7 +3285,11 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(title_id), None, None, 500, 0)
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(title_id.to_string()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
             .await?;
         let pending_releases = self
             .services
@@ -3353,7 +3368,12 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(Some("wanted"), None, Some(title_id), None, None, 500, 0)
+            .list_wanted_items(WantedItemsQuery {
+                status: Some("wanted".into()),
+                title_id: Some(title_id.to_string()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
             .await?;
 
         let now = Utc::now();
@@ -3405,15 +3425,13 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(
-                Some("wanted"),
-                Some("episode"),
-                Some(title_id),
-                None,
-                None,
-                500,
-                0,
-            )
+            .list_wanted_items(WantedItemsQuery {
+                status: Some("wanted".into()),
+                media_type: Some("episode".into()),
+                title_id: Some(title_id.to_string()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
             .await?;
 
         let now = Utc::now();
@@ -3647,7 +3665,11 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(title_id), None, None, 1000, 0)
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(title_id.to_string()),
+                limit: 1000,
+                ..WantedItemsQuery::default()
+            })
             .await?;
         if items.is_empty() {
             return Ok(if fallback_wanted_item_id.is_empty() {

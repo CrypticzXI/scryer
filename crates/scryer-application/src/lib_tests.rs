@@ -2773,18 +2773,18 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .cloned())
     }
 
-    async fn list_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-        limit: i64,
-        offset: i64,
-    ) -> AppResult<Vec<WantedItem>> {
+    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
+        let WantedItemsQuery {
+            status,
+            media_type,
+            title_id,
+            title_search,
+            latest_decision_code,
+            limit,
+            offset,
+        } = query;
         let latest_decisions = self.release_decisions.lock().await.clone();
-        let normalized_title_search = title_search.map(str::to_lowercase);
+        let normalized_title_search = title_search.as_deref().map(str::to_lowercase);
         let items: Vec<WantedItem> = self
             .store
             .lock()
@@ -2795,15 +2795,19 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status.is_none_or(|status| item.status.as_str() == status)
-                    && media_type.is_none_or(|media_type| item.media_type == media_type)
-                    && title_id.is_none_or(|title_id| item.title_id == title_id)
+                status.as_deref().is_none_or(|status| item.status.as_str() == status)
+                    && media_type
+                        .as_deref()
+                        .is_none_or(|media_type| item.media_type == media_type)
+                    && title_id
+                        .as_deref()
+                        .is_none_or(|title_id| item.title_id == title_id)
                     && normalized_title_search.as_ref().is_none_or(|title_search| {
                         item.title_name.as_deref().is_some_and(|title_name| {
                             title_name.to_lowercase().contains(title_search)
                         })
                     })
-                    && latest_decision_code.is_none_or(|code| {
+                    && latest_decision_code.as_deref().is_none_or(|code| {
                         latest_decision
                             .as_ref()
                             .is_some_and(|decision| decision.decision_code == code)
@@ -2816,16 +2820,17 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(items)
     }
 
-    async fn count_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-    ) -> AppResult<i64> {
+    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
+        let WantedItemsQuery {
+            status,
+            media_type,
+            title_id,
+            title_search,
+            latest_decision_code,
+            ..
+        } = query;
         let latest_decisions = self.release_decisions.lock().await.clone();
-        let normalized_title_search = title_search.map(str::to_lowercase);
+        let normalized_title_search = title_search.as_deref().map(str::to_lowercase);
         Ok(self
             .store
             .lock()
@@ -2836,15 +2841,19 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status.is_none_or(|status| item.status.as_str() == status)
-                    && media_type.is_none_or(|media_type| item.media_type == media_type)
-                    && title_id.is_none_or(|title_id| item.title_id == title_id)
+                status.as_deref().is_none_or(|status| item.status.as_str() == status)
+                    && media_type
+                        .as_deref()
+                        .is_none_or(|media_type| item.media_type == media_type)
+                    && title_id
+                        .as_deref()
+                        .is_none_or(|title_id| item.title_id == title_id)
                     && normalized_title_search.as_ref().is_none_or(|title_search| {
                         item.title_name.as_deref().is_some_and(|title_name| {
                             title_name.to_lowercase().contains(title_search)
                         })
                     })
-                    && latest_decision_code.is_none_or(|code| {
+                    && latest_decision_code.as_deref().is_none_or(|code| {
                         latest_decision
                             .as_ref()
                             .is_some_and(|decision| decision.decision_code == code)
@@ -7483,7 +7492,11 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
         app.services
             .workflow
             .wanted_items
-            .list_wanted_items(None, None, Some(&title.id), None, None, 100, 0)
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(title.id.clone()),
+                limit: 100,
+                ..WantedItemsQuery::default()
+            })
             .await
             .expect("list wanted items")
             .is_empty()
@@ -12149,7 +12162,11 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .expect("monitor interstitial collection");
 
     let wanted = wanted_items
-        .list_wanted_items(None, None, Some(&title.id), None, None, 50, 0)
+        .list_wanted_items(WantedItemsQuery {
+            title_id: Some(title.id.clone()),
+            limit: 50,
+            ..WantedItemsQuery::default()
+        })
         .await
         .expect("list wanted items");
     assert_eq!(wanted.len(), 1);

@@ -3,7 +3,8 @@ use scryer_application::{
     DownloadQueueCommandRecord, DownloadSourceIdentity, EpisodeUpdate,
     ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, QualityProfile,
     ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
-    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WorkflowOperationInfo,
+    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItemsQuery,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
@@ -2630,24 +2631,12 @@ impl DbRuntime {
 
     pub async fn list_wanted_items(
         &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-        limit: i64,
-        offset: i64,
+        query: WantedItemsQuery,
     ) -> AppResult<Vec<scryer_application::WantedItem>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::ListWantedItems {
-                status: status.map(str::to_string),
-                media_type: media_type.map(str::to_string),
-                title_id: title_id.map(str::to_string),
-                title_search: title_search.map(str::to_string),
-                latest_decision_code: latest_decision_code.map(str::to_string),
-                limit,
-                offset,
+                query,
                 reply: reply_tx,
             })
             .await
@@ -2660,20 +2649,12 @@ impl DbRuntime {
 
     pub async fn count_wanted_items(
         &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
+        query: WantedItemsQuery,
     ) -> AppResult<i64> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::CountWantedItems {
-                status: status.map(str::to_string),
-                media_type: media_type.map(str::to_string),
-                title_id: title_id.map(str::to_string),
-                title_search: title_search.map(str::to_string),
-                latest_decision_code: latest_decision_code.map(str::to_string),
+                query,
                 reply: reply_tx,
             })
             .await

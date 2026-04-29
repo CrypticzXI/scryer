@@ -850,25 +850,9 @@ pub trait WantedItemRepository: Send + Sync {
 
     async fn get_wanted_item_by_id(&self, id: &str) -> AppResult<Option<WantedItem>>;
 
-    async fn list_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-        limit: i64,
-        offset: i64,
-    ) -> AppResult<Vec<WantedItem>>;
+    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>>;
 
-    async fn count_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-    ) -> AppResult<i64>;
+    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64>;
 
     async fn list_release_decisions_for_title(
         &self,
@@ -889,7 +873,11 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
 ) -> AppResult<Option<WantedItem>> {
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
-            .list_wanted_items(None, None, Some(&item.title_id), None, None, 500, 0)
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(item.title_id.clone()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
             .await?
             .into_iter()
             .find(|existing| existing.collection_id.as_deref() == Some(collection_id)));
@@ -902,7 +890,11 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
     }
 
     Ok(repo
-        .list_wanted_items(None, None, Some(&item.title_id), None, None, 500, 0)
+        .list_wanted_items(WantedItemsQuery {
+            title_id: Some(item.title_id.clone()),
+            limit: 500,
+            ..WantedItemsQuery::default()
+        })
         .await?
         .into_iter()
         .find(|existing| existing.episode_id.is_none() && existing.collection_id.is_none()))

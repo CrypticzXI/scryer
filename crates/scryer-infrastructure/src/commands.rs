@@ -13,6 +13,7 @@ use scryer_application::{
     LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease, PendingReleaseStatus,
     ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
     SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem,
+    WantedItemsQuery,
     WorkflowOperationInfo,
 };
 use scryer_domain::{
@@ -778,21 +779,11 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<Option<WantedItem>>>,
     },
     ListWantedItems {
-        status: Option<String>,
-        media_type: Option<String>,
-        title_id: Option<String>,
-        title_search: Option<String>,
-        latest_decision_code: Option<String>,
-        limit: i64,
-        offset: i64,
+        query: WantedItemsQuery,
         reply: Sender<AppResult<Vec<WantedItem>>>,
     },
     CountWantedItems {
-        status: Option<String>,
-        media_type: Option<String>,
-        title_id: Option<String>,
-        title_search: Option<String>,
-        latest_decision_code: Option<String>,
+        query: WantedItemsQuery,
         reply: Sender<AppResult<i64>>,
     },
     ListReleaseDecisionsForTitle {
@@ -2678,48 +2669,14 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         crate::queries::wanted::get_wanted_item_by_id_query(&pool, &id).await,
                     );
                 }
-                DbCommand::ListWantedItems {
-                    status,
-                    media_type,
-                    title_id,
-                    title_search,
-                    latest_decision_code,
-                    limit,
-                    offset,
-                    reply,
-                } => {
+                DbCommand::ListWantedItems { query, reply } => {
                     let _ = reply.send(
-                        crate::queries::wanted::list_wanted_items_query(
-                            &pool,
-                            status.as_deref(),
-                            media_type.as_deref(),
-                            title_id.as_deref(),
-                            title_search.as_deref(),
-                            latest_decision_code.as_deref(),
-                            limit,
-                            offset,
-                        )
-                        .await,
+                        crate::queries::wanted::list_wanted_items_query(&pool, &query).await,
                     );
                 }
-                DbCommand::CountWantedItems {
-                    status,
-                    media_type,
-                    title_id,
-                    title_search,
-                    latest_decision_code,
-                    reply,
-                } => {
+                DbCommand::CountWantedItems { query, reply } => {
                     let _ = reply.send(
-                        crate::queries::wanted::count_wanted_items_query(
-                            &pool,
-                            status.as_deref(),
-                            media_type.as_deref(),
-                            title_id.as_deref(),
-                            title_search.as_deref(),
-                            latest_decision_code.as_deref(),
-                        )
-                        .await,
+                        crate::queries::wanted::count_wanted_items_query(&pool, &query).await,
                     );
                 }
                 DbCommand::ListReleaseDecisionsForTitle {

@@ -3163,11 +3163,18 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .expect("latest blocked decision should insert");
 
     let items = workflow
-        .list_wanted_items(None, None, None, None, Some("title_mismatch"), 50, 0)
+        .list_wanted_items(WantedItemsQuery {
+            latest_decision_code: Some("title_mismatch".into()),
+            limit: 50,
+            ..WantedItemsQuery::default()
+        })
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(None, None, None, None, Some("title_mismatch"))
+        .count_wanted_items(WantedItemsQuery {
+            latest_decision_code: Some("title_mismatch".into()),
+            ..WantedItemsQuery::default()
+        })
         .await
         .expect("filtered wanted count should load");
 
@@ -3437,11 +3444,18 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         .expect("other wanted item should insert");
 
     let items = workflow
-        .list_wanted_items(None, None, None, Some("scholhouse erth"), None, 50, 0)
+        .list_wanted_items(WantedItemsQuery {
+            title_search: Some("scholhouse erth".into()),
+            limit: 50,
+            ..WantedItemsQuery::default()
+        })
         .await
         .expect("filtered wanted items should load");
     let count = workflow
-        .count_wanted_items(None, None, None, Some("scholhouse erth"), None)
+        .count_wanted_items(WantedItemsQuery {
+            title_search: Some("scholhouse erth".into()),
+            ..WantedItemsQuery::default()
+        })
         .await
         .expect("filtered wanted count should load");
 

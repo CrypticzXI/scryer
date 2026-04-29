@@ -840,15 +840,12 @@ impl AppUseCase {
             .services
             .workflow
             .wanted_items
-            .list_wanted_items(
-                None,
-                Some("interstitial_movie"),
-                Some(&title.id),
-                None,
-                None,
-                500,
-                0,
-            )
+            .list_wanted_items(WantedItemsQuery {
+                media_type: Some("interstitial_movie".into()),
+                title_id: Some(title.id.clone()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
             .await?
             .into_iter()
             .find(|item| item.collection_id.as_deref() == Some(collection.id.as_str()));

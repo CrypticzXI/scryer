@@ -10,7 +10,9 @@ use scryer_domain::{
 use scryer_domain::RuleSet;
 
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
-use crate::{AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit};
+use crate::{
+    AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit, WantedItemsQuery,
+};
 use scryer_domain::PluginInstallation;
 
 use scryer_domain::BlocklistEntry;
@@ -431,26 +433,10 @@ impl WantedItemRepository for NullWantedItemRepository {
     async fn get_wanted_item_by_id(&self, _id: &str) -> AppResult<Option<WantedItem>> {
         Ok(None)
     }
-    async fn list_wanted_items(
-        &self,
-        _status: Option<&str>,
-        _media_type: Option<&str>,
-        _title_id: Option<&str>,
-        _title_search: Option<&str>,
-        _latest_decision_code: Option<&str>,
-        _limit: i64,
-        _offset: i64,
-    ) -> AppResult<Vec<WantedItem>> {
+    async fn list_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
         Ok(vec![])
     }
-    async fn count_wanted_items(
-        &self,
-        _status: Option<&str>,
-        _media_type: Option<&str>,
-        _title_id: Option<&str>,
-        _title_search: Option<&str>,
-        _latest_decision_code: Option<&str>,
-    ) -> AppResult<i64> {
+    async fn count_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<i64> {
         Ok(0)
     }
     async fn list_release_decisions_for_title(

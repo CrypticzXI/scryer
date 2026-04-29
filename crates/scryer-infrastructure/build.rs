@@ -1,4 +1,7 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 fn main() {
     println!("cargo:rerun-if-changed=src");
@@ -34,7 +37,7 @@ fn main() {
     }
 }
 
-fn compile_spellfix_extension(manifest_dir: &PathBuf) {
+fn compile_spellfix_extension(manifest_dir: &Path) {
     let spellfix_source = manifest_dir.join("vendor/sqlite/ext/misc/spellfix.c");
     println!("cargo:rerun-if-changed={}", spellfix_source.display());
 

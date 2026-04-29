@@ -1,6 +1,7 @@
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
     ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition,
+    WantedItemsQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     domain_events::{
@@ -1981,15 +1982,13 @@ async fn mark_wanted_completed_for_collection(
         .services
         .workflow
         .wanted_items
-        .list_wanted_items(
-            Some("wanted"),
-            Some("interstitial_movie"),
-            Some(title_id),
-            None,
-            None,
-            100,
-            0,
-        )
+        .list_wanted_items(WantedItemsQuery {
+            status: Some("wanted".into()),
+            media_type: Some("interstitial_movie".into()),
+            title_id: Some(title_id.to_string()),
+            limit: 100,
+            ..WantedItemsQuery::default()
+        })
         .await
     {
         Ok(items) => {

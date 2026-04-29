@@ -1259,7 +1259,10 @@ async fn series_monitoring_summary(
         .expect("episode");
     let wanted_count = ctx
         .library_state
-        .count_wanted_items(None, None, Some(title_id), None, None)
+        .count_wanted_items(scryer_application::WantedItemsQuery {
+            title_id: Some(title_id.to_string()),
+            ..scryer_application::WantedItemsQuery::default()
+        })
         .await
         .expect("count wanted items");
 
@@ -8447,7 +8450,11 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 
     assert!(
         ctx.db
-            .list_wanted_items(None, None, Some(&id), None, None, 10, 0)
+            .list_wanted_items(scryer_application::WantedItemsQuery {
+                title_id: Some(id.clone()),
+                limit: 10,
+                ..scryer_application::WantedItemsQuery::default()
+            })
             .await
             .expect("wanted items")
             .is_empty()

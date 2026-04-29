@@ -7,6 +7,7 @@ use scryer_application::{
     SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
     TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
+    WantedItemsQuery,
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
@@ -310,46 +311,12 @@ impl WantedItemRepository for SqliteLibraryStateStore {
         self.db.get_wanted_item_by_id(id).await
     }
 
-    async fn list_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-        limit: i64,
-        offset: i64,
-    ) -> AppResult<Vec<WantedItem>> {
-        self.db
-            .list_wanted_items(
-                status,
-                media_type,
-                title_id,
-                title_search,
-                latest_decision_code,
-                limit,
-                offset,
-            )
-            .await
+    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
+        self.db.list_wanted_items(query).await
     }
 
-    async fn count_wanted_items(
-        &self,
-        status: Option<&str>,
-        media_type: Option<&str>,
-        title_id: Option<&str>,
-        title_search: Option<&str>,
-        latest_decision_code: Option<&str>,
-    ) -> AppResult<i64> {
-        self.db
-            .count_wanted_items(
-                status,
-                media_type,
-                title_id,
-                title_search,
-                latest_decision_code,
-            )
-            .await
+    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
+        self.db.count_wanted_items(query).await
     }
 
     async fn list_release_decisions_for_title(
