@@ -1,6 +1,6 @@
 [package]
 name = "scryer-infrastructure"
-version = "0.12.1"
+version = "0.12.2"
 edition.workspace = true
 
 [dependencies]
@@ -43,7 +43,8 @@ security-framework-sys = { workspace = true }
 # security-framework-sys is v2 (re-exported by security-framework v3)
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { workspace = true }
+keyring-core = { workspace = true }
+windows-native-keyring-store = { workspace = true }
 
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }
