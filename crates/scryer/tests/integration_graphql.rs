@@ -6004,8 +6004,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .await
         .expect("update first regular episode air date");
 
-    ctx
-        .catalog
+    ctx.catalog
         .update_episode(
             &regular_episode_3.id,
             EpisodeUpdate {

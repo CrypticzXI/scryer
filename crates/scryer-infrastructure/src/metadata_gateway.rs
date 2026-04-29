@@ -623,7 +623,9 @@ impl MetadataGatewayClient {
 
         match self.try_build_mtls_client(secret).await {
             Ok((client, auth)) => {
-                info!("SMG instance auth enrollment successful, using instance authentication for metadata requests");
+                info!(
+                    "SMG instance auth enrollment successful, using instance authentication for metadata requests"
+                );
                 let result = (client.clone(), Some(auth.clone()));
                 *guard = MtlsState::Enrolled { client, auth };
                 Ok(result)
