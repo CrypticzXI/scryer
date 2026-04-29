@@ -554,7 +554,8 @@ fn next_version(current: &Version, bump: VersionBump) -> Version {
 
 fn workspace_member_tomls(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
     let manifest = fs::read_to_string(ctx.path("Cargo.toml"))?;
-    let workspace: TomlValue = manifest.parse::<TomlValue>()?;
+    let workspace: TomlValue =
+        toml::from_str(&manifest).context("failed to parse workspace Cargo.toml")?;
     let members = workspace
         .get("workspace")
         .and_then(|workspace| workspace.get("members"))
