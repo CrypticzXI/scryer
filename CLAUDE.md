@@ -17,6 +17,10 @@ workspace-level `AGENTS.md`, not here.
   - shared UI primitives under `components/ui/`
   - translations under `lib/i18n/locales/`
 - Build and release automation lives in `cargo xtask`
+- If the user explicitly requests a release or tag, treat that as approval to
+  commit the in-scope dirty tree for that release with a sensible commit
+  message before invoking `cargo xtask release`. Do not include unrelated dirty
+  files in that prep commit.
 - Docker assets live under `docker/`
 - CI lives under `.github/workflows/`
 

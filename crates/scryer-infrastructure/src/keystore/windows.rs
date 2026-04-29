@@ -1,18 +1,34 @@
 use super::KeyStore;
+use std::sync::OnceLock;
+
+use keyring_core::{Entry, Error as KeyringError};
+use windows_native_keyring_store::Store;
 
 const SERVICE: &str = "scryer";
 const ACCOUNT: &str = "encryption-master-key";
 
-/// Stores the encryption key in Windows Credential Manager via the `keyring` crate.
+/// Stores the encryption key in Windows Credential Manager via the keyring core/store crates.
 ///
 /// The credential is tied to the current user account and persists across reboots.
 /// Works under NSSM service accounts (Credential Manager is per-user).
 pub struct WindowsCredentialManager;
 
 impl WindowsCredentialManager {
-    fn entry() -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, ACCOUNT)
-            .map_err(|e| format!("failed to create credential entry: {e}"))
+    fn entry() -> Result<Entry, String> {
+        static STORE_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+        STORE_INIT
+            .get_or_init(|| {
+                let store = Store::new().map_err(|e| {
+                    format!("failed to initialize Windows Credential Manager store: {e}")
+                })?;
+                keyring_core::set_default_store(store);
+                Ok(())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+
+        Entry::new(SERVICE, ACCOUNT).map_err(|e| format!("failed to create credential entry: {e}"))
     }
 }
 
@@ -28,7 +44,7 @@ impl KeyStore for WindowsCredentialManager {
                     Ok(Some(trimmed))
                 }
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(KeyringError::NoEntry) => Ok(None),
             Err(e) => Err(format!("Windows Credential Manager error: {e}")),
         }
     }
@@ -44,7 +60,7 @@ impl KeyStore for WindowsCredentialManager {
         let entry = Self::entry()?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(KeyringError::NoEntry) => Ok(()),
             Err(e) => Err(format!(
                 "failed to delete key from Windows Credential Manager: {e}"
             )),

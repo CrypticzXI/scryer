@@ -20,6 +20,15 @@ Use this order when making architectural decisions:
 
 If runtime interfaces change (GraphQL, subscription payloads, gateway contract), update API contract documentation in the scryer-docs repo.
 
+## Release requests
+
+- Release automation goes through `cargo xtask`.
+- If the user explicitly asks for a release or tag, treat that as approval to
+  commit the in-scope dirty tree for that release with a sensible commit
+  message before invoking the release flow.
+- Do not fold unrelated dirty files into that prep commit. If the tree contains
+  unrelated user changes, stop and report the blocking paths.
+
 ## Runtime troubleshooting quickstart (Docker Compose logs)
 
 For local stack checks, use this sequence:

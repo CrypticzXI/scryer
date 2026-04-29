@@ -46,7 +46,8 @@ semver = "1"
 metrics = "0.24"
 security-framework = "3"
 security-framework-sys = "2"
-keyring = { version = "4", default-features = false }
+keyring-core = "1"
+windows-native-keyring-store = "1"
 wiremock = "0.6"
 strum = { version = "0.28", features = ["derive"] }
 
