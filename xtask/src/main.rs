@@ -615,9 +615,10 @@ fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
     let output_dir = ctx.path("crates/scryer-plugins/builtins");
     step("Rebuilding embedded plugin builtins");
     let mut command = ctx.release_command_in("cargo", &plugins_dir);
+    // The sibling scryer-plugins repo owns this lockfile independently, so
+    // builtin refresh must not hard-fail on its local lock drift.
     command.args([
         "run",
-        "--locked",
         "--manifest-path",
         "xtask/Cargo.toml",
         "--",
