@@ -162,7 +162,7 @@ fn facet_langid(facet: &MediaFacet) -> i64 {
 fn max_typo_distance(query_char_count: usize) -> i64 {
     match query_char_count {
         0..=5 => 100,
-        6..=10 => 100,
+        6..=10 => 150,
         _ => 200,
     }
 }
@@ -250,6 +250,10 @@ pub(crate) fn push_ranked_title_matches_cte(
         DirectLane::Contains,
         format!("%{}%", plan.normalized_query),
     );
+    builder.push(
+        "), typo_candidate_matches(title_id, token_key, candidate_weight, candidate_distance) AS (",
+    );
+    push_typo_candidate_matches(builder, plan);
     builder.push("), typo_token_matches(title_id, token_key, best_weight, best_distance) AS (");
     push_typo_token_matches(builder, plan);
     builder.push(
@@ -318,6 +322,17 @@ fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleS
         return;
     }
 
+    builder.push(
+        "SELECT title_id,
+                token_key,
+                MIN(candidate_weight) AS best_weight,
+                MIN(candidate_distance) AS best_distance
+         FROM typo_candidate_matches
+         GROUP BY title_id, token_key",
+    );
+}
+
+fn push_typo_candidate_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleSearchPlan) {
     let mut first = true;
     for query_token in &plan.query_tokens {
         for facet in &plan.facets {
@@ -325,45 +340,99 @@ fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleS
                 builder.push(" UNION ALL ");
             }
             first = false;
-            builder.push(
-                "SELECT terms.title_id AS title_id,
-                        ",
-            );
-            builder.push_bind(query_token.clone());
-            builder.push(
-                " AS token_key,
-                        MIN(terms.weight) AS best_weight,
-                        MIN(spellfix.distance) AS best_distance
-                 FROM title_search_spellfix spellfix
-                 JOIN title_search_terms terms ON terms.term_id = spellfix.rowid
-                 WHERE spellfix.word MATCH ",
-            );
-            builder.push_bind(query_token.clone());
-            builder.push(" AND spellfix.top = ");
-            builder.push_bind(TYPO_TOP_LIMIT);
-            builder.push(" AND spellfix.scope = ");
-            builder.push_bind(typo_scope(query_token.chars().count()));
-            builder.push(" AND spellfix.distance <= ");
-            builder.push_bind(max_typo_distance(query_token.chars().count()));
-            builder.push(" AND ABS(length(terms.normalized_term) - ");
-            builder.push_bind(query_token.chars().count() as i64);
-            builder.push(") <= ");
-            builder.push_bind(max_typo_length_delta(query_token.chars().count()));
-            if let Some((first_char, last_char)) = typo_boundary_chars(query_token) {
-                builder.push(" AND substr(terms.normalized_term, 1, 1) = ");
-                builder.push_bind(first_char);
-                if query_token.chars().count() <= 5 || plan.query_tokens.len() == 1 {
-                    builder.push(" AND substr(terms.normalized_term, -1, 1) = ");
-                    builder.push_bind(last_char);
-                }
-            }
-            builder.push(" AND spellfix.langid = ");
-            builder.push_bind(facet_langid(facet));
-            builder.push(" AND terms.facet = ");
-            builder.push_bind(facet.as_str());
-            builder.push(" AND terms.term_kind LIKE '%_token' GROUP BY terms.title_id");
+            push_spellfix_token_candidate_select(builder, plan, query_token, facet);
+            builder.push(" UNION ALL ");
+            push_edit_distance_token_candidate_select(builder, plan, query_token, facet);
         }
     }
+}
+
+fn push_spellfix_token_candidate_select(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    plan: &TitleSearchPlan,
+    query_token: &str,
+    facet: &MediaFacet,
+) {
+    builder.push(
+        "SELECT terms.title_id AS title_id,
+                ",
+    );
+    builder.push_bind(query_token.to_string());
+    builder.push(
+        " AS token_key,
+                MIN(terms.weight) AS candidate_weight,
+                MIN(spellfix.distance) AS candidate_distance
+         FROM title_search_spellfix spellfix
+         JOIN title_search_terms terms ON terms.term_id = spellfix.rowid
+         WHERE spellfix.word MATCH ",
+    );
+    builder.push_bind(query_token.to_string());
+    builder.push(" AND spellfix.top = ");
+    builder.push_bind(TYPO_TOP_LIMIT);
+    builder.push(" AND spellfix.scope = ");
+    builder.push_bind(typo_scope(query_token.chars().count()));
+    builder.push(" AND spellfix.distance <= ");
+    builder.push_bind(max_typo_distance(query_token.chars().count()));
+    builder.push(" AND ABS(length(terms.normalized_term) - ");
+    builder.push_bind(query_token.chars().count() as i64);
+    builder.push(") <= ");
+    builder.push_bind(max_typo_length_delta(query_token.chars().count()));
+    if let Some((first_char, last_char)) = typo_boundary_chars(query_token) {
+        builder.push(" AND substr(terms.normalized_term, 1, 1) = ");
+        builder.push_bind(first_char);
+        if query_token.chars().count() <= 5 || plan.query_tokens.len() == 1 {
+            builder.push(" AND substr(terms.normalized_term, -1, 1) = ");
+            builder.push_bind(last_char);
+        }
+    }
+    builder.push(" AND spellfix.langid = ");
+    builder.push_bind(facet_langid(facet));
+    builder.push(" AND terms.facet = ");
+    builder.push_bind(facet.as_str());
+    builder.push(" AND terms.term_kind LIKE '%_token' GROUP BY terms.title_id");
+}
+
+fn push_edit_distance_token_candidate_select(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    plan: &TitleSearchPlan,
+    query_token: &str,
+    facet: &MediaFacet,
+) {
+    builder.push(
+        "SELECT terms.title_id AS title_id,
+                ",
+    );
+    builder.push_bind(query_token.to_string());
+    builder.push(
+        " AS token_key,
+                MIN(terms.weight) AS candidate_weight,
+                MIN(editdist3(terms.normalized_term, ",
+    );
+    builder.push_bind(query_token.to_string());
+    builder.push(
+        ")) AS candidate_distance
+         FROM title_search_terms terms
+         WHERE terms.facet = ",
+    );
+    builder.push_bind(facet.as_str());
+    builder.push(" AND terms.term_kind LIKE '%_token'");
+    builder.push(" AND ABS(length(terms.normalized_term) - ");
+    builder.push_bind(query_token.chars().count() as i64);
+    builder.push(") <= ");
+    builder.push_bind(max_typo_length_delta(query_token.chars().count()));
+    if let Some((first_char, last_char)) = typo_boundary_chars(query_token) {
+        builder.push(" AND substr(terms.normalized_term, 1, 1) = ");
+        builder.push_bind(first_char);
+        if query_token.chars().count() <= 5 || plan.query_tokens.len() == 1 {
+            builder.push(" AND substr(terms.normalized_term, -1, 1) = ");
+            builder.push_bind(last_char);
+        }
+    }
+    builder.push(" AND editdist3(terms.normalized_term, ");
+    builder.push_bind(query_token.to_string());
+    builder.push(") <= ");
+    builder.push_bind(max_typo_distance(query_token.chars().count()));
+    builder.push(" GROUP BY terms.title_id");
 }
 
 fn push_facet_filter(builder: &mut QueryBuilder<'_, Sqlite>, facets: &[MediaFacet]) {

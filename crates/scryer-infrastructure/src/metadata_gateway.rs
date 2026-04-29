@@ -594,7 +594,7 @@ impl MetadataGatewayClient {
                 }
                 MtlsState::Failed { retry_after, .. } if Instant::now() < *retry_after => {
                     return Err(AppError::Repository(
-                        "SMG mTLS enrollment pending retry (backoff)".into(),
+                        "SMG instance auth enrollment pending retry (backoff)".into(),
                     ));
                 }
                 _ => {}
@@ -610,7 +610,7 @@ impl MetadataGatewayClient {
             }
             MtlsState::Failed { retry_after, .. } if Instant::now() < *retry_after => {
                 return Err(AppError::Repository(
-                    "SMG mTLS enrollment pending retry (backoff)".into(),
+                    "SMG instance auth enrollment pending retry (backoff)".into(),
                 ));
             }
             _ => {}
@@ -623,7 +623,7 @@ impl MetadataGatewayClient {
 
         match self.try_build_mtls_client(secret).await {
             Ok((client, auth)) => {
-                info!("SMG mTLS enrollment successful, using mutual TLS for metadata requests");
+                info!("SMG instance auth enrollment successful, using instance authentication for metadata requests");
                 let result = (client.clone(), Some(auth.clone()));
                 *guard = MtlsState::Enrolled { client, auth };
                 Ok(result)
@@ -635,14 +635,14 @@ impl MetadataGatewayClient {
                     error = %e,
                     attempt = next_attempts,
                     retry_in_secs = retry_after.as_secs(),
-                    "SMG mTLS enrollment failed"
+                    "SMG instance auth enrollment failed"
                 );
                 *guard = MtlsState::Failed {
                     retry_after: Instant::now() + retry_after,
                     attempts: next_attempts,
                 };
                 Err(AppError::Repository(format!(
-                    "SMG mTLS enrollment failed: {e}"
+                    "SMG instance auth enrollment failed: {e}"
                 )))
             }
         }

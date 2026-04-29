@@ -5968,7 +5968,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "1", "S01E01").await;
     let mut regular_episode_2 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "2", "S01E02").await;
-    let mut regular_episode_3 =
+    let regular_episode_3 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "3", "S01E03").await;
     let special_episode_1 =
         create_series_scan_episode(&ctx, &title, &specials_collection, "0", "1", "S00E01").await;
@@ -6004,7 +6004,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .await
         .expect("update first regular episode air date");
 
-    regular_episode_3 = ctx
+    ctx
         .catalog
         .update_episode(
             &regular_episode_3.id,

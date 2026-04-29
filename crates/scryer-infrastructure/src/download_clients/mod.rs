@@ -330,7 +330,10 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             | Ok(Event::PI(_))
             | Ok(Event::DocType(_)) => {}
             Ok(Event::Text(text)) if !saw_root => {
-                let text = text.unescape().map_err(|err| {
+                let text = text.decode().map_err(|err| {
+                    AppError::Repository(format!("nzb XML text decode failed: {err}"))
+                })?;
+                let text = quick_xml::escape::unescape(&text).map_err(|err| {
                     AppError::Repository(format!("nzb XML text decode failed: {err}"))
                 })?;
                 if !text

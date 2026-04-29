@@ -24,16 +24,16 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
-weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.3.1" }
-sevenz-rust2 = { version = "0.20", features = ["aes256", "bzip2", "deflate", "zstd"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.3.2" }
+sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 zstd = "0.13"
 lzma-rs = "0.3"
 tempfile = "3"
 alass-core = "2.0.0"
-chardetng = "0.1"
+chardetng = "1"
 encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"] }
 unicode-normalization = "0.1"

@@ -1596,6 +1596,7 @@ mod tests {
                 imdb_search: true,
                 tvdb_search: true,
                 anidb_search: false,
+                ..Default::default()
             }
         }
     }
@@ -1797,6 +1798,7 @@ mod tests {
             imdb_search: true,
             tvdb_search: false,
             anidb_search: false,
+            ..Default::default()
         }
     }
 
@@ -1812,6 +1814,7 @@ mod tests {
             imdb_search: false,
             tvdb_search: true,
             anidb_search: false,
+            ..Default::default()
         }
     }
 
@@ -1827,6 +1830,7 @@ mod tests {
             imdb_search: false,
             tvdb_search: false,
             anidb_search: true,
+            ..Default::default()
         }
     }
 
@@ -2403,6 +2407,7 @@ mod tests {
             imdb_search: false,
             tvdb_search: false,
             anidb_search: true,
+            ..Default::default()
         };
 
         let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
@@ -2480,6 +2485,7 @@ mod tests {
             imdb_search: false,
             tvdb_search: true,
             anidb_search: false,
+            ..Default::default()
         };
 
         let ids = HashMap::from([("tvdb_id".to_string(), "424536".to_string())]);

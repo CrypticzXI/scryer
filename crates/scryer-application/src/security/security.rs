@@ -1,3 +1,4 @@
+use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use ring::hmac;
@@ -458,16 +459,8 @@ impl AppUseCase {
 
     pub async fn authenticate_token(&self, token: &str) -> AppResult<User> {
         // Decode claims without signature verification to extract the subject (user ID).
-        let mut insecure = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
-        insecure.insecure_disable_signature_validation();
-        insecure.validate_exp = false;
-
-        let unverified = jsonwebtoken::decode::<JwtClaims>(
-            token,
-            &jsonwebtoken::DecodingKey::from_secret(&[]),
-            &insecure,
-        )
-        .map_err(|err| AppError::Unauthorized(format!("malformed token: {err}")))?;
+        let unverified = jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(token)
+            .map_err(|err| AppError::Unauthorized(format!("malformed token: {err}")))?;
 
         let user_id = &unverified.claims.sub;
         self.ensure_jwt_signing_keys_loaded().await?;

@@ -9404,7 +9404,7 @@ async fn download_import_page_stays_responsive_while_background_import_worker_is
         tracked_download_rx,
     ));
 
-    timeout(Duration::from_secs(1), async {
+    timeout(Duration::from_secs(5), async {
         loop {
             if file_importer.call_count.load(Ordering::SeqCst) > 0 {
                 break;
@@ -9413,7 +9413,7 @@ async fn download_import_page_stays_responsive_while_background_import_worker_is
         }
     })
     .await
-    .expect("background import worker should reach the file importer");
+    .expect("background import worker should reach the file importer under parallel test load");
 
     let page = timeout(
         Duration::from_millis(150),

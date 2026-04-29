@@ -104,6 +104,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     let mut reader = Reader::from_str(content);
 
     let mut current_tag = String::new();
+    let mut current_text = String::new();
     let mut uniqueid_type: Option<String> = None;
 
     // Legacy <id> is lowest priority — only used if uniqueid/jellyfin tags don't
@@ -115,6 +116,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
             Ok(Event::Start(ref e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_lowercase();
                 current_tag = name.clone();
+                current_text.clear();
 
                 if name == "uniqueid" {
                     uniqueid_type = e
@@ -126,63 +128,77 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                let text = e
-                    .unescape()
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-                if text.is_empty() {
-                    continue;
+                if let Some(decoded) = e.decode().ok().and_then(|decoded| {
+                    quick_xml::escape::unescape(&decoded)
+                        .ok()
+                        .map(|text| text.into_owned())
+                }) {
+                    current_text.push_str(&decoded);
                 }
-
-                match current_tag.as_str() {
-                    "uniqueid" => {
-                        if let Some(ref uid_type) = uniqueid_type {
-                            match uid_type.as_str() {
-                                "tvdb" if meta.tvdb_id.is_none() => {
-                                    meta.tvdb_id = Some(text);
-                                }
-                                "imdb" if meta.imdb_id.is_none() => {
-                                    meta.imdb_id = normalize_imdb(&text);
-                                }
-                                "tmdb" if meta.tmdb_id.is_none() => {
-                                    if looks_like_numeric_id(&text) {
-                                        meta.tmdb_id = Some(text);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+            }
+            Ok(Event::GeneralRef(ref e)) => {
+                if let Ok(Some(ch)) = e.resolve_char_ref() {
+                    current_text.push(ch);
+                } else if let Ok(decoded) = e.decode() {
+                    if let Some(entity) =
+                        quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
+                    {
+                        current_text.push_str(entity);
                     }
-                    "tvdbid" if meta.tvdb_id.is_none() => {
-                        if looks_like_numeric_id(&text) {
-                            meta.tvdb_id = Some(text);
-                        }
-                    }
-                    "imdbid" if meta.imdb_id.is_none() => {
-                        meta.imdb_id = normalize_imdb(&text);
-                    }
-                    "tmdbid" if meta.tmdb_id.is_none() => {
-                        if looks_like_numeric_id(&text) {
-                            meta.tmdb_id = Some(text);
-                        }
-                    }
-                    "id" if legacy_id.is_none() => {
-                        legacy_id = Some(text);
-                    }
-                    "title" if meta.title.is_none() => {
-                        meta.title = Some(text);
-                    }
-                    "year" if meta.year.is_none() => {
-                        meta.year = text
-                            .parse::<i32>()
-                            .ok()
-                            .filter(|&y| (1888..=2100).contains(&y));
-                    }
-                    _ => {} // silently skip unknown elements
                 }
             }
             Ok(Event::End(_)) => {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    match current_tag.as_str() {
+                        "uniqueid" => {
+                            if let Some(ref uid_type) = uniqueid_type {
+                                match uid_type.as_str() {
+                                    "tvdb" if meta.tvdb_id.is_none() => {
+                                        meta.tvdb_id = Some(text);
+                                    }
+                                    "imdb" if meta.imdb_id.is_none() => {
+                                        meta.imdb_id = normalize_imdb(&text);
+                                    }
+                                    "tmdb" if meta.tmdb_id.is_none() => {
+                                        if looks_like_numeric_id(&text) {
+                                            meta.tmdb_id = Some(text);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        "tvdbid" if meta.tvdb_id.is_none() => {
+                            if looks_like_numeric_id(&text) {
+                                meta.tvdb_id = Some(text);
+                            }
+                        }
+                        "imdbid" if meta.imdb_id.is_none() => {
+                            meta.imdb_id = normalize_imdb(&text);
+                        }
+                        "tmdbid" if meta.tmdb_id.is_none() => {
+                            if looks_like_numeric_id(&text) {
+                                meta.tmdb_id = Some(text);
+                            }
+                        }
+                        "id" if legacy_id.is_none() => {
+                            legacy_id = Some(text);
+                        }
+                        "title" if meta.title.is_none() => {
+                            meta.title = Some(text);
+                        }
+                        "year" if meta.year.is_none() => {
+                            meta.year = text
+                                .parse::<i32>()
+                                .ok()
+                                .filter(|&y| (1888..=2100).contains(&y));
+                        }
+                        _ => {} // silently skip unknown elements
+                    }
+                }
                 current_tag.clear();
+                current_text.clear();
                 uniqueid_type = None;
             }
             Ok(Event::Eof) => break,

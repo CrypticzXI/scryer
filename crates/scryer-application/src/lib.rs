@@ -87,7 +87,6 @@ pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
     library::discovery::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH;
 
 use chrono::{DateTime, Duration, Utc};
-use rand_core::OsRng;
 use ring::digest as ring_digest;
 use scryer_domain::{
     BlocklistEntry, CalendarEpisode, Collection, CollectionType, CompletedDownload, DomainEvent,

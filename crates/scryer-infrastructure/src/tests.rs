@@ -1056,6 +1056,9 @@ async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_unt
 }
 
 async fn single_connection_services(name: &str) -> (SqliteServices, std::path::PathBuf) {
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register before migrations");
+
     let db = std::env::temp_dir().join(format!(
         "{}_{}.db",
         name,

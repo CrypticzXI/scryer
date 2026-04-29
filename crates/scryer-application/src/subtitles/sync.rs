@@ -687,9 +687,10 @@ fn read_subtitle_to_string(path: &Path) -> AppResult<String> {
         return Ok(s.to_string());
     }
 
-    let mut detector = chardetng::EncodingDetector::new();
+    let mut detector =
+        chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
     detector.feed(&bytes, true);
-    let encoding = detector.guess(None, true);
+    let encoding = detector.guess(None, chardetng::Utf8Detection::Allow);
 
     let (decoded, _, had_errors) = encoding.decode(&bytes);
     if had_errors {
