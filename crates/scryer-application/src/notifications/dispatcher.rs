@@ -1086,7 +1086,11 @@ fn matches_scope(
     match scope {
         "global" => true,
         "facet" => match (scope_id, event_facet) {
-            (Some(scope_id), Some(facet)) => scope_id == facet,
+            (Some(scope_id), Some(facet)) => scope_id
+                .split(',')
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())
+                .any(|candidate| candidate.eq_ignore_ascii_case(facet)),
             _ => false,
         },
         "title" => match (scope_id, event_title_id) {
@@ -1125,6 +1129,28 @@ mod tests {
             poster_url: Some("https://example.invalid/poster.jpg".to_string()),
             year: Some(2024),
         }
+    }
+
+    #[test]
+    fn matches_scope_accepts_any_selected_facet_in_csv_scope_id() {
+        assert!(matches_scope(
+            "facet",
+            Some("movie, series"),
+            None,
+            Some("movie")
+        ));
+        assert!(matches_scope(
+            "facet",
+            Some("movie, series"),
+            None,
+            Some("series")
+        ));
+        assert!(!matches_scope(
+            "facet",
+            Some("movie, series"),
+            None,
+            Some("anime")
+        ));
     }
 
     fn notification_sample_events() -> Vec<DomainEvent> {

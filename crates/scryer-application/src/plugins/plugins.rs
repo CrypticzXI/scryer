@@ -7,7 +7,7 @@ use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, host_version_matches_constraint,
     load_plugin_descriptor_from_wasm_bytes, plugin_descriptor_sdk_constraint,
     sdk_constraint_or_legacy, validate_plugin_descriptor_host_permissions,
-    validate_plugin_descriptor_sdk_contract,
+    validate_plugin_descriptor_sdk_contract, validate_sdk_contract,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -401,6 +401,28 @@ fn installation_is_host_blocked_by_registry(
     })
 }
 
+fn installation_sdk_contract_is_host_compatible(installation: &PluginInstallation) -> bool {
+    match validate_sdk_contract(
+        installation.plugin_id.as_str(),
+        installation.sdk_version.as_str(),
+        installation.sdk_constraint.as_str(),
+        SDK_VERSION,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                plugin_id = installation.plugin_id.as_str(),
+                version = installation.version.as_str(),
+                sdk_version = installation.sdk_version.as_str(),
+                sdk_constraint = installation.sdk_constraint.as_str(),
+                error = %error,
+                "skipping installed plugin with incompatible sdk contract"
+            );
+            false
+        }
+    }
+}
+
 fn installation_scryer_constraint(
     installation: &PluginInstallation,
     registry: Option<&RegistryManifest>,
@@ -470,10 +492,13 @@ fn validate_downloaded_plugin_descriptor(
     let descriptor_sdk_constraint = plugin_descriptor_sdk_constraint(descriptor);
     let release_sdk_constraint = normalized_release_sdk_constraint(release);
     if descriptor_sdk_constraint != release_sdk_constraint {
-        return Err(AppError::Validation(format!(
-            "downloaded plugin '{}' has sdk_constraint '{}' but registry selected '{}'",
-            descriptor.id, descriptor_sdk_constraint, release_sdk_constraint
-        )));
+        warn!(
+            plugin_id = descriptor.id.as_str(),
+            version = release.version.as_str(),
+            descriptor_sdk_constraint = descriptor_sdk_constraint.as_str(),
+            registry_sdk_constraint = release_sdk_constraint.as_str(),
+            "downloaded plugin sdk_constraint differs from registry metadata; using registry constraint"
+        );
     }
     if !registry_release_is_host_compatible(plugin_id, release) {
         return Err(AppError::Validation(format!(
@@ -484,7 +509,7 @@ fn validate_downloaded_plugin_descriptor(
 
     Ok(ValidatedDownloadedPlugin {
         descriptor: descriptor.clone(),
-        sdk_constraint: descriptor_sdk_constraint,
+        sdk_constraint: release_sdk_constraint,
         scryer_constraint: normalized_constraint(registry_release_scryer_constraint(release)),
     })
 }
@@ -880,6 +905,7 @@ impl AppUseCase {
         let external_bytes: Vec<(Vec<u8>, bool)> = enabled
             .iter()
             .filter(|(inst, _)| inst.source_kind == PluginSourceKind::Downloaded)
+            .filter(|(inst, _)| installation_sdk_contract_is_host_compatible(inst))
             .filter(|(inst, _)| !installation_is_host_blocked_by_registry(inst, registry.as_ref()))
             .filter_map(|(inst, wasm)| {
                 wasm.clone().map(|bytes| {
@@ -1375,18 +1401,21 @@ impl AppUseCase {
                 continue;
             };
 
+            let next_sdk_constraint = normalized_release_sdk_constraint(&release);
             let next_scryer_constraint =
                 normalized_constraint(registry_release_scryer_constraint(&release));
             let next_source_url = release.source_url.clone();
             let next_wasm_sha256 = release.wasm_sha256.clone();
 
-            if installation.scryer_constraint == next_scryer_constraint
+            if installation.sdk_constraint == next_sdk_constraint
+                && installation.scryer_constraint == next_scryer_constraint
                 && installation.source_url == next_source_url
                 && installation.wasm_sha256 == next_wasm_sha256
             {
                 continue;
             }
 
+            installation.sdk_constraint = next_sdk_constraint;
             installation.scryer_constraint = next_scryer_constraint;
             installation.source_url = next_source_url;
             installation.wasm_sha256 = next_wasm_sha256;

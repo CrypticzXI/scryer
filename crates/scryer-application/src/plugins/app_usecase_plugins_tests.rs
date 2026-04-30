@@ -1451,6 +1451,63 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
     }
 }
 
+#[test]
+fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_override() {
+    let sdk_version = semver::Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
+    let narrow_sdk_constraint = format!(
+        ">={}.{}.0, <{}.{}.0",
+        sdk_version.major,
+        sdk_version.minor,
+        sdk_version.major,
+        sdk_version.minor + 1
+    );
+    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
+        "version": "0.2.0",
+        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
+        "sdk_constraint": narrow_sdk_constraint,
+        "builtin": false,
+        "wasm_url": "https://example.com/a.wasm",
+        "wasm_sha256": "abc123"
+    }))
+    .unwrap();
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "jellyfin".to_string(),
+        name: "Jellyfin".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "jellyfin".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: Default::default(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    let validated = validate_downloaded_plugin_descriptor(
+        "jellyfin",
+        "notification",
+        "jellyfin",
+        &release,
+        &descriptor,
+    )
+    .unwrap();
+
+    assert_eq!(validated.sdk_constraint, narrow_sdk_constraint);
+}
+
+#[test]
+fn installation_sdk_contract_filter_uses_persisted_registry_constraint() {
+    let mut installation = make_installation("jellyfin", "0.2.0", false, true);
+    installation.sdk_constraint = ">=99.0.0".to_string();
+
+    assert!(!installation_sdk_contract_is_host_compatible(&installation));
+}
+
 #[tokio::test]
 async fn upgrade_rejects_incompatible_host_version() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));

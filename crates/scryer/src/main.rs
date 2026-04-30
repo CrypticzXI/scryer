@@ -1418,6 +1418,30 @@ fn runtime_installation_is_host_blocked_by_registry(
     })
 }
 
+fn runtime_installation_sdk_contract_is_host_compatible(
+    installation: &scryer_domain::PluginInstallation,
+) -> bool {
+    match scryer_plugins::validate_sdk_contract(
+        installation.plugin_id.as_str(),
+        installation.sdk_version.as_str(),
+        installation.sdk_constraint.as_str(),
+        scryer_plugins::SDK_VERSION,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                plugin_id = installation.plugin_id.as_str(),
+                version = installation.version.as_str(),
+                sdk_version = installation.sdk_version.as_str(),
+                sdk_constraint = installation.sdk_constraint.as_str(),
+                error = %error,
+                "skipping installed plugin with incompatible sdk contract"
+            );
+            false
+        }
+    }
+}
+
 fn runtime_installation_scryer_constraint(
     installation: &scryer_domain::PluginInstallation,
     registry: Option<&RuntimePluginRegistryManifest>,
@@ -1472,6 +1496,9 @@ async fn load_runtime_plugin_state(
         .into_iter()
         .filter(|(installation, _)| {
             installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
+        })
+        .filter(|(installation, _)| {
+            runtime_installation_sdk_contract_is_host_compatible(installation)
         })
         .filter(|(installation, _)| {
             !runtime_installation_is_host_blocked_by_registry(installation, registry.as_ref())

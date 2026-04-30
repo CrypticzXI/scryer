@@ -17,18 +17,78 @@ import {
   upgradePluginMutation,
 } from "@/lib/graphql/mutations";
 
+function extractPluginMutationErrorMessage(error: unknown): string | null {
+  if (error && typeof error === "object" && "graphQLErrors" in error) {
+    const graphQLErrors = (error as { graphQLErrors?: Array<{ message?: string }> }).graphQLErrors;
+    const message = graphQLErrors?.find((entry) => typeof entry.message === "string")?.message;
+    if (message?.trim()) {
+      return message.trim();
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return null;
+}
+
+function formatPluginInstallError(
+  plugin: RegistryPluginRecord,
+  error: unknown,
+  t: ReturnType<typeof useTranslate>,
+): string {
+  const rawMessage = extractPluginMutationErrorMessage(error);
+  const normalized = rawMessage
+    ?.replace(/^\[GraphQL\]\s*/i, "")
+    .replace(/^validation:\s*/i, "")
+    .trim();
+
+  if (normalized && /WASM SHA256 mismatch/i.test(normalized)) {
+    return t("status.pluginInstallFailedChecksumMismatch", { name: plugin.name });
+  }
+
+  if (
+    normalized
+    && normalized.includes("has sdk_constraint")
+    && normalized.includes("but registry selected")
+  ) {
+    return t("status.pluginInstallFailedSdkMetadataMismatch", { name: plugin.name });
+  }
+
+  if (normalized) {
+    return t("status.pluginInstallFailedWithReason", {
+      name: plugin.name,
+      reason: normalized,
+    });
+  }
+
+  return t("status.failedToUpdate");
+}
+
 export function SettingsPluginsContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
   const [plugins, _setPlugins] = useState<RegistryPluginRecord[]>([]);
+  const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
 
   const setPlugins = useCallback((next: RegistryPluginRecord[]) => {
     _setPlugins(next);
   }, []);
-  const [mutatingPluginId, setMutatingPluginId] = useState<string | null>(null);
+  const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
+
+  const beginPluginMutation = useCallback((pluginId: string) => {
+    setMutatingPluginIds((current) => (
+      current.includes(pluginId) ? current : [...current, pluginId]
+    ));
+  }, []);
+
+  const endPluginMutation = useCallback((pluginId: string) => {
+    setMutatingPluginIds((current) => current.filter((id) => id !== pluginId));
+  }, []);
 
   const refreshPlugins = useCallback(async () => {
     try {
@@ -63,7 +123,7 @@ export function SettingsPluginsContainer() {
 
   const togglePlugin = useCallback(
     async (plugin: RegistryPluginRecord) => {
-      setMutatingPluginId(plugin.id);
+      beginPluginMutation(plugin.id);
       try {
         const { error } = await client
           .mutation(togglePluginMutation, {
@@ -82,14 +142,19 @@ export function SettingsPluginsContainer() {
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
       } finally {
-        setMutatingPluginId(null);
+        endPluginMutation(plugin.id);
       }
     },
-    [client, refreshPlugins, setGlobalStatus, t],
+    [beginPluginMutation, client, endPluginMutation, refreshPlugins, setGlobalStatus, t],
   );
 
   const installPlugin = async (plugin: RegistryPluginRecord) => {
-    setMutatingPluginId(plugin.id);
+    beginPluginMutation(plugin.id);
+    setPluginErrors((current) => {
+      const next = { ...current };
+      delete next[plugin.id];
+      return next;
+    });
     try {
       const { error } = await client
         .mutation(installPluginMutation, {
@@ -101,9 +166,14 @@ export function SettingsPluginsContainer() {
       await refreshPlugins();
       dispatchNavigationBadgesRefresh();
     } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+      const message = formatPluginInstallError(plugin, error, t);
+      setPluginErrors((current) => ({
+        ...current,
+        [plugin.id]: message,
+      }));
+      setGlobalStatus(message);
     } finally {
-      setMutatingPluginId(null);
+      endPluginMutation(plugin.id);
     }
   };
 
@@ -112,7 +182,7 @@ export function SettingsPluginsContainer() {
   };
 
   const upgradePlugin = async (plugin: RegistryPluginRecord) => {
-    setMutatingPluginId(plugin.id);
+    beginPluginMutation(plugin.id);
     try {
       const { error } = await client
         .mutation(upgradePluginMutation, {
@@ -126,7 +196,7 @@ export function SettingsPluginsContainer() {
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
-      setMutatingPluginId(null);
+      endPluginMutation(plugin.id);
     }
   };
 
@@ -134,7 +204,7 @@ export function SettingsPluginsContainer() {
     if (!pendingUninstall) return;
     const plugin = pendingUninstall;
     const isBuiltinOverride = plugin.builtin && plugin.sourceKind === "downloaded";
-    setMutatingPluginId(plugin.id);
+    beginPluginMutation(plugin.id);
     try {
       const { error } = await client
         .mutation(uninstallPluginMutation, {
@@ -152,7 +222,7 @@ export function SettingsPluginsContainer() {
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
     } finally {
-      setMutatingPluginId(null);
+      endPluginMutation(plugin.id);
       setPendingUninstall(null);
     }
   };
@@ -164,7 +234,8 @@ export function SettingsPluginsContainer() {
     <>
       <SettingsPluginsSection
         plugins={plugins}
-        mutatingPluginId={mutatingPluginId}
+        mutatingPluginIds={mutatingPluginIds}
+        pluginErrors={pluginErrors}
         refreshing={refreshing}
         onRefreshRegistry={refreshRegistry}
         onTogglePlugin={togglePlugin}
@@ -192,7 +263,7 @@ export function SettingsPluginsContainer() {
             : t("settings.pluginUninstall")
         }
         cancelLabel={t("label.cancel")}
-        isBusy={mutatingPluginId !== null}
+        isBusy={pendingUninstall ? mutatingPluginIds.includes(pendingUninstall.id) : false}
         onConfirm={confirmUninstall}
         onCancel={() => setPendingUninstall(null)}
       />

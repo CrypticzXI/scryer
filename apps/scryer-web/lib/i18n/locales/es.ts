@@ -1007,6 +1007,11 @@ const es: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "La versión más nueva v{{version}} requiere una versión más reciente de Scryer",
   "status.pluginInstalled": "Plugin '{{name}}' instalado.",
+  "status.pluginInstallFailedChecksumMismatch":
+    "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
+  "status.pluginInstallFailedSdkMetadataMismatch":
+    "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
+  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "El plugin '{{name}}' volvió a la versión integrada.",
   "status.pluginUninstalled": "Plugin '{{name}}' desinstalado.",

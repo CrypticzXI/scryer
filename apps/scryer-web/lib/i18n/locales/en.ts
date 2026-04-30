@@ -1283,6 +1283,11 @@ const en: LocaleDictionary = {
     "Newer release v{{version}} requires a newer Scryer version",
 
   "status.pluginInstalled": "Plugin '{{name}}' installed.",
+  "status.pluginInstallFailedChecksumMismatch":
+    "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
+  "status.pluginInstallFailedSdkMetadataMismatch":
+    "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
+  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "Plugin '{{name}}' reverted to the bundled built-in version.",
   "status.pluginUninstalled": "Plugin '{{name}}' uninstalled.",

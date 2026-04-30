@@ -60,12 +60,23 @@ export function LocalRemotePathMappingsField({
   onChange,
 }: LocalRemotePathMappingsFieldProps) {
   const t = useTranslate();
-  const rows = React.useMemo(() => parsePathMappings(value), [value]);
+  const [rows, setRows] = React.useState<PathMappingRow[]>(() =>
+    parsePathMappings(value),
+  );
   const [browseRowIndex, setBrowseRowIndex] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    setRows((currentRows) =>
+      serializePathMappings(currentRows) === value
+        ? currentRows
+        : parsePathMappings(value),
+    );
+  }, [value]);
 
   const writeRows = React.useCallback(
     (nextRows: PathMappingRow[]) => {
       const normalizedRows = nextRows.length > 0 ? nextRows : [emptyRow()];
+      setRows(normalizedRows);
       onChange(fieldKey, serializePathMappings(normalizedRows));
     },
     [fieldKey, onChange],
@@ -109,7 +120,7 @@ export function LocalRemotePathMappingsField({
 
   const browseInitialPath =
     browseRowIndex == null ? "/" : (rows[browseRowIndex]?.localPath.trim() || "/");
-  const isEmpty = value.trim().length === 0;
+  const isEmpty = serializePathMappings(rows).trim().length === 0;
 
   return (
     <label className="block">

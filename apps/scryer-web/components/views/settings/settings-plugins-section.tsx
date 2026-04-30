@@ -48,7 +48,8 @@ export type RegistryPluginRecord = {
 
 type SettingsPluginsSectionProps = {
   plugins: RegistryPluginRecord[];
-  mutatingPluginId: string | null;
+  mutatingPluginIds: string[];
+  pluginErrors: Partial<Record<string, string>>;
   refreshing: boolean;
   onRefreshRegistry: () => void;
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
@@ -189,7 +190,8 @@ function PluginFilters({
 
 function PluginTable({
   plugins,
-  mutatingPluginId,
+  mutatingPluginIds,
+  pluginErrors,
   showActions,
   onTogglePlugin,
   onInstallPlugin,
@@ -198,7 +200,8 @@ function PluginTable({
   emptyMessage,
 }: {
   plugins: RegistryPluginRecord[];
-  mutatingPluginId: string | null;
+  mutatingPluginIds: string[];
+  pluginErrors: Partial<Record<string, string>>;
   showActions: "installed" | "available";
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
   onInstallPlugin: (plugin: RegistryPluginRecord) => void;
@@ -225,7 +228,8 @@ function PluginTable({
       </TableHeader>
       <TableBody>
         {plugins.map((plugin) => {
-          const isBusy = mutatingPluginId === plugin.id;
+          const isBusy = mutatingPluginIds.includes(plugin.id);
+          const actionError = pluginErrors[plugin.id];
           const displayVersion =
             showActions === "installed" && plugin.installedVersion
               ? plugin.installedVersion
@@ -252,6 +256,11 @@ function PluginTable({
                 {blockedLabel && (
                   <div className="text-xs text-destructive">
                     {blockedLabel}
+                  </div>
+                )}
+                {actionError && (
+                  <div className="text-xs text-destructive">
+                    {actionError}
                   </div>
                 )}
               </TableCell>
@@ -345,7 +354,8 @@ function PluginTable({
 
 export function SettingsPluginsSection({
   plugins,
-  mutatingPluginId,
+  mutatingPluginIds,
+  pluginErrors,
   refreshing,
   onRefreshRegistry,
   onTogglePlugin,
@@ -413,7 +423,8 @@ export function SettingsPluginsSection({
             </div>
             <PluginTable
               plugins={filteredInstalled}
-              mutatingPluginId={mutatingPluginId}
+              mutatingPluginIds={mutatingPluginIds}
+              pluginErrors={pluginErrors}
               showActions="installed"
               onTogglePlugin={onTogglePlugin}
               onInstallPlugin={onInstallPlugin}
@@ -434,7 +445,8 @@ export function SettingsPluginsSection({
             </div>
             <PluginTable
               plugins={filteredAvailable}
-              mutatingPluginId={mutatingPluginId}
+              mutatingPluginIds={mutatingPluginIds}
+              pluginErrors={pluginErrors}
               showActions="available"
               onTogglePlugin={onTogglePlugin}
               onInstallPlugin={onInstallPlugin}

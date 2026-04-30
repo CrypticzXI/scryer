@@ -978,6 +978,11 @@ const ja: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "より新しいリリース v{{version}} には、より新しいScryerバージョンが必要です",
   "status.pluginInstalled": "プラグイン'{{name}}'がインストールされました。",
+  "status.pluginInstallFailedChecksumMismatch":
+    "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
+  "status.pluginInstallFailedSdkMetadataMismatch":
+    "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
+  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "プラグイン'{{name}}'は組み込み版に戻されました。",
   "status.pluginUninstalled":

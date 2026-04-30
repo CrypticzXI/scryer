@@ -961,6 +961,11 @@ const ko: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "더 새로운 릴리스 v{{version}}에는 더 새로운 Scryer 버전이 필요합니다",
   "status.pluginInstalled": "'{{name}}' 플러그인이 설치되었습니다.",
+  "status.pluginInstallFailedChecksumMismatch":
+    "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
+  "status.pluginInstallFailedSdkMetadataMismatch":
+    "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
+  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "'{{name}}' 플러그인이 내장 버전으로 되돌아갔습니다.",
   "status.pluginUninstalled": "'{{name}}' 플러그인이 제거되었습니다.",

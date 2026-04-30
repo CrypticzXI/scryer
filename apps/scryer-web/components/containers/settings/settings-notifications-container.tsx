@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsNotificationsSection } from "@/components/views/settings/settings-notifications-section";
 import { useClient } from "urql";
+import { toast } from "sonner";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type {
@@ -209,16 +210,17 @@ export function SettingsNotificationsContainer({
     }
   };
 
-  const editChannel = (channel: NotificationChannel) => {
-    setEditingChannelId(channel.id);
-    setChannelDraft({
-      name: channel.name,
-      channelType: channel.channelType,
-      isEnabled: channel.isEnabled,
-      configValues: parseConfigJson(channel.configJson),
-    });
-    setGlobalStatus(t("status.editingNotificationChannel", { name: channel.name }));
-  };
+   const editChannel = (channel: NotificationChannel) => {
+     setEditingChannelId(channel.id);
+     const provider = providerTypes.find((pt) => pt.providerType === channel.channelType);
+     setChannelDraft({
+       name: provider?.name ?? channel.name,
+       channelType: channel.channelType,
+       isEnabled: channel.isEnabled,
+       configValues: parseConfigJson(channel.configJson),
+     });
+     setGlobalStatus(t("status.editingNotificationChannel", { name: channel.name }));
+   };
 
   const deleteChannel = (channel: NotificationChannel) => {
     setPendingDeleteChannel(channel);
@@ -248,23 +250,42 @@ export function SettingsNotificationsContainer({
   };
 
   const toggleChannelEnabled = useCallback(async (channel: NotificationChannel) => {
+    const nextIsEnabled = !channel.isEnabled;
     setMutatingChannelId(channel.id);
+    setChannels((current) => current.map((existing) => (
+      existing.id === channel.id ? { ...existing, isEnabled: nextIsEnabled } : existing
+    )));
+    if (editingChannelId === channel.id) {
+      setChannelDraft((current) => ({
+        ...current,
+        isEnabled: nextIsEnabled,
+      }));
+    }
     try {
       const { error } = await client.mutation(updateNotificationChannelMutation, {
         input: {
           id: channel.id,
-          isEnabled: !channel.isEnabled,
+          isEnabled: nextIsEnabled,
         },
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(t("status.notificationChannelUpdated"));
       await refreshChannels();
     } catch (error) {
+      setChannels((current) => current.map((existing) => (
+        existing.id === channel.id ? { ...existing, isEnabled: channel.isEnabled } : existing
+      )));
+      if (editingChannelId === channel.id) {
+        setChannelDraft((current) => ({
+          ...current,
+          isEnabled: channel.isEnabled,
+        }));
+      }
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
       setMutatingChannelId(null);
     }
-  }, [client, refreshChannels, setGlobalStatus, t]);
+  }, [client, editingChannelId, refreshChannels, setGlobalStatus, t]);
 
   const testChannel = useCallback(async (channel: NotificationChannel) => {
     setTestingChannelId(channel.id);
@@ -273,11 +294,13 @@ export function SettingsNotificationsContainer({
         id: channel.id,
       }).toPromise();
       if (error) throw error;
-      setGlobalStatus(
-        data?.testNotificationChannel
-          ? t("settings.notificationTestSuccess")
-          : t("settings.notificationTestFailed"),
-      );
+      if (data?.testNotificationChannel) {
+        const message = t("settings.notificationTestSuccess");
+        setGlobalStatus(message);
+        toast.success(message);
+      } else {
+        setGlobalStatus(t("settings.notificationTestFailed"));
+      }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("settings.notificationTestFailed"));
     } finally {

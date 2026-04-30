@@ -928,6 +928,11 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "较新的发布版本 v{{version}} 需要更高版本的 Scryer",
   "status.pluginInstalled": "插件'{{name}}'已安装。",
+  "status.pluginInstallFailedChecksumMismatch":
+    "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
+  "status.pluginInstallFailedSdkMetadataMismatch":
+    "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
+  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "插件'{{name}}'已恢复为内置版本。",
   "status.pluginUninstalled": "插件'{{name}}'已卸载。",
