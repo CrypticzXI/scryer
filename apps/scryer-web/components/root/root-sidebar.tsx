@@ -1,6 +1,5 @@
 
 import * as React from "react";
-import { useClient } from "urql";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LucideIcon } from "lucide-react";
 import type {
@@ -56,8 +55,8 @@ type RootSidebarProps = {
   wantedSection: WantedSection;
   entitlements: string[];
   pendingImportCounts: PendingImportCounts | null;
-  ignoredImportCounts?: PendingImportCounts | null;
   manualImportRequiredCount: number;
+  pluginUpdateCount: number;
   children?: React.ReactNode;
   onNavigate: (
     nextView: ViewId,
@@ -211,39 +210,20 @@ function RootSidebarContent({
   wantedSection,
   entitlements,
   pendingImportCounts,
-  ignoredImportCounts,
   manualImportRequiredCount,
+  pluginUpdateCount,
   children,
   onNavigate,
 }: RootSidebarProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
   const { setOpenMobile } = useSidebar();
-  const client = useClient();
   const { theme, setTheme } = useTheme();
   const [themeMounted, setThemeMounted] = React.useState(false);
   React.useEffect(() => setThemeMounted(true), []);
   const cycleTheme = React.useCallback(() => {
     setTheme(getNextTheme(theme));
   }, [theme, setTheme]);
-  const [pluginUpgradeCount, setPluginUpgradeCount] = React.useState(0);
-
-  React.useEffect(() => {
-    const q = `query { plugins { updateAvailable } }`;
-    client.query(q, {}).toPromise().then(({ data }) => {
-      if (data?.plugins) {
-        setPluginUpgradeCount(
-          (data.plugins as Array<{ updateAvailable: boolean }>).filter((p) => p.updateAvailable).length,
-        );
-      }
-    }).catch(() => { /* ignore */ });
-
-    const onPluginUpdate = (e: Event) => {
-      setPluginUpgradeCount((e as CustomEvent<number>).detail);
-    };
-    window.addEventListener("scryer:pluginUpgradeCount", onPluginUpdate);
-    return () => window.removeEventListener("scryer:pluginUpgradeCount", onPluginUpdate);
-  }, [client]);
 
   const visibleSettingsEntries = React.useMemo(
     () => settingsEntries.filter((e) => !e.requiredEntitlement || entitlements.includes(e.requiredEntitlement)),
@@ -251,8 +231,8 @@ function RootSidebarContent({
   );
 
   const hasImportsForView = React.useCallback(
-    (viewId: ViewId) => hasImportItemsForView(pendingImportCounts, ignoredImportCounts, viewId),
-    [ignoredImportCounts, pendingImportCounts],
+    (viewId: ViewId) => hasImportItemsForView(pendingImportCounts, viewId),
+    [pendingImportCounts],
   );
 
   const pendingImportCountForNavView = React.useCallback(
@@ -451,8 +431,8 @@ function RootSidebarContent({
                                     }}
                                   >
                                     {entry.label(t)}
-                                    {entry.id === "plugins" && pluginUpgradeCount > 0 ? (
-                                      <LeafNavBadge count={pluginUpgradeCount} tone="warning" />
+                                    {entry.id === "plugins" && pluginUpdateCount > 0 ? (
+                                      <LeafNavBadge count={pluginUpdateCount} tone="warning" />
                                     ) : null}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>

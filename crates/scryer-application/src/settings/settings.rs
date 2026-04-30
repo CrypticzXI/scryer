@@ -15,9 +15,7 @@ use crate::{
     SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
-use super::keys::{
-    SMG_VERSION_COMPATIBILITY_NOTICE_KEY, default_indexer_routing_categories_for_scope,
-};
+use super::keys::default_indexer_routing_categories_for_scope;
 
 const ACQUISITION_ENABLED_KEY: &str = "acquisition.enabled";
 const ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY: &str = "acquisition.upgrade_cooldown_hours";
@@ -1349,13 +1347,6 @@ impl AppUseCase {
 
     pub(crate) async fn general_settings(&self) -> AppResult<GeneralSettings> {
         self.load_general_settings().await
-    }
-
-    pub async fn smg_version_compatibility_notice(
-        &self,
-    ) -> AppResult<Option<crate::types::SmgVersionCompatibilityNotice>> {
-        self.read_setting_json_value(SMG_VERSION_COMPATIBILITY_NOTICE_KEY, None)
-            .await
     }
 
     pub(crate) async fn delay_profiles(&self) -> AppResult<Vec<crate::DelayProfile>> {

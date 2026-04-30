@@ -333,6 +333,11 @@ fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleS
 }
 
 fn push_typo_candidate_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleSearchPlan) {
+    if plan.query_tokens.is_empty() {
+        builder.push("SELECT NULL, NULL, NULL, NULL WHERE 0");
+        return;
+    }
+
     let mut first = true;
     for query_token in &plan.query_tokens {
         for facet in &plan.facets {

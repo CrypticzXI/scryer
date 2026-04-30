@@ -1911,6 +1911,13 @@ pub struct PendingImportCountsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct NavigationBadgeCountsPayload {
+    pub pending_import_counts: PendingImportCountsPayload,
+    pub activity_import_count: i32,
+    pub plugin_update_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct PendingImportSearchAttemptPayload {
     pub query: String,
     pub result_count: i32,
@@ -2974,9 +2981,12 @@ pub struct WantedItemPayload {
     pub id: String,
     pub title_id: String,
     pub title_name: Option<String>,
+    pub title_slug: Option<String>,
+    pub title_facet: Option<String>,
     pub episode_id: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,
+    pub episode_number: Option<String>,
     pub media_type: WantedMediaTypeValue,
     pub search_phase: WantedSearchPhaseValue,
     pub next_search_at: Option<String>,
@@ -3028,12 +3038,14 @@ pub struct TitleAcquisitionDiagnosticsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct CutoffUnmetTitlePayload {
-    pub id: String,
-    pub name: String,
-    pub facet: MediaFacetValue,
-    pub poster_url: Option<String>,
-    pub external_ids: Vec<ExternalIdPayload>,
+pub struct CutoffUnmetItemPayload {
+    pub title_id: String,
+    pub title_name: String,
+    pub title_slug: Option<String>,
+    pub title_facet: MediaFacetValue,
+    pub episode_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
 }

@@ -1355,14 +1355,13 @@ export const seriesOverviewSettingsInitQuery = `query SeriesOverviewSettingsInit
 
 export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue) {
   cutoffUnmetTitles(facet: $facet) {
-    id
-    name
-    facet
-    posterUrl
-    externalIds {
-      source
-      value
-    }
+    titleId
+    titleName
+    titleSlug
+    titleFacet
+    episodeId
+    seasonNumber
+    episodeNumber
     currentTier
     targetTier
   }
@@ -1622,9 +1621,12 @@ export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $
       id
       titleId
       titleName
+      titleSlug
+      titleFacet
       episodeId
       collectionId
       seasonNumber
+      episodeNumber
       mediaType
       searchPhase
       nextSearchAt
@@ -1798,6 +1800,18 @@ export const pendingImportCountsQuery = `query PendingImportCounts {
     movie
     series
     anime
+  }
+}`;
+
+export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
+  navigationBadgeCounts {
+    pendingImportCounts {
+      movie
+      series
+      anime
+    }
+    activityImportCount
+    pluginUpdateCount
   }
 }`;
 

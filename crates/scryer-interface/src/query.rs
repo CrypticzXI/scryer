@@ -2,10 +2,11 @@ use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    ReleaseDecisionsQuery, TitleHistoryFilter, WantedItemsQuery,
+    DownloadImportFilter, PendingImportCounts, ReleaseDecisionsQuery, TitleHistoryFilter,
+    WantedItemsQuery,
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
-use scryer_domain::{PolicyInput, TitleHistoryEventType};
+use scryer_domain::{Entitlement, PolicyInput, TitleHistoryEventType};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
@@ -193,20 +194,15 @@ fn from_metadata_search_item(
     }
 }
 
-fn from_cutoff_unmet_title(item: scryer_application::CutoffUnmetTitle) -> CutoffUnmetTitlePayload {
-    CutoffUnmetTitlePayload {
-        id: item.id,
-        name: item.name,
-        facet: MediaFacetValue::from_domain(item.facet),
-        poster_url: item.poster_url,
-        external_ids: item
-            .external_ids
-            .into_iter()
-            .map(|id| ExternalIdPayload {
-                source: id.source,
-                value: id.value,
-            })
-            .collect(),
+fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUnmetItemPayload {
+    CutoffUnmetItemPayload {
+        title_id: item.title_id,
+        title_name: item.title_name,
+        title_slug: item.title_slug,
+        title_facet: MediaFacetValue::from_domain(item.title_facet),
+        episode_id: item.episode_id,
+        season_number: item.season_number,
+        episode_number: item.episode_number,
         current_tier: item.current_tier,
         target_tier: item.target_tier,
     }
@@ -721,6 +717,50 @@ impl QueryRoot {
             .await
             .map_err(to_gql_error)?;
         Ok(from_pending_import_counts(counts))
+    }
+
+    async fn navigation_badge_counts(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<NavigationBadgeCountsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let pending_import_counts = async {
+            if actor.has_entitlement(&Entitlement::ManageTitle) {
+                app.pending_import_counts(&actor).await
+            } else {
+                Ok(PendingImportCounts::default())
+            }
+        };
+        let activity_import_count = async {
+            if actor.has_entitlement(&Entitlement::ManageConfig) {
+                app.count_download_import_items(&actor, DownloadImportFilter::All)
+                    .await
+            } else {
+                Ok(0)
+            }
+        };
+        let plugin_update_count = async {
+            if actor.has_entitlement(&Entitlement::ManageConfig) {
+                app.plugin_update_count(&actor).await
+            } else {
+                Ok(0)
+            }
+        };
+
+        let (pending_import_counts, activity_import_count, plugin_update_count) = tokio::try_join!(
+            pending_import_counts,
+            activity_import_count,
+            plugin_update_count,
+        )
+        .map_err(to_gql_error)?;
+
+        Ok(NavigationBadgeCountsPayload {
+            pending_import_counts: from_pending_import_counts(pending_import_counts),
+            activity_import_count: activity_import_count as i32,
+            plugin_update_count: plugin_update_count as i32,
+        })
     }
 
     async fn pending_imports(
@@ -1438,14 +1478,14 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
-    ) -> GqlResult<Vec<CutoffUnmetTitlePayload>> {
+    ) -> GqlResult<Vec<CutoffUnmetItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let items = app
             .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain))
             .await
             .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_cutoff_unmet_title).collect())
+        Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
     }
 
     async fn release_decisions(

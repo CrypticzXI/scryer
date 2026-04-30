@@ -566,6 +566,34 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(out)
     }
 
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        let store = self.store.lock().await;
+        let mut out = Vec::new();
+        for title_id in title_ids {
+            for entry in store.iter().filter(|entry| &entry.title_id == title_id) {
+                let Some(label) = entry.quality_label.as_ref() else {
+                    continue;
+                };
+                let normalized = label.trim().to_ascii_uppercase();
+                if normalized.is_empty() {
+                    continue;
+                }
+                out.push(CutoffUnmetQualitySummary {
+                    title_id: title_id.clone(),
+                    episode_id: entry.episode_id.clone(),
+                    season_number: None,
+                    episode_number: None,
+                    quality_tier: normalized,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
     async fn list_title_episode_progress_summaries(
         &self,
         _title_ids: &[String],
@@ -7398,9 +7426,12 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         id: "wanted-a".to_string(),
         title_id: title_id.to_string(),
         title_name: Some("Covered Title".to_string()),
+        title_slug: None,
+        title_facet: None,
         episode_id: Some("episode-a".to_string()),
         collection_id: Some("season-1".to_string()),
         season_number: Some("1".to_string()),
+        episode_number: None,
         media_type: "series".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
@@ -8203,9 +8234,102 @@ async fn list_cutoff_unmet_titles_normalizes_lowercase_cutoff_tier() {
         .expect("cutoff unmet query should succeed");
 
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].id, title.id);
+    assert_eq!(items[0].title_id, title.id);
+    assert_eq!(items[0].episode_id, None);
     assert_eq!(items[0].current_tier, "480P");
     assert_eq!(items[0].target_tier, "720P");
+}
+
+#[tokio::test]
+async fn list_cutoff_unmet_titles_returns_episode_scoped_rows_for_series() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            r#""cutoff-series""#,
+        )
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![cutoff_projection_test_profile("cutoff-series", "1080P")])
+        .await;
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) =
+        bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Cutoff Episodes".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+
+    let file_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/library/Cutoff Episodes/Season 01/Cutoff Episodes - S01E01.mkv"
+                .to_string(),
+            size_bytes: 1_000,
+            quality_label: Some("720p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert media file");
+    media_files
+        .link_file_to_episode(&file_id, &episode.id)
+        .await
+        .expect("link media file to episode");
+
+    let items = app
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Series))
+        .await
+        .expect("cutoff unmet query should succeed");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title_id, title.id);
+    assert_eq!(items[0].episode_id.as_deref(), Some(episode.id.as_str()));
+    assert_eq!(items[0].current_tier, "720P");
+    assert_eq!(items[0].target_tier, "1080P");
 }
 
 #[tokio::test]
@@ -9149,6 +9273,65 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
         crate::integration::derive_download_queue_display_state(&page.items[0]),
         DownloadDisplayState::ImportBlocked
     );
+}
+
+#[tokio::test]
+async fn count_download_import_items_matches_selected_filter() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let mut importing =
+        queue_history_fixture_item("importing-1", DownloadQueueState::Completed, 40);
+    importing.import_status = Some(ImportStatus::Running);
+
+    let mut pending =
+        queue_history_fixture_item("pending-1", DownloadQueueState::ImportPending, 30);
+    pending.tracked_state = Some(TrackedDownloadState::ImportPending);
+
+    let mut blocked = queue_history_fixture_item("blocked-1", DownloadQueueState::Completed, 20);
+    blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+
+    let failed = queue_history_fixture_item("failed-1", DownloadQueueState::Failed, 10);
+    let completed = queue_history_fixture_item("completed-1", DownloadQueueState::Completed, 5);
+
+    *download_client.history_items.lock().await =
+        vec![completed, failed, blocked, pending.clone(), importing];
+
+    let all_page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::All)
+        .await
+        .expect("all import page");
+    let all_count = app
+        .count_download_import_items(&user, DownloadImportFilter::All)
+        .await
+        .expect("all import count");
+    let pending_count = app
+        .count_download_import_items(&user, DownloadImportFilter::Pending)
+        .await
+        .expect("pending import count");
+
+    assert_eq!(all_count, all_page.total_count as i64);
+    assert_eq!(pending_count, 1);
+    assert_eq!(pending.download_client_item_id, "pending-1");
 }
 
 #[tokio::test]
@@ -10173,9 +10356,12 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
@@ -10336,9 +10522,12 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
@@ -10572,9 +10761,12 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("7".to_string()),
+            episode_number: None,
             media_type: "episode".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some(original_next_search_at.clone()),
@@ -10754,9 +10946,12 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                 id: item_id.to_string(),
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
                 episode_id: Some(episode_id.to_string()),
                 collection_id: None,
                 season_number: Some("1".to_string()),
+                episode_number: None,
                 media_type: "episode".to_string(),
                 search_phase: "initial".to_string(),
                 next_search_at: None,
@@ -10951,9 +11146,12 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: episode.season_number.clone(),
+                episode_number: None,
                 media_type: "episode".to_string(),
                 search_phase: "initial".to_string(),
                 next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11147,9 +11345,12 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: Some(season_number.to_string()),
+                episode_number: None,
                 media_type: "episode".to_string(),
                 search_phase: "initial".to_string(),
                 next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11316,9 +11517,12 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: Some("7".to_string()),
+                episode_number: None,
                 media_type: "episode".to_string(),
                 search_phase: "initial".to_string(),
                 next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11400,9 +11604,12 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11511,9 +11718,12 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11634,9 +11844,12 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
+            episode_number: None,
             media_type: "episode".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11761,9 +11974,12 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
+            episode_number: None,
             media_type: "episode".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some(Utc::now().to_rfc3339()),
@@ -11822,14 +12038,17 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
 
-    let wanted = WantedItem {
-        id: Id::new().0,
-        title_id: title.id.clone(),
-        title_name: Some(title.name.clone()),
-        episode_id: None,
-        collection_id: None,
-        season_number: None,
-        media_type: "movie".to_string(),
+        let wanted = WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
@@ -11953,9 +12172,12 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
@@ -12059,9 +12281,12 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "primary".to_string(),
         next_search_at: Some(original_due_at.clone()),
@@ -12080,9 +12305,12 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: Some("episode-2".to_string()),
         collection_id: None,
         season_number: Some("1".to_string()),
+        episode_number: None,
         media_type: "episode".to_string(),
         search_phase: "primary".to_string(),
         next_search_at: Some(original_due_at.clone()),
@@ -12221,9 +12449,12 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
@@ -12466,9 +12697,12 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
                 id: Id::new().0,
                 title_id: title.id.clone(),
                 title_name: None,
+                title_slug: None,
+                title_facet: None,
                 episode_id: Some(episode_id.clone()),
                 collection_id: None,
                 season_number: Some("1".to_string()),
+                episode_number: None,
                 media_type: "episode".to_string(),
                 search_phase: "primary".to_string(),
                 next_search_at: Some(Utc::now().to_rfc3339()),

@@ -14,9 +14,12 @@ export type WantedItem = {
   id: string;
   titleId: string;
   titleName: string | null;
+  titleSlug: string | null;
+  titleFacet: string | null;
   episodeId: string | null;
   collectionId: string | null;
   seasonNumber: string | null;
+  episodeNumber: string | null;
   mediaType: WantedMediaType;
   searchPhase: WantedSearchPhase;
   nextSearchAt: string | null;

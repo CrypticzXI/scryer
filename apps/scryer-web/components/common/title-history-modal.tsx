@@ -68,6 +68,7 @@ export function TitleHistoryModal({
               eventTypes: eventTypes.length > 0 ? eventTypes : null,
               titleIds: [titleId],
               episodeId: episodeId ?? null,
+              groupByEvent: episodeId == null,
               limit: PAGE_SIZE,
               offset: pageOffset,
             },

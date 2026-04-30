@@ -37,7 +37,6 @@ export type RouteCommand = {
 type BuildRouteCommandsArgs = {
   t: Translate;
   pendingImportCounts: PendingImportCounts | null;
-  ignoredImportCounts?: PendingImportCounts | null;
   activityImportCount?: number;
   onNavigate: (
     nextView: ViewId,
@@ -66,7 +65,6 @@ function buildNavigate(
 export function buildRouteCommands({
   t,
   pendingImportCounts,
-  ignoredImportCounts,
   activityImportCount = 0,
   onNavigate,
 }: BuildRouteCommandsArgs): RouteCommand[] {
@@ -82,12 +80,12 @@ export function buildRouteCommands({
       },
     ];
 
-    if (hasImportItemsForView(pendingImportCounts, ignoredImportCounts, f.viewId)) {
+    if (hasImportItemsForView(pendingImportCounts, f.viewId)) {
       commands.push({
         id: `${f.viewId}-import`,
         label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
         description: t("nav.import"),
-        keywords: [f.viewId, f.id, "import", "pending", "ignored", "unmatched", "match"],
+        keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
       });

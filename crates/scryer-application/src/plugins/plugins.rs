@@ -687,10 +687,7 @@ impl AppUseCase {
         Ok(())
     }
 
-    /// List available plugins by merging cached registry with local installations.
-    pub async fn list_available_plugins(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
-        require(actor, &Entitlement::ManageConfig)?;
-
+    async fn build_available_plugins(&self) -> AppResult<Vec<RegistryPlugin>> {
         let installations = self
             .services
             .customization
@@ -865,6 +862,24 @@ impl AppUseCase {
         }
 
         Ok(result)
+    }
+
+    /// List available plugins by merging cached registry with local installations.
+    pub async fn list_available_plugins(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        self.build_available_plugins().await
+    }
+
+    pub async fn plugin_update_count(&self, actor: &User) -> AppResult<i64> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        Ok(self
+            .build_available_plugins()
+            .await?
+            .into_iter()
+            .filter(|plugin| plugin.update_available)
+            .count() as i64)
     }
 
     /// Refresh the plugin registry from the remote URL.

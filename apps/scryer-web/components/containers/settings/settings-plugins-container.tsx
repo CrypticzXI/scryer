@@ -7,6 +7,7 @@ import {
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import { pluginsQuery } from "@/lib/graphql/queries";
 import {
   refreshPluginRegistryMutation,
@@ -24,10 +25,6 @@ export function SettingsPluginsContainer() {
 
   const setPlugins = useCallback((next: RegistryPluginRecord[]) => {
     _setPlugins(next);
-    const upgradeCount = next.filter((p) => p.isInstalled && p.updateAvailable).length;
-    window.dispatchEvent(
-      new CustomEvent("scryer:pluginUpgradeCount", { detail: upgradeCount }),
-    );
   }, []);
   const [mutatingPluginId, setMutatingPluginId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -55,6 +52,7 @@ export function SettingsPluginsContainer() {
         .toPromise();
       if (error) throw error;
       setPlugins(data.refreshPluginRegistry || []);
+      dispatchNavigationBadgesRefresh();
       setGlobalStatus(t("status.registryRefreshed"));
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
@@ -80,6 +78,7 @@ export function SettingsPluginsContainer() {
           }),
         );
         await refreshPlugins();
+        dispatchNavigationBadgesRefresh();
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
       } finally {
@@ -100,6 +99,7 @@ export function SettingsPluginsContainer() {
       if (error) throw error;
       setGlobalStatus(t("status.pluginInstalled", { name: plugin.name }));
       await refreshPlugins();
+      dispatchNavigationBadgesRefresh();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
@@ -122,6 +122,7 @@ export function SettingsPluginsContainer() {
       if (error) throw error;
       setGlobalStatus(t("status.pluginUpgraded", { name: plugin.name, version: plugin.version }));
       await refreshPlugins();
+      dispatchNavigationBadgesRefresh();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
@@ -142,6 +143,7 @@ export function SettingsPluginsContainer() {
       if (error) throw error;
       setGlobalStatus(t("status.pluginUninstalled", { name: plugin.name }));
       await refreshPlugins();
+      dispatchNavigationBadgesRefresh();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
     } finally {

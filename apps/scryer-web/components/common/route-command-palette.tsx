@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/command";
 import { Loader2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { sectionLabelForFacet, viewFromFacet } from "@/lib/facets/helpers";
@@ -18,6 +19,7 @@ import { titlesQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Facet, TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import { buildOverviewDetailPath } from "@/lib/utils/routing";
 import { useClient } from "urql";
 
 export type RouteCommandItem = {
@@ -74,6 +76,7 @@ export function RouteCommandPalette({
   const lastShiftPressAt = React.useRef(0);
   const catalogRequestSeqRef = React.useRef(0);
   const client = useClient();
+  const navigate = useNavigate();
   const t = useTranslate();
 
   const handleCommandNavigate = React.useCallback((callback: () => void) => {
@@ -81,15 +84,40 @@ export function RouteCommandPalette({
     callback();
   }, []);
 
+  const handleOpenOverviewTarget = React.useCallback(
+    (targetView: ViewId, overviewTarget: OverviewTitleTarget) => {
+      if (onOpenOverview) {
+        onOpenOverview(targetView, overviewTarget);
+        return;
+      }
+
+      const normalizedTitleId = overviewTarget.id.trim();
+      if (!normalizedTitleId) {
+        return;
+      }
+
+      const normalizedSlug = overviewTarget.slug?.trim() || null;
+      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const nextParams = new URLSearchParams();
+      if (!normalizedSlug) {
+        nextParams.set("id", normalizedTitleId);
+      }
+
+      const nextQuery = nextParams.toString();
+      navigate(`${targetPath}${nextQuery ? `?${nextQuery}` : ""}`);
+    },
+    [navigate, onOpenOverview],
+  );
+
   const handleCatalogTitleSelect = React.useCallback(
     (title: TitleRecord) => {
       setOpen(false);
-      onOpenOverview?.(viewFromFacet(catalogFacetFromString(title.facet)), {
+      handleOpenOverviewTarget(viewFromFacet(catalogFacetFromString(title.facet)), {
         id: title.id,
         slug: title.slug ?? null,
       });
     },
-    [onOpenOverview],
+    [handleOpenOverviewTarget],
   );
 
   React.useEffect(() => {
@@ -142,7 +170,7 @@ export function RouteCommandPalette({
 
   React.useEffect(() => {
     const query = searchValue.trim();
-    if (!open || !onOpenOverview || query.length < CATALOG_COMMAND_MIN_QUERY_LENGTH) {
+    if (!open || query.length < CATALOG_COMMAND_MIN_QUERY_LENGTH) {
       setCatalogResults([]);
       setCatalogLoading(false);
       return;
@@ -183,18 +211,17 @@ export function RouteCommandPalette({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [client, onOpenOverview, open, searchValue]);
+  }, [client, open, searchValue]);
 
   if (!config || config.items.length === 0) {
     return null;
   }
 
   const showCatalogBeforeNavigation =
-    Boolean(onOpenOverview) &&
     searchValue.trim().length >= CATALOG_COMMAND_MIN_QUERY_LENGTH &&
     (catalogLoading || catalogResults.length > 0);
 
-  const catalogCommandGroup = onOpenOverview ? (
+  const catalogCommandGroup = (
     <CommandGroup heading={t("search.catalog")}>
       {catalogLoading ? (
         <CommandItem disabled value={`catalog-loading ${searchValue}`}>
@@ -254,7 +281,7 @@ export function RouteCommandPalette({
         );
       })}
     </CommandGroup>
-  ) : null;
+  );
 
   return (
     <CommandDialog

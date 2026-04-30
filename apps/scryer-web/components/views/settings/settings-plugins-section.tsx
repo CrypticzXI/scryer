@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ArrowUpCircle, Download, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowUpCircle, Download, Loader2, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -279,7 +279,11 @@ function PluginTable({
                       onClick={() => onInstallPlugin(plugin)}
                       label={t("settings.pluginInstall")}
                     >
-                      <Download className="h-4 w-4" />
+                      {isBusy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
                     </PluginActionButton>
                   )}
                 </div>

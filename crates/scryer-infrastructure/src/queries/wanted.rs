@@ -15,7 +15,9 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
          ON CONFLICT(collection_id) WHERE collection_id IS NOT NULL DO UPDATE SET
             search_phase = excluded.search_phase,
             next_search_at = CASE
-                WHEN wanted_items.search_count > 0 THEN wanted_items.next_search_at
+                WHEN excluded.next_search_at IS NULL THEN NULL
+                WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
+                THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,
             baseline_date = excluded.baseline_date,
@@ -34,7 +36,9 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
          ON CONFLICT(title_id, episode_id) DO UPDATE SET
             search_phase = excluded.search_phase,
             next_search_at = CASE
-                WHEN wanted_items.search_count > 0 THEN wanted_items.next_search_at
+                WHEN excluded.next_search_at IS NULL THEN NULL
+                WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
+                THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,
             baseline_date = excluded.baseline_date,
@@ -53,7 +57,9 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
          ON CONFLICT(title_id) WHERE episode_id IS NULL AND collection_id IS NULL DO UPDATE SET
             search_phase = excluded.search_phase,
             next_search_at = CASE
-                WHEN wanted_items.search_count > 0 THEN wanted_items.next_search_at
+                WHEN excluded.next_search_at IS NULL THEN NULL
+                WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
+                THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,
             baseline_date = excluded.baseline_date,
@@ -205,7 +211,10 @@ pub(crate) async fn list_due_wanted_items_query(
          FROM wanted_items w
          JOIN titles t ON t.id = w.title_id
          LEFT JOIN episodes e ON e.id = w.episode_id
-         WHERE w.status = 'wanted' AND (w.next_search_at IS NULL OR w.next_search_at <= ?)",
+         WHERE w.status = 'wanted'
+           AND w.next_search_at IS NOT NULL
+           AND w.next_search_at <= ?
+           AND (w.media_type != 'episode' OR w.baseline_date IS NOT NULL)",
     );
 
     if !excluded_facets.is_empty() {
@@ -250,7 +259,8 @@ pub(crate) async fn reset_fruitless_wanted_items_query(
          SET next_search_at = ?, updated_at = ?
          WHERE status = 'wanted'
            AND search_count > 0
-           AND current_score IS NULL",
+           AND current_score IS NULL
+           AND (media_type != 'episode' OR baseline_date IS NOT NULL)",
     )
     .bind(now)
     .bind(now)
@@ -466,8 +476,9 @@ pub(crate) async fn get_wanted_item_by_id_query(
     id: &str,
 ) -> AppResult<Option<WantedItem>> {
     let row: Option<SqliteRow> = sqlx::query(
-        "SELECT w.id, w.title_id, t.name AS title_name, w.episode_id, w.collection_id,
-                e.season_number, w.media_type, w.search_phase, w.next_search_at,
+        "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
+                t.facet AS title_facet, w.episode_id, w.collection_id,
+                e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
                 w.current_score,
                 latest_decision.id AS latest_decision_id,
@@ -544,8 +555,9 @@ pub(crate) async fn list_wanted_items_query(
     }
 
     builder.push(
-        "SELECT w.id, w.title_id, t.name AS title_name, w.episode_id, w.collection_id,
-                e.season_number, w.media_type, w.search_phase, w.next_search_at,
+        "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
+                t.facet AS title_facet, w.episode_id, w.collection_id,
+                e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status,
                 w.grabbed_release, w.current_score,
                 latest_decision.id AS latest_decision_id,
@@ -826,9 +838,12 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
             .try_get("title_id")
             .map_err(|e| AppError::Repository(e.to_string()))?,
         title_name: row.try_get("title_name").unwrap_or(None),
+        title_slug: row.try_get("title_slug").unwrap_or(None),
+        title_facet: row.try_get("title_facet").unwrap_or(None),
         episode_id: row.try_get("episode_id").unwrap_or(None),
         collection_id: row.try_get("collection_id").unwrap_or(None),
         season_number: row.try_get("season_number").unwrap_or(None),
+        episode_number: row.try_get("episode_number").unwrap_or(None),
         media_type: row
             .try_get("media_type")
             .map_err(|e| AppError::Repository(e.to_string()))?,

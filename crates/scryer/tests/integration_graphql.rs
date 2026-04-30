@@ -8,9 +8,9 @@ use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeScopedMediaFile,
     EpisodeUpdate, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease,
-    ReleaseDecision, ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
-    start_background_download_delete_poller,
+    ReleaseDecision, ScopedExternalId, ShowRepository, CutoffUnmetQualitySummary,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
@@ -147,6 +147,17 @@ impl MediaFileRepository for FailingMediaFileRepo {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
         <SqliteLibraryStateStore as MediaFileRepository>::list_title_quality_summaries(
+            &self.inner,
+            title_ids,
+        )
+        .await
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        <SqliteLibraryStateStore as MediaFileRepository>::list_cutoff_unmet_quality_summaries(
             &self.inner,
             title_ids,
         )

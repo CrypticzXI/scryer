@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import type { WantedSection } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useClient, useMutation } from "urql";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
@@ -7,6 +7,8 @@ import {
   cutoffUnmetTitlesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
+  searchForEpisodeQuery,
+  searchForTitleQuery,
   wantedItemsQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -16,11 +18,13 @@ import {
   resumeWantedItemMutation,
   resetWantedItemMutation,
   queueBestReleaseMutation,
+  queueExistingMutation,
   forceGrabPendingReleaseMutation,
   dismissPendingReleaseMutation,
 } from "@/lib/graphql/mutations";
 import type {
   PendingReleaseItem,
+  Release,
   ReleaseDecisionItem,
   WantedItem,
   WantedMediaType,
@@ -33,13 +37,48 @@ import {
   assertNoReplaceConflict,
   retryWithReplaceOnConflict,
 } from "@/lib/utils/download-conflicts";
+import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 
 type WantedContainerProps = {
   wantedSection: WantedSection;
+  onOpenOverview?: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
 };
+
+function cutoffItemKey(item: CutoffUnmetItem) {
+  return item.episodeId?.trim() || item.titleId;
+}
+
+function cutoffItemEpisodeCode(item: CutoffUnmetItem): string | null {
+  const seasonDigits = item.seasonNumber?.match(/\d+/)?.[0] ?? null;
+  const episodeDigits = item.episodeNumber?.match(/\d+/)?.[0] ?? null;
+  if (!seasonDigits || !episodeDigits) {
+    return null;
+  }
+  return `S${seasonDigits.padStart(2, "0")}E${episodeDigits.padStart(2, "0")}`;
+}
+
+function cutoffItemLabel(item: CutoffUnmetItem) {
+  const episodeCode = cutoffItemEpisodeCode(item);
+  return episodeCode ? `${item.titleName} ${episodeCode}` : item.titleName;
+}
+
+function cutoffConflictMessage(item: CutoffUnmetItem) {
+  return item.episodeId
+    ? "A download is already in progress for this episode."
+    : "A download is already in progress for this title.";
+}
+
+function cutoffQueueScope(item: CutoffUnmetItem) {
+  return item.episodeId?.trim() ? { episode: item.episodeId.trim() } : { title: true };
+}
 
 export const WantedContainer = memo(function WantedContainer({
   wantedSection,
+  onOpenOverview,
 }: WantedContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -73,7 +112,12 @@ export const WantedContainer = memo(function WantedContainer({
   const [cutoffItems, setCutoffItems] = useState<CutoffUnmetItem[]>([]);
   const [cutoffLoading, setCutoffLoading] = useState(false);
   const [cutoffFacetFilter, setCutoffFacetFilter] = useState<string | undefined>(undefined);
-  const [cutoffSearchingId, setCutoffSearchingId] = useState<string | null>(null);
+  const [cutoffAutoSearchingId, setCutoffAutoSearchingId] = useState<string | null>(null);
+  const [cutoffInteractiveSearchingId, setCutoffInteractiveSearchingId] = useState<string | null>(null);
+  const [cutoffActiveInteractiveItemId, setCutoffActiveInteractiveItemId] = useState<string | null>(null);
+  const [cutoffSearchResultsByItemId, setCutoffSearchResultsByItemId] = useState<
+    Record<string, Release[]>
+  >({});
   const [bulkSearching, setBulkSearching] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
   const bulkCancelRef = useRef(false);
@@ -310,14 +354,14 @@ export const WantedContainer = memo(function WantedContainer({
 
   // --- Cutoff search actions ---
 
-  const searchAndQueueTitle = useCallback(
+  const searchAndQueueCutoffItem = useCallback(
     async (
       cutoffItem: CutoffUnmetItem,
       options: { allowReplaceConfirmation?: boolean } = {},
     ) => {
       const input = {
-        titleId: cutoffItem.id,
-        scope: { title: true },
+        titleId: cutoffItem.titleId,
+        scope: cutoffQueueScope(cutoffItem),
       };
       const submit = async (nextInput: typeof input & { replaceInProgress?: boolean }) => {
         const { data, error } = await client
@@ -330,35 +374,115 @@ export const WantedContainer = memo(function WantedContainer({
         ? await retryWithReplaceOnConflict(
             input,
             submit,
-            "A download is already in progress for this title.",
+            cutoffConflictMessage(cutoffItem),
             confirmReplaceConflict,
           )
         : await submit(input);
-      assertNoReplaceConflict(payload, "A download is already in progress for this title.");
-      setGlobalStatus(t("cutoff.searchTriggered", { name: cutoffItem.name }));
+      assertNoReplaceConflict(payload, cutoffConflictMessage(cutoffItem));
+      setGlobalStatus(t("cutoff.searchTriggered", { name: cutoffItemLabel(cutoffItem) }));
     },
     [client, confirmReplaceConflict, t, setGlobalStatus],
   );
 
-  const cutoffTriggerSearch = useCallback(
+  const cutoffTriggerAutoSearch = useCallback(
     async (item: CutoffUnmetItem) => {
-      setCutoffSearchingId(item.id);
+      const itemKey = cutoffItemKey(item);
+      setCutoffAutoSearchingId(itemKey);
       try {
-        await searchAndQueueTitle(item, { allowReplaceConfirmation: true });
+        await searchAndQueueCutoffItem(item, { allowReplaceConfirmation: true });
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
       } finally {
-        setCutoffSearchingId(null);
+        setCutoffAutoSearchingId(null);
       }
     },
-    [searchAndQueueTitle, setGlobalStatus, t],
+    [searchAndQueueCutoffItem, setGlobalStatus, t],
   );
+
+  const cutoffTriggerInteractiveSearch = useCallback(
+    async (item: CutoffUnmetItem) => {
+      const itemKey = cutoffItemKey(item);
+      setCutoffInteractiveSearchingId(itemKey);
+      try {
+        if (item.episodeId) {
+          const season = item.seasonNumber?.trim();
+          const episode = item.episodeNumber?.trim();
+          if (!season || !episode) {
+            throw new Error("Episode search is unavailable because the episode numbers are missing.");
+          }
+          const { data, error } = await client
+            .query(searchForEpisodeQuery, {
+              titleId: item.titleId,
+              season,
+              episode,
+            })
+            .toPromise();
+          if (error) throw error;
+          const results = data?.searchReleases ?? [];
+          setCutoffSearchResultsByItemId((current) => ({ ...current, [itemKey]: results }));
+          setCutoffActiveInteractiveItemId(itemKey);
+          setGlobalStatus(t("status.foundNzb", { count: results.length }));
+        } else {
+          const { data, error } = await client
+            .query(searchForTitleQuery, { titleId: item.titleId })
+            .toPromise();
+          if (error) throw error;
+          const results = data?.searchReleases ?? [];
+          setCutoffSearchResultsByItemId((current) => ({ ...current, [itemKey]: results }));
+          setCutoffActiveInteractiveItemId(itemKey);
+          setGlobalStatus(t("status.foundNzb", { count: results.length }));
+        }
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setCutoffInteractiveSearchingId(null);
+      }
+    },
+    [client, setGlobalStatus, t],
+  );
+
+  const cutoffQueueRelease = useCallback(
+    async (item: CutoffUnmetItem, release: Release) => {
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+
+      const conflictMessage = cutoffConflictMessage(item);
+      const input = {
+        titleId: item.titleId,
+        scope: releaseQueueScopeInput(release, cutoffQueueScope(item)),
+        candidateToken: release.candidateToken,
+      };
+
+      try {
+        const payload = await retryWithReplaceOnConflict(
+          input,
+          async (nextInput) => {
+            const { data, error } = await client
+              .mutation(queueExistingMutation, { input: nextInput })
+              .toPromise();
+            if (error) throw error;
+            return data?.queueExistingTitleDownload;
+          },
+          conflictMessage,
+          confirmReplaceConflict,
+        );
+        assertNoReplaceConflict(payload, conflictMessage);
+        setGlobalStatus(t("status.queueSuccess", { name: release.title }));
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+      }
+    },
+    [client, confirmReplaceConflict, setGlobalStatus, t],
+  );
+
   const cutoffBulkSearch = useCallback(() => {
     bulkCancelRef.current = false;
     setBulkSearching(true);
 
     const filtered = cutoffFacetFilter
-      ? cutoffItems.filter((i) => i.facet === cutoffFacetFilter)
+      ? cutoffItems.filter((item) => item.titleFacet === cutoffFacetFilter)
       : cutoffItems;
 
     setBulkProgress({ current: 0, total: filtered.length });
@@ -370,16 +494,16 @@ export const WantedContainer = memo(function WantedContainer({
         searched++;
         setBulkProgress({ current: searched, total: filtered.length });
         try {
-          await searchAndQueueTitle(item);
+          await searchAndQueueCutoffItem(item);
         } catch {
-          // continue to next title on error
+          // continue to next item on error
         }
       }
       setBulkSearching(false);
       setBulkProgress(null);
       setGlobalStatus(t("cutoff.bulkComplete", { searched, total: filtered.length }));
     })();
-  }, [cutoffItems, cutoffFacetFilter, searchAndQueueTitle, setGlobalStatus, t]);
+  }, [cutoffItems, cutoffFacetFilter, searchAndQueueCutoffItem, setGlobalStatus, t]);
 
   const cancelBulkSearch = useCallback(() => {
     bulkCancelRef.current = true;
@@ -390,6 +514,7 @@ export const WantedContainer = memo(function WantedContainer({
       <div className="flex h-full min-h-0 flex-col">
       <WantedView
         section={wantedSection}
+        onOpenOverview={onOpenOverview}
         wantedState={{
           items,
           total,
@@ -421,10 +546,15 @@ export const WantedContainer = memo(function WantedContainer({
           loading: cutoffLoading,
           facetFilter: cutoffFacetFilter,
           setFacetFilter: setCutoffFacetFilter,
-          searchingId: cutoffSearchingId,
+          autoSearchingId: cutoffAutoSearchingId,
+          interactiveSearchingId: cutoffInteractiveSearchingId,
+          activeInteractiveItemId: cutoffActiveInteractiveItemId,
+          searchResultsByItemId: cutoffSearchResultsByItemId,
           bulkSearching,
           bulkProgress,
-          triggerSearch: cutoffTriggerSearch,
+          triggerAutoSearch: cutoffTriggerAutoSearch,
+          triggerInteractiveSearch: cutoffTriggerInteractiveSearch,
+          queueRelease: cutoffQueueRelease,
           triggerBulkSearch: cutoffBulkSearch,
           cancelBulkSearch,
         }}

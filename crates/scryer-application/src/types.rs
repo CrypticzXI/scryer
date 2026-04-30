@@ -80,12 +80,14 @@ pub struct AddTitleAndQueueDownloadOutcome {
 }
 
 #[derive(Clone, Debug)]
-pub struct CutoffUnmetTitle {
-    pub id: String,
-    pub name: String,
-    pub facet: scryer_domain::MediaFacet,
-    pub poster_url: Option<String>,
-    pub external_ids: Vec<ExternalId>,
+pub struct CutoffUnmetItem {
+    pub title_id: String,
+    pub title_name: String,
+    pub title_slug: Option<String>,
+    pub title_facet: scryer_domain::MediaFacet,
+    pub episode_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
 }
@@ -607,9 +609,12 @@ pub struct WantedItem {
     pub id: String,
     pub title_id: String,
     pub title_name: Option<String>,
+    pub title_slug: Option<String>,
+    pub title_facet: Option<String>,
     pub episode_id: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,
+    pub episode_number: Option<String>,
     pub media_type: String,
     pub search_phase: String,
     pub next_search_at: Option<String>,
@@ -1046,6 +1051,17 @@ pub struct TitleMediaSizeSummary {
 #[derive(Clone, Debug)]
 pub struct TitleQualitySummary {
     pub title_id: String,
+    pub quality_tier: String,
+}
+
+/// Aggregated current quality tier per movie title or per episodic item, based
+/// on the lowest-quality live media file linked to that item.
+#[derive(Clone, Debug)]
+pub struct CutoffUnmetQualitySummary {
+    pub title_id: String,
+    pub episode_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
     pub quality_tier: String,
 }
 

@@ -1,6 +1,7 @@
 
 import * as React from "react";
 import { Bell, Edit, Power, PowerOff, Send, Trash2 } from "lucide-react";
+import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -147,6 +148,19 @@ function DynamicConfigField({
   }
 
   if (field.fieldType === "multiline") {
+    if (field.key === "path_mappings") {
+      return (
+        <LocalRemotePathMappingsField
+          fieldKey={field.key}
+          label={field.label}
+          value={value}
+          helpText={field.helpText}
+          required={field.required}
+          onChange={onChange}
+        />
+      );
+    }
+
     return (
       <label>
         <Label className="mb-2 block">{field.label}</Label>

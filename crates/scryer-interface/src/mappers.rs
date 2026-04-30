@@ -1340,9 +1340,12 @@ pub(crate) fn from_wanted_item(item: scryer_application::WantedItem) -> WantedIt
         id: item.id,
         title_id: item.title_id,
         title_name: item.title_name,
+        title_slug: item.title_slug,
+        title_facet: item.title_facet,
         episode_id: item.episode_id,
         collection_id: item.collection_id,
         season_number: item.season_number,
+        episode_number: item.episode_number,
         media_type: WantedMediaTypeValue::parse(&item.media_type)
             .expect("wanted item media_type should map to GraphQL enum"),
         search_phase: WantedSearchPhaseValue::parse(&item.search_phase)

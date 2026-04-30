@@ -23,10 +23,13 @@ use scryer_infrastructure::SqliteNotificationStore;
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -194,6 +197,23 @@ fn config_json_with_path_mappings() -> String {
         "path_mappings": "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV"
     })
     .to_string()
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("repo root")
+        .to_path_buf()
+}
+
+fn jellyfin_dist_wasm_path() -> PathBuf {
+    repo_root()
+        .parent()
+        .expect("workspace root")
+        .join("scryer-plugins")
+        .join("dist")
+        .join("jellyfin_notification.wasm")
 }
 
 fn lifecycle_metadata(
@@ -808,6 +828,59 @@ async fn create_channel_preserves_multiline_jellyfin_config_json() {
         .expect("load channel")
         .expect("channel should exist");
     assert_eq!(fetched.config_json, config_json);
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
+    let wasm_path = jellyfin_dist_wasm_path();
+    if !wasm_path.exists() {
+        eprintln!("skipping jellyfin dist test; missing {}", wasm_path.display());
+        return;
+    }
+
+    let ctx = TestContext::new().await;
+    let wasm_bytes =
+        std::fs::read(&wasm_path).unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
+    let provider: Arc<dyn NotificationPluginProvider> = Arc::new(
+        scryer_plugins::DynamicNotificationPluginProvider::new(
+            scryer_plugins::WasmNotificationPluginProvider::empty()
+                .with_external_bytes(&wasm_bytes),
+        ),
+    );
+    let app = app_with_notification_provider(&ctx, provider);
+    let user = default_user(&app).await;
+
+    Mock::given(method("GET"))
+        .and(path("/System/Info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ServerName": "Jellyfin Test",
+            "Version": "10.10.0",
+        })))
+        .expect(1)
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let config_json = json!({
+        "base_url": ctx.nzbgeek_server.uri(),
+        "api_key": "secret",
+        "path_mappings": "/data => /mnt",
+    })
+    .to_string();
+
+    let channel = app
+        .create_notification_channel(
+            &user,
+            "Jellyfin".into(),
+            "jellyfin".into(),
+            config_json,
+            true,
+        )
+        .await
+        .expect("create channel");
+
+    app.test_notification_channel(&user, &channel.id)
+        .await
+        .expect("jellyfin dist plugin should accept test payload");
 }
 
 #[tokio::test]

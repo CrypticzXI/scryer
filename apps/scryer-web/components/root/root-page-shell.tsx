@@ -56,15 +56,15 @@ import {
 import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
-  importQueueCountQuery,
-  pendingImportsQuery,
-  pendingImportCountsQuery,
+  navigationBadgeCountsQuery,
   smgVersionCompatibilityNoticeQuery,
 } from "@/lib/graphql/queries";
-import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
+import type { PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
-
-const IMPORT_COUNT_FACETS = ["movie", "series", "anime"] as const;
+import {
+  NAVIGATION_BADGES_REFRESH_EVENT,
+  type NavigationBadgesRefreshDetail,
+} from "@/lib/events/navigation-badges";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
 
 const mediaContainers = () => import("@/components/containers/media-containers");
@@ -262,6 +262,7 @@ function MainContent({
   activitySection,
   wantedSection,
   handleOpenOverview,
+  handleImportRouteEmpty,
 }: {
   view: ViewId;
   overviewTitleId: string | null;
@@ -285,6 +286,7 @@ function MainContent({
     overviewTarget: OverviewTitleTarget,
     episodeId?: string,
   ) => void;
+  handleImportRouteEmpty: () => void;
 }) {
   if (view === "activity") {
     return <ActivityContainer key="activity" activitySection={activitySection} />;
@@ -296,7 +298,13 @@ function MainContent({
     if (wantedSection === "history") {
       return <WantedHistoryContainer key="wanted-history" />;
     }
-    return <WantedContainer key={`wanted-${wantedSection}`} wantedSection={wantedSection} />;
+    return (
+      <WantedContainer
+        key={`wanted-${wantedSection}`}
+        wantedSection={wantedSection}
+        onOpenOverview={handleOpenOverview}
+      />
+    );
   }
   if (view === "history") {
     return <WantedHistoryContainer key="history" />;
@@ -305,7 +313,13 @@ function MainContent({
     return <SystemContainer key={`system-${systemSection}`} systemSection={systemSection} />;
   }
   if (isMediaView(view) && contentSettingsSection === "import") {
-    return <PendingImportsContainer key={`${view}-imports`} view={view} />;
+    return (
+      <PendingImportsContainer
+        key={`${view}-imports`}
+        view={view}
+        onNavigateBackToOverview={handleImportRouteEmpty}
+      />
+    );
   }
   if (isMediaView(view) && contentSettingsSection === "overview" && overviewLoading) {
     return <ViewLoadingFallback />;
@@ -504,9 +518,14 @@ function AuthenticatedHomePage({
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw, {
     onServiceRestarting: useCallback(() => setServiceRestarting(true), [setServiceRestarting]),
   });
+  type NavigationBadgeCountsPayload = {
+    pendingImportCounts?: PendingImportCounts | null;
+    activityImportCount?: number | null;
+    pluginUpdateCount?: number | null;
+  };
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
-  const [ignoredImportCounts, setIgnoredImportCounts] = useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
+  const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
   const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
     useState<SmgVersionCompatibilityNotice | null>(null);
   const [resolvedOverviewTarget, setResolvedOverviewTarget] = useState<OverviewTitleTarget | null>(null);
@@ -594,87 +613,62 @@ function AuthenticatedHomePage({
     };
   }, [refreshSmgVersionCompatibilityNotice]);
 
-  const refreshSidebarCounts = useCallback(async () => {
+  const refreshNavigationBadges = useCallback(async () => {
     try {
-      const [pendingImportsResult, manualImportCountResult, ignoredImportResults] = await Promise.all([
-        backendClient.query(pendingImportCountsQuery, {}).toPromise(),
-        backendClient.query(importQueueCountQuery, {}).toPromise(),
-        Promise.all(
-          IMPORT_COUNT_FACETS.map((facet) =>
-            backendClient
-              .query(pendingImportsQuery, {
-                facet,
-                status: "ignored",
-                limit: 1,
-                offset: 0,
-              })
-              .toPromise(),
-          ),
-        ),
-      ]);
+      const badgeCountsResult = await backendClient
+        .query(navigationBadgeCountsQuery, {})
+        .toPromise();
 
-      if (pendingImportsResult.error) {
-        throw pendingImportsResult.error;
+      if (badgeCountsResult.error) {
+        throw badgeCountsResult.error;
       }
 
-      if (manualImportCountResult.error) {
-        throw manualImportCountResult.error;
-      }
-
-      for (const result of ignoredImportResults) {
-        if (result.error) {
-          throw result.error;
-        }
-      }
-
-      if (pendingImportsResult.data?.pendingImportCounts) {
-        setPendingImportCounts(pendingImportsResult.data.pendingImportCounts as PendingImportCounts);
-      } else {
-        setPendingImportCounts({ movie: 0, series: 0, anime: 0 });
-      }
-
-      setIgnoredImportCounts({
-        movie: Number(ignoredImportResults[0]?.data?.pendingImports?.total ?? 0),
-        series: Number(ignoredImportResults[1]?.data?.pendingImports?.total ?? 0),
-        anime: Number(ignoredImportResults[2]?.data?.pendingImports?.total ?? 0),
-      });
-
-      setManualImportRequiredCount(
-        Number(manualImportCountResult.data?.downloadImport?.totalCount ?? 0),
+      const badgeCounts = badgeCountsResult.data?.navigationBadgeCounts as NavigationBadgeCountsPayload | undefined;
+      setPendingImportCounts(
+        badgeCounts?.pendingImportCounts ?? { movie: 0, series: 0, anime: 0 },
       );
+      setManualImportRequiredCount(Number(badgeCounts?.activityImportCount ?? 0));
+      setPluginUpdateCount(Number(badgeCounts?.pluginUpdateCount ?? 0));
     } catch (error) {
-      console.warn("Failed to refresh sidebar counts", error);
+      console.warn("Failed to refresh navigation badges", error);
     }
   }, []);
 
   useEffect(() => {
-    void refreshSidebarCounts();
-  }, [refreshSidebarCounts]);
+    void refreshNavigationBadges();
+  }, [refreshNavigationBadges]);
 
   useEffect(() => {
-    const handleSidebarCountsRefresh = (event: Event) => {
+    const handleNavigationBadgeRefresh = (event: Event) => {
       const delta =
-        event instanceof CustomEvent && typeof event.detail?.delta === "number"
-          ? event.detail.delta
+        event instanceof CustomEvent &&
+          typeof (event as CustomEvent<NavigationBadgesRefreshDetail>).detail?.delta === "number"
+          ? Number((event as CustomEvent<NavigationBadgesRefreshDetail>).detail?.delta)
           : 0;
       if (delta !== 0) {
         setManualImportRequiredCount((current) => Math.max(0, current + delta));
         window.setTimeout(() => {
-          void refreshSidebarCounts();
+          void refreshNavigationBadges();
         }, 2_000);
         return;
       }
-      void refreshSidebarCounts();
+      void refreshNavigationBadges();
     };
-    window.addEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
+    window.addEventListener(
+      NAVIGATION_BADGES_REFRESH_EVENT,
+      handleNavigationBadgeRefresh,
+    );
     const intervalId = window.setInterval(() => {
-      void refreshSidebarCounts();
+      void refreshNavigationBadges();
     }, 30_000);
     return () => {
-      window.removeEventListener("scryer:pendingImportsRefresh", handleSidebarCountsRefresh);
+      window.removeEventListener(
+        NAVIGATION_BADGES_REFRESH_EVENT,
+        handleNavigationBadgeRefresh,
+      );
       window.clearInterval(intervalId);
     };
-  }, [refreshSidebarCounts]);
+  }, [refreshNavigationBadges]);
 
   const activeFacet = useMemo<Facet>(() => facetForView(view)?.id ?? "movie", [view]);
   const queueFacet = activeFacet;
@@ -937,11 +931,10 @@ function AuthenticatedHomePage({
     () => buildRouteCommands({
       t,
       pendingImportCounts,
-      ignoredImportCounts,
       activityImportCount: manualImportRequiredCount,
       onNavigate: navigateTo,
     }),
-    [ignoredImportCounts, manualImportRequiredCount, navigateTo, pendingImportCounts, t],
+    [manualImportRequiredCount, navigateTo, pendingImportCounts, t],
   );
 
   const routeCommandPaletteConfig = useMemo(
@@ -967,23 +960,6 @@ function AuthenticatedHomePage({
     () => navigateTo(view, undefined, "overview", undefined, undefined),
     [navigateTo, view],
   );
-
-  useEffect(() => {
-    if (
-      !isMediaView(view) ||
-      contentSettingsSection !== "import" ||
-      pendingImportCounts === null ||
-      ignoredImportCounts === null
-    ) {
-      return;
-    }
-
-    if (hasImportItemsForView(pendingImportCounts, ignoredImportCounts, view)) {
-      return;
-    }
-
-    navigateTo(view, undefined, "overview", undefined, undefined);
-  }, [contentSettingsSection, ignoredImportCounts, navigateTo, pendingImportCounts, view]);
 
   useEffect(() => {
     if (
@@ -1069,8 +1045,8 @@ function AuthenticatedHomePage({
                     wantedSection={wantedSection}
                     entitlements={entitlements}
                     pendingImportCounts={pendingImportCounts}
-                    ignoredImportCounts={ignoredImportCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
+                    pluginUpdateCount={pluginUpdateCount}
                     onNavigate={navigateTo}
                   >
                     <main className={view === "wanted" || view === "calendar" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
@@ -1094,6 +1070,7 @@ function AuthenticatedHomePage({
                           activitySection={activitySection}
                           wantedSection={wantedSection}
                           handleOpenOverview={handleOpenOverview}
+                          handleImportRouteEmpty={handleBackToList}
                         />
                       </Suspense>
                     </main>

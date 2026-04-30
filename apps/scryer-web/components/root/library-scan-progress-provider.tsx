@@ -6,6 +6,7 @@ import { LibraryScanProgressContext } from "@/lib/context/library-scan-progress-
 import { useTranslate } from "@/lib/context/translate-context";
 import { useLibraryScanEventStream } from "@/lib/hooks/use-library-scan-event-stream";
 import type { LibraryScanStatus } from "@/lib/types";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 
 const TERMINAL_TOAST_DURATION_MS = 6_000;
 const TOAST_EXIT_GRACE_MS = 200;
@@ -63,7 +64,7 @@ export function LibraryScanProgressProvider({
     for (const session of sessions) {
       if (isTerminal(session.status)) {
         if (!refreshedPendingImportSessionsRef.current.has(session.sessionId)) {
-          window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+          dispatchNavigationBadgesRefresh();
           refreshedPendingImportSessionsRef.current.add(session.sessionId);
         }
         const existingTimer = dismissTimersRef.current[session.sessionId];

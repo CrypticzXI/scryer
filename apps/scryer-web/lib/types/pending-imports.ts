@@ -102,13 +102,9 @@ export function pendingImportCountForView(
 
 export function hasImportItemsForView(
   pendingCounts: PendingImportCounts | null | undefined,
-  ignoredCounts: PendingImportCounts | null | undefined,
   view: string,
 ): boolean {
-  return (
-    pendingImportCountForView(pendingCounts, view) > 0 ||
-    pendingImportCountForView(ignoredCounts, view) > 0
-  );
+  return pendingImportCountForView(pendingCounts, view) > 0;
 }
 
 export function pendingImportFacetValueForView(

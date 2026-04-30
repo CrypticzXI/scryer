@@ -803,6 +803,30 @@ async fn list_invalid_semver_no_update() {
 }
 
 #[tokio::test]
+async fn plugin_update_count_matches_available_plugins() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = make_registry_json(&[
+        registry_entry("alpha", "0.2.0", false, None),
+        registry_entry("beta", "1.0.0", false, None),
+    ]);
+    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("alpha", "0.1.0", false, true));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("beta", "1.0.0", false, true));
+
+    let count = h.app.plugin_update_count(&admin()).await.unwrap();
+
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn list_default_base_url_from_provider() {
     let provider = MockPluginProvider::new().with_provider(
         "animetosho",

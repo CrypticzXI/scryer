@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import type { WantedSection } from "@/components/root/types";
+import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ import { CutoffUnmetView } from "@/components/views/cutoff-unmet-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import type {
   PendingReleaseItem,
+  Release,
   ReleaseDecisionItem,
   WantedItem,
   WantedMediaType,
@@ -48,10 +49,15 @@ type CutoffUnmetViewState = {
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
-  searchingId: string | null;
+  autoSearchingId: string | null;
+  interactiveSearchingId: string | null;
+  activeInteractiveItemId: string | null;
+  searchResultsByItemId: Record<string, Release[]>;
   bulkSearching: boolean;
   bulkProgress: { current: number; total: number } | null;
-  triggerSearch: (item: CutoffUnmetItem) => Promise<void>;
+  triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
+  triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
+  queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
   cancelBulkSearch: () => void;
 };
@@ -158,6 +164,50 @@ function wantedItemContext(item: WantedItem, t: Translate) {
     return t("wanted.context.episode");
   }
   return t("wanted.context.movie");
+}
+
+function wantedItemOverviewView(item: WantedItem): ViewId | null {
+  switch (item.titleFacet) {
+    case "movie":
+      return "movies";
+    case "series":
+      return "series";
+    case "anime":
+      return "anime";
+    default:
+      return null;
+  }
+}
+
+function wantedItemOverviewTarget(item: WantedItem): OverviewTitleTarget | null {
+  const normalizedTitleId = item.titleId.trim();
+  if (!normalizedTitleId) {
+    return null;
+  }
+
+  const normalizedSlug = item.titleSlug?.trim() || null;
+  return {
+    id: normalizedTitleId,
+    slug: normalizedSlug,
+  };
+}
+
+function formatWantedEpisodeCode(item: WantedItem): string | null {
+  if (item.mediaType !== "episode") {
+    return null;
+  }
+
+  const seasonDigits = item.seasonNumber?.match(/\d+/)?.[0] ?? null;
+  const episodeDigits = item.episodeNumber?.match(/\d+/)?.[0] ?? null;
+  if (!seasonDigits || !episodeDigits) {
+    return null;
+  }
+
+  return `S${seasonDigits.padStart(2, "0")}E${episodeDigits.padStart(2, "0")}`;
+}
+
+function wantedItemSubtitle(item: WantedItem, t: Translate): string {
+  return formatWantedEpisodeCode(item) ?? wantedItemContext(item, t);
 }
 
 function statusBadge(status: WantedStatus, t: Translate) {
@@ -280,9 +330,20 @@ type WantedViewProps = {
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
   pendingState: PendingViewState;
+  onOpenOverview?: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
 };
 
-export function WantedView({ section, wantedState, cutoffState, pendingState }: WantedViewProps) {
+export function WantedView({
+  section,
+  wantedState,
+  cutoffState,
+  pendingState,
+  onOpenOverview,
+}: WantedViewProps) {
   return (
     <div className="space-y-4 md:flex md:h-full md:min-h-0 md:flex-col md:gap-4 md:space-y-0">
       {section === "cutoff" ? (
@@ -290,13 +351,23 @@ export function WantedView({ section, wantedState, cutoffState, pendingState }: 
       ) : section === "pending" ? (
         <PendingReleasesCard state={pendingState} />
       ) : (
-        <WantedItemsCard state={wantedState} />
+        <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
       )}
     </div>
   );
 }
 
-function WantedItemsCard({ state }: { state: WantedViewState }) {
+function WantedItemsCard({
+  state,
+  onOpenOverview,
+}: {
+  state: WantedViewState;
+  onOpenOverview?: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
+}) {
   const t = useTranslate();
   const isMobile = useIsMobile();
   const {
@@ -345,6 +416,20 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
       }
       return next;
     });
+  };
+
+  const openWantedItemOverview = (item: WantedItem) => {
+    if (!onOpenOverview) {
+      return;
+    }
+
+    const targetView = wantedItemOverviewView(item);
+    const overviewTarget = wantedItemOverviewTarget(item);
+    if (!targetView || !overviewTarget) {
+      return;
+    }
+
+    onOpenOverview(targetView, overviewTarget, item.episodeId ?? undefined);
   };
 
   return (
@@ -450,14 +535,14 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                     <div className="min-w-0 flex-1">
                       <button
                         type="button"
-                        className="block text-left"
-                        onClick={() => void loadDecisions(item.id)}
+                        className="block text-left hover:text-foreground"
+                        onClick={() => openWantedItemOverview(item)}
                       >
-                        <p className="break-words text-sm font-medium text-foreground">
+                        <p className="break-words text-sm font-medium text-foreground hover:underline">
                           {item.titleName ?? item.titleId.slice(0, 8)}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {wantedItemContext(item, t)}
+                          {wantedItemSubtitle(item, t)}
                         </p>
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
@@ -638,14 +723,18 @@ function WantedItemsCard({ state }: { state: WantedViewState }) {
                         </button>
                       </TableCell>
                       <TableCell className="max-w-[260px] text-sm" title={item.titleName ?? item.titleId}>
-                        <div className="min-w-0">
-                          <div className="truncate font-medium">
+                        <button
+                          type="button"
+                          className="min-w-0 text-left hover:text-foreground"
+                          onClick={() => openWantedItemOverview(item)}
+                        >
+                          <div className="truncate font-medium hover:underline">
                             {item.titleName ?? item.titleId.slice(0, 8)}
                           </div>
                           <div className="truncate text-xs text-muted-foreground">
-                            {wantedItemContext(item, t)}
+                            {wantedItemSubtitle(item, t)}
                           </div>
-                        </div>
+                        </button>
                       </TableCell>
                       <TableCell>{formatWantedMediaType(item.mediaType, t)}</TableCell>
                       <TableCell>{statusBadge(item.status, t)}</TableCell>

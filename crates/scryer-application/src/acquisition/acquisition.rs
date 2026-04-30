@@ -5,7 +5,10 @@ use crate::acquisition_decision_helpers::{
     FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, extract_grabbed_release_title,
     is_all_clients_failed_error, should_research_failed_grab,
 };
-use crate::acquisition_policy::compute_search_schedule;
+use crate::acquisition_policy::{
+    SearchPhase, compute_search_schedule, episode_search_window_is_open,
+    parse_schedule_baseline_date,
+};
 use crate::acquisition_release_search::{
     ReleaseAutoDecisionCode, annotate_auto_decision, interstitial_movie_search_title,
     serialize_decision_explanation,
@@ -43,6 +46,39 @@ fn parsed_release_season_pack_season(parsed: &crate::ParsedReleaseMetadata) -> O
 
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
+}
+
+fn episode_wanted_schedule_fields(
+    baseline_date: Option<&str>,
+    now: &DateTime<Utc>,
+    immediate: bool,
+) -> (Option<String>, String, Option<String>) {
+    let normalized_baseline_date = baseline_date
+        .filter(|value| parse_schedule_baseline_date(Some(value)).is_some())
+        .map(str::to_string);
+
+    let Some(valid_baseline_date) = normalized_baseline_date.clone() else {
+        return (None, SearchPhase::PreAir.to_string(), None);
+    };
+
+    let schedule = compute_search_schedule(
+        "episode",
+        Some(valid_baseline_date.as_str()),
+        "primary",
+        now,
+    );
+    let next_search_at =
+        if immediate && episode_search_window_is_open(Some(valid_baseline_date.as_str()), now) {
+            Some(now.to_rfc3339())
+        } else {
+            Some(schedule.next_search_at)
+        };
+
+    (
+        Some(valid_baseline_date),
+        schedule.search_phase.to_string(),
+        next_search_at,
+    )
 }
 
 async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
@@ -261,9 +297,12 @@ impl AppUseCase {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: None,
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: schedule.search_phase.to_string(),
             next_search_at: Some(next_search_at),
@@ -306,8 +345,9 @@ impl AppUseCase {
         self.sync_wanted_series_inner(title, now, false).await;
     }
 
-    /// Sync wanted items for a series. When `immediate` is true, sets `next_search_at = now`
-    /// so the background poller picks up new items on the next 60-second tick.
+    /// Sync wanted items for a series. When `immediate` is true, episodes that are already
+    /// inside the active search window are queued immediately; episodes without a usable
+    /// air date remain unscheduled until metadata provides one.
     pub(crate) async fn sync_wanted_series_inner(
         &self,
         title: &Title,
@@ -365,27 +405,22 @@ impl AppUseCase {
                 }
                 eligible_episode_ids.insert(episode.id.clone());
 
-                let baseline_date = episode.air_date.clone();
-
-                let schedule =
-                    compute_search_schedule("episode", baseline_date.as_deref(), "primary", now);
-
-                let next_search_at = if immediate {
-                    now.to_rfc3339()
-                } else {
-                    schedule.next_search_at
-                };
+                let (baseline_date, search_phase, next_search_at) =
+                    episode_wanted_schedule_fields(episode.air_date.as_deref(), now, immediate);
 
                 let item = WantedItem {
                     id: Id::new().0,
                     title_id: title.id.clone(),
                     title_name: None,
+                    title_slug: None,
+                    title_facet: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
                     season_number: episode.season_number.clone(),
+                    episode_number: None,
                     media_type: "episode".to_string(),
-                    search_phase: schedule.search_phase.to_string(),
-                    next_search_at: Some(next_search_at),
+                    search_phase,
+                    next_search_at,
                     last_search_at: None,
                     search_count: 0,
                     baseline_date,
@@ -488,9 +523,12 @@ impl AppUseCase {
                     id: Id::new().0,
                     title_id: title.id.clone(),
                     title_name: None,
+                    title_slug: None,
+                    title_facet: None,
                     episode_id: None,
                     collection_id: Some(collection.id.clone()),
                     season_number: Some("0".to_string()),
+                    episode_number: None,
                     media_type: "interstitial_movie".to_string(),
                     search_phase: schedule.search_phase.to_string(),
                     next_search_at: Some(next_search_at),
@@ -3741,7 +3779,7 @@ impl AppUseCase {
                     .wanted_items
                     .schedule_wanted_item_search(&WantedSearchTransition {
                         id: item.id,
-                        next_search_at: None,
+                        next_search_at: Some(Utc::now().to_rfc3339()),
                         last_search_at: None,
                         search_count: 0,
                         current_score: None,
@@ -3875,9 +3913,12 @@ impl AppUseCase {
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: None,
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: schedule.search_phase.to_string(),
             next_search_at: Some(next_search_at),
@@ -3969,9 +4010,12 @@ impl AppUseCase {
                     id: Id::new().0,
                     title_id: title.id.clone(),
                     title_name: None,
+                    title_slug: None,
+                    title_facet: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
                     season_number: episode.season_number.clone(),
+                    episode_number: None,
                     media_type: "episode".to_string(),
                     search_phase: schedule.search_phase.to_string(),
                     next_search_at: Some(next_search_at.clone()),

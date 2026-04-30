@@ -30,8 +30,9 @@ use crate::{
     PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
     StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
     TitleImageKind, TitleImageProcessor, TitleImageReplacement, TitleImageRepository,
-    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
-    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    WantedItem, WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    CutoffUnmetQualitySummary,
 };
 
 #[derive(Default)]
@@ -243,6 +244,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
         Ok(Vec::new())
     }
 

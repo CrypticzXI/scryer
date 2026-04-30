@@ -6,8 +6,8 @@ use crate::types::{IndexerSearchResult, TitleMediaFile};
 /// Flat polling interval for movies without a baseline date.
 const MOVIE_FALLBACK_INTERVAL_HOURS: i64 = 6;
 
-/// Flat polling interval for episodes without a baseline date.
-const EPISODE_FALLBACK_INTERVAL_HOURS: i64 = 6;
+/// Episodes become searchable six hours before air time.
+pub(crate) const EPISODE_PRE_AIR_WINDOW_HOURS: i64 = 6;
 
 /// Configurable thresholds for the acquisition upgrade policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,14 +177,8 @@ pub struct SearchSchedule {
     pub search_phase: SearchPhase,
 }
 
-/// Compute the next search schedule based on media type, baseline date, and current phase.
-pub fn compute_search_schedule(
-    media_type: &str,
-    baseline_date: Option<&str>,
-    current_phase: &str,
-    now: &DateTime<Utc>,
-) -> SearchSchedule {
-    let baseline = baseline_date.and_then(|d| {
+pub(crate) fn parse_schedule_baseline_date(baseline_date: Option<&str>) -> Option<DateTime<Utc>> {
+    baseline_date.and_then(|d| {
         // Try RFC 3339 first, then fall back to "YYYY-MM-DD" (midnight UTC).
         DateTime::parse_from_rfc3339(d)
             .map(|dt| dt.with_timezone(&Utc))
@@ -195,7 +189,25 @@ pub fn compute_search_schedule(
                     .and_then(|nd| nd.and_hms_opt(0, 0, 0))
                     .map(|ndt| ndt.and_utc())
             })
-    });
+    })
+}
+
+pub(crate) fn episode_search_window_is_open(
+    baseline_date: Option<&str>,
+    now: &DateTime<Utc>,
+) -> bool {
+    parse_schedule_baseline_date(baseline_date)
+        .is_some_and(|baseline| *now >= baseline - Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS))
+}
+
+/// Compute the next search schedule based on media type, baseline date, and current phase.
+pub fn compute_search_schedule(
+    media_type: &str,
+    baseline_date: Option<&str>,
+    current_phase: &str,
+    now: &DateTime<Utc>,
+) -> SearchSchedule {
+    let baseline = parse_schedule_baseline_date(baseline_date);
 
     match media_type {
         "movie" => compute_movie_schedule(baseline, current_phase, now),
@@ -256,7 +268,7 @@ fn compute_episode_schedule(
 ) -> SearchSchedule {
     let Some(baseline) = baseline else {
         return SearchSchedule {
-            next_search_at: (*now + Duration::hours(EPISODE_FALLBACK_INTERVAL_HOURS)).to_rfc3339(),
+            next_search_at: (*now + Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS)).to_rfc3339(),
             search_phase: SearchPhase::Primary,
         };
     };
@@ -267,7 +279,7 @@ fn compute_episode_schedule(
     // secondary: +48h to +14d, every 1h
     // long_tail: >14d, every 6h (runs forever, no paused phase)
 
-    let pre_air_start = baseline - Duration::hours(6);
+    let pre_air_start = baseline - Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS);
     let primary_end = baseline + Duration::hours(48);
     let secondary_end = baseline + Duration::days(14);
 

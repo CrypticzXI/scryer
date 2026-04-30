@@ -13,13 +13,14 @@ import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
 import type {
   ActivitySection,
+  OverviewTitleTarget,
   ViewId,
   SettingsSection,
   ContentSettingsSection,
   SystemSection,
   WantedSection,
 } from "@/components/root/types";
-import { buildViewPath } from "@/lib/utils/routing";
+import { buildOverviewDetailPath, buildViewPath } from "@/lib/utils/routing";
 
 const SeriesOverviewContainer = lazy(() =>
   import("@/components/containers/series-overview-container").then((m) => ({ default: m.SeriesOverviewContainer })),
@@ -72,6 +73,26 @@ export function SeriesOverviewShell() {
   const handleTitleNotFound = useCallback(() => {
     navigate("/series", { replace: true });
   }, [navigate]);
+
+  const handleOpenOverview = useCallback(
+    (targetView: ViewId, overviewTarget: OverviewTitleTarget) => {
+      const normalizedTitleId = overviewTarget.id.trim();
+      if (!normalizedTitleId) {
+        return;
+      }
+
+      const normalizedSlug = overviewTarget.slug?.trim() || null;
+      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const nextParams = new URLSearchParams();
+      if (!normalizedSlug) {
+        nextParams.set("id", normalizedTitleId);
+      }
+
+      const nextQuery = nextParams.toString();
+      navigate(`${targetPath}${nextQuery ? `?${nextQuery}` : ""}`);
+    },
+    [navigate],
+  );
 
   const navigateTo = useCallback(
     (
@@ -126,7 +147,10 @@ export function SeriesOverviewShell() {
         <GlobalStatusContext.Provider value={setGlobalStatus}>
           <GlobalSearchProvider activeFacet="series" queueFacet="series" uiLanguage={uiLanguage}>
             <div className="min-h-screen bg-background text-foreground">
-              <RootHeader routeCommandPalette={routeCommandPaletteConfig} />
+              <RootHeader
+                routeCommandPalette={routeCommandPaletteConfig}
+                onOpenOverview={handleOpenOverview}
+              />
 
               <div className="mx-auto w-full max-w-[1480px] px-3 pb-10 pt-4">
                 <RootSidebar
@@ -140,6 +164,7 @@ export function SeriesOverviewShell() {
                   entitlements={[]}
                   pendingImportCounts={null}
                   manualImportRequiredCount={0}
+                  pluginUpdateCount={0}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

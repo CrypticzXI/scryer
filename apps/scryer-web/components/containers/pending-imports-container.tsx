@@ -32,9 +32,11 @@ import type {
   ResolvePendingImportResult,
 } from "@/lib/types";
 import { pendingImportFacetValueForView } from "@/lib/types";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 
 type PendingImportsContainerProps = {
   view: ViewId;
+  onNavigateBackToOverview: () => void;
 };
 
 const PAGE_SIZE = 50;
@@ -114,6 +116,7 @@ function groupBindingEpisodes(episodes: PendingImportBindingEpisode[]) {
 
 export const PendingImportsContainer = React.memo(function PendingImportsContainer({
   view,
+  onNavigateBackToOverview,
 }: PendingImportsContainerProps) {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
@@ -132,6 +135,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [ignoredOffset, setIgnoredOffset] = React.useState(0);
   const [pendingLoading, setPendingLoading] = React.useState(false);
   const [ignoredLoading, setIgnoredLoading] = React.useState(false);
+  const [pendingLoaded, setPendingLoaded] = React.useState(false);
+  const [ignoredLoaded, setIgnoredLoaded] = React.useState(false);
   const [pendingError, setPendingError] = React.useState<string | null>(null);
   const [ignoredError, setIgnoredError] = React.useState<string | null>(null);
   const [ignoredOpen, setIgnoredOpen] = React.useState(false);
@@ -215,6 +220,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       pageOffset: number,
     ): Promise<PendingImportConnection | null> => {
       const setLoading = status === "ignored" ? setIgnoredLoading : setPendingLoading;
+      const setLoaded = status === "ignored" ? setIgnoredLoaded : setPendingLoaded;
       const setError = status === "ignored" ? setIgnoredError : setPendingError;
       const setOffset = status === "ignored" ? setIgnoredOffset : setPendingOffset;
       const setConnection = status === "ignored" ? setIgnoredConnection : setPendingConnection;
@@ -242,6 +248,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         return null;
       } finally {
         setLoading(false);
+        setLoaded(true);
       }
     },
     [fetchPendingImportsPage, t],
@@ -265,9 +272,40 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   React.useEffect(() => {
     setPendingOffset(0);
     setIgnoredOffset(0);
+    setPendingLoaded(false);
+    setIgnoredLoaded(false);
     setIgnoredOpen(false);
     clearActiveItem();
   }, [clearActiveItem, view]);
+
+  React.useEffect(() => {
+    if (
+      !pendingLoaded ||
+      !ignoredLoaded ||
+      pendingLoading ||
+      ignoredLoading ||
+      pendingError ||
+      ignoredError
+    ) {
+      return;
+    }
+
+    if (pendingConnection.total > 0 || ignoredConnection.total > 0) {
+      return;
+    }
+
+    onNavigateBackToOverview();
+  }, [
+    ignoredConnection.total,
+    ignoredError,
+    ignoredLoaded,
+    ignoredLoading,
+    onNavigateBackToOverview,
+    pendingConnection.total,
+    pendingError,
+    pendingLoaded,
+    pendingLoading,
+  ]);
 
   React.useEffect(() => {
     if (!activeItemRef) {
@@ -411,7 +449,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       const result = data?.resolvePendingImport as ResolvePendingImportResult | undefined;
-      window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+      dispatchNavigationBadgesRefresh();
       await refreshAll();
 
       setGlobalStatus(
@@ -451,7 +489,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       const result = data?.bindPendingImport as ResolvePendingImportResult | undefined;
-      window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+      dispatchNavigationBadgesRefresh();
       await refreshAll();
       setGlobalStatus(
         t("pendingImports.resolveSuccess", {
@@ -484,7 +522,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         throw mutationError;
       }
 
-      window.dispatchEvent(new CustomEvent("scryer:pendingImportsRefresh"));
+      dispatchNavigationBadgesRefresh();
       await refreshAll();
       setGlobalStatus(
         t("pendingImports.ignoreSuccess", {

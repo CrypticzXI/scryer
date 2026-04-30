@@ -55,7 +55,7 @@ export function TitleHistoryView({
       <CardHeader className="space-y-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-1">
-            <CardTitle>{`${t("nav.wanted")} / ${t("history.title")}`}</CardTitle>
+            <CardTitle>{`${t("nav.wanted")} ${t("history.title")}`}</CardTitle>
             <p className="text-sm text-muted-foreground">
               {t("pendingImports.pageRange", {
                 start: pageStart,

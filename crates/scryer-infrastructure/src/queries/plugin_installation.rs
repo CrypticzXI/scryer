@@ -242,10 +242,20 @@ pub(crate) async fn seed_builtin_query(
 
     sqlx::query(
         "UPDATE plugin_installations
-         SET plugin_type = ?
+         SET name = ?,
+             description = ?,
+             version = ?,
+             plugin_type = ?,
+             provider_type = ?,
+             updated_at = ?
          WHERE plugin_id = ? AND is_builtin = 1",
     )
+    .bind(name)
+    .bind(description)
+    .bind(version)
     .bind(plugin_type)
+    .bind(provider_type)
+    .bind(&now)
     .bind(plugin_id)
     .execute(pool)
     .await

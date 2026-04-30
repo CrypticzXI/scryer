@@ -4,6 +4,7 @@ const fr: LocaleDictionary = {
   brand: "scryer",
   "label.ready": "Prêt",
   "label.search": "Rechercher",
+  "label.autoSearch": "Recherche automatique",
   "label.interactiveSearch": "Recherche interactive",
   "label.searching": "Recherche en cours",
   "help.autoSearchTooltip":
@@ -1457,12 +1458,13 @@ const fr: LocaleDictionary = {
   "cutoff.searching": "Recherche…",
   "cutoff.searchProgress": "Recherche de {{current}} sur {{total}}…",
   "cutoff.colTitle": "Titre",
+  "cutoff.colTitleEpisode": "Titre / Épisode",
   "cutoff.colFacet": "Type",
   "cutoff.colCurrentQuality": "Actuel",
   "cutoff.colTargetQuality": "Cible",
   "cutoff.noItems":
-    "Tous les titres surveillés atteignent le cutoff de leur profil de qualité.",
-  "cutoff.totalCount": "{{count}} titre(s) sous le cutoff",
+    "Tous les films et épisodes surveillés atteignent le cutoff de leur profil de qualité.",
+  "cutoff.totalCount": "{{count}} éléments sous le cutoff",
   "cutoff.filterFacet": "Type",
   "cutoff.allFacets": "Tous les types",
   "cutoff.searchTriggered":
@@ -1705,7 +1707,7 @@ const fr: LocaleDictionary = {
   "history.collapseDetails": "Masquer les détails de l'événement",
   "history.collectionId": "ID de collection",
   "history.episodeCountSingle": "1 épisode",
-  "history.episodeCountMultiple": "{count} épisodes",
+  "history.episodeCountMultiple": "{{count}} épisodes",
   "history.unknownEvent": "Inconnu",
   "history.noMore": "Plus d'événements",
   "history.loadMore": "Charger plus",

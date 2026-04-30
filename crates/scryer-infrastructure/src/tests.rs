@@ -5,12 +5,13 @@ use scryer_application::{
     DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
     ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
-    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    ShowRepository, SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    NotificationChannelRepository, NotificationSubscriptionRepository,
+    PendingImportStatus, PluginInstallationRepository, ReleaseAttemptRepository,
+    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository,
+    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode,
+    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository,
+    WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -35,6 +36,61 @@ async fn sqlite_can_initialize() {
         .expect("query should return users after initialization");
 
     assert!(!users.is_empty());
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enabled_state() {
+    let (services, db) = temp_services("scryer_plugin_builtin_refresh").await;
+    let customization = SqliteCustomizationStore::new(&services);
+
+    customization
+        .seed_builtin(
+            "newznab",
+            "Old Newznab",
+            "old description",
+            "0.1.0",
+            "indexer",
+            "newznab",
+        )
+        .await
+        .expect("initial builtin seed should succeed");
+
+    let mut installation = customization
+        .get_plugin_installation("newznab")
+        .await
+        .expect("load seeded builtin")
+        .expect("builtin installation should exist");
+    installation.is_enabled = false;
+    customization
+        .update_plugin_installation(&installation, None)
+        .await
+        .expect("disable builtin installation");
+
+    customization
+        .seed_builtin(
+            "newznab",
+            "Newznab Indexer",
+            "new description",
+            "0.2.2",
+            "usenet_indexer",
+            "newznab",
+        )
+        .await
+        .expect("refresh builtin seed should succeed");
+
+    let refreshed = customization
+        .get_plugin_installation("newznab")
+        .await
+        .expect("load refreshed builtin")
+        .expect("refreshed builtin installation should exist");
+    assert_eq!(refreshed.name, "Newznab Indexer");
+    assert_eq!(refreshed.description, "new description");
+    assert_eq!(refreshed.version, "0.2.2");
+    assert_eq!(refreshed.plugin_type, "usenet_indexer");
+    assert_eq!(refreshed.provider_type, "newznab");
+    assert!(!refreshed.is_enabled);
+
     let _ = std::fs::remove_file(db);
 }
 
@@ -2979,9 +3035,12 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             id: "wanted-movie".to_string(),
             title_id: movie_title.id.clone(),
             title_name: Some(movie_title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
@@ -3000,9 +3059,12 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             id: "wanted-series-episode".to_string(),
             title_id: series_title.id.clone(),
             title_name: Some(series_title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: Some(series_episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
+            episode_number: None,
             media_type: "episode".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some("2024-01-01T00:00:01Z".to_string()),
@@ -3021,9 +3083,12 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             id: "wanted-anime-movie".to_string(),
             title_id: anime_title.id.clone(),
             title_name: Some(anime_title.name.clone()),
+            title_slug: None,
+            title_facet: None,
             episode_id: None,
             collection_id: Some(anime_collection.id.clone()),
             season_number: Some("0".to_string()),
+            episode_number: None,
             media_type: "interstitial_movie".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
@@ -3080,9 +3145,12 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         id: "wanted-mismatch".to_string(),
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "movie".to_string(),
         search_phase: "primary".to_string(),
         next_search_at: None,
@@ -3413,9 +3481,12 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         id: "wanted-search-match".to_string(),
         title_id: title.id.clone(),
         title_name: Some("Schoolhouse Rock! Earth".to_string()),
+        title_slug: None,
+        title_facet: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
+        episode_number: None,
         media_type: "episode".to_string(),
         search_phase: "long_tail".to_string(),
         next_search_at: None,
@@ -3465,6 +3536,32 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
     assert_eq!(items.len(), 1);
     assert_eq!(count, 1);
     assert_eq!(items[0].id, wanted_match.id);
+
+    let short_items = workflow
+        .list_wanted_items(WantedItemsQuery {
+            title_search: Some("roc".into()),
+            limit: 50,
+            ..WantedItemsQuery::default()
+        })
+        .await
+        .expect("short filtered wanted items should load");
+    let short_count = workflow
+        .count_wanted_items(WantedItemsQuery {
+            title_search: Some("roc".into()),
+            ..WantedItemsQuery::default()
+        })
+        .await
+        .expect("short filtered wanted count should load");
+
+    assert_eq!(short_items.len(), 1);
+    assert_eq!(short_count, 1);
+    assert_eq!(short_items[0].id, wanted_match.id);
+
+    let short_title_hits = TitleRepository::list(&catalog, None, Some("roc".to_string()))
+        .await
+        .expect("short title list search should load");
+    assert_eq!(short_title_hits.len(), 1);
+    assert_eq!(short_title_hits[0].id, title.id);
 
     let _ = std::fs::remove_file(db);
 }

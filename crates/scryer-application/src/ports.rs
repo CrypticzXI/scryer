@@ -692,6 +692,11 @@ pub trait MediaFileRepository: Send + Sync {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>>;
 
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>>;
+
     async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],

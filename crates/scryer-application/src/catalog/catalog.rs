@@ -98,9 +98,12 @@ fn wanted_item_candidates_for_submission_scope(
                 id: String::new(),
                 title_id: title_id.to_string(),
                 title_name: None,
+                title_slug: None,
+                title_facet: None,
                 episode_id: None,
                 collection_id: None,
                 season_number: None,
+                episode_number: None,
                 media_type: "movie".to_string(),
                 search_phase: String::new(),
                 next_search_at: None,
@@ -171,9 +174,12 @@ fn wanted_item_candidates_for_submission_scope(
                     id: String::new(),
                     title_id: title_id.to_string(),
                     title_name: None,
+                    title_slug: None,
+                    title_facet: None,
                     episode_id: None,
                     collection_id: Some(collection_id.clone()),
                     season_number: None,
+                    episode_number: None,
                     media_type: "interstitial_movie".to_string(),
                     search_phase: String::new(),
                     next_search_at: None,
@@ -214,9 +220,12 @@ fn wanted_item_candidate_for_episode_id(
         id: String::new(),
         title_id: title_id.to_string(),
         title_name: None,
+        title_slug: None,
+        title_facet: None,
         episode_id: Some(episode_id.to_string()),
         collection_id,
         season_number,
+        episode_number: None,
         media_type: "episode".to_string(),
         search_phase: String::new(),
         next_search_at: None,
@@ -673,7 +682,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
-    ) -> AppResult<Vec<CutoffUnmetTitle>> {
+    ) -> AppResult<Vec<CutoffUnmetItem>> {
         require(actor, &Entitlement::ViewCatalog)?;
 
         let titles = self.services.catalog.titles.list(facet, None).await?;
@@ -693,12 +702,8 @@ impl AppUseCase {
             .services
             .library
             .media_files
-            .list_title_quality_summaries(&title_ids)
+            .list_cutoff_unmet_quality_summaries(&title_ids)
             .await?;
-        let quality_map: HashMap<&str, &str> = quality_summaries
-            .iter()
-            .map(|summary| (summary.title_id.as_str(), summary.quality_tier.as_str()))
-            .collect();
 
         let profile_settings = self.load_quality_profile_settings().await?;
         let global_profile_id = Some(profile_settings.global_profile_id.as_str());
@@ -709,12 +714,9 @@ impl AppUseCase {
             .collect();
         let default_profile = crate::default_quality_profile_for_search();
 
-        let mut items = Vec::new();
+        let mut title_map = HashMap::new();
+        let mut cutoff_profile_map = HashMap::new();
         for title in monitored_titles {
-            let Some(current_tier) = quality_map.get(title.id.as_str()).copied() else {
-                continue;
-            };
-
             let title_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:")
                 .map(str::trim)
                 .filter(|value| {
@@ -750,11 +752,6 @@ impl AppUseCase {
                 continue;
             };
 
-            let Some(normalized_current_tier) =
-                crate::quality_profile::normalize_quality_tier(Some(current_tier))
-            else {
-                continue;
-            };
             let Some(normalized_cutoff_tier) =
                 crate::quality_profile::normalize_quality_tier(Some(cutoff_tier))
             else {
@@ -765,39 +762,91 @@ impl AppUseCase {
                 .criteria
                 .quality_tiers
                 .iter()
-                .any(|tier| tier == &normalized_current_tier)
-                || !profile
-                    .criteria
-                    .quality_tiers
-                    .iter()
-                    .any(|tier| tier == &normalized_cutoff_tier)
+                .any(|tier| tier == &normalized_cutoff_tier)
             {
                 continue;
             }
 
+            cutoff_profile_map.insert(
+                title.id.clone(),
+                (profile.criteria.quality_tiers.clone(), normalized_cutoff_tier),
+            );
+            title_map.insert(title.id.clone(), title);
+        }
+
+        let mut items = Vec::new();
+        for summary in quality_summaries {
+            let Some(title) = title_map.get(summary.title_id.as_str()) else {
+                continue;
+            };
+            let Some((quality_tiers, normalized_cutoff_tier)) =
+                cutoff_profile_map.get(summary.title_id.as_str())
+            else {
+                continue;
+            };
+
+            if summary.episode_id.is_none() && title.facet != MediaFacet::Movie {
+                continue;
+            }
+
+            let Some(normalized_current_tier) =
+                crate::quality_profile::normalize_quality_tier(Some(summary.quality_tier.as_str()))
+            else {
+                continue;
+            };
+
+            if !quality_tiers.iter().any(|tier| tier == &normalized_current_tier) {
+                continue;
+            }
+
             if crate::quality_profile::quality_meets_or_exceeds_cutoff(
-                current_tier,
-                cutoff_tier,
-                &profile.criteria.quality_tiers,
+                normalized_current_tier.as_str(),
+                normalized_cutoff_tier.as_str(),
+                quality_tiers,
             ) {
                 continue;
             }
 
-            items.push(CutoffUnmetTitle {
-                id: title.id,
-                name: title.name,
-                facet: title.facet,
-                poster_url: title.poster_url,
-                external_ids: title.external_ids,
+            items.push(CutoffUnmetItem {
+                title_id: title.id.clone(),
+                title_name: title.name.clone(),
+                title_slug: title.slug.clone(),
+                title_facet: title.facet.clone(),
+                episode_id: summary.episode_id,
+                season_number: summary.season_number,
+                episode_number: summary.episode_number,
                 current_tier: normalized_current_tier,
-                target_tier: normalized_cutoff_tier,
+                target_tier: normalized_cutoff_tier.clone(),
             });
         }
 
+        fn parse_episode_sort_number(value: Option<&str>) -> i64 {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|value| {
+                    let digits = value.chars().filter(|ch| ch.is_ascii_digit()).collect::<String>();
+                    if digits.is_empty() {
+                        None
+                    } else {
+                        digits.parse::<i64>().ok()
+                    }
+                })
+                .unwrap_or(i64::MAX)
+        }
+
         items.sort_by(|left, right| {
-            left.name
+            left.title_name
                 .to_ascii_lowercase()
-                .cmp(&right.name.to_ascii_lowercase())
+                .cmp(&right.title_name.to_ascii_lowercase())
+                .then_with(|| {
+                    parse_episode_sort_number(left.season_number.as_deref())
+                        .cmp(&parse_episode_sort_number(right.season_number.as_deref()))
+                })
+                .then_with(|| {
+                    parse_episode_sort_number(left.episode_number.as_deref())
+                        .cmp(&parse_episode_sort_number(right.episode_number.as_deref()))
+                })
         });
 
         Ok(items)

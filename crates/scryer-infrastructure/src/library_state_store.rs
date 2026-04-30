@@ -4,9 +4,10 @@ use scryer_application::{
     InsertMediaFileInput, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileAnalysis, MediaFileRepository, NewBlocklistEntry,
     PendingImportStatus, PendingRelease, PendingReleaseRepository, ReleaseDecision,
-    SubtitleDownloadRepository, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository, WantedItemsQuery,
+    SubtitleDownloadRepository, CutoffUnmetQualitySummary, TitleEpisodeProgressSummary,
+    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
+    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
+    WantedItemRepository, WantedItemsQuery,
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
@@ -15,6 +16,7 @@ use crate::queries::housekeeping::list_all_media_file_paths_query;
 use crate::queries::library_scan_unmatched::get_library_scan_unmatched_item_query;
 use crate::queries::media_file::{
     get_media_file_by_id_query, get_media_file_by_path_query,
+    list_cutoff_unmet_quality_summaries_query,
     list_live_media_files_for_episode_ids_query, list_media_files_for_title_query,
     list_title_episode_progress_summaries_query, list_title_media_size_summaries_query,
     list_title_quality_summaries_query,
@@ -163,6 +165,13 @@ impl MediaFileRepository for SqliteLibraryStateStore {
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
         list_title_quality_summaries_query(&self.db.pool, title_ids).await
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        list_cutoff_unmet_quality_summaries_query(&self.db.pool, title_ids).await
     }
 
     async fn list_title_episode_progress_summaries(

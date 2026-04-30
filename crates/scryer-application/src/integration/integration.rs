@@ -1628,6 +1628,23 @@ impl AppUseCase {
         })
     }
 
+    pub async fn count_download_import_items(
+        &self,
+        actor: &User,
+        filter: DownloadImportFilter,
+    ) -> AppResult<i64> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let count = self
+            .collect_download_history_items(true)
+            .await?
+            .into_iter()
+            .filter(|item| matches_download_import_filter(item, filter))
+            .count();
+
+        Ok(count as i64)
+    }
+
     async fn collect_download_history_items(
         &self,
         use_tracked_runtime_snapshot: bool,

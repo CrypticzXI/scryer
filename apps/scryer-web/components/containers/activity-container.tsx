@@ -22,6 +22,7 @@ import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadImport } from "@/lib/hooks/use-download-import";
 import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import type { ActivitySection } from "@/components/root/types";
 import type {
   DownloadClientRecord,
@@ -412,11 +413,7 @@ export const ActivityContainer = memo(function ActivityContainer({
   }, [activityQueueItems, historyItems, importItems, optimisticallyRemovedKeys]);
 
   const decrementImportBadges = useCallback((count = 1) => {
-    window.dispatchEvent(
-      new CustomEvent("scryer:pendingImportsRefresh", {
-        detail: { delta: -Math.max(1, count) },
-      }),
-    );
+    dispatchNavigationBadgesRefresh({ delta: -Math.max(1, count) });
   }, []);
 
   const requestManualImport = useCallback(

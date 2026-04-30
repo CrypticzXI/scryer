@@ -1,7 +1,8 @@
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    CutoffUnmetQualitySummary, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary,
 };
 use scryer_domain::Id;
 use sqlx::sqlite::SqliteRow;
@@ -351,6 +352,81 @@ pub(crate) async fn list_title_quality_summaries_query(
         out.push(TitleQualitySummary {
             title_id: row
                 .try_get("title_id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            quality_tier: row
+                .try_get("quality_tier")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        });
+    }
+
+    Ok(out)
+}
+
+pub(crate) async fn list_cutoff_unmet_quality_summaries_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+    if title_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = title_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let normalized_quality = normalized_quality_expression("media_files");
+    let quality_rank = quality_rank_expression("media_files");
+    let sql = format!(
+        "SELECT title_id, episode_id, season_number, episode_number, quality_tier
+         FROM (
+            SELECT media_files.title_id AS title_id,
+                   fem.episode_id AS episode_id,
+                   e.season_number AS season_number,
+                   e.episode_number AS episode_number,
+                   {normalized_quality} AS quality_tier,
+                   ROW_NUMBER() OVER (
+                      PARTITION BY CASE
+                          WHEN fem.episode_id IS NOT NULL THEN fem.episode_id
+                          ELSE printf('title:%s', media_files.title_id)
+                      END
+                      ORDER BY {quality_rank} DESC,
+                               media_files.created_at DESC,
+                               media_files.id DESC
+                   ) AS quality_row
+              FROM media_files
+              LEFT JOIN file_episode_map fem ON fem.file_id = media_files.id
+              LEFT JOIN episodes e ON e.id = fem.episode_id
+             WHERE media_files.title_id IN ({placeholders})
+               AND {}
+               AND trim(COALESCE(media_files.quality_id, '')) <> ''
+               AND (fem.episode_id IS NULL OR e.monitored = 1)
+         ) ranked
+         WHERE quality_row = 1
+           AND quality_tier IS NOT NULL",
+        live_media_file_predicate("media_files"),
+    );
+
+    let mut query = sqlx::query(&sql);
+    for title_id in title_ids {
+        query = query.bind(title_id);
+    }
+
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(CutoffUnmetQualitySummary {
+            title_id: row
+                .try_get("title_id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            episode_id: row
+                .try_get("episode_id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            season_number: row
+                .try_get("season_number")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+            episode_number: row
+                .try_get("episode_number")
                 .map_err(|err| AppError::Repository(err.to_string()))?,
             quality_tier: row
                 .try_get("quality_tier")
@@ -1067,6 +1143,157 @@ mod tests {
         assert_eq!(quality_summaries.len(), 1);
         assert_eq!(quality_summaries[0].title_id, title.id);
         assert_eq!(quality_summaries[0].quality_tier, "720P");
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn cutoff_unmet_quality_summaries_expand_season_pack_links() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_cutoff_unmet_quality_summary_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let catalog = catalog_store(&services);
+        let library_state = library_state_store(&services);
+
+        let title = make_test_series_title("title-cutoff-summary");
+        catalog
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        let collection = Collection {
+            id: "collection-cutoff-summary".to_string(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("3".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        catalog
+            .create_collection(collection.clone())
+            .await
+            .expect("collection should insert");
+
+        let monitored_episode_one = Episode {
+            id: "episode-cutoff-summary-1".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode 1".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        let monitored_episode_two = Episode {
+            id: "episode-cutoff-summary-2".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("2".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E02".to_string()),
+            title: Some("Episode 2".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        let unmonitored_episode_three = Episode {
+            id: "episode-cutoff-summary-3".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("3".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E03".to_string()),
+            title: Some("Episode 3".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: false,
+            created_at: Utc::now(),
+        };
+        for episode in [
+            &monitored_episode_one,
+            &monitored_episode_two,
+            &unmonitored_episode_three,
+        ] {
+            catalog
+                .create_episode(episode.clone())
+                .await
+                .expect("episode should insert");
+        }
+
+        let pack_file_id = library_state
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01 pack.mkv".to_string(),
+                size_bytes: 1_000,
+                quality_label: Some("720p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("season pack should insert");
+
+        for episode_id in [
+            &monitored_episode_one.id,
+            &monitored_episode_two.id,
+            &unmonitored_episode_three.id,
+        ] {
+            library_state
+                .link_file_to_episode(&pack_file_id, episode_id)
+                .await
+                .expect("season pack should link");
+        }
+
+        let summaries = library_state
+            .list_cutoff_unmet_quality_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("cutoff summaries should succeed");
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].title_id, title.id);
+        assert_eq!(summaries[0].quality_tier, "720P");
+        assert_eq!(summaries[0].season_number.as_deref(), Some("1"));
+        assert_eq!(summaries[0].episode_number.as_deref(), Some("1"));
+        assert_eq!(summaries[1].season_number.as_deref(), Some("1"));
+        assert_eq!(summaries[1].episode_number.as_deref(), Some("2"));
 
         let _ = std::fs::remove_file(db);
     }

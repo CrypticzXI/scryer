@@ -1,5 +1,7 @@
+import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
   Select,
   SelectContent,
@@ -15,19 +17,22 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Loader2, Search } from "lucide-react";
+import { Loader2, Search, Zap } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { TitlePoster } from "@/components/title-poster";
-import type { ExternalId, Facet } from "@/lib/types";
+import { buildOverviewDetailPath } from "@/lib/utils/routing";
+import type { Facet, Release } from "@/lib/types";
+import type { ViewId } from "@/components/root/types";
 
 export type CutoffUnmetItem = {
-  id: string;
-  name: string;
-  facet: Facet;
-  posterUrl?: string | null;
-  externalIds: ExternalId[];
+  titleId: string;
+  titleName: string;
+  titleSlug?: string | null;
+  titleFacet: Facet;
+  episodeId?: string | null;
+  seasonNumber?: string | null;
+  episodeNumber?: string | null;
   currentTier: string;
   targetTier: string;
 };
@@ -37,13 +42,64 @@ type CutoffUnmetViewState = {
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
-  searchingId: string | null;
+  autoSearchingId: string | null;
+  interactiveSearchingId: string | null;
+  activeInteractiveItemId: string | null;
+  searchResultsByItemId: Record<string, Release[]>;
   bulkSearching: boolean;
   bulkProgress: { current: number; total: number } | null;
-  triggerSearch: (item: CutoffUnmetItem) => Promise<void>;
+  triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
+  triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
+  queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
   cancelBulkSearch: () => void;
 };
+
+function cutoffItemKey(item: CutoffUnmetItem) {
+  return item.episodeId?.trim() || item.titleId;
+}
+
+function cutoffEpisodeCode(item: CutoffUnmetItem): string | null {
+  const seasonDigits = item.seasonNumber?.match(/\d+/)?.[0] ?? null;
+  const episodeDigits = item.episodeNumber?.match(/\d+/)?.[0] ?? null;
+  if (!seasonDigits || !episodeDigits) {
+    return null;
+  }
+  return `S${seasonDigits.padStart(2, "0")}E${episodeDigits.padStart(2, "0")}`;
+}
+
+function cutoffOverviewView(facet: Facet): ViewId | null {
+  switch (facet) {
+    case "movie":
+      return "movies";
+    case "series":
+      return "series";
+    case "anime":
+      return "anime";
+    default:
+      return null;
+  }
+}
+
+function cutoffOverviewHref(item: CutoffUnmetItem, includeEpisode: boolean): string | null {
+  const targetView = cutoffOverviewView(item.titleFacet);
+  if (!targetView) {
+    return null;
+  }
+
+  const normalizedSlug = item.titleSlug?.trim() || null;
+  const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+  const params = new URLSearchParams();
+  if (!normalizedSlug) {
+    params.set("id", item.titleId);
+  }
+  if (includeEpisode && item.episodeId) {
+    params.set("episodeId", item.episodeId);
+  }
+
+  const query = params.toString();
+  return `${targetPath}${query ? `?${query}` : ""}`;
+}
 
 function qualityBadge(tier: string, variant: "current" | "target") {
   const cls =
@@ -59,6 +115,90 @@ function qualityBadge(tier: string, variant: "current" | "target") {
   );
 }
 
+function TitleCell({ item }: { item: CutoffUnmetItem }) {
+  const titleHref = cutoffOverviewHref(item, false);
+  const episodeHref = cutoffOverviewHref(item, true);
+  const episodeCode = cutoffEpisodeCode(item);
+
+  return (
+    <div className="space-y-1">
+      {titleHref ? (
+        <Link
+          to={titleHref}
+          className="font-medium text-foreground underline-offset-4 hover:underline"
+        >
+          {item.titleName}
+        </Link>
+      ) : (
+        <span className="font-medium text-foreground">{item.titleName}</span>
+      )}
+      {episodeCode ? (
+        episodeHref ? (
+          <Link
+            to={episodeHref}
+            className="block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            {episodeCode}
+          </Link>
+        ) : (
+          <span className="block text-sm text-muted-foreground">{episodeCode}</span>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function ActionButtons({
+  item,
+  autoSearchingId,
+  interactiveSearchingId,
+  bulkSearching,
+  triggerAutoSearch,
+  triggerInteractiveSearch,
+}: {
+  item: CutoffUnmetItem;
+  autoSearchingId: string | null;
+  interactiveSearchingId: string | null;
+  bulkSearching: boolean;
+  triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
+  triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
+}) {
+  const t = useTranslate();
+  const itemKey = cutoffItemKey(item);
+  const autoSearching = autoSearchingId === itemKey;
+  const interactiveSearching = interactiveSearchingId === itemKey;
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button
+        size="sm"
+        disabled={autoSearching || interactiveSearching || bulkSearching}
+        onClick={() => void triggerAutoSearch(item)}
+      >
+        {autoSearching ? (
+          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+        ) : (
+          <Zap className="mr-1 h-4 w-4" />
+        )}
+        {t("label.autoSearch")}
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={autoSearching || interactiveSearching || bulkSearching}
+        onClick={() => void triggerInteractiveSearch(item)}
+      >
+        {interactiveSearching ? (
+          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+        ) : (
+          <Search className="mr-1 h-4 w-4" />
+        )}
+        {t("label.interactiveSearch")}
+      </Button>
+    </div>
+  );
+}
+
 export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
   const t = useTranslate();
   const isMobile = useIsMobile();
@@ -67,16 +207,21 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     loading,
     facetFilter,
     setFacetFilter,
-    searchingId,
+    autoSearchingId,
+    interactiveSearchingId,
+    activeInteractiveItemId,
+    searchResultsByItemId,
     bulkSearching,
     bulkProgress,
-    triggerSearch,
+    triggerAutoSearch,
+    triggerInteractiveSearch,
+    queueRelease,
     triggerBulkSearch,
     cancelBulkSearch,
   } = state;
 
   const filtered = facetFilter
-    ? items.filter((i) => i.facet === facetFilter)
+    ? items.filter((item) => item.titleFacet === facetFilter)
     : items;
 
   return (
@@ -120,7 +265,9 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <Select
             value={facetFilter ?? "__all__"}
-            onValueChange={(v) => setFacetFilter(v === "__all__" ? undefined : v)}
+            onValueChange={(value) =>
+              setFacetFilter(value === "__all__" ? undefined : value)
+            }
           >
             <SelectTrigger className="w-full sm:w-[150px]">
               <SelectValue placeholder={t("cutoff.filterFacet")} />
@@ -144,49 +291,37 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
           ) : (
             <div className="space-y-3">
               {filtered.map((item) => {
-                const posterUrl = selectPosterVariantUrl(item.posterUrl, "w250");
-                const isSearching = searchingId === item.id;
+                const itemKey = cutoffItemKey(item);
+                const searchResults = searchResultsByItemId[itemKey] ?? [];
+                const showResults = activeInteractiveItemId === itemKey;
+
                 return (
-                  <div key={item.id} className="rounded-xl border border-border bg-card/30 p-3">
-                    <div className="flex items-start gap-3">
-                      <div className="shrink-0">
-                        {posterUrl ? (
-                          <TitlePoster
-                            src={posterUrl}
-                            alt={item.name}
-                            className="h-20 w-14 rounded object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <div className="h-20 w-14 rounded bg-muted" />
-                        )}
+                  <div
+                    key={itemKey}
+                    className="space-y-3 rounded-xl border border-border bg-card/30 p-3"
+                  >
+                    <div className="space-y-3">
+                      <TitleCell item={item} />
+                      <div className="flex flex-wrap gap-2">
+                        {qualityBadge(item.currentTier, "current")}
+                        {qualityBadge(item.targetTier, "target")}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="break-words text-sm font-medium text-foreground">
-                          {item.name}
-                        </p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                            {item.facet}
-                          </span>
-                          {qualityBadge(item.currentTier, "current")}
-                          {qualityBadge(item.targetTier, "target")}
-                        </div>
-                      </div>
+                      <ActionButtons
+                        item={item}
+                        autoSearchingId={autoSearchingId}
+                        interactiveSearchingId={interactiveSearchingId}
+                        bulkSearching={bulkSearching}
+                        triggerAutoSearch={triggerAutoSearch}
+                        triggerInteractiveSearch={triggerInteractiveSearch}
+                      />
                     </div>
-                    <Button
-                      size="sm"
-                      className="mt-3 w-full"
-                      disabled={isSearching || bulkSearching}
-                      onClick={() => void triggerSearch(item)}
-                    >
-                      {isSearching ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4" />
-                      )}
-                      <span>{t("label.search")}</span>
-                    </Button>
+                    {showResults ? (
+                      <SearchResultBuckets
+                        results={searchResults}
+                        onQueue={(release) => queueRelease(item, release)}
+                        requireCandidateToken
+                      />
+                    ) : null}
                   </div>
                 );
               })}
@@ -194,12 +329,10 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
           )
         ) : (
           <div className="overflow-auto rounded-xl border border-border/60">
-            <Table className="min-w-[720px]">
+            <Table className="min-w-[900px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10" />
-                  <TableHead>{t("cutoff.colTitle")}</TableHead>
-                  <TableHead>{t("cutoff.colFacet")}</TableHead>
+                  <TableHead>{t("cutoff.colTitleEpisode")}</TableHead>
                   <TableHead>{t("cutoff.colCurrentQuality")}</TableHead>
                   <TableHead>{t("cutoff.colTargetQuality")}</TableHead>
                   <TableHead>{t("label.actions")}</TableHead>
@@ -207,52 +340,54 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
               </TableHeader>
               <TableBody>
                 {filtered.map((item) => {
-                  const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
+                  const itemKey = cutoffItemKey(item);
+                  const searchResults = searchResultsByItemId[itemKey] ?? [];
+                  const showResults = activeInteractiveItemId === itemKey;
+
                   return (
-                    <TableRow key={item.id}>
-                      <TableCell>
-                        {posterUrl ? (
-                          <TitlePoster
-                            src={posterUrl}
-                            alt={item.name}
-                            className="h-8 w-6 rounded object-cover"
-                            loading="lazy"
+                    <Fragment key={itemKey}>
+                      <TableRow>
+                        <TableCell className="min-w-[320px] align-top">
+                          <TitleCell item={item} />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          {qualityBadge(item.currentTier, "current")}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          {qualityBadge(item.targetTier, "target")}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <ActionButtons
+                            item={item}
+                            autoSearchingId={autoSearchingId}
+                            interactiveSearchingId={interactiveSearchingId}
+                            bulkSearching={bulkSearching}
+                            triggerAutoSearch={triggerAutoSearch}
+                            triggerInteractiveSearch={triggerInteractiveSearch}
                           />
-                        ) : (
-                          <div className="h-8 w-6 rounded bg-muted" />
-                        )}
-                      </TableCell>
-                      <TableCell className="max-w-[250px] truncate text-sm font-medium">
-                        {item.name}
-                      </TableCell>
-                      <TableCell className="text-sm">{item.facet}</TableCell>
-                      <TableCell>{qualityBadge(item.currentTier, "current")}</TableCell>
-                      <TableCell>{qualityBadge(item.targetTier, "target")}</TableCell>
-                      <TableCell>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          disabled={searchingId === item.id || bulkSearching}
-                          onClick={() => void triggerSearch(item)}
-                        >
-                          {searchingId === item.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Search className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                        </TableCell>
+                      </TableRow>
+                      {showResults ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="bg-background/20">
+                            <SearchResultBuckets
+                              results={searchResults}
+                              onQueue={(release) => queueRelease(item, release)}
+                              requireCandidateToken
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
-                {filtered.length === 0 && !loading && (
+                {filtered.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
                       {t("cutoff.noItems")}
                     </TableCell>
                   </TableRow>
-                )}
+                ) : null}
               </TableBody>
             </Table>
           </div>
