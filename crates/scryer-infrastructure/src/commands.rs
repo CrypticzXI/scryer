@@ -1,6 +1,6 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    title::*,
+    plugin_installation::BuiltinPluginSeed, title::*,
 };
 use crate::{
     encryption::EncryptionKey,
@@ -668,12 +668,7 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<()>>,
     },
     SeedBuiltinPlugin {
-        plugin_id: String,
-        name: String,
-        description: String,
-        version: String,
-        plugin_type: String,
-        provider_type: String,
+        seed: BuiltinPluginSeed,
         reply: Sender<AppResult<()>>,
     },
     StorePluginRegistryCache {
@@ -2403,26 +2398,10 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::SeedBuiltinPlugin {
-                    plugin_id,
-                    name,
-                    description,
-                    version,
-                    plugin_type,
-                    provider_type,
-                    reply,
-                } => {
+                DbCommand::SeedBuiltinPlugin { seed, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("seed_builtin_plugin", || {
-                            crate::queries::plugin_installation::seed_builtin_query(
-                                &pool,
-                                &plugin_id,
-                                &name,
-                                &description,
-                                &version,
-                                &plugin_type,
-                                &provider_type,
-                            )
+                            crate::queries::plugin_installation::seed_builtin_query(&pool, &seed)
                         })
                         .await,
                     );

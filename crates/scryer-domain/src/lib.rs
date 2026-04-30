@@ -2036,6 +2036,14 @@ pub struct PolicyScoringEntry {
     pub source: String,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSourceKind {
+    Bundled,
+    #[default]
+    Downloaded,
+}
+
 /// A plugin installation record.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginInstallation {
@@ -2045,8 +2053,12 @@ pub struct PluginInstallation {
     pub name: String,
     pub description: String,
     pub version: String,
+    pub sdk_version: String,
+    pub sdk_constraint: String,
+    pub scryer_constraint: Option<String>,
     pub plugin_type: String,
     pub provider_type: String,
+    pub source_kind: PluginSourceKind,
     pub is_enabled: bool,
     pub is_builtin: bool,
     pub wasm_sha256: Option<String>,

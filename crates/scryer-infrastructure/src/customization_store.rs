@@ -5,7 +5,10 @@ use scryer_application::{
 use scryer_domain::{PluginInstallation, PostProcessingScript, PostProcessingScriptRun, RuleSet};
 
 use crate::SqliteServices;
-use crate::queries::{plugin_installation, post_processing_script, rule_set};
+use crate::queries::{
+    plugin_installation::{self, BuiltinPluginSeed},
+    post_processing_script, rule_set,
+};
 
 #[derive(Clone)]
 pub struct SqliteCustomizationStore {
@@ -170,18 +173,22 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
         name: &str,
         description: &str,
         version: &str,
+        sdk_version: &str,
+        sdk_constraint: &str,
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
         self.db
-            .seed_builtin_plugin(
-                plugin_id,
-                name,
-                description,
-                version,
-                plugin_type,
-                provider_type,
-            )
+            .seed_builtin_plugin(BuiltinPluginSeed {
+                plugin_id: plugin_id.to_string(),
+                name: name.to_string(),
+                description: description.to_string(),
+                version: version.to_string(),
+                sdk_version: sdk_version.to_string(),
+                sdk_constraint: sdk_constraint.to_string(),
+                plugin_type: plugin_type.to_string(),
+                provider_type: provider_type.to_string(),
+            })
             .await
     }
 

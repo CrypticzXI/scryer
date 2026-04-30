@@ -1,33 +1,34 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppResult, BlocklistRepository, EpisodeScopedMediaFile, HousekeepingRepository,
-    InsertMediaFileInput, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileAnalysis, MediaFileRepository, NewBlocklistEntry,
-    PendingImportStatus, PendingRelease, PendingReleaseRepository, ReleaseDecision,
-    SubtitleDownloadRepository, CutoffUnmetQualitySummary, TitleEpisodeProgressSummary,
-    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
-    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
-    WantedItemRepository, WantedItemsQuery,
+    AppResult, BlocklistRepository, CutoffUnmetQualitySummary, EpisodeScopedMediaFile,
+    HousekeepingRepository, InsertMediaFileInput, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileAnalysis,
+    MediaFileRepository, NewBlocklistEntry, PendingImportStatus, PendingRelease,
+    PendingReleaseRepository, ReleaseDecision, SubtitleDownloadRepository,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageRepository, TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary, WantedItem, WantedItemRepository, WantedItemsQuery,
+    subtitles::ExternalSubtitleProbeCacheEntry,
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
-use crate::SqliteServices;
 use crate::queries::housekeeping::list_all_media_file_paths_query;
 use crate::queries::library_scan_unmatched::get_library_scan_unmatched_item_query;
 use crate::queries::media_file::{
     get_media_file_by_id_query, get_media_file_by_path_query,
-    list_cutoff_unmet_quality_summaries_query,
-    list_live_media_files_for_episode_ids_query, list_media_files_for_title_query,
-    list_title_episode_progress_summaries_query, list_title_media_size_summaries_query,
-    list_title_quality_summaries_query,
+    list_cutoff_unmet_quality_summaries_query, list_live_media_files_for_episode_ids_query,
+    list_media_files_for_title_query, list_title_episode_progress_summaries_query,
+    list_title_media_size_summaries_query, list_title_quality_summaries_query,
 };
 use crate::queries::subtitle::{
-    get_subtitle_download, is_blocklisted as is_subtitle_blocklisted,
-    list_blocklist_for_media_file, list_subtitle_downloads_for_media_file,
-    list_subtitle_downloads_for_title,
+    delete_external_subtitle_probe_cache_entry, get_subtitle_download,
+    is_blocklisted as is_subtitle_blocklisted, list_blocklist_for_media_file,
+    list_external_subtitle_probe_cache_for_media_file, list_subtitle_downloads_for_media_file,
+    list_subtitle_downloads_for_title, upsert_external_subtitle_probe_cache_entry,
 };
 use crate::queries::workflow::get_library_probe_signature_query;
 use crate::title_images::{get_title_image_blob_query, list_titles_requiring_image_refresh_query};
+use crate::{SqliteServices, commands::run_with_sqlite_busy_retries};
 
 #[derive(Clone)]
 pub struct SqliteLibraryStateStore {
@@ -572,6 +573,13 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         list_subtitle_downloads_for_media_file(self.db.pool(), media_file_id).await
     }
 
+    async fn list_probe_cache_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<ExternalSubtitleProbeCacheEntry>> {
+        list_external_subtitle_probe_cache_for_media_file(self.db.pool(), media_file_id).await
+    }
+
     async fn list_blocklist_for_media_file(
         &self,
         media_file_id: &str,
@@ -583,12 +591,33 @@ impl SubtitleDownloadRepository for SqliteLibraryStateStore {
         self.db.insert_subtitle_download(download).await
     }
 
+    async fn upsert_probe_cache_entry(
+        &self,
+        entry: &ExternalSubtitleProbeCacheEntry,
+    ) -> AppResult<()> {
+        run_with_sqlite_busy_retries("upsert_external_subtitle_probe_cache_entry", || {
+            upsert_external_subtitle_probe_cache_entry(self.db.pool(), entry)
+        })
+        .await
+    }
+
     async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()> {
         self.db.set_subtitle_download_synced(id, synced).await
     }
 
     async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
         self.db.delete_subtitle_download(id).await
+    }
+
+    async fn delete_probe_cache_entry(
+        &self,
+        media_file_id: &str,
+        file_path: &str,
+    ) -> AppResult<()> {
+        run_with_sqlite_busy_retries("delete_external_subtitle_probe_cache_entry", || {
+            delete_external_subtitle_probe_cache_entry(self.db.pool(), media_file_id, file_path)
+        })
+        .await
     }
 
     async fn is_blocklisted(

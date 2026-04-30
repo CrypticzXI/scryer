@@ -26,11 +26,11 @@ use crate::types::{
     EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION,
     EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND, EXPORT_SUBTITLE_DOWNLOAD,
     EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
-    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SubtitleProviderMode,
-    config_fields_to_domain, indexer_capabilities_to_domain,
+    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
+    SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
+    plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
 
-const SUPPORTED_SDK_MAJOR: &str = "1";
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
 const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
@@ -315,6 +315,20 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.sdk_version.clone())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
+    }
+
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
@@ -520,6 +534,22 @@ impl IndexerPluginProvider for DynamicPluginProvider {
             .read()
             .expect("DynamicPluginProvider lock poisoned");
         guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.plugin_sdk_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.plugin_sdk_constraint_for_provider(provider_type)
     }
 
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -747,6 +777,20 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.sdk_version.clone())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
+    }
+
     fn config_fields_for_provider(
         &self,
         provider_type: &str,
@@ -858,6 +902,30 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
         vec![]
     }
 
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicDownloadClientPluginProvider lock poisoned");
+        guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicDownloadClientPluginProvider lock poisoned");
+        guard.plugin_sdk_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicDownloadClientPluginProvider lock poisoned");
+        guard.plugin_sdk_constraint_for_provider(provider_type)
+    }
+
     fn config_fields_for_provider(
         &self,
         provider_type: &str,
@@ -913,13 +981,14 @@ fn validate_descriptor_for_type(
     expected_type: Option<&str>,
     load_source: PluginLoadSource,
 ) -> bool {
-    let sdk_major = descriptor.sdk_version.split('.').next().unwrap_or("");
-    if sdk_major != SUPPORTED_SDK_MAJOR {
+    if let Err(error) = validate_plugin_descriptor_sdk_contract(descriptor, SDK_VERSION) {
         warn!(
             plugin = descriptor.name.as_str(),
             sdk_version = descriptor.sdk_version.as_str(),
-            expected_major = SUPPORTED_SDK_MAJOR,
-            "skipping plugin: incompatible sdk_version"
+            sdk_constraint = plugin_descriptor_sdk_constraint(descriptor),
+            host_sdk_version = SDK_VERSION,
+            error = error.as_str(),
+            "skipping plugin: incompatible sdk contract"
         );
         return false;
     }
@@ -1255,6 +1324,20 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.sdk_version.clone())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
+    }
+
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
         let key = provider_type.trim().to_ascii_lowercase();
         self.plugins
@@ -1367,6 +1450,30 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
 
     fn builtin_provider_types(&self) -> Vec<String> {
         builtin_subtitle_provider_types()
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.plugin_sdk_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.plugin_sdk_constraint_for_provider(provider_type)
     }
 
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
@@ -1924,6 +2031,20 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| loaded.descriptor.sdk_version.clone())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let key = provider_type.trim().to_ascii_lowercase();
+        self.plugins
+            .get(&key)
+            .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
+    }
+
     fn config_fields_for_provider(
         &self,
         provider_type: &str,
@@ -2014,6 +2135,30 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
 
     fn builtin_provider_types(&self) -> Vec<String> {
         vec![]
+    }
+
+    fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.plugin_sdk_version_for_provider(provider_type)
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.plugin_sdk_constraint_for_provider(provider_type)
     }
 
     fn config_fields_for_provider(
@@ -2143,6 +2288,7 @@ mod tests {
             name: "Test".to_string(),
             version: "0.1.0".to_string(),
             sdk_version: "1.0.0".to_string(),
+            sdk_constraint: ">=1.0.0, <2.0.0".to_string(),
             provider,
         }
     }

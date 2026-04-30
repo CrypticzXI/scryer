@@ -3749,7 +3749,7 @@ fn fallback_title_from_context(
             .collect::<Vec<_>>(),
     );
     let mut aliases = context.aliases.iter().collect::<Vec<_>>();
-    aliases.sort_by(|left, right| right.tokens.len().cmp(&left.tokens.len()));
+    aliases.sort_by_key(|alias| std::cmp::Reverse(alias.tokens.len()));
     aliases
         .into_iter()
         .find(|alias| {

@@ -18,6 +18,8 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
                 WHEN excluded.next_search_at IS NULL THEN NULL
                 WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
                 THEN wanted_items.next_search_at
+                WHEN wanted_items.status IN ('paused', 'completed')
+                THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,
             baseline_date = excluded.baseline_date,
@@ -39,6 +41,8 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
                 WHEN excluded.next_search_at IS NULL THEN NULL
                 WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
                 THEN wanted_items.next_search_at
+                WHEN wanted_items.status IN ('paused', 'completed')
+                THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,
             baseline_date = excluded.baseline_date,
@@ -59,6 +63,8 @@ fn upsert_wanted_item_sql(item: &WantedItem) -> &'static str {
             next_search_at = CASE
                 WHEN excluded.next_search_at IS NULL THEN NULL
                 WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
+                THEN wanted_items.next_search_at
+                WHEN wanted_items.status IN ('paused', 'completed')
                 THEN wanted_items.next_search_at
                 ELSE excluded.next_search_at
             END,

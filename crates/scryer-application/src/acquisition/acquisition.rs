@@ -1182,6 +1182,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
     );
 
     let mut submissions_by_title = HashMap::new();
+    let mut processed_failed_submissions = HashSet::new();
 
     for item in &grabbed_items {
         // Extract the grabbed release title from the stored JSON (for logging/blocklist)
@@ -1236,10 +1237,29 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                     sub.download_client_id.as_deref(),
                     &sub.download_client_item_id,
                 )
-                .map(|f| (f, sub.download_client_type.clone()))
+                .map(|f| (f, sub))
         });
 
-        if let Some((failed_item, download_client_type)) = failed {
+        if let Some((failed_item, submission)) = failed {
+            let failure_key = format!(
+                "{}:{}:{}",
+                submission.download_client_id.as_deref().unwrap_or(""),
+                submission.download_client_type,
+                submission.download_client_item_id
+            );
+            if !processed_failed_submissions.insert(failure_key.clone()) {
+                debug!(
+                    title_id = item.title_id.as_str(),
+                    failure_key = failure_key.as_str(),
+                    "skipping duplicate failed submission for covered grabbed set"
+                );
+                continue;
+            }
+
+            let release_title = submission
+                .source_title
+                .clone()
+                .unwrap_or_else(|| release_title.clone());
             warn!(
                 title_id = item.title_id.as_str(),
                 release = release_title.as_str(),
@@ -1253,7 +1273,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                     wanted_item: Some(item.clone()),
                     title_id: Some(item.title_id.clone()),
                     client_id: failed_item.client_id.clone(),
-                    client_type: download_client_type,
+                    client_type: submission.download_client_type.clone(),
                     client_name: failed_item.client_name.clone(),
                     client_item_id: failed_item.download_client_item_id.clone(),
                     release_title: release_title.clone(),
@@ -2236,23 +2256,50 @@ async fn process_single_wanted_item(
                                             item,
                                             episode.as_ref(),
                                         );
-                                    let _ = app
-                                        .services
+                                    let covered_wanted_item_ids = app
+                                        .covered_wanted_item_ids_for_submission_scope(
+                                            &title.id,
+                                            &submission_scope,
+                                            &item.id,
+                                        )
+                                        .await?;
+                                    let grabbed_json = serde_json::json!({
+                                        "title": best_pack.title,
+                                        "score": best_pack
+                                            .quality_profile_decision
+                                            .as_ref()
+                                            .map(|decision| decision.preference_score)
+                                            .unwrap_or(0),
+                                        "grabbed_at": now.to_rfc3339(),
+                                        "season_pack": true,
+                                    })
+                                    .to_string();
+                                    app.services
                                         .workflow
-                                        .download_submissions
-                                        .record_submission(DownloadSubmission {
-                                            title_id: title.id.clone(),
-                                            facet: facet_str.trim_matches('"').to_string(),
-                                            download_client_id: grab.client_id,
-                                            download_client_type: grab.client_type,
-                                            download_client_item_id: grab.job_id,
-                                            source_hint: None,
-                                            source_kind: None,
-                                            source_title: Some(best_pack.title.clone()),
-                                            request_signature: request_signature.clone(),
-                                            scope: submission_scope,
+                                        .acquisition_state
+                                        .commit_successful_grab(&SuccessfulGrabCommit {
+                                            wanted_item_id: item.id.clone(),
+                                            covered_wanted_item_ids,
+                                            search_count: item.search_count + 1,
+                                            current_score: item.current_score,
+                                            grabbed_release: grabbed_json,
+                                            last_search_at: Some(now.to_rfc3339()),
+                                            download_submission: DownloadSubmission {
+                                                title_id: title.id.clone(),
+                                                facet: facet_str.trim_matches('"').to_string(),
+                                                download_client_id: grab.client_id,
+                                                download_client_type: grab.client_type,
+                                                download_client_item_id: grab.job_id,
+                                                source_hint: None,
+                                                source_kind: None,
+                                                source_title: Some(best_pack.title.clone()),
+                                                request_signature: request_signature.clone(),
+                                                scope: submission_scope,
+                                            },
+                                            grabbed_pending_release_id: None,
+                                            grabbed_at: Some(now.to_rfc3339()),
                                         })
-                                        .await;
+                                        .await?;
                                     let pack_score = best_pack
                                         .quality_profile_decision
                                         .as_ref()

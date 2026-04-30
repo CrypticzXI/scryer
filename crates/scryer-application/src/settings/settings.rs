@@ -38,6 +38,7 @@ const SUBTITLES_SYNC_ENABLED_KEY: &str = "subtitles.sync_enabled";
 const SUBTITLES_SYNC_THRESHOLD_SERIES_KEY: &str = "subtitles.sync_threshold_series";
 const SUBTITLES_SYNC_THRESHOLD_MOVIE_KEY: &str = "subtitles.sync_threshold_movie";
 const SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY: &str = "subtitles.sync_max_offset_seconds";
+const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 
 #[derive(Debug, Clone)]
 pub struct SubtitleSettings {
@@ -781,6 +782,13 @@ impl AppUseCase {
                     "failed to parse setting '{key_name}' JSON value: {error}"
                 ))
             })
+    }
+
+    pub async fn smg_version_compatibility_notice(
+        &self,
+    ) -> AppResult<Option<crate::SmgVersionCompatibilityNotice>> {
+        self.read_setting_json_value(SMG_VERSION_COMPATIBILITY_NOTICE_KEY, None)
+            .await
     }
 
     async fn upsert_system_setting_json<T: Serialize>(

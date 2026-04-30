@@ -862,11 +862,7 @@ fn find_adts_header(data: &[u8]) -> Option<AdtsHeader> {
 
         let number_of_raw_data_blocks = hdr[6] & 0x03;
         let samples_per_frame = 1024_u32 * (u32::from(number_of_raw_data_blocks) + 1);
-        let bit_rate_bps = if samples_per_frame > 0 {
-            Some(frame_length * 8 * sample_rate / samples_per_frame)
-        } else {
-            None
-        };
+        let bit_rate_bps = (frame_length * 8 * sample_rate).checked_div(samples_per_frame);
 
         return Some(AdtsHeader {
             channels,

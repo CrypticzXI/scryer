@@ -604,7 +604,7 @@ impl JobRunTracker {
     pub async fn list_active(&self) -> Vec<JobRun> {
         let state = self.state.lock().await;
         let mut runs = state.active_runs.values().cloned().collect::<Vec<_>>();
-        runs.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+        runs.sort_by_key(|run| run.started_at);
         runs
     }
 

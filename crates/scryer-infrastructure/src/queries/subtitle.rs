@@ -1,4 +1,7 @@
-use scryer_application::{AppError, AppResult};
+use scryer_application::{
+    AppError, AppResult,
+    subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
+};
 use scryer_domain::{ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload};
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -51,6 +54,30 @@ pub async fn list_subtitle_downloads_for_media_file(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         out.push(row_to_subtitle_download(&row)?);
+    }
+    Ok(out)
+}
+
+pub async fn list_external_subtitle_probe_cache_for_media_file(
+    pool: &SqlitePool,
+    media_file_id: &str,
+) -> AppResult<Vec<ExternalSubtitleProbeCacheEntry>> {
+    let rows = sqlx::query(
+        "SELECT media_file_id, file_path, size_bytes, modified_at, language,
+                hearing_impaired, detection_source_language, detection_source_hi,
+                probe_version, updated_at
+         FROM external_subtitle_probe_cache
+         WHERE media_file_id = ?
+         ORDER BY file_path ASC",
+    )
+    .bind(media_file_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::Repository(e.to_string()))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(row_to_external_subtitle_probe_cache_entry(&row)?);
     }
     Ok(out)
 }
@@ -111,6 +138,42 @@ pub async fn insert_subtitle_download(
     Ok(())
 }
 
+pub async fn upsert_external_subtitle_probe_cache_entry(
+    pool: &SqlitePool,
+    entry: &ExternalSubtitleProbeCacheEntry,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO external_subtitle_probe_cache
+         (media_file_id, file_path, size_bytes, modified_at, language,
+          hearing_impaired, detection_source_language, detection_source_hi,
+          probe_version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(media_file_id, file_path) DO UPDATE SET
+            size_bytes = excluded.size_bytes,
+            modified_at = excluded.modified_at,
+            language = excluded.language,
+            hearing_impaired = excluded.hearing_impaired,
+            detection_source_language = excluded.detection_source_language,
+            detection_source_hi = excluded.detection_source_hi,
+            probe_version = excluded.probe_version,
+            updated_at = excluded.updated_at",
+    )
+    .bind(&entry.media_file_id)
+    .bind(&entry.file_path)
+    .bind(entry.size_bytes)
+    .bind(&entry.modified_at)
+    .bind(&entry.language)
+    .bind(entry.hearing_impaired.map(|value| value as i32))
+    .bind(entry.detection_source_language.as_str())
+    .bind(entry.detection_source_hi.as_str())
+    .bind(entry.probe_version)
+    .bind(&entry.updated_at)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Repository(e.to_string()))?;
+    Ok(())
+}
+
 pub async fn update_subtitle_download_synced(
     pool: &SqlitePool,
     id: &str,
@@ -155,6 +218,23 @@ pub async fn delete_subtitle_download(
     Ok(Some(download))
 }
 
+pub async fn delete_external_subtitle_probe_cache_entry(
+    pool: &SqlitePool,
+    media_file_id: &str,
+    file_path: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM external_subtitle_probe_cache
+         WHERE media_file_id = ? AND file_path = ?",
+    )
+    .bind(media_file_id)
+    .bind(file_path)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Repository(e.to_string()))?;
+    Ok(())
+}
+
 fn row_to_subtitle_download(row: &sqlx::sqlite::SqliteRow) -> AppResult<SubtitleDownload> {
     use sqlx::Row;
     Ok(SubtitleDownload {
@@ -197,6 +277,51 @@ fn row_to_subtitle_download(row: &sqlx::sqlite::SqliteRow) -> AppResult<Subtitle
         synced: row.try_get::<i32, _>("synced").unwrap_or(0) != 0,
         downloaded_at: row
             .try_get("downloaded_at")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+    })
+}
+
+fn row_to_external_subtitle_probe_cache_entry(
+    row: &sqlx::sqlite::SqliteRow,
+) -> AppResult<ExternalSubtitleProbeCacheEntry> {
+    use sqlx::Row;
+
+    let detection_source_language = ExternalSubtitleDetectionSource::parse(
+        &row.try_get::<String, _>("detection_source_language")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+    )
+    .ok_or_else(|| {
+        AppError::Repository("invalid subtitle probe language detection source".into())
+    })?;
+    let detection_source_hi = ExternalSubtitleDetectionSource::parse(
+        &row.try_get::<String, _>("detection_source_hi")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+    )
+    .ok_or_else(|| AppError::Repository("invalid subtitle probe hi detection source".into()))?;
+
+    Ok(ExternalSubtitleProbeCacheEntry {
+        media_file_id: row
+            .try_get("media_file_id")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        file_path: row
+            .try_get("file_path")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        size_bytes: row
+            .try_get("size_bytes")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        modified_at: row.try_get("modified_at").unwrap_or(None),
+        language: row.try_get("language").unwrap_or(None),
+        hearing_impaired: row
+            .try_get::<Option<i32>, _>("hearing_impaired")
+            .unwrap_or(None)
+            .map(|value| value != 0),
+        detection_source_language,
+        detection_source_hi,
+        probe_version: row
+            .try_get::<i32, _>("probe_version")
+            .map_err(|e| AppError::Repository(e.to_string()))?,
+        updated_at: row
+            .try_get("updated_at")
             .map_err(|e| AppError::Repository(e.to_string()))?,
     })
 }

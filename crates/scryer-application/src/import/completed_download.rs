@@ -703,16 +703,20 @@ async fn apply_import_result(
         ImportDecision::Skipped
             if matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported)) =>
         {
-            if verify_import(app, td, files_imported_this_pass).await {
-                td.state = TrackedDownloadState::Imported;
-                td.status = TrackedDownloadStatus::Ok;
-                td.status_messages.clear();
-                true
-            } else {
-                td.state = TrackedDownloadState::ImportBlocked;
-                td.status = TrackedDownloadStatus::Warning;
-                td.status_messages = vec![import_result_message(&result, ImportStatus::Skipped)];
-                false
+            match verify_import(app, td, files_imported_this_pass).await {
+                true => {
+                    td.state = TrackedDownloadState::Imported;
+                    td.status = TrackedDownloadStatus::Ok;
+                    td.status_messages.clear();
+                    true
+                }
+                false => {
+                    td.state = TrackedDownloadState::ImportBlocked;
+                    td.status = TrackedDownloadStatus::Warning;
+                    td.status_messages =
+                        vec![import_result_message(&result, ImportStatus::Skipped)];
+                    false
+                }
             }
         }
         ImportDecision::Failed => {

@@ -866,12 +866,15 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     name
     description
     version
+    latestVersion
     pluginType
     providerType
     author
     official
     builtin
     sourceUrl
+    sourceKind
+    blockedReason
     isInstalled
     isEnabled
     installedVersion
@@ -884,11 +887,16 @@ export const installPluginMutation = `mutation InstallPlugin($input: InstallPlug
     id
     pluginId
     name
+    description
     version
+    sdkVersion
+    sdkConstraint
     pluginType
     providerType
     isEnabled
     isBuiltin
+    sourceKind
+    sourceUrl
     installedAt
     updatedAt
   }
@@ -903,11 +911,16 @@ export const togglePluginMutation = `mutation TogglePlugin($input: TogglePluginI
     id
     pluginId
     name
+    description
     version
+    sdkVersion
+    sdkConstraint
     pluginType
     providerType
     isEnabled
     isBuiltin
+    sourceKind
+    sourceUrl
     installedAt
     updatedAt
   }
@@ -918,11 +931,16 @@ export const upgradePluginMutation = `mutation UpgradePlugin($input: UpgradePlug
     id
     pluginId
     name
+    description
     version
+    sdkVersion
+    sdkConstraint
     pluginType
     providerType
     isEnabled
     isBuiltin
+    sourceKind
+    sourceUrl
     installedAt
     updatedAt
   }

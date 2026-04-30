@@ -8252,7 +8252,10 @@ async fn list_cutoff_unmet_titles_returns_episode_scoped_rows_for_series() {
         .await;
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
-        .set_profiles(vec![cutoff_projection_test_profile("cutoff-series", "1080P")])
+        .set_profiles(vec![cutoff_projection_test_profile(
+            "cutoff-series",
+            "1080P",
+        )])
         .await;
     let media_files = Arc::new(MockMediaFileRepo::default());
     let (app, user, _) =
@@ -11008,6 +11011,196 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
 }
 
 #[tokio::test]
+async fn acquisition_cycle_records_failed_collection_submission_once() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Shared Failed Season Pack".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    let pack_title = "Shared Failed Season Pack.S01.1080p.WEB-DL";
+    let grabbed_release = serde_json::json!({
+        "title": pack_title,
+        "score": 100,
+        "grabbed_at": Utc::now().to_rfc3339(),
+        "season_pack": true,
+    })
+    .to_string();
+
+    let mut wanted_ids = Vec::new();
+    for (episode_number, label) in [("1", "S01E01"), ("2", "S01E02")] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("1".to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let wanted_id = Id::new().0;
+        wanted_ids.push(wanted_id.clone());
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: wanted_id,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                episode_id: Some(episode.id.clone()),
+                collection_id: Some(season.id.clone()),
+                season_number: Some("1".to_string()),
+                episode_number: Some(episode_number.to_string()),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: None,
+                last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+                search_count: 1,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Grabbed,
+                grabbed_release: Some(grabbed_release.clone()),
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed grabbed wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "shared-failed-season-pack".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some(pack_title.to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Collection {
+                collection_id: season.id.clone(),
+            },
+        })
+        .await
+        .expect("record failed collection submission");
+
+    *download_client.history_items.lock().await = vec![DownloadQueueItem {
+        title_id: Some(title.id.clone()),
+        facet: Some("anime".to_string()),
+        ..failed_history_item("shared-failed-season-pack", pack_title)
+    }];
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(
+        &app,
+        &[MediaFacet::Anime],
+    )
+    .await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(searches.is_empty());
+
+    let wanted_store = wanted_items.store.lock().await.clone();
+    for wanted_id in wanted_ids {
+        let wanted = wanted_store
+            .iter()
+            .find(|wanted| wanted.id == wanted_id)
+            .expect("wanted item exists");
+        assert_eq!(wanted.status, WantedStatus::Wanted);
+        assert!(wanted.grabbed_release.is_none());
+    }
+
+    let blocklist = app
+        .list_title_release_blocklist(&user, &title.id, 10)
+        .await
+        .expect("list title release blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(blocklist[0].source_title.as_deref(), Some(pack_title));
+    assert!(
+        blocklist[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("corrupt archive"))
+    );
+
+    assert!(
+        !download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| submission.download_client_item_id == "shared-failed-season-pack")
+    );
+}
+
+#[tokio::test]
 async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -11427,6 +11620,261 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             .iter()
             .all(|search| search.season == Some(2) && search.episode == Some(1))
     );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() {
+    struct AutoGrabSeasonPackIndexerClient {
+        searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
+    }
+
+    #[async_trait]
+    impl IndexerClient for AutoGrabSeasonPackIndexerClient {
+        async fn search(
+            &self,
+            query: String,
+            _ids: std::collections::HashMap<String, String>,
+            _category: Option<String>,
+            _facet: Option<String>,
+            _newznab_categories: Option<Vec<String>>,
+            _indexer_routing: Option<IndexerRoutingPlan>,
+            _mode: SearchMode,
+            season: Option<u32>,
+            episode: Option<u32>,
+            _absolute_episode: Option<u32>,
+            _tagged_aliases: Vec<TaggedAlias>,
+        ) -> AppResult<IndexerSearchResponse> {
+            self.searches.lock().await.push(RecordedIndexerSearch {
+                query: query.clone(),
+                season,
+                episode,
+            });
+
+            let release_title = match (season, episode) {
+                (Some(season), Some(episode)) => {
+                    format!("{query}.S{season:02}E{episode:02}.1080p.WEB-DL")
+                }
+                (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
+                (None, _) => format!("{query}.2024.1080p.WEB-DL"),
+            };
+            let release_slug = release_title.replace([' ', '/'], ".");
+
+            Ok(IndexerSearchResponse {
+                results: vec![IndexerSearchResult {
+                    source: "nzbgeek".into(),
+                    title: release_title.clone(),
+                    link: Some(format!("https://example.invalid/info/{release_slug}")),
+                    download_url: Some(format!(
+                        "https://example.invalid/download/{release_slug}.nzb"
+                    )),
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    size_bytes: None,
+                    published_at: Some("1970-01-01T00:00:00Z".into()),
+                    thumbs_up: None,
+                    thumbs_down: None,
+                    indexer_languages: None,
+                    indexer_subtitles: None,
+                    indexer_grabs: None,
+                    password_hint: None,
+                    parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
+                    quality_profile_decision: Some(
+                        crate::quality::profile::QualityProfileDecision {
+                            release_score: 100,
+                            scoring_log: Vec::new(),
+                            allowed: true,
+                            block_codes: Vec::new(),
+                            preference_score: 100,
+                        },
+                    ),
+                    extra: Default::default(),
+                    guid: Some(format!("guid-{release_slug}")),
+                    info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                    provenance: None,
+                    auto_eligible: Some(true),
+                    auto_decision_code: None,
+                    auto_decision_summary: None,
+                    candidate_token: None,
+                    queue_scope: None,
+                }],
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            })
+        }
+    }
+
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let recorded_searches = Arc::new(Mutex::new(Vec::new()));
+    let indexer_client: Arc<dyn IndexerClient> = Arc::new(AutoGrabSeasonPackIndexerClient {
+        searches: recorded_searches.clone(),
+    });
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Season Pack Grab Success".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    let mut wanted_ids = Vec::new();
+    for (episode_number, label) in [("1", "S01E01"), ("2", "S01E02")] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("1".to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let wanted_id = Id::new().0;
+        wanted_ids.push(wanted_id.clone());
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: wanted_id,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                episode_id: Some(episode.id.clone()),
+                collection_id: Some(season.id.clone()),
+                season_number: Some("1".to_string()),
+                episode_number: Some(episode_number.to_string()),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(Utc::now().to_rfc3339()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed due wanted item");
+    }
+
+    app.run_acquisition_cycle_once().await;
+
+    let searches = recorded_searches.lock().await.clone();
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(1) && search.episode.is_none())
+    );
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .clone(),
+        vec!["Season Pack Grab Success.S01.1080p.WEB-DL".to_string()]
+    );
+
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].download_client_item_id,
+        format!("job-for-{}", title.id)
+    );
+    assert_eq!(
+        submissions[0].source_title.as_deref(),
+        Some("Season Pack Grab Success.S01.1080p.WEB-DL")
+    );
+    assert_eq!(
+        submissions[0].scope,
+        SubmissionScope::Collection {
+            collection_id: season.id.clone(),
+        }
+    );
+
+    let wanted_store = wanted_items.store.lock().await.clone();
+    for wanted_id in wanted_ids {
+        let wanted = wanted_store
+            .iter()
+            .find(|wanted| wanted.id == wanted_id)
+            .expect("wanted item exists");
+        assert_eq!(wanted.status, WantedStatus::Grabbed);
+        let grabbed_release: serde_json::Value = serde_json::from_str(
+            wanted
+                .grabbed_release
+                .as_deref()
+                .expect("grabbed release recorded"),
+        )
+        .expect("grabbed release should parse");
+        assert_eq!(
+            grabbed_release["title"].as_str(),
+            Some("Season Pack Grab Success.S01.1080p.WEB-DL")
+        );
+        assert_eq!(grabbed_release["season_pack"].as_bool(), Some(true));
+    }
 }
 
 #[tokio::test]
@@ -12038,17 +12486,17 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
 
-        let wanted = WantedItem {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            title_name: Some(title.name.clone()),
-            title_slug: None,
-            title_facet: None,
-            episode_id: None,
-            collection_id: None,
-            season_number: None,
-            episode_number: None,
-            media_type: "movie".to_string(),
+    let wanted = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
         search_phase: "initial".to_string(),
         next_search_at: None,
         last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),

@@ -53,9 +53,43 @@ fn load_wasm_fixture(path: &std::path::Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
+fn registry_plugin_entry(
+    plugin_id: &str,
+    name: &str,
+    description: &str,
+    plugin_type: &str,
+    provider_type: &str,
+    version: &str,
+    builtin: bool,
+    wasm_url: Option<String>,
+) -> serde_json::Value {
+    const TEST_SDK_VERSION: &str = "1.0.0";
+    const TEST_SDK_CONSTRAINT: &str = ">=1.0.0, <2.0.0";
+
+    let mut release = serde_json::json!({
+        "version": version,
+        "sdk_version": TEST_SDK_VERSION,
+        "sdk_constraint": TEST_SDK_CONSTRAINT,
+        "builtin": builtin,
+    });
+    if let Some(wasm_url) = wasm_url {
+        release["wasm_url"] = serde_json::json!(wasm_url);
+    }
+
+    serde_json::json!({
+        "id": plugin_id,
+        "name": name,
+        "description": description,
+        "plugin_type": plugin_type,
+        "provider_type": provider_type,
+        "official": true,
+        "releases": [release],
+    })
+}
+
 fn bundled_test_indexer_fixture() -> RealPluginFixture {
     RealPluginFixture {
-        plugin_id: "test-indexer",
+        plugin_id: "test",
         name: "Test",
         description: "A test plugin",
         version: "0.1.0",
@@ -86,7 +120,7 @@ fn torrent_rss_dist_fixture() -> Option<RealPluginFixture> {
         plugin_id: "torrent-rss",
         name: "Torrent RSS Feed Indexer",
         description: "Generic torrent RSS indexer",
-        version: "0.1.3",
+        version: "0.1.4",
         plugin_type: "torrent_indexer",
         provider_type: "torrent_rss",
         request_path: "/dist/torrent_rss_indexer.wasm",
@@ -111,19 +145,16 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
 
     let registry_json = serde_json::json!({
         "schema_version": 1,
-        "plugins": [
-            {
-                "id": fixture.plugin_id,
-                "name": fixture.name,
-                "description": fixture.description,
-                "plugin_type": fixture.plugin_type,
-                "provider_type": fixture.provider_type,
-                "version": fixture.version,
-                "official": true,
-                "builtin": false,
-                "wasm_url": format!("{}{}", ctx.nzbgeek_server.uri(), fixture.request_path),
-            }
-        ]
+        "plugins": [registry_plugin_entry(
+            fixture.plugin_id,
+            fixture.name,
+            fixture.description,
+            fixture.plugin_type,
+            fixture.provider_type,
+            fixture.version,
+            false,
+            Some(format!("{}{}", ctx.nzbgeek_server.uri(), fixture.request_path)),
+        )]
     })
     .to_string();
     ctx.customization
@@ -200,6 +231,8 @@ async fn seed_builtins_prunes_removed_builtin_installations() {
             "OpenSubtitles",
             "",
             "0.1.0",
+            "1.0.0",
+            ">=1.0.0, <2.0.0",
             "subtitle_provider",
             "opensubtitles",
         )
@@ -211,6 +244,8 @@ async fn seed_builtins_prunes_removed_builtin_installations() {
             "Whisper",
             "",
             "0.1.0",
+            "1.0.0",
+            ">=1.0.0, <2.0.0",
             "subtitle_provider",
             "whisper",
         )
@@ -244,28 +279,26 @@ async fn list_available_with_builtins_and_registry() {
     let registry_json = serde_json::json!({
         "schema_version": 1,
         "plugins": [
-            {
-                "id": "nzbgeek",
-                "name": "NZBGeek",
-                "description": "NZBGeek indexer",
-                "plugin_type": "indexer",
-                "provider_type": "nzbgeek",
-                "version": "0.2.0",
-                "official": true,
-                "builtin": true,
-            },
-            {
-                "id": "animetosho",
-                "name": "AnimeTosho",
-                "description": "AnimeTosho indexer",
-                "plugin_type": "indexer",
-                "provider_type": "animetosho",
-                "version": "0.1.0",
-                "official": true,
-                "builtin": false,
-                "wasm_url": "https://example.com/animetosho.wasm",
-                "wasm_sha256": "abc123",
-            }
+            registry_plugin_entry(
+                "nzbgeek",
+                "NZBGeek",
+                "NZBGeek indexer",
+                "indexer",
+                "nzbgeek",
+                "0.2.0",
+                true,
+                None,
+            ),
+            registry_plugin_entry(
+                "animetosho",
+                "AnimeTosho",
+                "AnimeTosho indexer",
+                "indexer",
+                "animetosho",
+                "0.1.0",
+                false,
+                Some("https://example.com/animetosho.wasm".to_string()),
+            )
         ]
     })
     .to_string();
@@ -277,7 +310,7 @@ async fn list_available_with_builtins_and_registry() {
     let result = ctx.app.list_available_plugins(&admin()).await.unwrap();
 
     // Should have nzbgeek (installed+builtin), newznab (installed+builtin),
-    // and animetosho (not installed, but recognized as builtin-capable)
+    // and animetosho (not installed, registry-available)
     assert!(result.len() >= 3, "got {} plugins", result.len());
 
     let nzbgeek = result.iter().find(|p| p.id == "nzbgeek").unwrap();
@@ -286,7 +319,7 @@ async fn list_available_with_builtins_and_registry() {
 
     let animetosho = result.iter().find(|p| p.id == "animetosho").unwrap();
     assert!(!animetosho.is_installed);
-    assert!(animetosho.builtin);
+    assert!(!animetosho.builtin);
     assert!(animetosho.wasm_url.is_some());
 }
 

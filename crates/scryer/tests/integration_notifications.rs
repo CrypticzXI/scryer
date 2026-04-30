@@ -834,19 +834,21 @@ async fn create_channel_preserves_multiline_jellyfin_config_json() {
 async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
     let wasm_path = jellyfin_dist_wasm_path();
     if !wasm_path.exists() {
-        eprintln!("skipping jellyfin dist test; missing {}", wasm_path.display());
+        eprintln!(
+            "skipping jellyfin dist test; missing {}",
+            wasm_path.display()
+        );
         return;
     }
 
     let ctx = TestContext::new().await;
-    let wasm_bytes =
-        std::fs::read(&wasm_path).unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
-    let provider: Arc<dyn NotificationPluginProvider> = Arc::new(
-        scryer_plugins::DynamicNotificationPluginProvider::new(
+    let wasm_bytes = std::fs::read(&wasm_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
+    let provider: Arc<dyn NotificationPluginProvider> =
+        Arc::new(scryer_plugins::DynamicNotificationPluginProvider::new(
             scryer_plugins::WasmNotificationPluginProvider::empty()
                 .with_external_bytes(&wasm_bytes),
-        ),
-    );
+        ));
     let app = app_with_notification_provider(&ctx, provider);
     let user = default_user(&app).await;
 

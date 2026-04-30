@@ -1,3 +1,5 @@
+use std::sync::{OnceLock, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -10,6 +12,9 @@ use tracing::{debug, info, warn};
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 const PQ_CLIENT_FAMILY: &str = "scryer-stable";
+// ML-DSA key generation and signing allocate large fixed-size temporaries on the stack.
+// Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
+const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 
 /// Returned when SMG reports a version compatibility issue.
@@ -287,7 +292,7 @@ async fn enroll_pq_with_smg(
     let nonce = base64::engine::general_purpose::STANDARD
         .decode(challenge.nonce.as_bytes())
         .map_err(|e| EnrollmentError::Other(format!("invalid PQ challenge nonce: {e}")))?;
-    let pq_key = generate_pq_keypair()?;
+    let pq_key = generate_pq_keypair().await?;
     let proof_message = pq_registration_proof_message(
         "bootstrap",
         &challenge.challenge_id,
@@ -297,8 +302,9 @@ async fn enroll_pq_with_smg(
         &pq_key.key_id,
         &pq_key.public_key_b64,
     );
-    let proof_signature =
-        sign_pq_seed(&pq_key.seed_b64, &proof_message).map_err(EnrollmentError::Other)?;
+    let proof_signature = sign_pq_seed(&pq_key.seed_b64, &proof_message)
+        .await
+        .map_err(EnrollmentError::Other)?;
     let bootstrap_mac = sign_bootstrap_mac(registration_secret, &proof_message);
 
     let response = http
@@ -570,7 +576,7 @@ pub async fn rotate_pq_enrollment(
     let nonce = base64::engine::general_purpose::STANDARD
         .decode(challenge.nonce.as_bytes())
         .map_err(|e| EnrollmentError::Other(format!("invalid PQ rotation challenge nonce: {e}")))?;
-    let next_key = generate_pq_keypair()?;
+    let next_key = generate_pq_keypair().await?;
     let proof_message = pq_registration_proof_message(
         "rotate",
         &challenge.challenge_id,
@@ -580,8 +586,9 @@ pub async fn rotate_pq_enrollment(
         &next_key.key_id,
         &next_key.public_key_b64,
     );
-    let proof_signature =
-        sign_pq_seed(&next_key.seed_b64, &proof_message).map_err(EnrollmentError::Other)?;
+    let proof_signature = sign_pq_seed(&next_key.seed_b64, &proof_message)
+        .await
+        .map_err(EnrollmentError::Other)?;
 
     let response = send_authenticated_pq_registration_request(
         &http,
@@ -658,7 +665,94 @@ struct PqKeypair {
     key_id: String,
 }
 
-fn generate_pq_keypair() -> Result<PqKeypair, EnrollmentError> {
+enum PqCryptoJob {
+    GenerateKeypair {
+        reply: tokio::sync::oneshot::Sender<Result<PqKeypair, String>>,
+    },
+    SignSeed {
+        seed_b64: String,
+        message: Vec<u8>,
+        reply: tokio::sync::oneshot::Sender<Result<String, String>>,
+    },
+}
+
+struct PqCryptoExecutor {
+    tx: mpsc::Sender<PqCryptoJob>,
+}
+
+impl PqCryptoExecutor {
+    fn global() -> &'static Result<Self, String> {
+        static EXECUTOR: OnceLock<Result<PqCryptoExecutor, String>> = OnceLock::new();
+        EXECUTOR.get_or_init(Self::spawn)
+    }
+
+    fn spawn() -> Result<Self, String> {
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("smg-pq-crypto".to_string())
+            .stack_size(PQ_CRYPTO_THREAD_STACK_SIZE_BYTES)
+            .spawn(move || Self::run(rx))
+            .map_err(|error| format!("failed to spawn SMG PQ crypto thread: {error}"))?;
+        Ok(Self { tx })
+    }
+
+    fn run(rx: mpsc::Receiver<PqCryptoJob>) {
+        while let Ok(job) = rx.recv() {
+            match job {
+                PqCryptoJob::GenerateKeypair { reply } => {
+                    let _ = reply.send(generate_pq_keypair_sync().map_err(|error| match error {
+                        EnrollmentError::Other(message) => message,
+                        other => other.to_string(),
+                    }));
+                }
+                PqCryptoJob::SignSeed {
+                    seed_b64,
+                    message,
+                    reply,
+                } => {
+                    let _ = reply.send(sign_pq_seed_sync(&seed_b64, &message));
+                }
+            }
+        }
+    }
+
+    async fn generate_keypair(&self) -> Result<PqKeypair, String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PqCryptoJob::GenerateKeypair { reply: reply_tx })
+            .map_err(|_| "SMG PQ crypto thread is unavailable".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SMG PQ crypto thread dropped key generation response".to_string())?
+    }
+
+    async fn sign_seed(&self, seed_b64: &str, message: &[u8]) -> Result<String, String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PqCryptoJob::SignSeed {
+                seed_b64: seed_b64.to_string(),
+                message: message.to_vec(),
+                reply: reply_tx,
+            })
+            .map_err(|_| "SMG PQ crypto thread is unavailable".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SMG PQ crypto thread dropped signing response".to_string())?
+    }
+}
+
+async fn generate_pq_keypair() -> Result<PqKeypair, EnrollmentError> {
+    let executor = match PqCryptoExecutor::global() {
+        Ok(executor) => executor,
+        Err(error) => return Err(EnrollmentError::Other(error.clone())),
+    };
+    executor
+        .generate_keypair()
+        .await
+        .map_err(EnrollmentError::Other)
+}
+
+fn generate_pq_keypair_sync() -> Result<PqKeypair, EnrollmentError> {
     use ml_dsa::signature::Keypair;
 
     let rng = ring::rand::SystemRandom::new();
@@ -731,6 +825,7 @@ async fn send_authenticated_pq_registration_request(
         timestamp,
         &sha256_hex_bytes(&body_bytes),
     )
+    .await
     .map_err(EnrollmentError::Other)?;
 
     http.post(url)
@@ -905,7 +1000,7 @@ pub fn sign_request(
     Ok(base64::engine::general_purpose::STANDARD.encode(signature.as_ref()))
 }
 
-pub fn sign_pq_request(
+pub async fn sign_pq_request(
     seed_b64: &str,
     method: &str,
     host: &str,
@@ -914,7 +1009,7 @@ pub fn sign_pq_request(
     body_hash: &str,
 ) -> Result<String, String> {
     let message = canonical_pq_request_message(method, host, path_and_query, timestamp, body_hash);
-    sign_pq_seed(seed_b64, &message)
+    sign_pq_seed(seed_b64, &message).await
 }
 
 fn canonical_request_host(url: &reqwest::Url) -> Result<String, EnrollmentError> {
@@ -934,7 +1029,15 @@ fn canonical_request_path_and_query(url: &reqwest::Url) -> String {
     }
 }
 
-fn sign_pq_seed(seed_b64: &str, message: &[u8]) -> Result<String, String> {
+async fn sign_pq_seed(seed_b64: &str, message: &[u8]) -> Result<String, String> {
+    let executor = match PqCryptoExecutor::global() {
+        Ok(executor) => executor,
+        Err(error) => return Err(error.clone()),
+    };
+    executor.sign_seed(seed_b64, message).await
+}
+
+fn sign_pq_seed_sync(seed_b64: &str, message: &[u8]) -> Result<String, String> {
     use ml_dsa::signature::Signer;
 
     let seed_bytes = base64::engine::general_purpose::STANDARD
@@ -1118,8 +1221,9 @@ fn extract_pem_issuer_cn(pem_str: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnrollmentError, canonical_pq_request_message, parse_retry_after_value,
-        pq_registration_proof_message, sign_bootstrap_mac,
+        EnrollmentError, canonical_pq_request_message, generate_pq_keypair,
+        parse_retry_after_value, pq_registration_proof_message, sign_bootstrap_mac,
+        sign_pq_request,
     };
     use std::time::Duration;
 
@@ -1191,5 +1295,29 @@ mod tests {
         let second = sign_bootstrap_mac("secret", b"message");
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn pq_crypto_executor_generates_keys_and_signs_requests() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(async {
+            let keypair = generate_pq_keypair().await.expect("generated pq keypair");
+            let signature = sign_pq_request(
+                &keypair.seed_b64,
+                "post",
+                "smg.example",
+                "/graphql",
+                123,
+                "abc123",
+            )
+            .await
+            .expect("signed pq request");
+
+            assert!(!signature.is_empty());
+        });
     }
 }

@@ -303,7 +303,7 @@ impl LibraryScanTracker {
         let (initial_sessions, initial_sequence) = {
             let state = self.state.lock().await;
             let mut sessions = state.sessions.values().cloned().collect::<Vec<_>>();
-            sessions.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+            sessions.sort_by_key(|session| session.started_at);
             (sessions, state.next_sequence)
         };
         let receiver = Self::spawn_subscription(source, Some(initial_sequence));
@@ -313,7 +313,7 @@ impl LibraryScanTracker {
     pub async fn list_active(&self) -> Vec<LibraryScanSession> {
         let state = self.state.lock().await;
         let mut sessions = state.sessions.values().cloned().collect::<Vec<_>>();
-        sessions.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+        sessions.sort_by_key(|session| session.started_at);
         sessions
     }
 

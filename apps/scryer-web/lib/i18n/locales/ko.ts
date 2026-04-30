@@ -940,16 +940,29 @@ const ko: LocaleDictionary = {
   "settings.pluginInstall": "설치",
   "settings.pluginInstalling": "설치 중…",
   "settings.pluginUninstall": "제거",
+  "settings.pluginRevertToBundled": "내장 버전으로 되돌리기",
+  "settings.pluginRevert": "되돌리기",
   "settings.pluginUninstallWarning":
     "'{{name}}'을(를) 제거하면 관련된 모든 설정이 영구적으로 삭제됩니다. 설정을 유지하려면 플러그인을 비활성화하세요.",
+  "settings.pluginRevertToBundledWarning":
+    "이 작업은 '{{name}}'의 다운로드된 재정의를 제거하고 내장 플러그인으로 되돌립니다.",
   "settings.pluginBuiltin": "내장",
   "settings.pluginInstalled": "설치됨",
   "settings.pluginNotInstalled": "미설치",
   "settings.pluginOfficial": "공식",
+  "settings.pluginOverride": "재정의",
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "업데이트: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}으로 업그레이드",
+  "settings.pluginNoCompatibleRelease":
+    "이 Scryer 버전과 호환되는 릴리스가 없습니다",
+  "settings.pluginNewerReleaseRequiresNewerScryer":
+    "더 새로운 릴리스에는 더 새로운 Scryer 버전이 필요합니다",
+  "settings.pluginNewerReleaseRequiresNewerScryerVersion":
+    "더 새로운 릴리스 v{{version}}에는 더 새로운 Scryer 버전이 필요합니다",
   "status.pluginInstalled": "'{{name}}' 플러그인이 설치되었습니다.",
+  "status.pluginRevertedToBundled":
+    "'{{name}}' 플러그인이 내장 버전으로 되돌아갔습니다.",
   "status.pluginUninstalled": "'{{name}}' 플러그인이 제거되었습니다.",
   "status.pluginUpgraded":
     "'{{name}}' 플러그인이 v{{version}}으로 업그레이드되었습니다.",

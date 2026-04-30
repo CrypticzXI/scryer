@@ -148,7 +148,7 @@ impl AppUseCase {
 
         for (wanted_item_id, mut releases) in by_wanted {
             // Sort descending by score
-            releases.sort_by(|a, b| b.release_score.cmp(&a.release_score));
+            releases.sort_by_key(|release| std::cmp::Reverse(release.release_score));
 
             let Some(wanted) = self
                 .services

@@ -133,6 +133,7 @@ export function SettingsPluginsContainer() {
   const confirmUninstall = async () => {
     if (!pendingUninstall) return;
     const plugin = pendingUninstall;
+    const isBuiltinOverride = plugin.builtin && plugin.sourceKind === "downloaded";
     setMutatingPluginId(plugin.id);
     try {
       const { error } = await client
@@ -141,7 +142,11 @@ export function SettingsPluginsContainer() {
         })
         .toPromise();
       if (error) throw error;
-      setGlobalStatus(t("status.pluginUninstalled", { name: plugin.name }));
+      setGlobalStatus(
+        isBuiltinOverride
+          ? t("status.pluginRevertedToBundled", { name: plugin.name })
+          : t("status.pluginUninstalled", { name: plugin.name }),
+      );
       await refreshPlugins();
       dispatchNavigationBadgesRefresh();
     } catch (error) {
@@ -151,6 +156,9 @@ export function SettingsPluginsContainer() {
       setPendingUninstall(null);
     }
   };
+
+  const pendingUninstallIsBuiltinOverride =
+    pendingUninstall?.builtin && pendingUninstall.sourceKind === "downloaded";
 
   return (
     <>
@@ -166,13 +174,23 @@ export function SettingsPluginsContainer() {
       />
       <ConfirmDialog
         open={pendingUninstall !== null}
-        title={t("settings.pluginUninstall")}
+        title={
+          pendingUninstallIsBuiltinOverride
+            ? t("settings.pluginRevertToBundled")
+            : t("settings.pluginUninstall")
+        }
         description={
           pendingUninstall
-            ? t("settings.pluginUninstallWarning", { name: pendingUninstall.name })
+            ? pendingUninstallIsBuiltinOverride
+              ? t("settings.pluginRevertToBundledWarning", { name: pendingUninstall.name })
+              : t("settings.pluginUninstallWarning", { name: pendingUninstall.name })
             : ""
         }
-        confirmLabel={t("settings.pluginUninstall")}
+        confirmLabel={
+          pendingUninstallIsBuiltinOverride
+            ? t("settings.pluginRevert")
+            : t("settings.pluginUninstall")
+        }
         cancelLabel={t("label.cancel")}
         isBusy={mutatingPluginId !== null}
         onConfirm={confirmUninstall}

@@ -13,7 +13,16 @@ struct MockPluginInstallationRepo {
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
 }
 
-type SeededPluginRecord = (String, String, String, String, String, String);
+type SeededPluginRecord = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 
 impl MockPluginInstallationRepo {
     fn new() -> Self {
@@ -87,6 +96,8 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         name: &str,
         description: &str,
         version: &str,
+        sdk_version: &str,
+        sdk_constraint: &str,
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
@@ -95,6 +106,8 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
             name.to_string(),
             description.to_string(),
             version.to_string(),
+            sdk_version.to_string(),
+            sdk_constraint.to_string(),
             plugin_type.to_string(),
             provider_type.to_string(),
         ));
@@ -172,6 +185,8 @@ struct MockPluginProvider {
     default_urls: HashMap<String, String>,
     plugin_names: HashMap<String, String>,
     plugin_versions: HashMap<String, String>,
+    plugin_sdk_versions: HashMap<String, String>,
+    plugin_sdk_constraints: HashMap<String, String>,
     plugin_types: HashMap<String, String>,
     reload_count: AtomicUsize,
 }
@@ -184,6 +199,8 @@ impl MockPluginProvider {
             default_urls: HashMap::new(),
             plugin_names: HashMap::new(),
             plugin_versions: HashMap::new(),
+            plugin_sdk_versions: HashMap::new(),
+            plugin_sdk_constraints: HashMap::new(),
             plugin_types: HashMap::new(),
             reload_count: AtomicUsize::new(0),
         }
@@ -194,6 +211,10 @@ impl MockPluginProvider {
         self.plugin_names.insert(pt.to_string(), name.to_string());
         self.plugin_versions
             .insert(pt.to_string(), "0.1.0".to_string());
+        self.plugin_sdk_versions
+            .insert(pt.to_string(), scryer_plugin_sdk::SDK_VERSION.to_string());
+        self.plugin_sdk_constraints
+            .insert(pt.to_string(), scryer_plugin_sdk::current_sdk_constraint());
         self.plugin_types
             .insert(pt.to_string(), "indexer".to_string());
         if let Some(url) = default_url {
@@ -224,6 +245,14 @@ impl IndexerPluginProvider for MockPluginProvider {
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
         self.plugin_versions.get(provider_type).cloned()
+    }
+
+    fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
+        self.plugin_sdk_versions.get(provider_type).cloned()
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
+        self.plugin_sdk_constraints.get(provider_type).cloned()
     }
 
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -292,8 +321,16 @@ fn make_installation(
         name: format!("{plugin_id} Plugin"),
         description: format!("Description for {plugin_id}"),
         version: version.to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        scryer_constraint: None,
         plugin_type: "indexer".to_string(),
         provider_type: plugin_id.to_string(),
+        source_kind: if builtin {
+            scryer_domain::PluginSourceKind::Bundled
+        } else {
+            scryer_domain::PluginSourceKind::Downloaded
+        },
         is_enabled: enabled,
         is_builtin: builtin,
         wasm_sha256: None,
@@ -317,21 +354,26 @@ fn registry_entry(
     builtin: bool,
     wasm_url: Option<&str>,
 ) -> serde_json::Value {
-    let mut entry = serde_json::json!({
+    let mut release = serde_json::json!({
+        "version": version,
+        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
+        "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+        "builtin": builtin,
+    });
+    if let Some(url) = wasm_url {
+        release["wasm_url"] = serde_json::json!(url);
+        release["wasm_sha256"] = serde_json::json!("abc123");
+    }
+
+    serde_json::json!({
         "id": id,
         "name": format!("{id} Plugin"),
         "description": format!("Description for {id}"),
         "plugin_type": "indexer",
         "provider_type": id,
-        "version": version,
         "official": true,
-        "builtin": builtin,
-    });
-    if let Some(url) = wasm_url {
-        entry["wasm_url"] = serde_json::json!(url);
-        entry["wasm_sha256"] = serde_json::json!("abc123");
-    }
-    entry
+        "releases": [release],
+    })
 }
 
 fn registry_entry_with_type(
@@ -354,7 +396,7 @@ fn registry_entry_with_min_scryer_version(
     min_scryer_version: &str,
 ) -> serde_json::Value {
     let mut entry = registry_entry(id, version, builtin, wasm_url);
-    entry["min_scryer_version"] = serde_json::json!(min_scryer_version);
+    entry["releases"][0]["min_scryer_version"] = serde_json::json!(min_scryer_version);
     entry
 }
 
@@ -384,6 +426,7 @@ struct TestHarness {
     app: AppUseCase,
     plugin_repo: Arc<MockPluginInstallationRepo>,
     indexer_config_repo: Arc<MockIndexerConfigRepo>,
+    plugin_provider: Option<Arc<MockPluginProvider>>,
 }
 
 fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
@@ -394,7 +437,7 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
 
-    let services = AppServices::builder(
+    let mut services = AppServices::builder(
         Arc::new(NullTitleRepository),
         Arc::new(NullShowRepository),
         Arc::new(NullUserRepository),
@@ -408,13 +451,11 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         String::new(),
     )
     .with_plugin_installations(plugin_repo.clone());
-    let services = if let Some(p) = provider {
-        services
-            .with_plugin_provider(Arc::new(p))
-            .build_partial_for_tests()
-    } else {
-        services.build_partial_for_tests()
-    };
+    let plugin_provider = provider.map(Arc::new);
+    if let Some(provider) = &plugin_provider {
+        services = services.with_plugin_provider(provider.clone());
+    }
+    let services = services.build_partial_for_tests();
 
     let registry = FacetRegistry::new();
     let app = AppUseCase::new(
@@ -431,6 +472,7 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         app,
         plugin_repo,
         indexer_config_repo,
+        plugin_provider,
     }
 }
 
@@ -459,8 +501,9 @@ fn bootstrap_plugins_with_subtitles(
         String::new(),
     )
     .with_plugin_installations(plugin_repo.clone());
-    if let Some(p) = provider {
-        services = services.with_plugin_provider(Arc::new(p));
+    let plugin_provider = provider.map(Arc::new);
+    if let Some(provider) = &plugin_provider {
+        services = services.with_plugin_provider(provider.clone());
     }
     if let Some(subtitle_provider) = subtitle_provider {
         services = services.with_subtitle_plugin_provider(subtitle_provider);
@@ -481,6 +524,7 @@ fn bootstrap_plugins_with_subtitles(
         app,
         plugin_repo,
         indexer_config_repo,
+        plugin_provider,
     }
 }
 
@@ -518,6 +562,14 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
 
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
         Some("0.1.0".to_string())
+    }
+
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::SDK_VERSION.to_string())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::current_sdk_constraint())
     }
 
     fn supports_catalog_search_for_provider(&self, _provider_type: &str) -> bool {
@@ -561,11 +613,11 @@ fn registry_manifest_deserialize_with_defaults() {
     assert_eq!(entry.id, "test");
     assert_eq!(entry.author, ""); // default
     assert!(!entry.official); // default false
-    assert!(!entry.builtin); // default false
+    assert!(entry.releases.is_empty());
     assert!(entry.source_url.is_none());
     assert!(entry.wasm_url.is_none());
     assert!(entry.wasm_sha256.is_none());
-    assert!(entry.min_scryer_version.is_none());
+    assert!(entry.legacy_min_scryer_version.is_none());
 }
 
 // ── list_available_plugins ───────────────────────────────────────────────────
@@ -597,7 +649,7 @@ async fn list_registry_entries_not_installed() {
 }
 
 #[tokio::test]
-async fn list_hides_incompatible_registry_entries_when_not_installed() {
+async fn list_keeps_incompatible_registry_entries_visible_as_blocked() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_registry_json(&[
         registry_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
@@ -612,8 +664,16 @@ async fn list_hides_incompatible_registry_entries_when_not_installed() {
     h.plugin_repo.store_registry_cache(&json).await.unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].id, "alpha");
+    assert_eq!(result.len(), 2);
+    let torrent_rss = result
+        .iter()
+        .find(|plugin| plugin.id == "torrent-rss")
+        .unwrap();
+    assert!(!torrent_rss.is_installed);
+    assert_eq!(
+        torrent_rss.blocked_reason.as_deref(),
+        Some("no_compatible_release")
+    );
 }
 
 #[tokio::test]
@@ -654,6 +714,61 @@ async fn list_hides_registry_entries_with_invalid_min_version() {
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert!(result.is_empty());
+}
+
+#[test]
+fn installed_host_block_uses_persisted_scryer_constraint_without_registry() {
+    let mut installation = make_installation("alpha", "0.1.0", false, true);
+    installation.scryer_constraint = Some(">=99.0.0".to_string());
+
+    assert!(installation_is_host_blocked_by_registry(
+        &installation,
+        None
+    ));
+}
+
+#[tokio::test]
+async fn apply_plugin_registry_manifest_backfills_release_metadata_and_reloads_provider() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut installation = make_installation("alpha", "0.2.0", false, true);
+    installation.wasm_sha256 = Some("abc123".to_string());
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let mut entry = registry_entry_with_min_scryer_version(
+        "alpha",
+        "0.2.0",
+        false,
+        Some("https://example.com/a.wasm"),
+        ">=99.0.0",
+    );
+    entry["releases"][0]["source_url"] = serde_json::json!("https://example.com/a");
+    let json = make_registry_json(&[entry]);
+    let manifest: RegistryManifest = serde_json::from_str(&json).unwrap();
+
+    h.app
+        .apply_plugin_registry_manifest(&manifest, &json)
+        .await
+        .unwrap();
+
+    let installation = h
+        .plugin_repo
+        .get_plugin_installation("alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(installation.scryer_constraint.as_deref(), Some(">=99.0.0"));
+    assert_eq!(
+        installation.source_url.as_deref(),
+        Some("https://example.com/a")
+    );
+    assert_eq!(
+        h.plugin_provider
+            .as_ref()
+            .unwrap()
+            .reload_count
+            .load(Ordering::Relaxed),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1293,6 +1408,49 @@ async fn upgrade_no_wasm_url() {
     }
 }
 
+#[test]
+fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
+    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
+        "version": "0.2.0",
+        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
+        "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+        "builtin": false,
+        "wasm_url": "https://example.com/a.wasm",
+        "wasm_sha256": "abc123"
+    }))
+    .unwrap();
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "alpha".to_string(),
+        name: "Alpha Plugin".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        provider: scryer_plugin_sdk::ProviderDescriptor::Indexer(
+            scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: "alpha".to_string(),
+                provider_aliases: Vec::new(),
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
+                capabilities: Default::default(),
+                scoring_policies: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: vec!["https://example.com".to_string()],
+                rate_limit_seconds: None,
+            },
+        ),
+    };
+
+    let err =
+        validate_downloaded_plugin_descriptor("alpha", "indexer", "alpha", &release, &descriptor)
+            .unwrap_err();
+    match err {
+        AppError::Validation(msg) => {
+            assert!(msg.contains("invalid network permission pattern"))
+        }
+        _ => panic!("expected Validation"),
+    }
+}
+
 #[tokio::test]
 async fn upgrade_rejects_incompatible_host_version() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
@@ -1352,7 +1510,7 @@ async fn seed_uses_provider_builtin_inventory() {
 
     let ids: Vec<&str> = seeded
         .iter()
-        .map(|(id, _, _, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _, _, _, _)| id.as_str())
         .collect();
     assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"newznab"));

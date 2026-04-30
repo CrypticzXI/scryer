@@ -9,6 +9,7 @@ pub fn scryer_describe(_input: String) -> FnResult<String> {
         name: "Test Indexer".to_string(),
         version: "0.1.0".to_string(),
         sdk_version: SDK_VERSION.to_string(),
+        sdk_constraint: current_sdk_constraint(),
         provider: ProviderDescriptor::Indexer(IndexerDescriptor {
             provider_type: "test".to_string(),
             provider_aliases: vec![],

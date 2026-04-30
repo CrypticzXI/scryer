@@ -3,8 +3,7 @@ use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     DownloadImportFilter, PendingImportCounts, ReleaseDecisionsQuery, TitleHistoryFilter,
-    WantedItemsQuery,
-    is_supported_title_history_event_type, supported_title_history_event_types,
+    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{Entitlement, PolicyInput, TitleHistoryEventType};
 
@@ -2023,7 +2022,7 @@ impl QueryRoot {
                 path: full_path,
             });
         }
-        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries.sort_by_key(|a| a.name.to_lowercase());
         Ok(entries)
     }
 

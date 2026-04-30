@@ -1674,12 +1674,15 @@ export const pluginsQuery = `query Plugins {
     name
     description
     version
+    latestVersion
     pluginType
     providerType
     author
     official
     builtin
     sourceUrl
+    sourceKind
+    blockedReason
     isInstalled
     isEnabled
     installedVersion

@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
+use extism::{Manifest, PluginBuilder, Wasm};
 use schemars::{JsonSchema, schema_for};
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 pub mod indexer;
@@ -24,6 +27,127 @@ pub use notification::{
 };
 
 pub const SDK_VERSION: &str = "1.3.0";
+
+pub fn current_sdk_constraint() -> String {
+    sdk_minor_line_constraint(SDK_VERSION).unwrap_or_else(|| legacy_sdk_constraint(SDK_VERSION))
+}
+
+pub fn sdk_constraint_or_legacy(sdk_version: &str, sdk_constraint: &str) -> String {
+    let explicit = sdk_constraint.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+
+    legacy_sdk_constraint(sdk_version)
+}
+
+pub fn plugin_descriptor_sdk_constraint(descriptor: &PluginDescriptor) -> String {
+    sdk_constraint_or_legacy(&descriptor.sdk_version, &descriptor.sdk_constraint)
+}
+
+pub fn host_version_matches_constraint(
+    current_version: &str,
+    constraint: &str,
+) -> Result<bool, String> {
+    let current = Version::parse(current_version.trim())
+        .map_err(|error| format!("invalid host version {current_version}: {error}"))?;
+    let required = VersionReq::parse(constraint.trim())
+        .map_err(|error| format!("invalid host constraint {constraint}: {error}"))?;
+    Ok(required.matches(&current))
+}
+
+pub fn validate_sdk_contract(
+    subject: &str,
+    sdk_version: &str,
+    sdk_constraint: &str,
+    host_sdk_version: &str,
+) -> Result<(), String> {
+    let host_version = Version::parse(host_sdk_version)
+        .map_err(|error| format!("invalid host sdk_version {host_sdk_version}: {error}"))?;
+    let descriptor_version = Version::parse(sdk_version.trim())
+        .map_err(|error| format!("{subject}: invalid sdk_version {sdk_version}: {error}"))?;
+    let constraint = sdk_constraint_or_legacy(sdk_version, sdk_constraint);
+    let req = VersionReq::parse(constraint.trim())
+        .map_err(|error| format!("{subject}: invalid sdk_constraint {constraint}: {error}"))?;
+    if !req.matches(&descriptor_version) {
+        return Err(format!(
+            "{subject}: sdk_version {sdk_version} does not satisfy sdk_constraint {constraint}"
+        ));
+    }
+    if !req.matches(&host_version) {
+        return Err(format!(
+            "{subject}: host sdk_version {host_sdk_version} does not satisfy sdk_constraint {constraint}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_plugin_descriptor_sdk_contract(
+    descriptor: &PluginDescriptor,
+    host_sdk_version: &str,
+) -> Result<(), String> {
+    validate_sdk_contract(
+        &descriptor.id,
+        &descriptor.sdk_version,
+        &descriptor.sdk_constraint,
+        host_sdk_version,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn allowed_host_pattern_is_valid(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty()
+        || host == "*"
+        || host.contains("://")
+        || host.contains('/')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains(':')
+    {
+        return false;
+    }
+
+    if let Some(suffix) = host.strip_prefix("*.") {
+        return !suffix.is_empty() && !suffix.contains('*') && url::Host::parse(suffix).is_ok();
+    }
+
+    !host.contains('*') && url::Host::parse(host).is_ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn validate_plugin_descriptor_host_permissions(
+    descriptor: &PluginDescriptor,
+) -> Result<(), String> {
+    for host in descriptor.allowed_hosts() {
+        if !allowed_host_pattern_is_valid(host) {
+            return Err(format!(
+                "{}: invalid network permission pattern {}",
+                descriptor.id, host
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn legacy_sdk_constraint(version: &str) -> String {
+    let parsed = Version::parse(version.trim()).ok();
+    let Some(version) = parsed else {
+        return ">=0.0.0".to_string();
+    };
+    format!(">={}.0.0, <{}.0.0", version.major, version.major + 1)
+}
+
+fn sdk_minor_line_constraint(version: &str) -> Option<String> {
+    let version = Version::parse(version.trim()).ok()?;
+    Some(format!(
+        ">={}.{}.0, <{}.{}.0",
+        version.major,
+        version.minor,
+        version.major,
+        version.minor + 1
+    ))
+}
 
 pub const EXPORT_DESCRIBE: &str = "scryer_describe";
 pub const EXPORT_VALIDATE_CONFIG: &str = "scryer_validate_config";
@@ -86,6 +210,8 @@ pub struct PluginDescriptor {
     pub name: String,
     pub version: String,
     pub sdk_version: String,
+    #[serde(default)]
+    pub sdk_constraint: String,
     pub provider: ProviderDescriptor,
 }
 
@@ -198,6 +324,74 @@ impl PluginDescriptor {
             _ => None,
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
+    let mut exports = vec![EXPORT_DESCRIBE];
+    match &descriptor.provider {
+        ProviderDescriptor::Indexer(_) => exports.push(EXPORT_INDEXER_SEARCH),
+        ProviderDescriptor::DownloadClient(_) => exports.extend([
+            EXPORT_DOWNLOAD_ADD,
+            EXPORT_DOWNLOAD_LIST_QUEUE,
+            EXPORT_DOWNLOAD_LIST_HISTORY,
+            EXPORT_DOWNLOAD_LIST_COMPLETED,
+            EXPORT_DOWNLOAD_CONTROL,
+            EXPORT_DOWNLOAD_MARK_IMPORTED,
+            EXPORT_DOWNLOAD_STATUS,
+            EXPORT_DOWNLOAD_TEST_CONNECTION,
+        ]),
+        ProviderDescriptor::Notification(_) => exports.push(EXPORT_NOTIFICATION_SEND),
+        ProviderDescriptor::Subtitle(subtitle) => {
+            exports.push(EXPORT_VALIDATE_CONFIG);
+            match subtitle.capabilities.mode {
+                SubtitleProviderMode::Catalog => {
+                    exports.extend([EXPORT_SUBTITLE_SEARCH, EXPORT_SUBTITLE_DOWNLOAD]);
+                }
+                SubtitleProviderMode::Generator => exports.push(EXPORT_SUBTITLE_GENERATE),
+            }
+        }
+    }
+    exports
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_plugin_descriptor_from_wasm_bytes(
+    wasm_bytes: &[u8],
+) -> Result<PluginDescriptor, String> {
+    let manifest = Manifest::new([Wasm::data(wasm_bytes.to_vec())])
+        .with_timeout(std::time::Duration::from_secs(10));
+    let mut plugin = PluginBuilder::new(manifest)
+        .with_wasi(true)
+        .build()
+        .map_err(|error| format!("failed to instantiate WASM: {error}"))?;
+
+    if !plugin.function_exists(EXPORT_DESCRIBE) {
+        return Err(format!(
+            "plugin is missing required export {EXPORT_DESCRIBE}"
+        ));
+    }
+
+    let output: String = plugin
+        .call::<&str, String>(EXPORT_DESCRIBE, "")
+        .map_err(|error| format!("{EXPORT_DESCRIBE}() failed: {error}"))?;
+    let descriptor: PluginDescriptor = serde_json::from_str(&output)
+        .map_err(|error| format!("describe() returned invalid JSON: {error}"))?;
+
+    let missing = required_exports_for_descriptor(&descriptor)
+        .into_iter()
+        .filter(|export| !plugin.function_exists(export))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} ({}) is missing required export(s): {}",
+            descriptor.id,
+            descriptor.plugin_type(),
+            missing.join(", ")
+        ));
+    }
+
+    Ok(descriptor)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1692,6 +1886,7 @@ mod tests {
             name: "Newznab".into(),
             version: "1.0.0".into(),
             sdk_version: SDK_VERSION.into(),
+            sdk_constraint: current_sdk_constraint(),
             provider: ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "newznab".into(),
                 provider_aliases: vec![],
@@ -2267,6 +2462,7 @@ mod tests {
             name: provider_type.to_string(),
             version: "0.1.0".to_string(),
             sdk_version: SDK_VERSION.to_string(),
+            sdk_constraint: current_sdk_constraint(),
             provider: ProviderDescriptor::DownloadClient(DownloadClientDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
@@ -2383,6 +2579,7 @@ mod tests {
             name: provider_type.to_string(),
             version: "0.1.0".to_string(),
             sdk_version: SDK_VERSION.to_string(),
+            sdk_constraint: current_sdk_constraint(),
             provider: ProviderDescriptor::Notification(NotificationDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),

@@ -709,6 +709,10 @@ async fn bootstrap_application(
 
     app_use_case.connect_library_scan_tracker().await;
 
+    if let Err(e) = app_use_case.refresh_plugin_registry_internal().await {
+        tracing::warn!(error = %e, "failed to refresh plugin registry on startup");
+    }
+
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {
         tracing::warn!(error = %e, "failed to migrate legacy persona preferences on startup");
     }
@@ -744,9 +748,6 @@ async fn bootstrap_application(
     }
     if let Err(e) = app_use_case.normalize_routing_settings().await {
         tracing::warn!(error = %e, "failed to normalize routing settings on startup");
-    }
-    if let Err(e) = app_use_case.refresh_plugin_registry_internal().await {
-        tracing::warn!(error = %e, "failed to refresh plugin registry on startup");
     }
 
     let auth_mode = resolve_auth_mode_from_env();
@@ -1306,13 +1307,74 @@ struct RuntimePluginRegistryEntry {
     id: String,
     plugin_type: String,
     provider_type: String,
-    version: String,
     #[serde(default)]
     official: bool,
     #[serde(default)]
-    builtin: bool,
+    releases: Vec<RuntimePluginRegistryRelease>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    sdk_version: Option<String>,
+    #[serde(default)]
+    sdk_constraint: Option<String>,
+    #[serde(default)]
+    scryer_constraint: Option<String>,
+    #[serde(default, rename = "min_scryer_version")]
+    legacy_min_scryer_version: Option<String>,
     #[serde(default)]
     wasm_sha256: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+struct RuntimePluginRegistryRelease {
+    version: String,
+    #[serde(default)]
+    sdk_version: String,
+    #[serde(default)]
+    sdk_constraint: String,
+    #[serde(default)]
+    scryer_constraint: Option<String>,
+    #[serde(default, rename = "min_scryer_version")]
+    legacy_min_scryer_version: Option<String>,
+    #[serde(default)]
+    wasm_sha256: Option<String>,
+}
+
+impl RuntimePluginRegistryEntry {
+    fn normalized_releases(&self) -> Vec<RuntimePluginRegistryRelease> {
+        if !self.releases.is_empty() {
+            return self.releases.clone();
+        }
+
+        self.version
+            .as_ref()
+            .map(|version| {
+                vec![RuntimePluginRegistryRelease {
+                    version: version.clone(),
+                    sdk_version: self.sdk_version.clone().unwrap_or_default(),
+                    sdk_constraint: self.sdk_constraint.clone().unwrap_or_default(),
+                    scryer_constraint: self.scryer_constraint.clone(),
+                    legacy_min_scryer_version: self.legacy_min_scryer_version.clone(),
+                    wasm_sha256: self.wasm_sha256.clone(),
+                }]
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn runtime_registry_release_scryer_constraint(
+    release: &RuntimePluginRegistryRelease,
+) -> Option<&str> {
+    release
+        .scryer_constraint
+        .as_deref()
+        .or(release.legacy_min_scryer_version.as_deref())
+}
+
+fn runtime_normalized_constraint(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|constraint| !constraint.is_empty())
+        .map(str::to_string)
 }
 
 fn runtime_installation_matches_official_registry(
@@ -1325,16 +1387,70 @@ fn runtime_installation_matches_official_registry(
 
     registry.plugins.iter().any(|entry| {
         entry.official
-            && !entry.builtin
             && entry.id == installation.plugin_id
             && entry.plugin_type == installation.plugin_type
             && entry.provider_type == installation.provider_type
-            && entry.version == installation.version
-            && entry
-                .wasm_sha256
-                .as_deref()
-                .zip(installation.wasm_sha256.as_deref())
-                .is_some_and(|(expected, installed)| expected.eq_ignore_ascii_case(installed))
+            && entry.normalized_releases().into_iter().any(|release| {
+                release.version == installation.version
+                    && release
+                        .wasm_sha256
+                        .as_deref()
+                        .zip(installation.wasm_sha256.as_deref())
+                        .is_some_and(|(expected, installed)| {
+                            expected.eq_ignore_ascii_case(installed)
+                        })
+                    && scryer_plugins::sdk_constraint_or_legacy(
+                        &release.sdk_version,
+                        &release.sdk_constraint,
+                    ) == installation.sdk_constraint
+            })
+    })
+}
+
+fn runtime_installation_is_host_blocked_by_registry(
+    installation: &scryer_domain::PluginInstallation,
+    registry: Option<&RuntimePluginRegistryManifest>,
+) -> bool {
+    runtime_installation_scryer_constraint(installation, registry).is_some_and(|constraint| {
+        scryer_plugins::host_version_matches_constraint(env!("CARGO_PKG_VERSION"), &constraint)
+            .map(|matches| !matches)
+            .unwrap_or(true)
+    })
+}
+
+fn runtime_installation_scryer_constraint(
+    installation: &scryer_domain::PluginInstallation,
+    registry: Option<&RuntimePluginRegistryManifest>,
+) -> Option<String> {
+    runtime_normalized_constraint(installation.scryer_constraint.as_deref()).or_else(|| {
+        registry
+            .and_then(|registry| {
+                registry.plugins.iter().find(|entry| {
+                    entry.official
+                        && entry.id == installation.plugin_id
+                        && entry.plugin_type == installation.plugin_type
+                        && entry.provider_type == installation.provider_type
+                })
+            })
+            .and_then(|entry| {
+                entry.normalized_releases().into_iter().find(|release| {
+                    release.version == installation.version
+                        && release
+                            .wasm_sha256
+                            .as_deref()
+                            .zip(installation.wasm_sha256.as_deref())
+                            .is_some_and(|(expected, installed)| {
+                                expected.eq_ignore_ascii_case(installed)
+                            })
+                        && scryer_plugins::sdk_constraint_or_legacy(
+                            &release.sdk_version,
+                            &release.sdk_constraint,
+                        ) == installation.sdk_constraint
+                })
+            })
+            .and_then(|release| {
+                runtime_normalized_constraint(runtime_registry_release_scryer_constraint(&release))
+            })
     })
 }
 
@@ -1354,7 +1470,12 @@ async fn load_runtime_plugin_state(
         .and_then(|json| serde_json::from_str::<RuntimePluginRegistryManifest>(&json).ok());
     let runtime_plugin_bytes = enabled_plugins
         .into_iter()
-        .filter(|(installation, _)| !installation.is_builtin)
+        .filter(|(installation, _)| {
+            installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
+        })
+        .filter(|(installation, _)| {
+            !runtime_installation_is_host_blocked_by_registry(installation, registry.as_ref())
+        })
         .filter_map(|(installation, wasm_bytes)| {
             wasm_bytes.map(|bytes| {
                 (
@@ -1386,6 +1507,8 @@ async fn seed_builtin_plugin_installations(
     struct BuiltinPluginSeed {
         name: String,
         version: String,
+        sdk_version: String,
+        sdk_constraint: String,
         plugin_type: String,
         provider_type: String,
     }
@@ -1401,12 +1524,23 @@ async fn seed_builtin_plugin_installations(
         let Some(version) = indexer_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
+        let Some(sdk_version) = indexer_provider.plugin_sdk_version_for_provider(&provider_key)
+        else {
+            continue;
+        };
+        let Some(sdk_constraint) =
+            indexer_provider.plugin_sdk_constraint_for_provider(&provider_key)
+        else {
+            continue;
+        };
         let plugin_type = indexer_provider
             .plugin_type_for_provider(&provider_key)
             .unwrap_or_else(|| "indexer".to_string());
         builtins.push(BuiltinPluginSeed {
             name,
             version,
+            sdk_version,
+            sdk_constraint,
             plugin_type,
             provider_type: provider_key,
         });
@@ -1421,9 +1555,20 @@ async fn seed_builtin_plugin_installations(
         let Some(version) = subtitle_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
+        let Some(sdk_version) = subtitle_provider.plugin_sdk_version_for_provider(&provider_key)
+        else {
+            continue;
+        };
+        let Some(sdk_constraint) =
+            subtitle_provider.plugin_sdk_constraint_for_provider(&provider_key)
+        else {
+            continue;
+        };
         builtins.push(BuiltinPluginSeed {
             name,
             version,
+            sdk_version,
+            sdk_constraint,
             plugin_type: "subtitle_provider".to_string(),
             provider_type: provider_key,
         });
@@ -1439,9 +1584,21 @@ async fn seed_builtin_plugin_installations(
         else {
             continue;
         };
+        let Some(sdk_version) =
+            download_client_provider.plugin_sdk_version_for_provider(&provider_key)
+        else {
+            continue;
+        };
+        let Some(sdk_constraint) =
+            download_client_provider.plugin_sdk_constraint_for_provider(&provider_key)
+        else {
+            continue;
+        };
         builtins.push(BuiltinPluginSeed {
             name,
             version,
+            sdk_version,
+            sdk_constraint,
             plugin_type: "download_client".to_string(),
             provider_type: provider_key,
         });
@@ -1456,17 +1613,37 @@ async fn seed_builtin_plugin_installations(
         let Some(version) = notification_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
+        let Some(sdk_version) =
+            notification_provider.plugin_sdk_version_for_provider(&provider_key)
+        else {
+            continue;
+        };
+        let Some(sdk_constraint) =
+            notification_provider.plugin_sdk_constraint_for_provider(&provider_key)
+        else {
+            continue;
+        };
         builtins.push(BuiltinPluginSeed {
             name,
             version,
+            sdk_version,
+            sdk_constraint,
             plugin_type: "notification".to_string(),
             provider_type: provider_key,
         });
     }
 
-    let builtin_provider_types = builtins
+    let builtin_lookup_key = |plugin_type: &str, provider_type: &str| {
+        let family = match plugin_type {
+            "indexer" | "usenet_indexer" | "torrent_indexer" => "indexer",
+            other => other,
+        };
+        format!("{family}::{}", provider_type.trim().to_ascii_lowercase())
+    };
+
+    let builtin_keys = builtins
         .iter()
-        .map(|builtin| builtin.provider_type.clone())
+        .map(|builtin| builtin_lookup_key(&builtin.plugin_type, &builtin.provider_type))
         .collect::<std::collections::HashSet<_>>();
 
     for builtin in builtins {
@@ -1476,6 +1653,8 @@ async fn seed_builtin_plugin_installations(
                 &builtin.name,
                 "",
                 &builtin.version,
+                &builtin.sdk_version,
+                &builtin.sdk_constraint,
                 &builtin.plugin_type,
                 &builtin.provider_type,
             )
@@ -1490,8 +1669,10 @@ async fn seed_builtin_plugin_installations(
         .into_iter()
         .filter(|installation| {
             installation.is_builtin
-                && !builtin_provider_types
-                    .contains(&installation.provider_type.trim().to_ascii_lowercase())
+                && !builtin_keys.contains(&builtin_lookup_key(
+                    &installation.plugin_type,
+                    &installation.provider_type,
+                ))
         })
         .map(|installation| installation.plugin_id)
         .collect::<Vec<_>>();

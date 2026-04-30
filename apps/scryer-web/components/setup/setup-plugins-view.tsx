@@ -97,6 +97,16 @@ function groupPluginsByType(
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
+function canUninstallPlugin(plugin: RegistryPluginRecord) {
+  return !plugin.builtin || plugin.sourceKind === "downloaded";
+}
+
+function uninstallLabel(plugin: RegistryPluginRecord, t: SetupPluginsViewProps["t"]) {
+  return plugin.builtin && plugin.sourceKind === "downloaded"
+    ? t("settings.pluginRevertToBundled")
+    : t("settings.pluginUninstall");
+}
+
 export function SetupPluginsView({
   t,
   plugins,
@@ -210,13 +220,13 @@ export function SetupPluginsView({
                                 <span className="text-sm text-muted-foreground">
                                   {t("settings.pluginInstalled")}
                                 </span>
-                                {!plugin.builtin && (
+                                {canUninstallPlugin(plugin) && (
                                   <Button
                                     variant="ghost"
                                     size="icon"
                                     disabled={isBusy}
                                     onClick={() => onUninstallPlugin(plugin)}
-                                    title={t("settings.pluginUninstall")}
+                                    title={uninstallLabel(plugin, t)}
                                   >
                                     {isBusy ? (
                                       <Loader2 className="h-4 w-4 animate-spin text-destructive" />
@@ -230,7 +240,7 @@ export function SetupPluginsView({
                               <Button
                                 variant="outline"
                                 size="sm"
-                                disabled={isBusy}
+                                disabled={isBusy || plugin.blockedReason === "no_compatible_release"}
                                 onClick={() => onInstallPlugin(plugin)}
                               >
                                 {isBusy ? (

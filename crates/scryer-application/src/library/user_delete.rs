@@ -293,6 +293,14 @@ impl AppUseCase {
                 AppError::NotFound(format!("external subtitle {}", external_subtitle_id))
             })?;
 
+        if deleted.source_kind == scryer_domain::ExternalSubtitleSourceKind::Discovered {
+            self.services
+                .workflow
+                .subtitle_downloads
+                .delete_probe_cache_entry(&deleted.media_file_id, &deleted.file_path)
+                .await?;
+        }
+
         if let ExternalSubtitleRemovalMode::DeleteAndBlocklist { reason } = mode {
             self.services
                 .workflow

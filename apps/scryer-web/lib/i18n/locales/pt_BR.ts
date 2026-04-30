@@ -975,16 +975,29 @@ const pt_BR: LocaleDictionary = {
   "settings.pluginInstall": "Instalar",
   "settings.pluginInstalling": "Instalando…",
   "settings.pluginUninstall": "Desinstalar",
+  "settings.pluginRevertToBundled": "Reverter para o integrado",
+  "settings.pluginRevert": "Reverter",
   "settings.pluginUninstallWarning":
     "Desinstalar '{{name}}' excluirá permanentemente toda a configuração associada. Se você deseja manter suas configurações, desabilite o plugin em vez disso.",
+  "settings.pluginRevertToBundledWarning":
+    "Isso remove a substituição baixada de '{{name}}' e volta para o plugin integrado.",
   "settings.pluginBuiltin": "Integrado",
   "settings.pluginInstalled": "Instalado",
   "settings.pluginNotInstalled": "Não instalado",
   "settings.pluginOfficial": "Oficial",
+  "settings.pluginOverride": "Substituição",
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Atualização: v{{version}}",
   "settings.pluginUpgrade": "Atualizar para v{{version}}",
+  "settings.pluginNoCompatibleRelease":
+    "Nenhuma versão compatível para esta versão do Scryer",
+  "settings.pluginNewerReleaseRequiresNewerScryer":
+    "Uma versão mais nova exige uma versão mais nova do Scryer",
+  "settings.pluginNewerReleaseRequiresNewerScryerVersion":
+    "A versão mais nova v{{version}} exige uma versão mais nova do Scryer",
   "status.pluginInstalled": "Plugin '{{name}}' instalado.",
+  "status.pluginRevertedToBundled":
+    "O plugin '{{name}}' voltou para a versão integrada.",
   "status.pluginUninstalled": "Plugin '{{name}}' desinstalado.",
   "status.pluginUpgraded": "Plugin '{{name}}' atualizado para v{{version}}.",
   "status.pluginToggled": "Plugin '{{name}}' {{state}}.",

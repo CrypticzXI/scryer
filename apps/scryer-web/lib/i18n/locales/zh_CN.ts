@@ -907,16 +907,29 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginInstall": "安装",
   "settings.pluginInstalling": "安装中…",
   "settings.pluginUninstall": "卸载",
+  "settings.pluginRevertToBundled": "恢复为内置版本",
+  "settings.pluginRevert": "恢复",
   "settings.pluginUninstallWarning":
     "卸载'{{name}}'将永久删除所有相关配置。如果想保留设置，请改为禁用插件。",
+  "settings.pluginRevertToBundledWarning":
+    "这会移除 '{{name}}' 的已下载覆盖版本，并恢复为内置插件。",
   "settings.pluginBuiltin": "内置",
   "settings.pluginInstalled": "已安装",
   "settings.pluginNotInstalled": "未安装",
   "settings.pluginOfficial": "官方",
+  "settings.pluginOverride": "覆盖",
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新：v{{version}}",
   "settings.pluginUpgrade": "升级到 v{{version}}",
+  "settings.pluginNoCompatibleRelease":
+    "当前 Scryer 版本没有兼容的发布版本",
+  "settings.pluginNewerReleaseRequiresNewerScryer":
+    "较新的发布版本需要更高版本的 Scryer",
+  "settings.pluginNewerReleaseRequiresNewerScryerVersion":
+    "较新的发布版本 v{{version}} 需要更高版本的 Scryer",
   "status.pluginInstalled": "插件'{{name}}'已安装。",
+  "status.pluginRevertedToBundled":
+    "插件'{{name}}'已恢复为内置版本。",
   "status.pluginUninstalled": "插件'{{name}}'已卸载。",
   "status.pluginUpgraded": "插件'{{name}}'已升级到 v{{version}}。",
   "status.pluginToggled": "插件'{{name}}'已{{state}}。",

@@ -1058,6 +1058,8 @@ pub trait PluginInstallationRepository: Send + Sync {
         name: &str,
         description: &str,
         version: &str,
+        sdk_version: &str,
+        sdk_constraint: &str,
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()>;
@@ -1090,6 +1092,12 @@ pub trait IndexerPluginProvider: Send + Sync {
         vec![]
     }
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
     fn plugin_type_for_provider(&self, _provider_type: &str) -> Option<String> {
@@ -1155,6 +1163,12 @@ pub trait DownloadClientPluginProvider: Send + Sync {
         vec![]
     }
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
     fn config_fields_for_provider(
@@ -1427,6 +1441,12 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
@@ -1451,6 +1471,12 @@ pub trait SubtitlePluginProvider: Send + Sync {
         vec![]
     }
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool;
@@ -1591,7 +1617,7 @@ pub trait DownloadClient: Send + Sync {
         }
 
         let mut items = self.list_completed_downloads().await?;
-        items.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+        items.sort_by_key(|item| std::cmp::Reverse(item.completed_at));
         items.truncate(limit);
         Ok(items)
     }
@@ -1671,13 +1697,23 @@ pub trait SubtitleDownloadRepository: Send + Sync {
         &self,
         media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>>;
+    async fn list_probe_cache_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<crate::subtitles::ExternalSubtitleProbeCacheEntry>>;
     async fn list_blocklist_for_media_file(
         &self,
         media_file_id: &str,
     ) -> AppResult<Vec<scryer_domain::SubtitleBlocklistEntry>>;
     async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()>;
+    async fn upsert_probe_cache_entry(
+        &self,
+        entry: &crate::subtitles::ExternalSubtitleProbeCacheEntry,
+    ) -> AppResult<()>;
     async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()>;
     async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>>;
+    async fn delete_probe_cache_entry(&self, media_file_id: &str, file_path: &str)
+    -> AppResult<()>;
     async fn is_blocklisted(
         &self,
         media_file_id: &str,

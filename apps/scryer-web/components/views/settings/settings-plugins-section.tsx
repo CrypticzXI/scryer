@@ -31,12 +31,15 @@ export type RegistryPluginRecord = {
   name: string;
   description: string;
   version: string;
+  latestVersion?: string | null;
   pluginType: string;
   providerType: string;
   author: string;
   official: boolean;
   builtin: boolean;
   sourceUrl: string | null;
+  sourceKind?: string | null;
+  blockedReason?: string | null;
   isInstalled: boolean;
   isEnabled: boolean;
   installedVersion: string | null;
@@ -60,6 +63,39 @@ type FilterState = {
 };
 
 type Translate = (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string;
+
+function isDownloadedBuiltinOverride(plugin: RegistryPluginRecord): boolean {
+  return plugin.builtin && plugin.sourceKind === "downloaded";
+}
+
+function canUninstallPlugin(plugin: RegistryPluginRecord): boolean {
+  return !plugin.builtin || plugin.sourceKind === "downloaded";
+}
+
+function uninstallLabel(plugin: RegistryPluginRecord, t: Translate): string {
+  return isDownloadedBuiltinOverride(plugin)
+    ? t("settings.pluginRevertToBundled")
+    : t("settings.pluginUninstall");
+}
+
+function installIsBlocked(plugin: RegistryPluginRecord): boolean {
+  return plugin.blockedReason === "no_compatible_release";
+}
+
+function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string | null {
+  switch (plugin.blockedReason) {
+    case "no_compatible_release":
+      return t("settings.pluginNoCompatibleRelease");
+    case "newer_release_requires_newer_scryer":
+      return plugin.latestVersion
+        ? t("settings.pluginNewerReleaseRequiresNewerScryerVersion", {
+          version: plugin.latestVersion,
+        })
+        : t("settings.pluginNewerReleaseRequiresNewerScryer");
+    default:
+      return null;
+  }
+}
 
 function PluginActionButton({
   label,
@@ -194,6 +230,7 @@ function PluginTable({
             showActions === "installed" && plugin.installedVersion
               ? plugin.installedVersion
               : plugin.version;
+          const blockedLabel = blockedReasonLabel(plugin, t);
           return (
             <TableRow key={plugin.id}>
               <TableCell>
@@ -212,6 +249,11 @@ function PluginTable({
                     {t("settings.pluginUpdateAvailable", { version: plugin.version })}
                   </div>
                 )}
+                {blockedLabel && (
+                  <div className="text-xs text-destructive">
+                    {blockedLabel}
+                  </div>
+                )}
               </TableCell>
               <TableCell>
                 <div className="flex items-center gap-2">
@@ -223,6 +265,11 @@ function PluginTable({
                   {plugin.official && (
                     <span className="rounded bg-purple-900/40 px-1.5 py-0.5 text-xs text-purple-300">
                       {t("settings.pluginOfficial")}
+                    </span>
+                  )}
+                  {isDownloadedBuiltinOverride(plugin) && (
+                    <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
+                      {t("settings.pluginOverride")}
                     </span>
                   )}
                 </div>
@@ -261,12 +308,12 @@ function PluginTable({
                           <ArrowUpCircle className="h-4 w-4" />
                         </PluginActionButton>
                       )}
-                      {!plugin.builtin && (
+                      {canUninstallPlugin(plugin) && (
                         <PluginActionButton
                           tone="delete"
                           disabled={isBusy}
                           onClick={() => onUninstallPlugin(plugin)}
-                          label={t("settings.pluginUninstall")}
+                          label={uninstallLabel(plugin, t)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </PluginActionButton>
@@ -275,7 +322,7 @@ function PluginTable({
                   ) : (
                     <PluginActionButton
                       tone="install"
-                      disabled={isBusy}
+                      disabled={isBusy || installIsBlocked(plugin)}
                       onClick={() => onInstallPlugin(plugin)}
                       label={t("settings.pluginInstall")}
                     >

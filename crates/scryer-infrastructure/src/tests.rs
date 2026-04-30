@@ -5,13 +5,14 @@ use scryer_application::{
     DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
     ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingImportStatus, PluginInstallationRepository, ReleaseAttemptRepository,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository,
-    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode,
-    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository,
-    WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
+    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository, SubmissionScope,
+    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
+    WantedStatus,
+    subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
@@ -50,6 +51,8 @@ async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enab
             "Old Newznab",
             "old description",
             "0.1.0",
+            "1.3.0",
+            ">=1.3.0, <1.4.0",
             "indexer",
             "newznab",
         )
@@ -73,6 +76,8 @@ async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enab
             "Newznab Indexer",
             "new description",
             "0.2.2",
+            "1.3.0",
+            ">=1.3.0, <1.4.0",
             "usenet_indexer",
             "newznab",
         )
@@ -90,6 +95,66 @@ async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enab
     assert_eq!(refreshed.plugin_type, "usenet_indexer");
     assert_eq!(refreshed.provider_type, "newznab");
     assert!(!refreshed.is_enabled);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
+    let (services, db) = temp_services("scryer_plugin_builtin_revert").await;
+    let customization = SqliteCustomizationStore::new(&services);
+    let now = Utc::now();
+    let installation = scryer_domain::PluginInstallation {
+        id: scryer_domain::Id::new().0,
+        plugin_id: "newznab".to_string(),
+        name: "Newznab".to_string(),
+        description: "downloaded override".to_string(),
+        version: "0.2.2".to_string(),
+        sdk_version: "1.3.0".to_string(),
+        sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+        scryer_constraint: None,
+        plugin_type: "usenet_indexer".to_string(),
+        provider_type: "newznab".to_string(),
+        is_enabled: true,
+        is_builtin: true,
+        source_kind: scryer_domain::PluginSourceKind::Downloaded,
+        wasm_sha256: Some("abc123".to_string()),
+        source_url: Some("https://example.com/newznab-0.2.2.wasm".to_string()),
+        installed_at: now,
+        updated_at: now,
+    };
+
+    customization
+        .create_plugin_installation(&installation, Some(&[1_u8, 2, 3]))
+        .await
+        .expect("seed downloaded builtin override");
+
+    let mut reverted = installation.clone();
+    reverted.source_kind = scryer_domain::PluginSourceKind::Bundled;
+    reverted.wasm_sha256 = None;
+    reverted.source_url = None;
+
+    let reverted = customization
+        .update_plugin_installation(&reverted, None)
+        .await
+        .expect("revert builtin override");
+
+    assert_eq!(
+        reverted.source_kind,
+        scryer_domain::PluginSourceKind::Bundled
+    );
+    assert!(reverted.wasm_sha256.is_none());
+    assert!(reverted.source_url.is_none());
+
+    let enabled = customization
+        .get_enabled_plugin_wasm_bytes()
+        .await
+        .expect("list enabled plugin wasm bytes");
+    let (_, wasm_bytes) = enabled
+        .into_iter()
+        .find(|(item, _)| item.plugin_id == "newznab")
+        .expect("reverted builtin should remain installed");
+    assert!(wasm_bytes.is_none());
 
     let _ = std::fs::remove_file(db);
 }
@@ -762,6 +827,92 @@ async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
         .await
         .expect("db should initialize");
     (services, db)
+}
+
+#[tokio::test]
+async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
+    let (services, db) = temp_services("scryer_external_subtitle_probe_cache").await;
+    let pool = services.pool();
+    let catalog = catalog_store(&services);
+    let library_state = library_state_store(&services);
+
+    let title = make_test_title("title-probe-cache", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    let media_file_id = library_state
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/library/Example.Movie.mkv".to_string(),
+            size_bytes: 4_096,
+            ..Default::default()
+        })
+        .await
+        .expect("media file should insert");
+
+    let initial = ExternalSubtitleProbeCacheEntry {
+        media_file_id: media_file_id.clone(),
+        file_path: "/tmp/Example.Movie.srt".to_string(),
+        size_bytes: 512,
+        modified_at: Some("2026-04-29T00:00:00Z".to_string()),
+        language: None,
+        hearing_impaired: None,
+        detection_source_language: ExternalSubtitleDetectionSource::Unknown,
+        detection_source_hi: ExternalSubtitleDetectionSource::Unknown,
+        probe_version: 2,
+        updated_at: "2026-04-29T00:00:01Z".to_string(),
+    };
+
+    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &initial)
+        .await
+        .expect("initial probe cache row should insert");
+
+    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
+        pool,
+        &media_file_id,
+    )
+    .await
+    .expect("probe cache rows should list");
+    assert_eq!(listed, vec![initial.clone()]);
+
+    let replaced = ExternalSubtitleProbeCacheEntry {
+        language: Some("eng".to_string()),
+        hearing_impaired: Some(true),
+        detection_source_language: ExternalSubtitleDetectionSource::Content,
+        detection_source_hi: ExternalSubtitleDetectionSource::Content,
+        updated_at: "2026-04-29T00:00:02Z".to_string(),
+        ..initial
+    };
+
+    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &replaced)
+        .await
+        .expect("probe cache row should replace");
+
+    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
+        pool,
+        &media_file_id,
+    )
+    .await
+    .expect("replaced probe cache row should list");
+    assert_eq!(listed, vec![replaced.clone()]);
+
+    crate::queries::subtitle::delete_external_subtitle_probe_cache_entry(
+        pool,
+        &media_file_id,
+        "/tmp/Example.Movie.srt",
+    )
+    .await
+    .expect("probe cache row should delete");
+
+    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
+        pool,
+        &media_file_id,
+    )
+    .await
+    .expect("probe cache rows should list after delete");
+    assert!(listed.is_empty());
+
+    let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]

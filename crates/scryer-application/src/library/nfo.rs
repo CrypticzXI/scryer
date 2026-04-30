@@ -159,27 +159,24 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                                     "imdb" if meta.imdb_id.is_none() => {
                                         meta.imdb_id = normalize_imdb(&text);
                                     }
-                                    "tmdb" if meta.tmdb_id.is_none() => {
-                                        if looks_like_numeric_id(&text) {
-                                            meta.tmdb_id = Some(text);
-                                        }
+                                    "tmdb"
+                                        if meta.tmdb_id.is_none()
+                                            && looks_like_numeric_id(&text) =>
+                                    {
+                                        meta.tmdb_id = Some(text);
                                     }
                                     _ => {}
                                 }
                             }
                         }
-                        "tvdbid" if meta.tvdb_id.is_none() => {
-                            if looks_like_numeric_id(&text) {
-                                meta.tvdb_id = Some(text);
-                            }
+                        "tvdbid" if meta.tvdb_id.is_none() && looks_like_numeric_id(&text) => {
+                            meta.tvdb_id = Some(text);
                         }
                         "imdbid" if meta.imdb_id.is_none() => {
                             meta.imdb_id = normalize_imdb(&text);
                         }
-                        "tmdbid" if meta.tmdb_id.is_none() => {
-                            if looks_like_numeric_id(&text) {
-                                meta.tmdb_id = Some(text);
-                            }
+                        "tmdbid" if meta.tmdb_id.is_none() && looks_like_numeric_id(&text) => {
+                            meta.tmdb_id = Some(text);
                         }
                         "id" if legacy_id.is_none() => {
                             legacy_id = Some(text);

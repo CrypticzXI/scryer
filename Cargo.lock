@@ -2355,6 +2355,16 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "allocator-api2",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -4923,10 +4933,12 @@ dependencies = [
  "metrics",
  "quick-xml",
  "rand_core 0.10.1",
+ "regex",
  "reqwest",
  "ring",
  "scryer-domain",
  "scryer-mediainfo",
+ "scryer-plugin-sdk",
  "scryer-release-parser",
  "scryer-rules",
  "semver",
@@ -4942,6 +4954,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "weaver-rar",
+ "whatlang",
  "wiremock",
  "zip",
  "zstd",
@@ -5053,9 +5066,12 @@ name = "scryer-plugin-sdk"
 version = "0.12.2"
 dependencies = [
  "base64",
+ "extism",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -7258,6 +7274,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "whatlang"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "471d1c1645d361eb782a1650b1786a8fb58dd625e681a04c09f5ff7c8764a7b0"
+dependencies = [
+ "hashbrown 0.14.5",
+ "once_cell",
 ]
 
 [[package]]

@@ -18,21 +18,20 @@ use scryer_domain::PluginInstallation;
 use scryer_domain::BlocklistEntry;
 
 use crate::{
-    AppError, AppResult, BlocklistRepository, DomainEventRepository, DownloadQueueCommandRecord,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
-    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
+    AppError, AppResult, BlocklistRepository, CutoffUnmetQualitySummary, DomainEventRepository,
+    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
+    DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository,
+    FileImporter, HousekeepingRepository, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord,
+    JobRunRepository, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, NewBlocklistEntry,
     NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
     PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
     PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
     StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
     TitleImageKind, TitleImageProcessor, TitleImageReplacement, TitleImageRepository,
-    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    WantedItem, WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
-    CutoffUnmetQualitySummary,
+    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -620,6 +619,8 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
         _name: &str,
         _description: &str,
         _version: &str,
+        _sdk_version: &str,
+        _sdk_constraint: &str,
         _plugin_type: &str,
         _provider_type: &str,
     ) -> AppResult<()> {
@@ -1104,6 +1105,12 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
     ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
         Ok(Vec::new())
     }
+    async fn list_probe_cache_for_media_file(
+        &self,
+        _media_file_id: &str,
+    ) -> AppResult<Vec<crate::subtitles::ExternalSubtitleProbeCacheEntry>> {
+        Ok(Vec::new())
+    }
     async fn list_blocklist_for_media_file(
         &self,
         _media_file_id: &str,
@@ -1113,11 +1120,20 @@ impl crate::SubtitleDownloadRepository for NullSubtitleDownloadRepository {
     async fn insert(&self, _download: &scryer_domain::SubtitleDownload) -> AppResult<()> {
         Ok(())
     }
+    async fn upsert_probe_cache_entry(
+        &self,
+        _entry: &crate::subtitles::ExternalSubtitleProbeCacheEntry,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn set_synced(&self, _id: &str, _synced: bool) -> AppResult<()> {
         Ok(())
     }
     async fn delete(&self, _id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
         Ok(None)
+    }
+    async fn delete_probe_cache_entry(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
     }
     async fn is_blocklisted(
         &self,

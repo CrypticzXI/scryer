@@ -263,7 +263,7 @@ async fn search_all_subtitle_providers(
     }
 
     let mut results = merged.into_values().collect::<Vec<_>>();
-    results.sort_by(|left, right| right.score.cmp(&left.score));
+    results.sort_by_key(|result| std::cmp::Reverse(result.score));
     Ok(results)
 }
 

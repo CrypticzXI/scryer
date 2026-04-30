@@ -114,6 +114,10 @@
         "sdk_version": {
           "type": "string"
         },
+        "sdk_constraint": {
+          "type": "string",
+          "default": ""
+        },
         "provider": {
           "$ref": "#/$defs/ProviderDescriptor"
         }

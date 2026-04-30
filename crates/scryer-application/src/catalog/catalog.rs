@@ -769,7 +769,10 @@ impl AppUseCase {
 
             cutoff_profile_map.insert(
                 title.id.clone(),
-                (profile.criteria.quality_tiers.clone(), normalized_cutoff_tier),
+                (
+                    profile.criteria.quality_tiers.clone(),
+                    normalized_cutoff_tier,
+                ),
             );
             title_map.insert(title.id.clone(), title);
         }
@@ -795,7 +798,10 @@ impl AppUseCase {
                 continue;
             };
 
-            if !quality_tiers.iter().any(|tier| tier == &normalized_current_tier) {
+            if !quality_tiers
+                .iter()
+                .any(|tier| tier == &normalized_current_tier)
+            {
                 continue;
             }
 
@@ -825,7 +831,10 @@ impl AppUseCase {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .and_then(|value| {
-                    let digits = value.chars().filter(|ch| ch.is_ascii_digit()).collect::<String>();
+                    let digits = value
+                        .chars()
+                        .filter(|ch| ch.is_ascii_digit())
+                        .collect::<String>();
                     if digits.is_empty() {
                         None
                     } else {

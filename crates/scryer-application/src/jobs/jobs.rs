@@ -154,7 +154,7 @@ impl AppUseCase {
         let mut runs = replay_active_job_runs(&events)
             .into_values()
             .collect::<Vec<_>>();
-        runs.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+        runs.sort_by_key(|run| run.started_at);
         Ok(runs)
     }
 

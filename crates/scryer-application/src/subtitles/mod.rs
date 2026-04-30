@@ -6,6 +6,7 @@
 pub mod configs;
 pub mod download;
 mod external;
+mod external_probe;
 pub mod extraction;
 pub mod language;
 pub mod orchestration;
@@ -16,6 +17,7 @@ pub mod sync;
 pub mod wanted;
 
 pub(crate) use external::reconcile_external_subtitles_for_media_file;
+pub use external_probe::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry};
 pub use language::{
     from_opensubtitles_language, normalize_subtitle_language_code, same_subtitle_language,
     to_opensubtitles_language,

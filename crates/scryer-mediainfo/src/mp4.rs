@@ -575,10 +575,8 @@ fn parse_mp4_chapter_metadata(data: &[u8]) -> Mp4ChapterMetadata {
             _ => None,
         },
         |header, payload, _depth| match &header.name {
-            b"chpl" => {
-                if metadata.chpl_count.is_none() {
-                    metadata.chpl_count = parse_chpl_count(payload);
-                }
+            b"chpl" if metadata.chpl_count.is_none() => {
+                metadata.chpl_count = parse_chpl_count(payload);
             }
             b"chap" => {
                 metadata

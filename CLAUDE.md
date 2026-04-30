@@ -24,6 +24,13 @@ workspace-level `AGENTS.md`, not here.
 - Docker assets live under `docker/`
 - CI lives under `.github/workflows/`
 
+## Code discovery
+
+- In indexed workspaces, prefer the shared `agent-context` MCP server first for repository discovery.
+- Start with `list_scopes`, use the `scryer` repo scope for single-repo work, and use the workspace/group scope for cross-repo searches when available.
+- Use `search_symbols` for exact definitions and `search_code` for broader semantic/hybrid discovery.
+- Use shell search only for narrow exact-string confirmation or follow-up inspection after MCP has already identified the target files.
+
 ## Documentation and planning
 
 - Architecture documents, plans, and ADRs live in

@@ -1261,17 +1261,30 @@ const en: LocaleDictionary = {
   "settings.pluginInstall": "Install",
   "settings.pluginInstalling": "Installing…",
   "settings.pluginUninstall": "Uninstall",
+  "settings.pluginRevertToBundled": "Revert to bundled",
+  "settings.pluginRevert": "Revert",
   "settings.pluginUninstallWarning":
     "Uninstalling '{{name}}' will permanently delete all associated configuration. If you want to keep your settings, disable the plugin instead.",
+  "settings.pluginRevertToBundledWarning":
+    "This removes the downloaded override for '{{name}}' and reverts to the bundled built-in plugin.",
   "settings.pluginBuiltin": "Built-in",
   "settings.pluginInstalled": "Installed",
   "settings.pluginNotInstalled": "Not Installed",
   "settings.pluginOfficial": "Official",
+  "settings.pluginOverride": "Override",
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Update: v{{version}}",
   "settings.pluginUpgrade": "Upgrade to v{{version}}",
+  "settings.pluginNoCompatibleRelease":
+    "No compatible release for this Scryer version",
+  "settings.pluginNewerReleaseRequiresNewerScryer":
+    "A newer release requires a newer Scryer version",
+  "settings.pluginNewerReleaseRequiresNewerScryerVersion":
+    "Newer release v{{version}} requires a newer Scryer version",
 
   "status.pluginInstalled": "Plugin '{{name}}' installed.",
+  "status.pluginRevertedToBundled":
+    "Plugin '{{name}}' reverted to the bundled built-in version.",
   "status.pluginUninstalled": "Plugin '{{name}}' uninstalled.",
   "status.pluginUpgraded": "Plugin '{{name}}' upgraded to v{{version}}.",
   "status.pluginToggled": "Plugin '{{name}}' {{state}}.",

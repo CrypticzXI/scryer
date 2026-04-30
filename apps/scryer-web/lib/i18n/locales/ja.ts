@@ -957,16 +957,29 @@ const ja: LocaleDictionary = {
   "settings.pluginInstall": "インストール",
   "settings.pluginInstalling": "インストール中…",
   "settings.pluginUninstall": "アンインストール",
+  "settings.pluginRevertToBundled": "組み込み版に戻す",
+  "settings.pluginRevert": "戻す",
   "settings.pluginUninstallWarning":
     "'{{name}}'をアンインストールすると、関連するすべての設定が完全に削除されます。設定を保持したい場合は、プラグインを無効化してください。",
+  "settings.pluginRevertToBundledWarning":
+    "これにより '{{name}}' のダウンロード済みオーバーライドが削除され、組み込みプラグインに戻ります。",
   "settings.pluginBuiltin": "組み込み",
   "settings.pluginInstalled": "インストール済み",
   "settings.pluginNotInstalled": "未インストール",
   "settings.pluginOfficial": "公式",
+  "settings.pluginOverride": "オーバーライド",
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新あり: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}にアップグレード",
+  "settings.pluginNoCompatibleRelease":
+    "このScryerバージョンに対応するリリースはありません",
+  "settings.pluginNewerReleaseRequiresNewerScryer":
+    "より新しいリリースには、より新しいScryerバージョンが必要です",
+  "settings.pluginNewerReleaseRequiresNewerScryerVersion":
+    "より新しいリリース v{{version}} には、より新しいScryerバージョンが必要です",
   "status.pluginInstalled": "プラグイン'{{name}}'がインストールされました。",
+  "status.pluginRevertedToBundled":
+    "プラグイン'{{name}}'は組み込み版に戻されました。",
   "status.pluginUninstalled":
     "プラグイン'{{name}}'がアンインストールされました。",
   "status.pluginUpgraded":

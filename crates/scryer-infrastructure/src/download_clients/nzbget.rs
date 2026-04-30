@@ -1192,10 +1192,8 @@ fn extract_nzbget_parameters(
                     title_id = Some(value.to_string());
                 }
             }
-            "*scryer_facet" => {
-                if !value.is_empty() {
-                    facet = Some(value.to_string());
-                }
+            "*scryer_facet" if !value.is_empty() => {
+                facet = Some(value.to_string());
             }
             _ => {}
         }

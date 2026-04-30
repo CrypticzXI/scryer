@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 scryer-domain = { path = "../scryer-domain" }
+scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo" }
@@ -37,6 +38,8 @@ chardetng = "1"
 encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"] }
 unicode-normalization = "0.1"
+whatlang = "0.16"
+regex = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

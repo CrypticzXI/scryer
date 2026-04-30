@@ -1372,12 +1372,10 @@ impl<'a> AudioBitReader<'a> {
         }
 
         let mut value = 0_u32;
-        let mut bit_pos = self.bit_pos;
-        for _ in 0..count {
+        for bit_pos in self.bit_pos..(self.bit_pos + count) {
             let byte_index = bit_pos / 8;
             let bit_index = 7 - (bit_pos % 8);
             value = (value << 1) | u32::from((self.data[byte_index] >> bit_index) & 0x01);
-            bit_pos += 1;
         }
         Some(value)
     }

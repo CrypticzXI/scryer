@@ -1026,11 +1026,12 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
 
             if discovery_closed {
                 match prepare_set.join_next().await {
-                    Some(Ok(Ok(entry))) => {
-                        if !library_scan_cancel_requested(cancel_token.as_ref()) {
-                            prepared_batch.push(entry);
-                        }
+                    Some(Ok(Ok(entry)))
+                        if !library_scan_cancel_requested(cancel_token.as_ref()) =>
+                    {
+                        prepared_batch.push(entry);
                     }
+                    Some(Ok(Ok(_))) => {}
                     Some(Ok(Err(error))) => {
                         let _ = prepared_tx.send(Err(error)).await;
                         return;

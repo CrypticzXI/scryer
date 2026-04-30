@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -311,7 +312,7 @@ fn sha256_hex_bytes(data: &[u8]) -> String {
 
 /// Attach instance auth headers. Legacy certificate auth signs the historic
 /// `timestamp:hash` message, while PQ auth signs the full request target.
-fn apply_instance_auth_headers(
+async fn apply_instance_auth_headers(
     req: reqwest::RequestBuilder,
     auth: &InstanceAuth,
     method: &str,
@@ -357,6 +358,7 @@ fn apply_instance_auth_headers(
                 timestamp,
                 &body_hash,
             )
+            .await
             .map_err(|e| AppError::Repository(format!("failed to sign PQ request: {e}")))?;
             debug!(
                 timestamp,
@@ -835,22 +837,30 @@ impl MetadataGatewayClient {
         let mut retried_after_reenrollment = false;
         loop {
             let (client, auth) = self.get_http_client().await?;
-            let build_req = || -> AppResult<reqwest::RequestBuilder> {
-                let mut req = client
-                    .post(url.clone())
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(body_bytes.clone());
-                if let Some(ref auth) = auth {
-                    req = apply_instance_auth_headers(
-                        req,
-                        auth,
-                        reqwest::Method::POST.as_str(),
-                        &endpoint_url,
-                        &body_bytes,
-                        &body_bytes,
-                    )?;
+            let build_req = || {
+                let client = client.clone();
+                let auth = auth.clone();
+                let url = url.clone();
+                let body_bytes = body_bytes.clone();
+                let endpoint_url = endpoint_url.clone();
+                async move {
+                    let mut req = client
+                        .post(url)
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(body_bytes.clone());
+                    if let Some(ref auth) = auth {
+                        req = apply_instance_auth_headers(
+                            req,
+                            auth,
+                            reqwest::Method::POST.as_str(),
+                            &endpoint_url,
+                            &body_bytes,
+                            &body_bytes,
+                        )
+                        .await?;
+                    }
+                    Ok(req)
                 }
-                Ok(req)
             };
 
             let response = self
@@ -964,21 +974,29 @@ impl MetadataGatewayClient {
         let get_result = self
             .send_request_with_retry(
                 || {
-                    let mut req = client.get(url.clone());
-                    if let Some(ref etag) = cached_etag {
-                        req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+                    let client = client.clone();
+                    let cached_etag = cached_etag.clone();
+                    let auth = auth.clone();
+                    let url = url.clone();
+                    let raw_query = raw_query.clone();
+                    async move {
+                        let mut req = client.get(url.clone());
+                        if let Some(ref etag) = cached_etag {
+                            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+                        }
+                        if let Some(ref auth) = auth {
+                            req = apply_instance_auth_headers(
+                                req,
+                                auth,
+                                reqwest::Method::GET.as_str(),
+                                &url,
+                                raw_query.as_bytes(),
+                                &[],
+                            )
+                            .await?;
+                        }
+                        Ok(req)
                     }
-                    if let Some(ref auth) = auth {
-                        req = apply_instance_auth_headers(
-                            req,
-                            auth,
-                            reqwest::Method::GET.as_str(),
-                            &url,
-                            raw_query.as_bytes(),
-                            &[],
-                        )?;
-                    }
-                    Ok(req)
                 },
                 "metadata gateway APQ GET",
             )
@@ -1167,17 +1185,18 @@ impl MetadataGatewayClient {
             .ok_or_else(|| AppError::Repository("metadata gateway returned empty data".into()))
     }
 
-    async fn send_request_with_retry<F>(
+    async fn send_request_with_retry<F, Fut>(
         &self,
         build_req: F,
         request_label: &'static str,
     ) -> AppResult<reqwest::Response>
     where
-        F: Fn() -> AppResult<reqwest::RequestBuilder>,
+        F: Fn() -> Fut,
+        Fut: Future<Output = AppResult<reqwest::RequestBuilder>>,
     {
         for retry_index in 0..=METADATA_GATEWAY_MAX_RETRIES {
             self.wait_for_rate_limit_window().await;
-            let result = build_req()?.send().await;
+            let result = build_req().await?.send().await;
 
             match result {
                 Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
@@ -1369,22 +1388,30 @@ impl MetadataGatewayClient {
         let endpoint_url = reqwest::Url::parse(&self.endpoint)
             .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
 
-        let build_req = || -> AppResult<reqwest::RequestBuilder> {
-            let mut req = client
-                .post(&self.endpoint)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body_bytes.clone());
-            if let Some(ref auth) = auth {
-                req = apply_instance_auth_headers(
-                    req,
-                    auth,
-                    reqwest::Method::POST.as_str(),
-                    &endpoint_url,
-                    &body_bytes,
-                    &body_bytes,
-                )?;
+        let build_req = || {
+            let client = client.clone();
+            let auth = auth.clone();
+            let endpoint_url = endpoint_url.clone();
+            let body_bytes = body_bytes.clone();
+            let endpoint = self.endpoint.clone();
+            async move {
+                let mut req = client
+                    .post(endpoint)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body_bytes.clone());
+                if let Some(ref auth) = auth {
+                    req = apply_instance_auth_headers(
+                        req,
+                        auth,
+                        reqwest::Method::POST.as_str(),
+                        &endpoint_url,
+                        &body_bytes,
+                        &body_bytes,
+                    )
+                    .await?;
+                }
+                Ok(req)
             }
-            Ok(req)
         };
 
         let response = self
@@ -1418,22 +1445,30 @@ impl MetadataGatewayClient {
             .map_err(|e| AppError::Repository(format!("failed to serialize payload: {e}")))?;
         let endpoint_url = reqwest::Url::parse(&self.endpoint)
             .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
-        let build_req = || -> AppResult<reqwest::RequestBuilder> {
-            let mut req = client
-                .post(&self.endpoint)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body_bytes.clone());
-            if let Some(ref auth) = auth {
-                req = apply_instance_auth_headers(
-                    req,
-                    auth,
-                    reqwest::Method::POST.as_str(),
-                    &endpoint_url,
-                    &body_bytes,
-                    &body_bytes,
-                )?;
+        let build_req = || {
+            let client = client.clone();
+            let auth = auth.clone();
+            let endpoint_url = endpoint_url.clone();
+            let body_bytes = body_bytes.clone();
+            let endpoint = self.endpoint.clone();
+            async move {
+                let mut req = client
+                    .post(endpoint)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body_bytes.clone());
+                if let Some(ref auth) = auth {
+                    req = apply_instance_auth_headers(
+                        req,
+                        auth,
+                        reqwest::Method::POST.as_str(),
+                        &endpoint_url,
+                        &body_bytes,
+                        &body_bytes,
+                    )
+                    .await?;
+                }
+                Ok(req)
             }
-            Ok(req)
         };
         let resp = self
             .send_request_with_retry(build_req, request_label)
@@ -1461,22 +1496,30 @@ impl MetadataGatewayClient {
                 "retrying metadata gateway request after re-enrollment"
             );
             let (client2, auth2) = self.get_http_client().await?;
-            let build_retry_req = || -> AppResult<reqwest::RequestBuilder> {
-                let mut req = client2
-                    .post(&self.endpoint)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(body_bytes.clone());
-                if let Some(ref auth2) = auth2 {
-                    req = apply_instance_auth_headers(
-                        req,
-                        auth2,
-                        reqwest::Method::POST.as_str(),
-                        &endpoint_url,
-                        &body_bytes,
-                        &body_bytes,
-                    )?;
+            let build_retry_req = || {
+                let client2 = client2.clone();
+                let auth2 = auth2.clone();
+                let endpoint_url = endpoint_url.clone();
+                let body_bytes = body_bytes.clone();
+                let endpoint = self.endpoint.clone();
+                async move {
+                    let mut req = client2
+                        .post(endpoint)
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(body_bytes.clone());
+                    if let Some(ref auth2) = auth2 {
+                        req = apply_instance_auth_headers(
+                            req,
+                            auth2,
+                            reqwest::Method::POST.as_str(),
+                            &endpoint_url,
+                            &body_bytes,
+                            &body_bytes,
+                        )
+                        .await?;
+                    }
+                    Ok(req)
                 }
-                Ok(req)
             };
             let resp2 = self
                 .send_request_with_retry(build_retry_req, request_label)

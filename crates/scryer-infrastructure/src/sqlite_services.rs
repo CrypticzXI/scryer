@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{DbCommand, spawn_db_command_worker};
 use crate::encryption::EncryptionKey;
+use crate::queries::plugin_installation::BuiltinPluginSeed;
 use crate::types::MigrationMode;
 use crate::types::{SettingDefinitionSeed, SettingsValueRecord};
 
@@ -2271,24 +2272,11 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    pub async fn seed_builtin_plugin(
-        &self,
-        plugin_id: &str,
-        name: &str,
-        description: &str,
-        version: &str,
-        plugin_type: &str,
-        provider_type: &str,
-    ) -> AppResult<()> {
+    pub(crate) async fn seed_builtin_plugin(&self, seed: BuiltinPluginSeed) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::SeedBuiltinPlugin {
-                plugin_id: plugin_id.to_string(),
-                name: name.to_string(),
-                description: description.to_string(),
-                version: version.to_string(),
-                plugin_type: plugin_type.to_string(),
-                provider_type: provider_type.to_string(),
+                seed,
                 reply: reply_tx,
             })
             .await

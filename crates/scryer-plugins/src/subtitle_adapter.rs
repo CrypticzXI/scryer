@@ -157,7 +157,7 @@ impl SubtitleProviderClient for WasmSubtitleClient {
             .into_iter()
             .map(|candidate| map_candidate_to_match(&self.provider_name, query, candidate))
             .collect::<Vec<_>>();
-        results.sort_by(|left, right| right.score.cmp(&left.score));
+        results.sort_by_key(|result| std::cmp::Reverse(result.score));
         Ok(results)
     }
 

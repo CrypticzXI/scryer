@@ -1,8 +1,8 @@
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis,
-    CutoffUnmetQualitySummary, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary,
+    AppError, AppResult, CutoffUnmetQualitySummary, EpisodeScopedMediaFile, InsertMediaFileInput,
+    MediaFileAnalysis, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary,
 };
 use scryer_domain::Id;
 use sqlx::sqlite::SqliteRow;

@@ -19,4 +19,6 @@ pub use loader::build_indexer_plugin_provider;
 pub use loader::build_notification_plugin_provider;
 pub use loader::build_subtitle_plugin_provider;
 pub use loader::load_indexer_plugins;
+pub use scryer_plugin_sdk::host_version_matches_constraint;
+pub use scryer_plugin_sdk::sdk_constraint_or_legacy;
 pub use types::{ConfigFieldDef, ConfigFieldOption};

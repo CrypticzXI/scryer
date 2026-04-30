@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, DownloadSubmissionRepository, EpisodeScopedMediaFile,
-    EpisodeUpdate, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, PendingRelease,
-    ReleaseDecision, ScopedExternalId, ShowRepository, CutoffUnmetQualitySummary,
+    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary, DownloadSubmissionRepository,
+    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, MediaFileAnalysis,
+    MediaFileRepository, PendingRelease, ReleaseDecision, ScopedExternalId, ShowRepository,
     TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
     TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
 };
@@ -4451,9 +4451,12 @@ async fn graphql_traverses_core_graph_relationships() {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some(title.facet.as_str().to_string()),
         episode_id: Some(episode.id.clone()),
         collection_id: Some(collection.id.clone()),
         season_number: Some("1".to_string()),
+        episode_number: episode.episode_number.clone(),
         media_type: "episode".to_string(),
         search_phase: "primary".to_string(),
         next_search_at: None,
@@ -9012,9 +9015,12 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             id: Id::new().0,
             title_id: id.clone(),
             title_name: Some("Delete With Cleanup".to_string()),
+            title_slug: None,
+            title_facet: Some("movie".to_string()),
             episode_id: None,
             collection_id: None,
             season_number: None,
+            episode_number: None,
             media_type: "movie".to_string(),
             search_phase: "auto".to_string(),
             next_search_at: None,
