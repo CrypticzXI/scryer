@@ -385,6 +385,50 @@ fn command_available(command: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+fn rustup_toolchain_from_file(path: &Path) -> Result<Option<String>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let document = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .parse::<TomlValue>()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(document
+        .get("toolchain")
+        .and_then(|toolchain| toolchain.get("channel"))
+        .and_then(TomlValue::as_str)
+        .map(ToOwned::to_owned))
+}
+
+fn repo_rustup_toolchain(repo_root: &Path) -> Result<Option<String>> {
+    if !command_available("rustup")? {
+        return Ok(None);
+    }
+
+    if let Some(toolchain) = rustup_toolchain_from_file(&repo_root.join("rust-toolchain.toml"))? {
+        return Ok(Some(toolchain));
+    }
+
+    let mut command = Command::new("rustup");
+    command.current_dir(repo_root);
+    command.args(["show", "active-toolchain"]);
+    Ok(run_capture(&mut command)?
+        .split_whitespace()
+        .next()
+        .map(str::to_string))
+}
+
+fn repo_release_cargo_command_in(ctx: &TaskContext, cwd: &Path) -> Result<Command> {
+    if let Some(toolchain) = repo_rustup_toolchain(cwd)? {
+        let mut command = ctx.release_command_in("rustup", cwd);
+        command.args(["run", toolchain.as_str(), "cargo"]);
+        return Ok(command);
+    }
+
+    Ok(ctx.release_command_in("cargo", cwd))
+}
+
 fn validated_release_rtk_available() -> Result<bool> {
     if !command_available("rtk")? {
         return Ok(false);
@@ -615,7 +659,7 @@ fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
 
     let output_dir = ctx.path("crates/scryer-plugins/builtins");
     step("Rebuilding embedded plugin builtins");
-    let mut command = ctx.release_command_in("cargo", &plugins_dir);
+    let mut command = repo_release_cargo_command_in(ctx, &plugins_dir)?;
     // The sibling scryer-plugins repo owns this lockfile independently, so
     // builtin refresh must not hard-fail on its local lock drift.
     command.args([
