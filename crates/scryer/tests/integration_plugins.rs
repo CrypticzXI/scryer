@@ -200,7 +200,8 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
             "official": true,
             "releases": [release],
         }]
-    }).to_string();
+    })
+    .to_string();
     ctx.customization
         .store_registry_cache(&registry_json)
         .await

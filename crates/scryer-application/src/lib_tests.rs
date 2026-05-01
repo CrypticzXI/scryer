@@ -5936,7 +5936,10 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         series_items.items[0].title_name.as_deref(),
         Some(known_series_title.title.name.as_str())
     );
-    assert_eq!(series_items.items[0].title_slug, known_series_title.title.slug);
+    assert_eq!(
+        series_items.items[0].title_slug,
+        known_series_title.title.slug
+    );
 }
 
 #[tokio::test]
@@ -11739,9 +11742,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 (Some(_season), Some(_episode)) => format!("{query}.1080p.WEB-DL"),
                 (Some(season), None) => {
                     let season_token = format!(" S{season:02}");
-                    let base_query = query
-                        .strip_suffix(&season_token)
-                        .unwrap_or(query.as_str());
+                    let base_query = query.strip_suffix(&season_token).unwrap_or(query.as_str());
                     format!("{base_query} Season {season} - (1 - 2) [Typis]")
                 }
                 (None, _) => format!("{query}.2024.1080p.WEB-DL"),
@@ -11752,11 +11753,8 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                     let mut episode_metadata = parsed.episode.unwrap_or_default();
                     episode_metadata.season = Some(season);
                     episode_metadata.full_season = true;
-                    episode_metadata.release_type =
-                        crate::ParsedEpisodeReleaseType::SeasonPack;
-                    parsed.episode = Some(crate::ParsedEpisodeMetadata {
-                        ..episode_metadata
-                    });
+                    episode_metadata.release_type = crate::ParsedEpisodeReleaseType::SeasonPack;
+                    parsed.episode = Some(crate::ParsedEpisodeMetadata { ..episode_metadata });
                     parsed
                 }
                 _ => crate::parse_release_metadata(&release_title),
@@ -11979,10 +11977,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             Some("2") => "Bleach S01E02.1080p.WEB-DL",
             other => panic!("unexpected episode number: {other:?}"),
         };
-        assert_eq!(
-            grabbed_release["title"].as_str(),
-            Some(expected_title)
-        );
+        assert_eq!(grabbed_release["title"].as_str(), Some(expected_title));
         assert_ne!(grabbed_release["season_pack"].as_bool(), Some(true));
     }
 }

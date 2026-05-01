@@ -9,7 +9,9 @@ use crate::{
     NotificationScopeIdUpdate,
 };
 
-fn parse_subscribable_notification_event_type(event_type: &str) -> AppResult<NotificationEventType> {
+fn parse_subscribable_notification_event_type(
+    event_type: &str,
+) -> AppResult<NotificationEventType> {
     let parsed = NotificationEventType::parse(event_type).ok_or_else(|| {
         AppError::Validation(format!("unknown notification event type: {event_type}"))
     })?;
