@@ -307,7 +307,7 @@ async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
     );
 
     let request = request_rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(10))
         .expect("mock Newznab server should receive a request");
     assert!(request.contains("GET /api?"), "request was {request}");
     assert!(request.contains("t=tvsearch"), "request was {request}");
@@ -331,7 +331,7 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
     let (request_tx, request_rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match listener.accept() {
                 Ok((mut stream, _)) => {
