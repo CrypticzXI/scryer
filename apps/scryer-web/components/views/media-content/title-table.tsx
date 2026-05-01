@@ -4,10 +4,11 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { ArrowDown, ArrowUp, Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
@@ -50,6 +51,8 @@ type TitleTableProps = {
   isDeletingById: Record<string, boolean>;
   isTogglingMonitoredById?: Record<string, boolean>;
   showScanLibraryAction?: boolean;
+  showConfigureRootsAction?: boolean;
+  configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
@@ -71,6 +74,8 @@ export function TitleTable({
   isDeletingById,
   isTogglingMonitoredById,
   showScanLibraryAction = false,
+  showConfigureRootsAction = false,
+  configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
@@ -310,46 +315,49 @@ export function TitleTable({
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
           <TableCell className="text-center align-middle">
-            <div data-ui="row-actions" className="inline-flex items-center justify-end gap-2">
-              <HoverCard openDelay={3000} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <TitleTableActionButton
-                    tone="auto"
-                    label={t("label.search")}
-                    onClick={() => handleQueueExisting(item)}
-                    disabled={autoQueueLoading}
-                    className={posterActionButtonClassName}
-                  >
-                    {autoQueueLoading ? (
-                      <Loader2 className={cn(posterActionIconClassName, "animate-spin text-emerald-500")} />
-                    ) : (
-                      <Zap className={posterActionIconClassName} />
-                    )}
-                  </TitleTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent>
-                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+            <TooltipProvider>
+              <div data-ui="row-actions" className="inline-flex items-center justify-end gap-2">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TitleTableActionButton
+                        tone="auto"
+                        label={t("label.search")}
+                        showTitleAttribute={false}
+                        onClick={() => handleQueueExisting(item)}
+                        disabled={autoQueueLoading}
+                        className={posterActionButtonClassName}
+                      >
+                        {autoQueueLoading ? (
+                          <Loader2 className={cn(posterActionIconClassName, "animate-spin text-emerald-500")} />
+                        ) : (
+                          <Zap className={posterActionIconClassName} />
+                        )}
+                      </TitleTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
                     {t("help.autoSearchTooltip")}
-                  </p>
-                </HoverCardContent>
-              </HoverCard>
-              <HoverCard openDelay={3000} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <TitleTableActionButton
-                    tone="search"
-                    label={t("label.interactiveSearch")}
-                    onClick={() => handleToggleInteractiveSearch(item)}
-                    className={posterActionButtonClassName}
-                  >
-                    <Search className={posterActionIconClassName} />
-                  </TitleTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent>
-                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TitleTableActionButton
+                        tone="search"
+                        label={t("label.interactiveSearch")}
+                        showTitleAttribute={false}
+                        onClick={() => handleToggleInteractiveSearch(item)}
+                        className={posterActionButtonClassName}
+                      >
+                        <Search className={posterActionIconClassName} />
+                      </TitleTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
                     {t("help.interactiveSearchTooltip")}
-                  </p>
-                </HoverCardContent>
-              </HoverCard>
+                  </TooltipContent>
+                </Tooltip>
               {onToggleMonitored ? (
                 <TitleTableActionButton
                   tone={item.monitored ? "disabled" : "enabled"}
@@ -380,7 +388,8 @@ export function TitleTable({
                   <Trash2 className={posterActionIconClassName} />
                 )}
               </TitleTableActionButton>
-            </div>
+              </div>
+            </TooltipProvider>
           </TableCell>
         </TableRow>
         {isPanelOpen ? (
@@ -496,6 +505,8 @@ export function TitleTable({
                 colSpan={columnCount}
                 t={t}
                 showScanAction={showScanLibraryAction}
+                showConfigureRootsAction={showConfigureRootsAction}
+                configureRootsHref={configureRootsHref}
                 onScan={onScanLibrary}
                 scanLoading={scanLibraryLoading}
                 scanDisabled={scanLibraryDisabled}

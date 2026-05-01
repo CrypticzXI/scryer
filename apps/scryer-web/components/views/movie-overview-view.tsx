@@ -408,6 +408,7 @@ function TitleSettingsPanel({
 // ─── main view ────────────────────────────────────────────────────────────────
 
 type Props = {
+  canManageTitle: boolean;
   loading: boolean;
   title: TitleDetail | null;
   collections: TitleCollection[];
@@ -453,6 +454,7 @@ type Props = {
 };
 
 export function MovieOverviewView({
+  canManageTitle,
   loading,
   title,
   collections = [],
@@ -548,10 +550,10 @@ export function MovieOverviewView({
   const wantedPhaseLabel = wantedItem?.searchPhase
     ? localizedWantedPhase(t, wantedItem.searchPhase)
     : null;
-  const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
+  const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
-  const interactiveSearchPanel = (
+  const interactiveSearchPanel = canManageTitle ? (
     <div className="p-4">
       {searchPrerequisiteNotice ? (
         searchPrerequisiteNotice
@@ -585,7 +587,7 @@ export function MovieOverviewView({
         </p>
       )}
     </div>
-  );
+  ) : null;
   const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, ExternalSubtitleRecord[]>>(
     (grouped, download) => {
       (grouped[download.mediaFileId] ??= []).push(download);
@@ -704,58 +706,62 @@ export function MovieOverviewView({
                     <span className="text-xs text-muted-foreground">
                       {t("wanted.colNextSearch")}: {formatDateTime(wantedItem.nextSearchAt)}
                     </span>
-                    {wantedItem.status === "paused" ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void onResumeWanted()}
-                        disabled={wantedActionLoading !== null}
-                      >
-                        {wantedActionLoading === "resume" ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                    {canManageTitle ? (
+                      <>
+                        {wantedItem.status === "paused" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void onResumeWanted()}
+                            disabled={wantedActionLoading !== null}
+                          >
+                            {wantedActionLoading === "resume" ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Play className="h-4 w-4" />
+                            )}
+                            {t("wanted.resume")}
+                          </Button>
                         ) : (
-                          <Play className="h-4 w-4" />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void onPauseWanted()}
+                            disabled={wantedActionLoading !== null}
+                          >
+                            {wantedActionLoading === "pause" ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Pause className="h-4 w-4" />
+                            )}
+                            {t("wanted.pause")}
+                          </Button>
                         )}
-                        {t("wanted.resume")}
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void onPauseWanted()}
-                        disabled={wantedActionLoading !== null}
-                      >
-                        {wantedActionLoading === "pause" ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Pause className="h-4 w-4" />
-                        )}
-                        {t("wanted.pause")}
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void onResetWanted()}
-                      disabled={wantedActionLoading !== null}
-                    >
-                      {wantedActionLoading === "reset" ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <RotateCcw className="h-4 w-4" />
-                      )}
-                      {t("wanted.reset")}
-                    </Button>
-                    {wantedItem.mismatchRecoveryEligible ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void onTriggerMismatchRecovery()}
-                        disabled={wantedActionLoading !== null}
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                        Recover mismatch
-                      </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => void onResetWanted()}
+                          disabled={wantedActionLoading !== null}
+                        >
+                          {wantedActionLoading === "reset" ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RotateCcw className="h-4 w-4" />
+                          )}
+                          {t("wanted.reset")}
+                        </Button>
+                        {wantedItem.mismatchRecoveryEligible ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void onTriggerMismatchRecovery()}
+                            disabled={wantedActionLoading !== null}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                            Recover mismatch
+                          </Button>
+                        ) : null}
+                      </>
                     ) : null}
                   </>
                 ) : title.monitored && !hasMediaFiles ? (
@@ -838,33 +844,35 @@ export function MovieOverviewView({
         );
       })()}
 
-      <OverviewControlPanel
-        monitored={title.monitored}
-        searchMonitoredLabel={t("label.search")}
-        monitoredUpdating={monitoredUpdating}
-        searchMonitoredLoading={searchMonitoredLoading}
-        interactiveSearchLoading={searching}
-        refreshAndScanLoading={refreshAndScanLoading}
-        deleteLoading={deleteLoading}
-        onToggleMonitoring={() => void onSetTitleMonitored(!title.monitored)}
-        onSearchMonitored={() => void onSearchMonitored()}
-        onInteractiveSearch={() => void onSearch()}
-        onRefreshAndScan={() => void onRefreshAndScan()}
-        onRequestDelete={onRequestDeleteTitle}
-        onHistory={() => setHistoryOpen(true)}
-        searchNotice={searchPrerequisiteNotice}
-        settingsPanel={(
-            <TitleSettingsPanel
-              title={title}
-              qualityProfiles={qualityProfiles}
-              defaultRootFolder={defaultRootFolder}
-              onUpdateTitleOptions={onUpdateTitleOptions}
-              onTitleChanged={onTitleChanged}
-              onOpenFixMatch={onOpenFixMatch}
-            />
-        )}
-        interactiveSearchPanel={interactiveSearchPanel}
-      />
+      {canManageTitle ? (
+        <OverviewControlPanel
+          monitored={title.monitored}
+          searchMonitoredLabel={t("label.search")}
+          monitoredUpdating={monitoredUpdating}
+          searchMonitoredLoading={searchMonitoredLoading}
+          interactiveSearchLoading={searching}
+          refreshAndScanLoading={refreshAndScanLoading}
+          deleteLoading={deleteLoading}
+          onToggleMonitoring={() => void onSetTitleMonitored(!title.monitored)}
+          onSearchMonitored={() => void onSearchMonitored()}
+          onInteractiveSearch={() => void onSearch()}
+          onRefreshAndScan={() => void onRefreshAndScan()}
+          onRequestDelete={onRequestDeleteTitle}
+          onHistory={() => setHistoryOpen(true)}
+          searchNotice={searchPrerequisiteNotice}
+          settingsPanel={(
+              <TitleSettingsPanel
+                title={title}
+                qualityProfiles={qualityProfiles}
+                defaultRootFolder={defaultRootFolder}
+                onUpdateTitleOptions={onUpdateTitleOptions}
+                onTitleChanged={onTitleChanged}
+                onOpenFixMatch={onOpenFixMatch}
+              />
+          )}
+          interactiveSearchPanel={interactiveSearchPanel}
+        />
+      ) : null}
 
       {downloadQueueItems.length > 0 ? (
         <Card>
@@ -885,15 +893,17 @@ export function MovieOverviewView({
                 <FolderOpen className="h-4 w-4" />
               {t("title.filesOnDisk")}
               </CardTitle>
-            <Button
-              className="w-full sm:w-auto"
-              size="sm"
-              variant="primary"
-              onClick={onPreviewRename}
-              disabled={renamePreviewing || collections.length === 0}
-            >
-              {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
-            </Button>
+            {canManageTitle ? (
+              <Button
+                className="w-full sm:w-auto"
+                size="sm"
+                variant="primary"
+                onClick={onPreviewRename}
+                disabled={renamePreviewing || collections.length === 0}
+              >
+                {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
+              </Button>
+            ) : null}
           </div>
         </CardHeader>
         <CardContent>
@@ -902,9 +912,11 @@ export function MovieOverviewView({
               <p className="text-sm text-muted-foreground">
                 {t("title.noFilesTracked")} {t("title.noFilesTrackedHint")}
               </p>
-              <Button size="sm" onClick={onRefreshAndScan} disabled={refreshAndScanLoading}>
-                {t("settings.libraryScanButton")}
-              </Button>
+              {canManageTitle ? (
+                <Button size="sm" onClick={onRefreshAndScan} disabled={refreshAndScanLoading}>
+                  {t("settings.libraryScanButton")}
+                </Button>
+              ) : null}
             </div>
           ) : (
             <div className="space-y-2">
@@ -929,9 +941,11 @@ export function MovieOverviewView({
                         <MediaInfoBadges file={mediaFile} />
                         <ExternalSubtitleSection
                           downloads={subtitleDownloadsByMediaFile[mediaFile.id] ?? []}
-                          onChanged={() => {
-                            onRefreshSubtitles?.();
-                          }}
+                          onChanged={canManageTitle
+                            ? () => {
+                                onRefreshSubtitles?.();
+                              }
+                            : undefined}
                         />
                       </div>
                       <div className="flex shrink-0 items-center gap-3 sm:self-center sm:pl-4">
@@ -946,19 +960,21 @@ export function MovieOverviewView({
                             {formatFileSize(mediaFile.sizeBytes)}
                           </div>
                         </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
-                          onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
-                          title={t("subtitle.search")}
-                          aria-label={t("subtitle.search")}
-                        >
-                          <Search className="mr-1.5 h-3.5 w-3.5" />
-                          {t("subtitle.search")}
-                        </Button>
-                        {onDeleteFile ? (
+                        {canManageTitle ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
+                            onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
+                            title={t("subtitle.search")}
+                            aria-label={t("subtitle.search")}
+                          >
+                            <Search className="mr-1.5 h-3.5 w-3.5" />
+                            {t("subtitle.search")}
+                          </Button>
+                        ) : null}
+                        {canManageTitle && onDeleteFile ? (
                           <Button
                             type="button"
                             size="icon-sm"
@@ -1005,7 +1021,7 @@ export function MovieOverviewView({
             </div>
           )}
 
-          {renamePlan ? (
+          {canManageTitle && renamePlan ? (
             <div className="mt-5">
               <MediaRenamePlanPanel
                 plan={renamePlan}
@@ -1017,7 +1033,7 @@ export function MovieOverviewView({
           ) : null}
         </CardContent>
       </Card>
-      {subtitleSearchTarget ? (
+      {canManageTitle && subtitleSearchTarget ? (
         <SubtitleSearchModal
           open={true}
           onOpenChange={(open) => { if (!open) setSubtitleSearchTarget(null); }}

@@ -23,6 +23,7 @@ use scryer_infrastructure::{
     SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore, SqliteReleaseStore,
     SqliteServices, SqliteSettingsStore,
 };
+use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{ApiSchema, build_schema};
 
 /// Shared integration-test context.
@@ -37,6 +38,7 @@ pub struct TestContext {
     /// Base URL of the test axum server (e.g. `http://127.0.0.1:12345`).
     pub app_url: String,
     pub schema: ApiSchema,
+    pub auth_runtime: AuthRuntimeStateHandle,
     pub app: AppUseCase,
     pub catalog: SqliteCatalogStore,
     pub customization: SqliteCustomizationStore,
@@ -45,6 +47,17 @@ pub struct TestContext {
     pub settings_store: SqliteSettingsStore,
     pub staged_nzb_store: Arc<FileSystemStagedNzbStore>,
     pub staged_nzb_dir: tempfile::TempDir,
+}
+
+pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
+    AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
+        form_login_enabled: false,
+        skip_login_for_local_ips: false,
+        effective_form_login_enabled: false,
+        env_override_active: false,
+        env_override_description: None,
+        epoch: 0,
+    })
 }
 
 impl TestContext {
@@ -179,7 +192,8 @@ impl TestContext {
         );
 
         // Build the GraphQL schema with authentication disabled.
-        let schema = build_schema(app.clone(), false);
+        let auth_runtime = disabled_auth_runtime_handle();
+        let schema = build_schema(app.clone(), auth_runtime.clone());
 
         // Start axum server on a random port
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -188,7 +202,7 @@ impl TestContext {
         let addr = listener.local_addr().expect("failed to get local addr");
         let app_url = format!("http://{addr}");
 
-        let router = build_test_router(app.clone(), schema.clone());
+        let router = build_test_router(app.clone(), schema.clone(), auth_runtime.clone());
         tokio::spawn(async move {
             axum::serve(listener, router)
                 .await
@@ -201,6 +215,7 @@ impl TestContext {
             smg_server,
             app_url,
             schema,
+            auth_runtime,
             app,
             catalog: catalog_store,
             customization: customization_store,
@@ -324,19 +339,27 @@ pub fn load_fixture(path: &str) -> String {
 }
 
 /// Build a minimal axum router with a GraphQL endpoint and authentication disabled.
-fn build_test_router(app: AppUseCase, schema: ApiSchema) -> Router {
+fn build_test_router(
+    app: AppUseCase,
+    schema: ApiSchema,
+    auth_runtime: AuthRuntimeStateHandle,
+) -> Router {
     Router::new().route(
         "/graphql",
-        post(test_graphql_handler).with_state((app, schema)),
+        post(test_graphql_handler).with_state((app, schema, auth_runtime)),
     )
 }
 
 /// Minimal GraphQL handler that replicates auth-disabled default-user injection.
 async fn test_graphql_handler(
-    State((app, schema)): State<(AppUseCase, ApiSchema)>,
+    State((app, schema, auth_runtime)): State<(AppUseCase, ApiSchema, AuthRuntimeStateHandle)>,
     req: GraphQLRequest,
 ) -> Response {
-    let user = app.find_or_create_default_user().await.ok();
+    let user = if auth_runtime.snapshot().effective_form_login_enabled {
+        None
+    } else {
+        app.find_or_create_default_user().await.ok()
+    };
     let mut request = req.into_inner();
     let response_status = graphql_response_status(&mut request);
     if let Some(u) = user {

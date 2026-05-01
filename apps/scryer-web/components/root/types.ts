@@ -5,6 +5,7 @@ export type WantedSection = "wanted" | "cutoff" | "pending" | "history";
 export type SettingsSection =
   | "profile"
   | "general"
+  | "security"
   | "users"
   | "indexers"
   | "downloadClients"

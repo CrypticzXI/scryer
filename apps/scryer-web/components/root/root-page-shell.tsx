@@ -57,6 +57,7 @@ import { FACET_REGISTRY, isMediaView, facetForView } from "@/lib/facets/registry
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
   navigationBadgeCountsQuery,
+  scryerVersionQuery,
   smgVersionCompatibilityNoticeQuery,
 } from "@/lib/graphql/queries";
 import type { PendingImportCounts } from "@/lib/types";
@@ -120,6 +121,73 @@ function normalizeSmgVersionCompatibilityStatus(
   status: string,
 ): "deprecated" | "blocked" {
   return status.trim().toLowerCase() === "deprecated" ? "deprecated" : "blocked";
+}
+
+function isMediaSettingsSection(section: ContentSettingsSection): boolean {
+  return (
+    section === "settings" ||
+    section === "general" ||
+    section === "quality" ||
+    section === "renaming" ||
+    section === "routing"
+  );
+}
+
+function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
+  return section === "import" || isMediaSettingsSection(section);
+}
+
+function canAccessSettingsSection(
+  section: SettingsSection,
+  canManageUsers: boolean,
+  canManageConfig: boolean,
+): boolean {
+  if (section === "profile") {
+    return true;
+  }
+
+  if (section === "security" || section === "users") {
+    return canManageUsers;
+  }
+
+  return canManageConfig;
+}
+
+function defaultSettingsSection(
+  canManageUsers: boolean,
+  canManageConfig: boolean,
+): SettingsSection {
+  if (canManageConfig) {
+    return "general";
+  }
+
+  if (canManageUsers) {
+    return "security";
+  }
+
+  return "profile";
+}
+
+function defaultAccessibleRoute(
+  canViewCatalog: boolean,
+  canManageUsers: boolean,
+  canManageConfig: boolean,
+): {
+  view: ViewId;
+  settingsSection?: SettingsSection;
+  contentSettingsSection?: ContentSettingsSection;
+} {
+  if (canViewCatalog) {
+    return {
+      view: "movies",
+      contentSettingsSection: "overview",
+    };
+  }
+
+  return {
+    view: "settings",
+    settingsSection: defaultSettingsSection(canManageUsers, canManageConfig),
+  };
 }
 
 function formatSmgUpgradeDeadline(value: string | null): string | null {
@@ -263,6 +331,9 @@ function MainContent({
   wantedSection,
   handleOpenOverview,
   handleImportRouteEmpty,
+  canManageTitle,
+  canManageUsers,
+  canManageConfig,
 }: {
   view: ViewId;
   overviewTitleId: string | null;
@@ -287,8 +358,14 @@ function MainContent({
     episodeId?: string,
   ) => void;
   handleImportRouteEmpty: () => void;
+  canManageTitle: boolean;
+  canManageUsers: boolean;
+  canManageConfig: boolean;
 }) {
   if (view === "activity") {
+    if (!canManageTitle) {
+      return <ViewLoadingFallback />;
+    }
     return <ActivityContainer key="activity" activitySection={activitySection} />;
   }
   if (view === "calendar") {
@@ -296,6 +373,15 @@ function MainContent({
   }
   if (view === "wanted") {
     if (wantedSection === "history") {
+      if (!canManageTitle) {
+        return (
+          <WantedContainer
+            key="wanted-wanted"
+            wantedSection="wanted"
+            onOpenOverview={handleOpenOverview}
+          />
+        );
+      }
       return <WantedHistoryContainer key="wanted-history" />;
     }
     return (
@@ -307,12 +393,24 @@ function MainContent({
     );
   }
   if (view === "history") {
+    if (!canManageTitle) {
+      return (
+        <WantedContainer
+          key="wanted-wanted"
+          wantedSection="wanted"
+          onOpenOverview={handleOpenOverview}
+        />
+      );
+    }
     return <WantedHistoryContainer key="history" />;
   }
   if (view === "system") {
+    if (!canManageConfig) {
+      return <ViewLoadingFallback />;
+    }
     return <SystemContainer key={`system-${systemSection}`} systemSection={systemSection} />;
   }
-  if (isMediaView(view) && contentSettingsSection === "import") {
+  if (isMediaView(view) && contentSettingsSection === "import" && canManageConfig) {
     return (
       <PendingImportsContainer
         key={`${view}-imports`}
@@ -338,10 +436,17 @@ function MainContent({
     );
   }
   if (view === "settings") {
+    const resolvedSettingsSection = canAccessSettingsSection(
+      settingsSection,
+      canManageUsers,
+      canManageConfig,
+    )
+      ? settingsSection
+      : defaultSettingsSection(canManageUsers, canManageConfig);
     return (
       <SettingsContainer
         key="settings"
-        settingsSection={settingsSection}
+        settingsSection={resolvedSettingsSection}
         userId={userId}
         username={username}
         availableLanguages={AVAILABLE_LANGUAGES}
@@ -353,9 +458,14 @@ function MainContent({
   }
   return (
     <MediaContentContainer
-      key={`${view}-${contentSettingsSection}`}
+      key={`${view}-${!canManageConfig && isManageConfigMediaSection(contentSettingsSection) ? "overview" : contentSettingsSection}`}
       view={view}
-      contentSettingsSection={contentSettingsSection}
+      contentSettingsSection={
+        !canManageConfig && isManageConfigMediaSection(contentSettingsSection)
+          ? "overview"
+          : contentSettingsSection
+      }
+      canManageConfig={canManageConfig}
       onOpenOverview={handleOpenOverview}
     />
   );
@@ -413,6 +523,7 @@ export default function HomePage() {
 
   return (
     <AuthenticatedHomePage
+      authenticatedUser={user}
       serviceRestarting={serviceRestarting}
       setServiceRestarting={setServiceRestarting}
     />
@@ -420,13 +531,14 @@ export default function HomePage() {
 }
 
 function AuthenticatedHomePage({
+  authenticatedUser,
   serviceRestarting,
   setServiceRestarting,
 }: {
+  authenticatedUser: { id: string; username: string; entitlements: string[] };
   serviceRestarting: boolean;
   setServiceRestarting: (value: boolean) => void;
 }) {
-  const { user } = useAuth();
   const isOnline = useOnlineStatus();
   const { canPrompt, isInstalled, isIosSafari, promptInstall } = useInstallPrompt();
 
@@ -526,6 +638,7 @@ function AuthenticatedHomePage({
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
   const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
+  const [scryerVersion, setScryerVersion] = useState<string | null>(null);
   const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
     useState<SmgVersionCompatibilityNotice | null>(null);
   const [resolvedOverviewTarget, setResolvedOverviewTarget] = useState<OverviewTitleTarget | null>(null);
@@ -563,6 +676,26 @@ function AuthenticatedHomePage({
       window.localStorage.setItem(INSTALL_BANNER_DISMISSED_KEY, "true");
     }
   }, []);
+
+  const refreshScryerVersion = useCallback(async () => {
+    try {
+      const { data, error } = await backendClient
+        .query<{ scryerVersion?: string | null }>(scryerVersionQuery, {})
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      setScryerVersion(data?.scryerVersion ?? null);
+    } catch (error) {
+      console.warn("Failed to refresh Scryer version", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!serviceRestarting) {
+      void refreshScryerVersion();
+    }
+  }, [refreshScryerVersion, serviceRestarting]);
 
   const refreshSmgVersionCompatibilityNotice = useCallback(async () => {
     try {
@@ -926,15 +1059,24 @@ function AuthenticatedHomePage({
     ],
     [t],
   );
+  const entitlements = useMemo(
+    () => authenticatedUser.entitlements ?? [],
+    [authenticatedUser.entitlements],
+  );
+  const canViewCatalog = entitlements.includes("view_catalog");
+  const canManageTitle = entitlements.includes("manage_title");
+  const canManageUsers = entitlements.includes("manage_users");
+  const canManageConfig = entitlements.includes("manage_config");
 
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
       t,
       pendingImportCounts,
+      entitlements,
       activityImportCount: manualImportRequiredCount,
       onNavigate: navigateTo,
     }),
-    [manualImportRequiredCount, navigateTo, pendingImportCounts, t],
+    [entitlements, manualImportRequiredCount, navigateTo, pendingImportCounts, t],
   );
 
   const routeCommandPaletteConfig = useMemo(
@@ -949,7 +1091,85 @@ function AuthenticatedHomePage({
     [routeCommandPalette, t],
   );
 
-  const entitlements = useMemo(() => user?.entitlements ?? [], [user?.entitlements]);
+  useEffect(() => {
+    if (!isMediaView(view) || canManageConfig || !isManageConfigMediaSection(contentSettingsSection)) {
+      return;
+    }
+
+    navigateTo(view, undefined, "overview", undefined, undefined);
+  }, [canManageConfig, contentSettingsSection, navigateTo, view]);
+
+  const navigateToAccessibleDefault = useCallback(() => {
+    const fallback = defaultAccessibleRoute(
+      canViewCatalog,
+      canManageUsers,
+      canManageConfig,
+    );
+    navigateTo(
+      fallback.view,
+      fallback.settingsSection,
+      fallback.contentSettingsSection,
+      undefined,
+      undefined,
+    );
+  }, [canManageConfig, canManageUsers, canViewCatalog, navigateTo]);
+
+  useEffect(() => {
+    if (view !== "activity" || canManageTitle) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canManageTitle, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
+    if (view !== "system" || canManageConfig) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canManageConfig, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
+    if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {
+      return;
+    }
+
+    if (!canViewCatalog) {
+      navigateToAccessibleDefault();
+      return;
+    }
+
+    navigateTo("wanted", undefined, undefined, undefined, "wanted");
+  }, [
+    canManageTitle,
+    canViewCatalog,
+    navigateTo,
+    navigateToAccessibleDefault,
+    view,
+    wantedSection,
+  ]);
+
+  useEffect(() => {
+    if (view !== "settings") {
+      return;
+    }
+
+    if (canAccessSettingsSection(settingsSection, canManageUsers, canManageConfig)) {
+      return;
+    }
+
+    navigateTo(
+      "settings",
+      defaultSettingsSection(canManageUsers, canManageConfig),
+    );
+  }, [
+    canManageConfig,
+    canManageUsers,
+    navigateTo,
+    settingsSection,
+    view,
+  ]);
 
   const handleBackToList = useCallback(
     () => navigateTo(view, undefined, "overview", undefined, undefined),
@@ -1047,6 +1267,7 @@ function AuthenticatedHomePage({
                     pendingImportCounts={pendingImportCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
                     pluginUpdateCount={pluginUpdateCount}
+                    scryerVersion={scryerVersion}
                     onNavigate={navigateTo}
                   >
                     <main className={view === "wanted" || view === "calendar" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
@@ -1060,8 +1281,8 @@ function AuthenticatedHomePage({
                           handleTitleNotFound={handleTitleNotFound}
                           handleOverviewTitleResolved={handleOverviewTitleResolved}
                           settingsSection={settingsSection}
-                          userId={user?.id}
-                          username={user?.username}
+                          userId={authenticatedUser.id}
+                          username={authenticatedUser.username}
                           selectedLanguage={selectedLanguage}
                           uiLanguage={uiLanguage}
                           setLanguagePreferenceFromShell={setLanguagePreferenceFromShell}
@@ -1071,6 +1292,9 @@ function AuthenticatedHomePage({
                           wantedSection={wantedSection}
                           handleOpenOverview={handleOpenOverview}
                           handleImportRouteEmpty={handleBackToList}
+                          canManageTitle={canManageTitle}
+                          canManageUsers={canManageUsers}
+                          canManageConfig={canManageConfig}
                         />
                       </Suspense>
                     </main>

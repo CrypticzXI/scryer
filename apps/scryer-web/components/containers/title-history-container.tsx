@@ -5,7 +5,7 @@ import { retryImportMutation } from "@/lib/graphql/mutations";
 import { useActivitySubscription } from "@/lib/hooks/use-activity-subscription";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { TitleHistoryEvent, TitleHistoryPage } from "@/lib/types";
+import type { TitleHistoryEvent, TitleHistoryPage, TitleRecord } from "@/lib/types";
 import { WANTED_HISTORY_FILTERS } from "@/components/common/title-history-event-meta";
 import { TitleHistoryView } from "@/components/views/title-history-view";
 
@@ -29,8 +29,7 @@ export function TitleHistoryContainer() {
   const [error, setError] = React.useState<string | null>(null);
   const [activeFilters, setActiveFilters] = React.useState<string[]>([]);
   const [page, setPage] = React.useState(0);
-  const [titleFilterInput, setTitleFilterInput] = React.useState("");
-  const [titleSearch, setTitleSearch] = React.useState<string | undefined>(undefined);
+  const [selectedTitle, setSelectedTitle] = React.useState<TitleRecord | null>(null);
 
   const selectedEventTypes = React.useMemo(
     () => (activeFilters.length > 0 ? activeFilters : [...WANTED_HISTORY_FILTERS]),
@@ -46,7 +45,7 @@ export function TitleHistoryContainer() {
         .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
           filter: {
             eventTypes: selectedEventTypes,
-            titleSearch: titleSearch ?? null,
+            titleIds: selectedTitle ? [selectedTitle.id] : null,
             groupByEvent: true,
             limit: PAGE_SIZE,
             offset,
@@ -69,21 +68,11 @@ export function TitleHistoryContainer() {
     } finally {
       setLoading(false);
     }
-  }, [client, offset, selectedEventTypes, t, titleSearch]);
+  }, [client, offset, selectedEventTypes, selectedTitle, t]);
 
   React.useEffect(() => {
     void fetchHistory();
   }, [fetchHistory]);
-
-  React.useEffect(() => {
-    const handle = window.setTimeout(() => {
-      const normalized = titleFilterInput.trim();
-      setPage(0);
-      setTitleSearch(normalized.length > 0 ? normalized : undefined);
-    }, 250);
-
-    return () => window.clearTimeout(handle);
-  }, [titleFilterInput]);
 
   useActivitySubscription(WANTED_HISTORY_ACTIVITY_KINDS, () => {
     void fetchHistory();
@@ -105,9 +94,9 @@ export function TitleHistoryContainer() {
     setActiveFilters([]);
   }, []);
 
-  const handleTitleFilterInputChange = React.useCallback((value: string) => {
+  const handleSelectedTitleChange = React.useCallback((title: TitleRecord | null) => {
     setPage(0);
-    setTitleFilterInput(value);
+    setSelectedTitle(title);
   }, []);
 
   const handlePreviousPage = React.useCallback(() => {
@@ -150,10 +139,10 @@ export function TitleHistoryContainer() {
       error={error}
       activeFilters={activeFilters}
       availableFilters={[...WANTED_HISTORY_FILTERS]}
-      titleFilterInput={titleFilterInput}
+      selectedTitle={selectedTitle}
       currentPage={page}
       pageSize={PAGE_SIZE}
-      onTitleFilterInputChange={handleTitleFilterInputChange}
+      onSelectedTitleChange={handleSelectedTitleChange}
       onToggleFilter={toggleFilter}
       onClearFilters={clearFilters}
       onPreviousPage={handlePreviousPage}

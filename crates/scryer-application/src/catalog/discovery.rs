@@ -844,7 +844,7 @@ impl AppUseCase {
         actor: &User,
         title_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
@@ -888,7 +888,7 @@ impl AppUseCase {
         title_id: String,
         collection_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
@@ -960,7 +960,7 @@ impl AppUseCase {
         season: String,
         episode: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services

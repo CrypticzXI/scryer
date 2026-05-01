@@ -1,10 +1,12 @@
 
 import * as React from "react";
-import { Loader2, Plus, Search, X } from "lucide-react";
+import { ChevronDown, Loader2, LogOut, Plus, Search, User, UserRound, X } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useNavigate } from "react-router-dom";
 import ScryerLogo from "@/components/scryer-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RouteCommandPalette } from "@/components/common/route-command-palette";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -12,6 +14,7 @@ import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
 import type { MetadataCatalogAddOptions } from "@/lib/hooks/use-global-search";
 import type { RouteCommandPaletteConfig } from "@/components/common/route-command-palette";
+import { useAuth } from "@/lib/hooks/use-auth";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { MobileSearchOverlay } from "@/components/root/mobile-search-overlay";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
@@ -24,6 +27,7 @@ import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
+import { buildViewPath } from "@/lib/utils/routing";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
 
 
@@ -73,8 +77,11 @@ export const RootHeader = React.memo(function RootHeader({
   const t = useTranslate();
   const isMobile = useIsMobile();
   const { theme } = useTheme();
+  const navigate = useNavigate();
+  const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
   const searchShellRef = React.useRef<HTMLDivElement>(null);
   const searchPanelRef = React.useRef<HTMLDivElement>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const hasAnyMatches =
     catalogSearchResults.length > 0 ||
     FACET_REGISTRY.some((f) => (metadataSearchResults[f.metadataKey] ?? []).length > 0);
@@ -120,6 +127,17 @@ export const RootHeader = React.memo(function RootHeader({
     },
     [forceSearchGlobal],
   );
+
+  const handleOpenProfile = React.useCallback(() => {
+    setAccountMenuOpen(false);
+    navigate(buildViewPath("settings", "profile"));
+  }, [navigate]);
+
+  const handleLogout = React.useCallback(() => {
+    setAccountMenuOpen(false);
+    logout();
+    navigate("/login", { replace: true });
+  }, [logout, navigate]);
 
   const handleSearchChange = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -345,7 +363,7 @@ export const RootHeader = React.memo(function RootHeader({
             </div>
           </div>
           <form
-            className="relative ml-auto flex w-full min-w-0 items-center gap-3"
+            className="relative ml-auto flex min-w-0 flex-1 items-center gap-3"
             onSubmit={handleSearchSubmit}
           >
             <div ref={searchShellRef} className="relative flex-1">
@@ -440,6 +458,58 @@ export const RootHeader = React.memo(function RootHeader({
               ) : null}
             </div>
           </form>
+          {user ? (
+            <Popover open={accountMenuOpen} onOpenChange={setAccountMenuOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-11 shrink-0 gap-1.5 rounded-lg px-2.5 text-foreground transition hover:bg-accent/80 sm:h-10"
+                  aria-label={t("profile.accountInfo")}
+                  aria-expanded={accountMenuOpen}
+                >
+                  <UserRound className="h-5 w-5" />
+                  <ChevronDown
+                    className={cn(
+                      "h-4 w-4 text-muted-foreground transition-transform",
+                      accountMenuOpen ? "rotate-180" : "",
+                    )}
+                  />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                sideOffset={8}
+                className="w-[min(18rem,calc(100vw-1rem))] p-2 sm:w-56"
+              >
+                <div className="border-b border-border/70 px-3 pb-2 pt-1.5">
+                  <p className="truncate text-sm font-medium text-foreground">{user.username}</p>
+                </div>
+                <div className="space-y-1 pt-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-11 w-full justify-start px-3 text-sm"
+                    onClick={handleOpenProfile}
+                  >
+                    <User className="mr-2 h-4 w-4" />
+                    {t("settings.profile")}
+                  </Button>
+                  {token && effectiveFormLoginEnabled !== false ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-11 w-full justify-start px-3 text-sm text-destructive hover:text-destructive"
+                      onClick={handleLogout}
+                    >
+                      <LogOut className="mr-2 h-4 w-4" />
+                      {t("auth.logoutButton")}
+                    </Button>
+                  ) : null}
+                </div>
+              </PopoverContent>
+            </Popover>
+          ) : null}
         </div>
       </header>
       {isGlobalSearchPanelOpen && !isMobile ? (

@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
+import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -37,6 +37,7 @@ import type {
   PendingReleaseItem,
   Release,
   ReleaseDecisionItem,
+  TitleRecord,
   WantedItem,
   WantedMediaType,
   WantedSearchPhase,
@@ -72,8 +73,8 @@ type WantedViewState = {
   setMediaTypeFilter: (v: WantedMediaType | undefined) => void;
   latestDecisionCodeFilter: string | undefined;
   setLatestDecisionCodeFilter: (v: string | undefined) => void;
-  titleFilterInput: string;
-  setTitleFilterInput: (v: string) => void;
+  selectedTitle: TitleRecord | null;
+  setSelectedTitle: (title: TitleRecord | null) => void;
   offset: number;
   setOffset: (v: number) => void;
   limit: number;
@@ -380,8 +381,8 @@ function WantedItemsCard({
     setMediaTypeFilter,
     latestDecisionCodeFilter,
     setLatestDecisionCodeFilter,
-    titleFilterInput,
-    setTitleFilterInput,
+    selectedTitle,
+    setSelectedTitle,
     offset,
     setOffset,
     limit,
@@ -451,12 +452,13 @@ function WantedItemsCard({
       </CardHeader>
       <CardContent className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col space-y-3" : undefined}>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-          <Input
-            aria-label={t("wanted.filterTitle")}
+          <TitleAutocompletePicker
+            ariaLabel={t("wanted.filterTitle")}
             className="w-full sm:max-w-sm"
             placeholder={t("wanted.filterTitlePlaceholder")}
-            value={titleFilterInput}
-            onChange={(event) => setTitleFilterInput(event.target.value)}
+            selectedTitle={selectedTitle}
+            selectedTitleId={selectedTitle?.id ?? null}
+            onSelectedTitleChange={setSelectedTitle}
           />
 
           <Select

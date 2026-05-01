@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
 
@@ -79,6 +79,8 @@ fn pending_import_item_from_unmatched(item: LibraryScanUnmatchedItem) -> Pending
         facet: item.facet,
         status: item.status,
         title_id: item.title_id,
+        title_name: None,
+        title_slug: None,
         display_name: item.display_name,
         path: item.item_path,
         folder_path,
@@ -393,7 +395,7 @@ impl AppUseCase {
             .library_scan_unmatched_items
             .count_library_scan_unmatched_items(Some(facet.clone()), None, Some(status))
             .await?;
-        let items = self
+        let mut items = self
             .services
             .library
             .library_scan_unmatched_items
@@ -401,9 +403,50 @@ impl AppUseCase {
             .await?
             .into_iter()
             .map(pending_import_item_from_unmatched)
-            .collect();
+            .collect::<Vec<_>>();
+        self.hydrate_pending_import_known_titles(&mut items).await?;
 
         Ok(PendingImportConnection { total, items })
+    }
+
+    async fn hydrate_pending_import_known_titles(
+        &self,
+        items: &mut [PendingImportItem],
+    ) -> AppResult<()> {
+        let title_ids = items
+            .iter()
+            .filter_map(|item| item.title_id.as_deref())
+            .map(str::trim)
+            .filter(|title_id| !title_id.is_empty())
+            .collect::<HashSet<_>>();
+        if title_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut known_titles = HashMap::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            if let Some(title) = self.services.catalog.titles.get_by_id(title_id).await? {
+                known_titles.insert(title_id.to_string(), (title.name, title.slug));
+            }
+        }
+
+        for item in items.iter_mut() {
+            let Some(title_id) = item
+                .title_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|title_id| !title_id.is_empty())
+            else {
+                continue;
+            };
+
+            if let Some((title_name, title_slug)) = known_titles.get(title_id) {
+                item.title_name = Some(title_name.clone());
+                item.title_slug = title_slug.clone();
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn ignore_pending_import(

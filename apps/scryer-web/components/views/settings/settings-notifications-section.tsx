@@ -1,12 +1,16 @@
 
 import * as React from "react";
-import { Bell, Edit, Loader2, Power, PowerOff, Send, Trash2 } from "lucide-react";
+import { Bell, ChevronDown, Edit, Loader2, Power, PowerOff, Send, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { InfoHelp } from "@/components/common/info-help";
+import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
@@ -21,15 +25,18 @@ import {
 import type { Translate } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
+import { viewFromFacet } from "@/lib/facets/helpers";
 import type {
   ConfigFieldDef,
   NotificationChannel,
   NotificationChannelDraft,
   NotificationProviderType,
-  NotificationSubscription,
   NotificationSubscriptionDraft,
+  NotificationSubscriptionRow,
+  TitleRecord,
 } from "@/lib/types";
 import type { Facet } from "@/lib/types/titles";
+import { buildOverviewDetailPath } from "@/lib/utils/routing";
 
 type SettingsNotificationsSectionProps = {
   channels: NotificationChannel[];
@@ -45,16 +52,17 @@ type SettingsNotificationsSectionProps = {
   testChannel: (channel: NotificationChannel) => Promise<void> | void;
   testingChannelId: string | null;
   providerTypes: NotificationProviderType[];
-  subscriptions: NotificationSubscription[];
+  subscriptions: NotificationSubscriptionRow[];
+  subscriptionTitlesById: Record<string, TitleRecord | null>;
   editingSubscriptionId: string | null;
   subscriptionDraft: NotificationSubscriptionDraft;
   setSubscriptionDraft: React.Dispatch<React.SetStateAction<NotificationSubscriptionDraft>>;
   submitSubscription: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
   mutatingSubscriptionId: string | null;
   resetSubscriptionDraft: () => void;
-  editSubscription: (sub: NotificationSubscription) => void;
-  toggleSubscriptionEnabled: (sub: NotificationSubscription) => Promise<void> | void;
-  deleteSubscription: (sub: NotificationSubscription) => Promise<void> | void;
+  editSubscription: (sub: NotificationSubscriptionRow) => void;
+  toggleSubscriptionEnabled: (sub: NotificationSubscriptionRow) => Promise<void> | void;
+  deleteSubscription: (sub: NotificationSubscriptionRow) => Promise<void> | void;
   eventTypes: string[];
 };
 
@@ -119,18 +127,31 @@ function parseFacetScopeIds(scopeId: string | null | undefined): Facet[] {
   return FACET_SCOPE_OPTIONS.filter((facet) => selected.has(facet));
 }
 
-function serializeFacetScopeIds(scopeIds: Iterable<Facet>): string {
-  const selected = new Set(scopeIds);
-  return FACET_SCOPE_OPTIONS.filter((facet) => selected.has(facet)).join(",");
+function formatResolvedTitleLabel(title: TitleRecord): string {
+  return title.year ? `${title.name} (${title.year})` : title.name;
+}
+
+function titleOverviewHref(title: TitleRecord): string {
+  const basePath = buildOverviewDetailPath(viewFromFacet(title.facet), title.slug ?? null);
+  if (title.slug?.trim()) {
+    return basePath;
+  }
+  return `${basePath}?id=${encodeURIComponent(title.id)}`;
 }
 
 function notificationScopeIdLabel(
   scope: string,
   scopeId: string | null | undefined,
   t: Translate,
+  subscriptionTitlesById: Record<string, TitleRecord | null>,
 ): string | null {
   if (!scopeId) {
     return null;
+  }
+
+  if (scope === "title") {
+    const title = subscriptionTitlesById[scopeId];
+    return title ? formatResolvedTitleLabel(title) : t("label.unknown");
   }
 
   if (scope !== "facet") {
@@ -154,6 +175,18 @@ function DynamicConfigField({
   value: string;
   onChange: (key: string, value: string) => void;
 }) {
+  const help = field.helpText ? (
+    <InfoHelp
+      text={field.helpText}
+      ariaLabel={`About ${field.label}`}
+    />
+  ) : null;
+  const requiredMarker = field.required ? (
+    <span aria-hidden="true" className="text-destructive">
+      *
+    </span>
+  ) : null;
+
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2">
@@ -163,10 +196,11 @@ function DynamicConfigField({
           onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
           className="accent-primary"
         />
-        <span className="text-sm">{field.label}</span>
-        {field.helpText ? (
-          <span className="text-xs text-muted-foreground">{field.helpText}</span>
-        ) : null}
+        <span className="inline-flex items-center gap-2 text-sm">
+          {field.label}
+          {requiredMarker}
+          {help}
+        </span>
       </label>
     );
   }
@@ -174,7 +208,11 @@ function DynamicConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+          {help}
+        </Label>
         <Select
           value={value || field.defaultValue || ""}
           onValueChange={(v) => onChange(field.key, v)}
@@ -188,9 +226,6 @@ function DynamicConfigField({
             ))}
           </SelectContent>
         </Select>
-        {field.helpText ? (
-          <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
-        ) : null}
       </label>
     );
   }
@@ -211,7 +246,11 @@ function DynamicConfigField({
 
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+          {help}
+        </Label>
         <Textarea
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
@@ -219,16 +258,17 @@ function DynamicConfigField({
           placeholder={field.defaultValue ?? ""}
           rows={6}
         />
-        {field.helpText ? (
-          <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
-        ) : null}
       </label>
     );
   }
 
   return (
     <label>
-      <Label className="mb-2 block">{field.label}</Label>
+      <Label className="mb-2 inline-flex items-center gap-2">
+        {field.label}
+        {requiredMarker}
+        {help}
+      </Label>
       <Input
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
@@ -243,15 +283,91 @@ function DynamicConfigField({
         required={field.required}
         placeholder={field.defaultValue ?? ""}
       />
-      {field.helpText ? (
-        <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
-      ) : null}
     </label>
   );
 }
 
 function channelNameById(channels: NotificationChannel[], id: string): string {
   return channels.find((c) => c.id === id)?.name ?? id;
+}
+
+type MultiSelectDropdownOption = {
+  value: string;
+  label: string;
+};
+
+function MultiSelectDropdown({
+  options,
+  selectedValues,
+  onSelectedValuesChange,
+  placeholder,
+}: {
+  options: MultiSelectDropdownOption[];
+  selectedValues: string[];
+  onSelectedValuesChange: (values: string[]) => void;
+  placeholder: string;
+}) {
+  const selectedLabel = React.useMemo(() => {
+    const labels = options
+      .filter((option) => selectedValues.includes(option.value))
+      .map((option) => option.label);
+    return labels.length > 0 ? labels.join(", ") : placeholder;
+  }, [options, placeholder, selectedValues]);
+
+  const toggleOption = React.useCallback(
+    (value: string) => {
+      const selectedSet = new Set(selectedValues);
+      if (selectedSet.has(value)) {
+        selectedSet.delete(value);
+      } else {
+        selectedSet.add(value);
+      }
+
+      onSelectedValuesChange(
+        options
+          .map((option) => option.value)
+          .filter((optionValue) => selectedSet.has(optionValue)),
+      );
+    },
+    [onSelectedValuesChange, options, selectedValues],
+  );
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-between px-3 text-left font-normal"
+        >
+          <span
+            className={`truncate ${selectedValues.length === 0 ? "text-muted-foreground" : ""}`}
+          >
+            {selectedLabel}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
+        <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+          {options.map((option) => {
+            const checked = selectedValues.includes(option.value);
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => toggleOption(option.value)}
+                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+              >
+                <Checkbox checked={checked} className="pointer-events-none" />
+                <span className="truncate">{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 export function SettingsNotificationsSection({
@@ -269,6 +385,7 @@ export function SettingsNotificationsSection({
   testingChannelId,
   providerTypes,
   subscriptions,
+  subscriptionTitlesById,
   editingSubscriptionId,
   subscriptionDraft,
   setSubscriptionDraft,
@@ -282,10 +399,44 @@ export function SettingsNotificationsSection({
 }: SettingsNotificationsSectionProps) {
   const t = useTranslate();
   const normalizedChannelType = channelDraft.channelType.trim().toLowerCase();
-  const selectedFacetScopeIds = React.useMemo(
-    () => parseFacetScopeIds(subscriptionDraft.scopeId),
-    [subscriptionDraft.scopeId],
+  const selectedFacetScopeIds = subscriptionDraft.facetScopeIds;
+  const scopeOptions = React.useMemo(
+    () =>
+      SCOPE_OPTIONS.map((scope) => ({
+        value: scope,
+        label: notificationScopeLabel(scope, t),
+      })),
+    [t],
   );
+  const eventTypeOptions = React.useMemo(
+    () =>
+      eventTypes.map((eventType) => ({
+        value: eventType,
+        label: notificationEventLabel(eventType, t),
+      })),
+    [eventTypes, t],
+  );
+  const orderedSubscriptionEventTypes = React.useCallback(
+    (values: string[]) => {
+      const order = new Map(eventTypes.map((value, index) => [value, index]));
+      return [...values].sort((left, right) => {
+        const leftIndex = order.get(left) ?? Number.MAX_SAFE_INTEGER;
+        const rightIndex = order.get(right) ?? Number.MAX_SAFE_INTEGER;
+        if (leftIndex !== rightIndex) {
+          return leftIndex - rightIndex;
+        }
+        return left.localeCompare(right);
+      });
+    },
+    [eventTypes],
+  );
+  const isSubscriptionDraftValid =
+    subscriptionDraft.channelId.trim().length > 0 &&
+    subscriptionDraft.eventTypes.length > 0 &&
+    subscriptionDraft.scope.trim().length > 0 &&
+    (subscriptionDraft.scope !== "facet" || selectedFacetScopeIds.length > 0) &&
+    (subscriptionDraft.scope !== "title" ||
+      subscriptionDraft.titleScopeId.trim().length > 0);
 
   const providerTypeOptions = React.useMemo(() => {
     if (providerTypes.length === 0) return [];
@@ -313,7 +464,7 @@ export function SettingsNotificationsSection({
   const handleFacetScopeCheckedChange = React.useCallback(
     (facet: Facet, checked: boolean) => {
       setSubscriptionDraft((prev) => {
-        const next = new Set(parseFacetScopeIds(prev.scopeId));
+        const next = new Set(prev.facetScopeIds);
         if (checked) {
           next.add(facet);
         } else {
@@ -321,7 +472,7 @@ export function SettingsNotificationsSection({
         }
         return {
           ...prev,
-          scopeId: serializeFacetScopeIds(next),
+          facetScopeIds: FACET_SCOPE_OPTIONS.filter((scopeOption) => next.has(scopeOption)),
         };
       });
     },
@@ -558,18 +709,61 @@ export function SettingsNotificationsSection({
             <TableBody>
               {subscriptions.map((sub) => (
                 <TableRow key={sub.id}>
-                  <TableCell>{notificationEventLabel(sub.eventType, t)}</TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      {orderedSubscriptionEventTypes(sub.eventTypes).map((eventType) => (
+                        <div key={eventType} className="leading-snug">
+                          {notificationEventLabel(eventType, t)}
+                        </div>
+                      ))}
+                    </div>
+                  </TableCell>
                   <TableCell>{channelNameById(channels, sub.channelId)}</TableCell>
                   <TableCell>
-                    {notificationScopeLabel(sub.scope, t)}
-                    {notificationScopeIdLabel(sub.scope, sub.scopeId, t)
-                      ? ` (${notificationScopeIdLabel(sub.scope, sub.scopeId, t)})`
-                      : ""}
+                    {(() => {
+                      const scopeIdLabel = notificationScopeIdLabel(
+                        sub.scope,
+                        sub.scopeId,
+                        t,
+                        subscriptionTitlesById,
+                      );
+
+                      if (sub.scope !== "title" || !sub.scopeId) {
+                        return (
+                          <>
+                            {notificationScopeLabel(sub.scope, t)}
+                            {scopeIdLabel ? ` (${scopeIdLabel})` : ""}
+                          </>
+                        );
+                      }
+
+                      const title = subscriptionTitlesById[sub.scopeId];
+
+                      return (
+                        <>
+                          {notificationScopeLabel(sub.scope, t)}
+                          {" ("}
+                          {title ? (
+                            <Link
+                              to={titleOverviewHref(title)}
+                              className="underline-offset-4 hover:text-foreground hover:underline"
+                            >
+                              {formatResolvedTitleLabel(title)}
+                            </Link>
+                          ) : (
+                            scopeIdLabel ?? t("label.unknown")
+                          )}
+                          {")"}
+                        </>
+                      );
+                    })()}
                   </TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
                       value={sub.isEnabled}
-                      label={`${t("label.enabled")}: ${notificationEventLabel(sub.eventType, t)}`}
+                      label={`${t("label.enabled")}: ${orderedSubscriptionEventTypes(sub.eventTypes)
+                        .map((eventType) => notificationEventLabel(eventType, t))
+                        .join(", ")}`}
                     />
                   </TableCell>
                   <TableCell className="text-right">
@@ -638,26 +832,17 @@ export function SettingsNotificationsSection({
               <div className="grid gap-3 md:grid-cols-3">
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationEventType")}</Label>
-                  <Select
-                    value={subscriptionDraft.eventType || undefined}
-                    onValueChange={(v) =>
+                  <MultiSelectDropdown
+                    options={eventTypeOptions}
+                    selectedValues={subscriptionDraft.eventTypes}
+                    onSelectedValuesChange={(values) =>
                       setSubscriptionDraft((prev) => ({
                         ...prev,
-                        eventType: v,
+                        eventTypes: values,
                       }))
                     }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder={t("settings.notificationEventType")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {eventTypes.map((et) => (
-                        <SelectItem key={et} value={et}>
-                          {notificationEventLabel(et, t)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    placeholder={t("settings.notificationEventType")}
+                  />
                 </label>
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationChannel")}</Label>
@@ -683,29 +868,21 @@ export function SettingsNotificationsSection({
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationScope")}</Label>
                   <Select
-                    value={subscriptionDraft.scope}
-                    onValueChange={(v) =>
+                    value={subscriptionDraft.scope || undefined}
+                    onValueChange={(value) =>
                       setSubscriptionDraft((prev) => ({
                         ...prev,
-                        scope: v,
-                        scopeId:
-                          v === "global"
-                            ? ""
-                            : v === "facet"
-                              ? serializeFacetScopeIds(parseFacetScopeIds(prev.scopeId))
-                              : prev.scope === "facet"
-                                ? ""
-                                : prev.scopeId,
+                        scope: value,
                       }))
                     }
                   >
                     <SelectTrigger className="w-full">
-                      <SelectValue />
+                      <SelectValue placeholder={t("settings.notificationScope")} />
                     </SelectTrigger>
                     <SelectContent>
-                      {SCOPE_OPTIONS.map((scope) => (
-                        <SelectItem key={scope} value={scope}>
-                          {notificationScopeLabel(scope, t)}
+                      {scopeOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -713,39 +890,42 @@ export function SettingsNotificationsSection({
                 </label>
               </div>
 
-              {subscriptionDraft.scope !== "global" ? (
-                subscriptionDraft.scope === "facet" ? (
-                  <div>
-                    <Label className="mb-2 block">{t("settings.notificationScopeId")}</Label>
-                    <div className="flex flex-wrap gap-4 rounded-md border border-border bg-card/40 p-3">
-                      {FACET_SCOPE_OPTIONS.map((facet) => (
-                        <label key={facet} className="flex items-center gap-2 text-sm">
-                          <Checkbox
-                            checked={selectedFacetScopeIds.includes(facet)}
-                            onCheckedChange={(checked) =>
-                              handleFacetScopeCheckedChange(facet, checked === true)
-                            }
-                          />
-                          {sectionLabelForFacet(t, facet)}
-                        </label>
-                      ))}
-                    </div>
+              {subscriptionDraft.scope === "facet" ? (
+                <div>
+                  <Label className="mb-2 block">{t("settings.notificationScopeId")}</Label>
+                  <div className="flex flex-wrap gap-4 rounded-md border border-border bg-card/40 p-3">
+                    {FACET_SCOPE_OPTIONS.map((facet) => (
+                      <label key={facet} className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={selectedFacetScopeIds.includes(facet)}
+                          onCheckedChange={(checked) =>
+                            handleFacetScopeCheckedChange(facet, checked === true)
+                          }
+                        />
+                        {sectionLabelForFacet(t, facet)}
+                      </label>
+                    ))}
                   </div>
-                ) : (
-                  <label>
-                    <Label className="mb-2 block">{t("settings.notificationScopeId")}</Label>
-                    <Input
-                      value={subscriptionDraft.scopeId}
-                      onChange={(event) =>
-                        setSubscriptionDraft((prev) => ({
-                          ...prev,
-                          scopeId: event.target.value,
-                        }))
-                      }
-                      placeholder={t("settings.notificationScopeIdPlaceholderTitle")}
-                    />
-                  </label>
-                )
+                </div>
+              ) : null}
+
+              {subscriptionDraft.scope === "title" ? (
+                <label>
+                  <Label className="mb-2 block">{t("settings.notificationScopeId")}</Label>
+                  <TitleAutocompletePicker
+                    selectedTitle={subscriptionDraft.titleScopeTitle}
+                    selectedTitleId={subscriptionDraft.titleScopeId || null}
+                    onSelectedTitleChange={(title) =>
+                      setSubscriptionDraft((prev) => ({
+                        ...prev,
+                        titleScopeId: title?.id ?? "",
+                        titleScopeTitle: title,
+                      }))
+                    }
+                    placeholder={t("settings.notificationScopeIdPlaceholderTitle")}
+                    ariaLabel={t("settings.notificationScopeId")}
+                  />
+                </label>
               ) : null}
 
               <label className="flex items-center gap-2">
@@ -764,8 +944,8 @@ export function SettingsNotificationsSection({
               </label>
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingSubscriptionId === "new"}>
-                  {mutatingSubscriptionId === "new"
+                <Button type="submit" disabled={!isSubscriptionDraftValid || mutatingSubscriptionId !== null}>
+                  {mutatingSubscriptionId !== null
                     ? t("label.saving")
                     : editingSubscriptionId
                       ? t("settings.notificationSubscriptionUpdate")

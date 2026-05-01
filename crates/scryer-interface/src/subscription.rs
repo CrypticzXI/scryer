@@ -1,13 +1,16 @@
 use async_graphql::{
     Context, Subscription,
-    futures_util::stream::{self, BoxStream, unfold},
+    futures_util::{
+        StreamExt,
+        stream::{self, BoxStream, unfold},
+    },
 };
 use scryer_domain::{DomainEvent, DownloadQueueItem, Entitlement};
 use std::collections::{HashSet, VecDeque};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::context::LogBuffer;
-use crate::context::{actor_from_ctx, app_from_ctx};
+use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx};
 use crate::mappers::{
     from_activity_event, from_domain_event, from_download_queue_item, from_job_run,
     from_library_scan_session,
@@ -21,6 +24,34 @@ pub struct SubscriptionRoot;
 
 fn empty_box_stream<T: Send + 'static>() -> BoxStream<'static, T> {
     Box::pin(stream::empty())
+}
+
+fn guard_subscription_stream<T: Send + 'static>(
+    ctx: &Context<'_>,
+    stream: BoxStream<'static, T>,
+) -> BoxStream<'static, T> {
+    let auth_runtime = auth_runtime_from_ctx(ctx);
+    let expected_epoch = auth_runtime.snapshot().epoch;
+    let epoch_rx = auth_runtime.subscribe_epoch();
+
+    Box::pin(unfold(
+        (stream, epoch_rx, expected_epoch),
+        move |(mut stream, mut epoch_rx, expected_epoch)| async move {
+            loop {
+                tokio::select! {
+                    next = stream.next() => {
+                        return next.map(|item| (item, (stream, epoch_rx, expected_epoch)));
+                    }
+                    changed = epoch_rx.changed() => {
+                        match changed {
+                            Ok(()) if *epoch_rx.borrow() == expected_epoch => continue,
+                            Ok(()) | Err(_) => return None,
+                        }
+                    }
+                }
+            }
+        },
+    ))
 }
 
 fn library_scan_state_stream_from_domain_events(
@@ -206,7 +237,7 @@ impl SubscriptionRoot {
             },
         );
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 
     async fn domain_event_feed(
@@ -293,7 +324,7 @@ impl SubscriptionRoot {
             },
         );
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 
     async fn download_queue(
@@ -320,12 +351,12 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        let required_entitlement = if title_id.is_some() {
-            Entitlement::ViewCatalog
-        } else {
-            Entitlement::ManageConfig
-        };
-        if !actor.has_entitlement(&required_entitlement) {
+        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
+            || actor.has_entitlement(&Entitlement::ManageTitle);
+        let can_view_global_queue = actor.has_entitlement(&Entitlement::ManageTitle);
+        if (title_id.is_some() && !can_view_title_progress)
+            || (title_id.is_none() && !can_view_global_queue)
+        {
             tracing::warn!("download_queue sub: insufficient entitlements");
             return empty_box_stream();
         }
@@ -343,13 +374,16 @@ impl SubscriptionRoot {
             }
         };
 
-        download_queue_state_stream_from_snapshots(
-            receiver,
-            include_all_activity.unwrap_or(false),
-            include_history_only.unwrap_or(false),
-            include_import_activity.unwrap_or(false),
-            title_id,
-            activity_filter.unwrap_or(DownloadActivityFilterValue::All),
+        guard_subscription_stream(
+            ctx,
+            download_queue_state_stream_from_snapshots(
+                receiver,
+                include_all_activity.unwrap_or(false),
+                include_history_only.unwrap_or(false),
+                include_import_activity.unwrap_or(false),
+                title_id,
+                activity_filter.unwrap_or(DownloadActivityFilterValue::All),
+            ),
         )
     }
 
@@ -377,12 +411,12 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        let required_entitlement = if title_id.is_some() {
-            Entitlement::ViewCatalog
-        } else {
-            Entitlement::ManageConfig
-        };
-        if !actor.has_entitlement(&required_entitlement) {
+        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
+            || actor.has_entitlement(&Entitlement::ManageTitle);
+        let can_view_global_queue = actor.has_entitlement(&Entitlement::ManageTitle);
+        if (title_id.is_some() && !can_view_title_progress)
+            || (title_id.is_none() && !can_view_global_queue)
+        {
             tracing::warn!("download_queue_state sub: insufficient entitlements");
             return empty_box_stream();
         }
@@ -395,13 +429,16 @@ impl SubscriptionRoot {
             }
         };
 
-        download_queue_state_stream_from_snapshots(
-            receiver,
-            include_all_activity.unwrap_or(false),
-            include_history_only.unwrap_or(false),
-            include_import_activity.unwrap_or(false),
-            title_id,
-            activity_filter.unwrap_or(DownloadActivityFilterValue::All),
+        guard_subscription_stream(
+            ctx,
+            download_queue_state_stream_from_snapshots(
+                receiver,
+                include_all_activity.unwrap_or(false),
+                include_history_only.unwrap_or(false),
+                include_import_activity.unwrap_or(false),
+                title_id,
+                activity_filter.unwrap_or(DownloadActivityFilterValue::All),
+            ),
         )
     }
 
@@ -442,7 +479,7 @@ impl SubscriptionRoot {
             }
         };
 
-        library_scan_state_stream_from_domain_events(receiver)
+        guard_subscription_stream(ctx, library_scan_state_stream_from_domain_events(receiver))
     }
 
     async fn library_scan_state(
@@ -477,7 +514,7 @@ impl SubscriptionRoot {
             }
         };
 
-        library_scan_state_stream_from_domain_events(receiver)
+        guard_subscription_stream(ctx, library_scan_state_stream_from_domain_events(receiver))
     }
 
     async fn job_run_events(&self, ctx: &Context<'_>) -> BoxStream<'static, JobRunPayload> {
@@ -517,7 +554,10 @@ impl SubscriptionRoot {
             }
         };
 
-        job_run_state_stream_from_domain_events(receiver, initial_runs).await
+        guard_subscription_stream(
+            ctx,
+            job_run_state_stream_from_domain_events(receiver, initial_runs).await,
+        )
     }
 
     async fn job_run_state(&self, ctx: &Context<'_>) -> BoxStream<'static, JobRunPayload> {
@@ -557,7 +597,10 @@ impl SubscriptionRoot {
             }
         };
 
-        job_run_state_stream_from_domain_events(receiver, initial_runs).await
+        guard_subscription_stream(
+            ctx,
+            job_run_state_stream_from_domain_events(receiver, initial_runs).await,
+        )
     }
 
     async fn service_log_lines(&self, ctx: &Context<'_>) -> BoxStream<'static, String> {
@@ -603,7 +646,7 @@ impl SubscriptionRoot {
             }
         });
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 
     async fn import_history_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, bool> {
@@ -654,7 +697,7 @@ impl SubscriptionRoot {
             }
         });
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 
     async fn provider_catalog_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
@@ -706,7 +749,7 @@ impl SubscriptionRoot {
             }
         });
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 
     async fn settings_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
@@ -755,7 +798,7 @@ impl SubscriptionRoot {
             }
         });
 
-        Box::pin(stream)
+        guard_subscription_stream(ctx, Box::pin(stream))
     }
 }
 

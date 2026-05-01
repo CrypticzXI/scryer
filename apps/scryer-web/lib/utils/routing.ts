@@ -23,6 +23,7 @@ import { isMediaView } from "@/lib/facets/registry";
 export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   profile: "profile",
   general: "general",
+  security: "security",
   users: "users",
   indexers: "indexers",
   downloadClients: "download-clients",

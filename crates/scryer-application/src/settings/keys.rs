@@ -23,6 +23,8 @@ pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
+pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
+pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
 
 pub(crate) fn default_indexer_routing_categories_for_scope(scope_id: &str) -> Vec<String> {
     match scope_id {

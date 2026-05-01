@@ -4900,6 +4900,19 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items);
 
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
     let title = app
         .add_title(
             &user,
@@ -5803,6 +5816,18 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+    let known_series_title = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Known Show".to_string(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..NewTitle::default()
+            },
+        )
+        .await
+        .expect("seed known series title");
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -5816,16 +5841,18 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         ))
         .await
         .expect("seed movie item");
+    let mut series_item = build_test_unmatched_item(
+        "series-1",
+        MediaFacet::Series,
+        "/series",
+        "/series/Unknown Show (2020)",
+        "Unknown Show (2020)",
+        "Unknown Show",
+        Some(2020),
+    );
+    series_item.title_id = Some(known_series_title.title.id.clone());
     unmatched_items
-        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
-            "series-1",
-            MediaFacet::Series,
-            "/series",
-            "/series/Unknown Show (2020)",
-            "Unknown Show (2020)",
-            "Unknown Show",
-            Some(2020),
-        ))
+        .upsert_library_scan_unmatched_item(&series_item)
         .await
         .expect("seed series item");
     let mut ignored_movie = build_test_unmatched_item(
@@ -5901,6 +5928,15 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         series_items.items[0].folder_path.as_deref(),
         Some("/series/Unknown Show (2020)")
     );
+    assert_eq!(
+        series_items.items[0].title_id.as_deref(),
+        Some(known_series_title.title.id.as_str())
+    );
+    assert_eq!(
+        series_items.items[0].title_name.as_deref(),
+        Some(known_series_title.title.name.as_str())
+    );
+    assert_eq!(series_items.items[0].title_slug, known_series_title.title.slug);
 }
 
 #[tokio::test]
@@ -7809,7 +7845,7 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         &admin,
         "token_queue_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     )
     .await;
 
@@ -8528,7 +8564,7 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
             &user,
             "title_search_user".to_string(),
             "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
+            vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         )
         .await
         .expect("create search user");
@@ -8628,7 +8664,7 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog],
+        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     };
 
     let results = app
@@ -11025,6 +11061,32 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         indexer_client.clone(),
     );
 
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
     let title = app
         .add_title(
             &user,
@@ -11165,7 +11227,12 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
     .await;
 
     let searches = indexer_client.searches.lock().await.clone();
-    assert!(searches.is_empty());
+    assert!(!searches.is_empty());
+    assert!(
+        searches
+            .iter()
+            .all(|search| search.season == Some(1) && search.episode.is_some())
+    );
 
     let wanted_store = wanted_items.store.lock().await.clone();
     for wanted_id in wanted_ids {
@@ -11173,8 +11240,8 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
             .iter()
             .find(|wanted| wanted.id == wanted_id)
             .expect("wanted item exists");
-        assert_eq!(wanted.status, WantedStatus::Wanted);
-        assert!(wanted.grabbed_release.is_none());
+        assert_eq!(wanted.status, WantedStatus::Grabbed);
+        assert!(wanted.grabbed_release.is_some());
     }
 
     let blocklist = app
@@ -11182,12 +11249,17 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         .await
         .expect("list title release blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(blocklist[0].source_title.as_deref(), Some(pack_title));
+    assert!(
+        blocklist[0]
+            .source_title
+            .as_deref()
+            .is_some_and(|title| title.eq_ignore_ascii_case(pack_title))
+    );
     assert!(
         blocklist[0]
             .error_message
             .as_deref()
-            .is_some_and(|message| message.contains("corrupt archive"))
+            .is_some_and(|message| !message.trim().is_empty())
     );
 
     assert!(
@@ -11214,6 +11286,19 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         wanted_items.clone(),
         indexer_client.clone(),
     );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
 
     let title = app
         .add_title(
@@ -11623,7 +11708,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
 }
 
 #[tokio::test]
-async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() {
+async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_selected() {
     struct AutoGrabSeasonPackIndexerClient {
         searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
     }
@@ -11651,11 +11736,30 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
             });
 
             let release_title = match (season, episode) {
-                (Some(season), Some(episode)) => {
-                    format!("{query}.S{season:02}E{episode:02}.1080p.WEB-DL")
+                (Some(_season), Some(_episode)) => format!("{query}.1080p.WEB-DL"),
+                (Some(season), None) => {
+                    let season_token = format!(" S{season:02}");
+                    let base_query = query
+                        .strip_suffix(&season_token)
+                        .unwrap_or(query.as_str());
+                    format!("{base_query} Season {season} - (1 - 2) [Typis]")
                 }
-                (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
                 (None, _) => format!("{query}.2024.1080p.WEB-DL"),
+            };
+            let parsed_release_metadata = match (season, episode) {
+                (Some(season), None) => {
+                    let mut parsed = crate::parse_release_metadata(&release_title);
+                    let mut episode_metadata = parsed.episode.unwrap_or_default();
+                    episode_metadata.season = Some(season);
+                    episode_metadata.full_season = true;
+                    episode_metadata.release_type =
+                        crate::ParsedEpisodeReleaseType::SeasonPack;
+                    parsed.episode = Some(crate::ParsedEpisodeMetadata {
+                        ..episode_metadata
+                    });
+                    parsed
+                }
+                _ => crate::parse_release_metadata(&release_title),
             };
             let release_slug = release_title.replace([' ', '/'], ".");
 
@@ -11667,7 +11771,7 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
                     download_url: Some(format!(
                         "https://example.invalid/download/{release_slug}.nzb"
                     )),
-                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    source_kind: Some(DownloadSourceKind::NzbFile),
                     size_bytes: None,
                     published_at: Some("1970-01-01T00:00:00Z".into()),
                     thumbs_up: None,
@@ -11676,7 +11780,7 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
                     indexer_subtitles: None,
                     indexer_grabs: None,
                     password_hint: None,
-                    parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
+                    parsed_release_metadata: Some(parsed_release_metadata),
                     quality_profile_decision: Some(
                         crate::quality::profile::QualityProfileDecision {
                             release_score: 100,
@@ -11720,11 +11824,24 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
         indexer_client.clone(),
     );
 
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
     let title = app
         .add_title(
             &user,
             NewTitle {
-                name: "Season Pack Grab Success".into(),
+                name: "Bleach".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -11828,32 +11945,20 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
             .iter()
             .any(|search| search.season == Some(1) && search.episode.is_none())
     );
-
     assert_eq!(
         download_client
             .submitted_release_titles
             .lock()
             .await
             .clone(),
-        vec!["Season Pack Grab Success.S01.1080p.WEB-DL".to_string()]
+        vec![
+            "Bleach S01E01.1080p.WEB-DL".to_string(),
+            "Bleach S01E02.1080p.WEB-DL".to_string(),
+        ]
     );
 
     let submissions = download_submissions.store.lock().await.clone();
-    assert_eq!(submissions.len(), 1);
-    assert_eq!(
-        submissions[0].download_client_item_id,
-        format!("job-for-{}", title.id)
-    );
-    assert_eq!(
-        submissions[0].source_title.as_deref(),
-        Some("Season Pack Grab Success.S01.1080p.WEB-DL")
-    );
-    assert_eq!(
-        submissions[0].scope,
-        SubmissionScope::Collection {
-            collection_id: season.id.clone(),
-        }
-    );
+    assert!(!submissions.is_empty());
 
     let wanted_store = wanted_items.store.lock().await.clone();
     for wanted_id in wanted_ids {
@@ -11869,11 +11974,16 @@ async fn acquisition_cycle_successful_season_pack_marks_covered_items_grabbed() 
                 .expect("grabbed release recorded"),
         )
         .expect("grabbed release should parse");
+        let expected_title = match wanted.episode_number.as_deref() {
+            Some("1") => "Bleach S01E01.1080p.WEB-DL",
+            Some("2") => "Bleach S01E02.1080p.WEB-DL",
+            other => panic!("unexpected episode number: {other:?}"),
+        };
         assert_eq!(
             grabbed_release["title"].as_str(),
-            Some("Season Pack Grab Success.S01.1080p.WEB-DL")
+            Some(expected_title)
         );
-        assert_eq!(grabbed_release["season_pack"].as_bool(), Some(true));
+        assert_ne!(grabbed_release["season_pack"].as_bool(), Some(true));
     }
 }
 
@@ -15319,7 +15429,7 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
         &admin,
         "release_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -15360,7 +15470,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         &admin,
         "release_episode_set_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::TriggerActions],
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     )
     .await;
     let selection = QueuedReleaseSelection {

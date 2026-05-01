@@ -220,6 +220,12 @@ function DynamicConfigField({
   value: string;
   onChange: (key: string, value: string) => void;
 }) {
+  const requiredMarker = field.required ? (
+    <span aria-hidden="true" className="text-destructive">
+      *
+    </span>
+  ) : null;
+
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2">
@@ -231,7 +237,10 @@ function DynamicConfigField({
           }
           className="accent-primary"
         />
-        <span className="text-sm">{field.label}</span>
+        <span className="inline-flex items-center gap-2 text-sm">
+          {field.label}
+          {requiredMarker}
+        </span>
         {field.helpText ? (
           <span className="text-xs text-muted-foreground">
             {field.helpText}
@@ -244,7 +253,10 @@ function DynamicConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
         <Select
           value={value || field.defaultValue || ""}
           onValueChange={(v) => onChange(field.key, v)}
@@ -270,7 +282,10 @@ function DynamicConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
         <Textarea
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
@@ -287,7 +302,10 @@ function DynamicConfigField({
 
   return (
     <label>
-      <Label className="mb-2 block">{field.label}</Label>
+      <Label className="mb-2 inline-flex items-center gap-2">
+        {field.label}
+        {requiredMarker}
+      </Label>
       <Input
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}

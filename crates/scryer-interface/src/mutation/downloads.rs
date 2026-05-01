@@ -93,7 +93,7 @@ impl DownloadMutations {
             .await
             .map_err(to_gql_error)?;
         let title = app
-            .get_title_for_trigger_actions(&actor, &title_id)
+            .get_title_for_download_actions(&actor, &title_id)
             .await
             .map_err(to_gql_error)?
             .ok_or_else(|| Error::new(format!("title not found: {}", title_id)))?;
@@ -131,7 +131,7 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title_for_trigger_actions(&actor, &input.title_id)
+            .get_title_for_download_actions(&actor, &input.title_id)
             .await
             .map_err(to_gql_error)?
             .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;

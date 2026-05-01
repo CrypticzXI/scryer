@@ -123,6 +123,20 @@ pub(crate) fn require(actor: &User, entitlement: &Entitlement) -> AppResult<()> 
     }
 }
 
+pub(crate) fn require_any(actor: &User, entitlements: &[Entitlement]) -> AppResult<()> {
+    if entitlements
+        .iter()
+        .any(|entitlement| actor.has_entitlement(entitlement))
+    {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized(format!(
+            "user {} lacks one of {:?}",
+            actor.username, entitlements
+        )))
+    }
+}
+
 pub(crate) fn sha256_hex(input: impl AsRef<str>) -> String {
     let hash = ring_digest::digest(&ring_digest::SHA256, input.as_ref().as_bytes());
     to_hex(hash.as_ref())

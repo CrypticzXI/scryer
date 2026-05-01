@@ -3,12 +3,14 @@ use async_graphql::http::{ALL_WEBSOCKET_PROTOCOLS, GraphiQLSource};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase};
 use scryer_domain::Entitlement;
+use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch};
+use std::net::{IpAddr, SocketAddr};
 
 use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
@@ -269,15 +271,24 @@ pub(crate) async fn graphiql_handler() -> impl IntoResponse {
 
 pub(crate) async fn graphql_ws_handler(
     State(state): State<AuthState>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     protocol: GraphQLProtocol,
     ws: WebSocketUpgrade,
 ) -> Response {
     let schema = state.schema.clone();
     let app = state.app.clone();
-    let auth_enabled = state.auth_enabled;
+    let auth_runtime = state.auth_runtime.clone();
+    let auth_snapshot = auth_runtime.snapshot();
+    let auth_enabled = auth_snapshot.effective_form_login_enabled;
+    let local_bypass_active = local_ip_bypass_active(&auth_snapshot, &headers, Some(remote_addr));
+    let connection_epoch = auth_snapshot.epoch;
 
     let mut initial_data = Data::default();
-    if !auth_enabled && let Ok(user) = app.find_or_create_default_user().await {
+    initial_data.insert(ConnectionAuthEpoch(connection_epoch));
+    if (!auth_enabled || local_bypass_active)
+        && let Ok(user) = app.find_or_create_default_user().await
+    {
         initial_data.insert(user);
     }
 
@@ -288,29 +299,37 @@ pub(crate) async fn graphql_ws_handler(
                 .with_data(initial_data)
                 .on_connection_init(move |value: serde_json::Value| async move {
                     let mut data = Data::default();
+                    data.insert(ConnectionAuthEpoch(connection_epoch));
                     if !auth_enabled {
                         return Ok(data);
                     }
-                    let token = value
-                        .get("Authorization")
-                        .and_then(|v| v.as_str())
-                        .and_then(|raw| {
-                            let stripped = raw
-                                .strip_prefix("Bearer ")
-                                .or_else(|| raw.strip_prefix("bearer "))?;
-                            Some(stripped.trim())
-                        });
-                    if let Some(token) = token {
-                        match app_for_init.authenticate_token(token).await {
-                            Ok(user) => {
-                                data.insert(user);
+                    let auth_value = value.get("Authorization").and_then(|v| v.as_str());
+                    if let Some(raw) = auth_value {
+                        match parse_bearer_token(raw) {
+                            Some(token) => match app_for_init.authenticate_token(token).await {
+                                Ok(user) => {
+                                    data.insert(user);
+                                }
+                                Err(_) if local_bypass_active => {
+                                    return Ok(data);
+                                }
+                                Err(e) => {
+                                    return Err(async_graphql::Error::new(format!(
+                                        "authentication failed: {e}"
+                                    )));
+                                }
+                            },
+                            None if local_bypass_active => {
+                                return Ok(data);
                             }
-                            Err(e) => {
-                                return Err(async_graphql::Error::new(format!(
-                                    "authentication failed: {e}"
-                                )));
+                            None => {
+                                return Err(async_graphql::Error::new(
+                                    "invalid authorization header",
+                                ));
                             }
                         }
+                    } else if local_bypass_active {
+                        return Ok(data);
                     }
                     Ok(data)
                 })
@@ -323,7 +342,7 @@ pub(crate) async fn graphql_ws_handler(
 pub(crate) struct AuthState {
     pub(crate) app: AppUseCase,
     pub(crate) schema: scryer_interface::ApiSchema,
-    pub(crate) auth_enabled: bool,
+    pub(crate) auth_runtime: AuthRuntimeStateHandle,
 }
 
 /// GraphQL handler that returns a streaming response body.
@@ -335,9 +354,10 @@ pub(crate) struct AuthState {
 pub(crate) async fn graphql_handler(
     State(state): State<AuthState>,
     headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
-    let actor = resolve_actor(&state, &headers).await;
+    let actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
     let mut batch = body.into_inner();
     let response_status = graphql_response_status(&mut batch);
     let batch = if let Some(user) = actor {
@@ -375,19 +395,40 @@ fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCod
     StatusCode::OK
 }
 
-async fn resolve_actor(state: &AuthState, headers: &HeaderMap) -> Option<scryer_domain::User> {
-    if state.auth_enabled {
-        let token = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_bearer_token);
-        match token {
-            Some(t) => state.app.authenticate_token(t).await.ok(),
-            None => None,
-        }
-    } else {
-        state.app.find_or_create_default_user().await.ok()
+async fn resolve_actor(
+    state: &AuthState,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> Option<scryer_domain::User> {
+    let snapshot = state.auth_runtime.snapshot();
+    if !snapshot.effective_form_login_enabled {
+        return state.app.find_or_create_default_user().await.ok();
     }
+
+    let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
+    match authorization_token_from_headers(headers) {
+        Ok(Some(token)) => match state.app.authenticate_token(token).await {
+            Ok(user) => Some(user),
+            Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+            Err(_) => None,
+        },
+        Ok(None) | Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+fn authorization_token_from_headers(headers: &HeaderMap) -> Result<Option<&str>, AppError> {
+    let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+
+    let raw = auth_header
+        .to_str()
+        .map_err(|_| AppError::Unauthorized("invalid authorization header".into()))?;
+    let token = parse_bearer_token(raw)
+        .ok_or_else(|| AppError::Unauthorized("invalid authorization header".into()))?;
+
+    Ok(Some(token))
 }
 
 pub(crate) fn parse_bearer_token(raw: &str) -> Option<&str> {
@@ -406,25 +447,29 @@ pub(crate) fn parse_bearer_token(raw: &str) -> Option<&str> {
 
 pub(crate) async fn resolve_actor_with_entitlement(
     app_use_case: &AppUseCase,
-    auth_enabled: bool,
+    auth_runtime: &AuthRuntimeStateHandle,
     headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
     required_entitlement: Entitlement,
 ) -> Result<String, AppError> {
-    if !auth_enabled {
+    let snapshot = auth_runtime.snapshot();
+    if !snapshot.effective_form_login_enabled {
         let actor = app_use_case.find_or_create_default_user().await?;
         return Ok(actor.id);
     }
 
-    let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
-        return Err(AppError::Unauthorized("authorization required".into()));
+    let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
+    let actor = match authorization_token_from_headers(headers) {
+        Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
+            Ok(actor) => actor,
+            Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
+            Err(error) => return Err(error),
+        },
+        Ok(None) if local_bypass => app_use_case.find_or_create_default_user().await?,
+        Ok(None) => return Err(AppError::Unauthorized("authorization required".into())),
+        Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
+        Err(error) => return Err(error),
     };
-
-    let raw = auth_header
-        .to_str()
-        .map_err(|_| AppError::Unauthorized("invalid authorization header".into()))?;
-    let token = parse_bearer_token(raw)
-        .ok_or_else(|| AppError::Unauthorized("invalid authorization header".into()))?;
-    let actor = app_use_case.authenticate_token(token).await?;
 
     if !actor.has_entitlement(&required_entitlement) {
         return Err(AppError::Unauthorized(
@@ -433,6 +478,141 @@ pub(crate) async fn resolve_actor_with_entitlement(
     }
 
     Ok(actor.id)
+}
+
+fn local_ip_bypass_active(
+    snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> bool {
+    if !snapshot.effective_form_login_enabled || !snapshot.skip_login_for_local_ips {
+        return false;
+    }
+
+    request_client_ip(headers, remote_addr).is_some_and(is_local_network_ip)
+        || remote_addr
+            .map(|addr| addr.ip())
+            .is_some_and(is_trusted_proxy_ip)
+            && request_target_is_local(headers)
+}
+
+fn request_client_ip(headers: &HeaderMap, remote_addr: Option<SocketAddr>) -> Option<IpAddr> {
+    let peer_ip = remote_addr?.ip();
+    if is_trusted_proxy_ip(peer_ip)
+        && let Some(forwarded_ip) = forwarded_client_ip(headers)
+    {
+        return Some(forwarded_ip);
+    }
+    Some(peer_ip)
+}
+
+fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    x_forwarded_for_client_ip(headers)
+        .or_else(|| x_real_ip_client_ip(headers))
+        .or_else(|| forwarded_header_client_ip(headers))
+}
+
+fn request_target_is_local(headers: &HeaderMap) -> bool {
+    forwarded_host_header(headers)
+        .or_else(|| host_header(headers))
+        .is_some_and(is_local_host_value)
+}
+
+fn forwarded_host_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-forwarded-host")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+}
+
+fn host_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+}
+
+fn is_local_host_value(raw: &str) -> bool {
+    let trimmed = raw.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let Ok(authority) = trimmed.parse::<http::uri::Authority>() else {
+        return trimmed.eq_ignore_ascii_case("localhost")
+            || parse_forwarded_ip_token(trimmed).is_some_and(is_local_network_ip);
+    };
+
+    let host = authority.host().trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || parse_forwarded_ip_token(host).is_some_and(is_local_network_ip)
+}
+
+fn x_forwarded_for_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').find_map(parse_forwarded_ip_token))
+}
+
+fn x_real_ip_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_forwarded_ip_token)
+}
+
+fn forwarded_header_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    headers
+        .get(header::FORWARDED)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(',').find_map(|entry| {
+                entry.split(';').find_map(|part| {
+                    let (name, raw_value) = part.split_once('=')?;
+                    if !name.trim().eq_ignore_ascii_case("for") {
+                        return None;
+                    }
+                    parse_forwarded_ip_token(raw_value)
+                })
+            })
+        })
+}
+
+fn parse_forwarded_ip_token(raw: &str) -> Option<IpAddr> {
+    let token = raw.trim().trim_matches('"');
+    if token.is_empty() || token.eq_ignore_ascii_case("unknown") {
+        return None;
+    }
+
+    token
+        .parse::<IpAddr>()
+        .ok()
+        .or_else(|| token.parse::<SocketAddr>().ok().map(|addr| addr.ip()))
+        .or_else(|| {
+            let bracketed = token.strip_prefix('[')?;
+            let end = bracketed.find(']')?;
+            bracketed[..end].parse::<IpAddr>().ok()
+        })
+}
+
+fn is_trusted_proxy_ip(ip: IpAddr) -> bool {
+    ip.is_loopback() || is_local_network_ip(ip)
+}
+
+fn is_local_network_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+        IpAddr::V6(ipv6) => {
+            ipv6.is_loopback()
+                || ipv6.is_unique_local()
+                || ipv6.is_unicast_link_local()
+                || ipv6
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| is_local_network_ip(IpAddr::V4(mapped)))
+        }
+    }
 }
 
 pub(crate) async fn health_handler() -> impl IntoResponse {
@@ -472,6 +652,8 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn scan_library_mutation_returns_ok_status() {
@@ -515,5 +697,186 @@ mod tests {
         ));
 
         assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+    }
+
+    #[test]
+    fn local_network_ip_ranges_match_expected_blocks() {
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            172, 16, 0, 1
+        ))));
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            172, 31, 255, 254
+        ))));
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 5, 10
+        ))));
+        assert!(!is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            172, 15, 0, 1
+        ))));
+        assert!(!is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            172, 32, 0, 1
+        ))));
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_local_network_ip(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 10, 20
+        ))));
+        assert!(is_local_network_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_local_network_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(is_local_network_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(!is_local_network_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_local_network_ip(IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0x4860, 0, 0, 0, 0, 0, 0x8888
+        ))));
+    }
+
+    #[test]
+    fn local_ip_bypass_accepts_direct_private_and_loopback_clients() {
+        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: true,
+            skip_login_for_local_ips: true,
+            effective_form_login_enabled: true,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        };
+        let headers = HeaderMap::new();
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 16, 5, 173), 3000))),
+        ));
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))),
+        ));
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        ));
+    }
+
+    #[test]
+    fn forwarded_headers_from_trusted_proxy_are_used() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.2"),
+        );
+
+        let client_ip = request_client_ip(
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        );
+
+        assert_eq!(client_ip, Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 25))));
+    }
+
+    #[test]
+    fn forwarded_headers_from_untrusted_peer_are_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 8.8.8.8"),
+        );
+
+        let client_ip = request_client_ip(
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+        );
+
+        assert_eq!(client_ip, Some(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn forwarded_ipv6_headers_from_trusted_proxy_are_used() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("[fc00::25]:8443"));
+
+        let client_ip = request_client_ip(
+            &headers,
+            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        );
+
+        assert_eq!(
+            client_ip,
+            Some(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0x25))),
+        );
+    }
+
+    #[test]
+    fn local_bypass_accepts_localhost_host_through_trusted_proxy() {
+        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: true,
+            skip_login_for_local_ips: true,
+            effective_form_login_enabled: true,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_bypass_accepts_private_host_through_trusted_proxy() {
+        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: true,
+            skip_login_for_local_ips: true,
+            effective_form_login_enabled: true,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("172.16.5.173:3000"),
+        );
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_bypass_rejects_public_host_with_public_forwarded_ip() {
+        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: true,
+            skip_login_for_local_ips: true,
+            effective_form_login_enabled: true,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("example.com:3000"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
     }
 }

@@ -349,6 +349,16 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   }
 }`;
 
+export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($input: UpdateSecuritySettingsInput!) {
+  updateSecuritySettings(input: $input) {
+    formLoginEnabled
+    skipLoginForLocalIps
+    effectiveFormLoginEnabled
+    envOverrideActive
+    envOverrideDescription
+  }
+}`;
+
 export const upsertDelayProfileMutation = `mutation UpsertDelayProfile($input: DelayProfileInput!) {
   upsertDelayProfile(input: $input) {
     id

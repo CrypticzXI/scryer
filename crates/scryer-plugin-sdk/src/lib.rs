@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
-use extism::{Manifest, PluginBuilder, Wasm};
+use extism::{Function, Manifest, PluginBuilder, UserData, ValType, Wasm, host_fn};
 use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 pub mod indexer;
+pub mod net;
 pub mod notification;
 pub mod torrent;
 pub use indexer::{
@@ -18,6 +19,12 @@ pub use indexer::{
     indexer_capability_fixtures, normalize_external_id_key, normalize_external_ids,
     normalize_info_hash as normalize_indexer_info_hash, torrent_result, usenet_result,
 };
+pub use net::{
+    SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode, SocketOpenRequest,
+    SocketOpenResponse, SocketPermission, SocketReadRequest, SocketReadResponse, SocketResponse,
+    SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode, SocketWriteRequest,
+    SocketWriteResponse,
+};
 pub use notification::{
     NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationDeliveryMode, NotificationEventOptions,
     NotificationMediaUpdateBatch, NotificationPayloadFormat, NotificationRichEmbed,
@@ -26,7 +33,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "1.3.0";
+pub const SDK_VERSION: &str = "1.4.0";
 
 pub fn current_sdk_constraint() -> String {
     sdk_minor_line_constraint(SDK_VERSION).unwrap_or_else(|| legacy_sdk_constraint(SDK_VERSION))
@@ -116,6 +123,26 @@ pub fn allowed_host_pattern_is_valid(host: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub fn socket_host_pattern_is_valid(host: &str) -> bool {
+    allowed_host_pattern_is_valid(host) || socket_host_pattern_config_key(host).is_some()
+}
+
+pub fn socket_host_pattern_config_key(host: &str) -> Option<&str> {
+    let key = host
+        .trim()
+        .strip_prefix("${")
+        .and_then(|value| value.strip_suffix('}'))?;
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return None;
+    }
+    Some(key)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn validate_plugin_descriptor_host_permissions(
     descriptor: &PluginDescriptor,
 ) -> Result<(), String> {
@@ -124,6 +151,26 @@ pub fn validate_plugin_descriptor_host_permissions(
             return Err(format!(
                 "{}: invalid network permission pattern {}",
                 descriptor.id, host
+            ));
+        }
+    }
+    for permission in &descriptor.socket_permissions {
+        if !socket_host_pattern_is_valid(&permission.host_pattern) {
+            return Err(format!(
+                "{}: invalid socket permission host pattern {}",
+                descriptor.id, permission.host_pattern
+            ));
+        }
+        if permission.ports.is_empty() {
+            return Err(format!(
+                "{}: socket permission for {} must include at least one port",
+                descriptor.id, permission.host_pattern
+            ));
+        }
+        if permission.tls_modes.is_empty() {
+            return Err(format!(
+                "{}: socket permission for {} must include at least one TLS mode",
+                descriptor.id, permission.host_pattern
             ));
         }
     }
@@ -212,6 +259,8 @@ pub struct PluginDescriptor {
     pub sdk_version: String,
     #[serde(default)]
     pub sdk_constraint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub socket_permissions: Vec<SocketPermission>,
     pub provider: ProviderDescriptor,
 }
 
@@ -356,13 +405,121 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct DisabledDescriptorSocketHost {
+    state: UserData<()>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DisabledDescriptorSocketHost {
+    fn new() -> Self {
+        Self {
+            state: UserData::new(()),
+        }
+    }
+
+    fn functions(&self) -> Vec<Function> {
+        let params = || [ValType::I64];
+        let results = || [ValType::I64];
+
+        vec![
+            Function::new(
+                "scryer_socket_open",
+                params(),
+                results(),
+                self.state.clone(),
+                descriptor_socket_open,
+            )
+            .with_namespace(SOCKET_HOST_NAMESPACE),
+            Function::new(
+                "scryer_socket_read",
+                params(),
+                results(),
+                self.state.clone(),
+                descriptor_socket_read,
+            )
+            .with_namespace(SOCKET_HOST_NAMESPACE),
+            Function::new(
+                "scryer_socket_write",
+                params(),
+                results(),
+                self.state.clone(),
+                descriptor_socket_write,
+            )
+            .with_namespace(SOCKET_HOST_NAMESPACE),
+            Function::new(
+                "scryer_socket_starttls",
+                params(),
+                results(),
+                self.state.clone(),
+                descriptor_socket_starttls,
+            )
+            .with_namespace(SOCKET_HOST_NAMESPACE),
+            Function::new(
+                "scryer_socket_close",
+                params(),
+                results(),
+                self.state.clone(),
+                descriptor_socket_close,
+            )
+            .with_namespace(SOCKET_HOST_NAMESPACE),
+        ]
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn disabled_descriptor_socket_response() -> String {
+    serde_json::to_string(&SocketResponse::<()>::error(
+        SocketErrorCode::Unsupported,
+        "socket host functions are unavailable while loading plugin descriptors",
+    ))
+    .unwrap_or_else(|_| "{\"ok\":false}".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+host_fn!(descriptor_socket_open(state: (); _input: String) -> String {
+    let _ = state.get()?;
+    Ok(disabled_descriptor_socket_response())
+});
+
+#[cfg(not(target_arch = "wasm32"))]
+host_fn!(descriptor_socket_read(state: (); _input: String) -> String {
+    let _ = state.get()?;
+    Ok(disabled_descriptor_socket_response())
+});
+
+#[cfg(not(target_arch = "wasm32"))]
+host_fn!(descriptor_socket_write(state: (); _input: String) -> String {
+    let _ = state.get()?;
+    Ok(disabled_descriptor_socket_response())
+});
+
+#[cfg(not(target_arch = "wasm32"))]
+host_fn!(descriptor_socket_starttls(state: (); _input: String) -> String {
+    let _ = state.get()?;
+    Ok(disabled_descriptor_socket_response())
+});
+
+#[cfg(not(target_arch = "wasm32"))]
+host_fn!(descriptor_socket_close(state: (); _input: String) -> String {
+    let _ = state.get()?;
+    Ok(disabled_descriptor_socket_response())
+});
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_plugin_descriptor_from_wasm_bytes(
     wasm_bytes: &[u8],
 ) -> Result<PluginDescriptor, String> {
     let manifest = Manifest::new([Wasm::data(wasm_bytes.to_vec())])
         .with_timeout(std::time::Duration::from_secs(10));
+    let socket_host = DisabledDescriptorSocketHost::new();
     let mut plugin = PluginBuilder::new(manifest)
         .with_wasi(true)
+        .with_http_response_headers(true)
+        .with_functions(socket_host.functions())
         .build()
         .map_err(|error| format!("failed to instantiate WASM: {error}"))?;
 
@@ -1887,6 +2044,7 @@ mod tests {
             version: "1.0.0".into(),
             sdk_version: SDK_VERSION.into(),
             sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
             provider: ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "newznab".into(),
                 provider_aliases: vec![],
@@ -1911,6 +2069,47 @@ mod tests {
     fn unknown_download_state_is_rejected() {
         let json = r#"{"client_item_id":"1","title":"x","state":"mystery"}"#;
         assert!(serde_json::from_str::<PluginDownloadItem>(json).is_err());
+    }
+
+    #[test]
+    fn socket_permission_host_patterns_are_validated() {
+        assert!(socket_host_pattern_is_valid("smtp.example.com"));
+        assert!(socket_host_pattern_is_valid("*.example.com"));
+        assert!(socket_host_pattern_is_valid("${smtp_host}"));
+        assert!(!socket_host_pattern_is_valid("*"));
+        assert!(!socket_host_pattern_is_valid("https://smtp.example.com"));
+        assert!(!socket_host_pattern_is_valid("smtp.example.com:587"));
+    }
+
+    #[test]
+    fn socket_permission_requires_ports_and_tls_modes() {
+        let mut descriptor = PluginDescriptor {
+            id: "email".into(),
+            name: "Email".into(),
+            version: "1.0.0".into(),
+            sdk_version: SDK_VERSION.into(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![SocketPermission {
+                host_pattern: "${smtp_host}".into(),
+                ports: vec![],
+                tls_modes: vec![SocketTlsMode::Starttls],
+            }],
+            provider: ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: "email".into(),
+                provider_aliases: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: NotificationCapabilities::default(),
+                config_fields: vec![],
+            }),
+        };
+
+        assert!(validate_plugin_descriptor_host_permissions(&descriptor).is_err());
+        descriptor.socket_permissions[0].ports = vec![587];
+        descriptor.socket_permissions[0].tls_modes = vec![];
+        assert!(validate_plugin_descriptor_host_permissions(&descriptor).is_err());
+        descriptor.socket_permissions[0].tls_modes = vec![SocketTlsMode::Starttls];
+        assert!(validate_plugin_descriptor_host_permissions(&descriptor).is_ok());
     }
 
     #[test]
@@ -2463,6 +2662,7 @@ mod tests {
             version: "0.1.0".to_string(),
             sdk_version: SDK_VERSION.to_string(),
             sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
             provider: ProviderDescriptor::DownloadClient(DownloadClientDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
@@ -2580,6 +2780,7 @@ mod tests {
             version: "0.1.0".to_string(),
             sdk_version: SDK_VERSION.to_string(),
             sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
             provider: ProviderDescriptor::Notification(NotificationDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),

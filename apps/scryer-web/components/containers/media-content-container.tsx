@@ -70,6 +70,7 @@ const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
 type MediaContentContainerProps = {
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
+  canManageConfig: boolean;
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
@@ -336,6 +337,7 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
 export const MediaContentContainer = React.memo(function MediaContentContainer({
   view,
   contentSettingsSection,
+  canManageConfig,
   onOpenOverview,
 }: MediaContentContainerProps) {
   const searchState = useSearchContext();
@@ -1811,6 +1813,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         state={{
           view,
           contentSettingsSection,
+          canManageConfig,
           contentSettingsLabel,
           moviesPath,
           setMoviesPath,

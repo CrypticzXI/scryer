@@ -53,6 +53,16 @@ macro_rules! notification_domain_event_type_list {
 
 notification_event_mappings!(notification_domain_event_type_list);
 
+macro_rules! notification_supported_event_type_list {
+    ($( $name:ident => $type_pattern:pat => $build_pattern:pat => $domain_event_type:expr => $notification_event_type:expr => $builder:expr, )*) => {
+        const SUPPORTED_NOTIFICATION_EVENT_TYPES: &[NotificationEventType] = &[
+            $( $notification_event_type, )*
+        ];
+    };
+}
+
+notification_event_mappings!(notification_supported_event_type_list);
+
 macro_rules! notification_event_type_match {
     ($payload:expr, $( $name:ident => $type_pattern:pat => $build_pattern:pat => $domain_event_type:expr => $notification_event_type:expr => $builder:expr, )*) => {
         match $payload {
@@ -154,6 +164,10 @@ pub(crate) fn notification_event_type(
     payload: &DomainEventPayload,
 ) -> Option<NotificationEventType> {
     notification_event_mappings!(notification_event_type_match, payload)
+}
+
+pub(crate) fn supported_notification_event_types() -> &'static [NotificationEventType] {
+    SUPPORTED_NOTIFICATION_EVENT_TYPES
 }
 
 async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {

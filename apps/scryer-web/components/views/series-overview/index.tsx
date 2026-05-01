@@ -118,6 +118,7 @@ const anilistLogoUrl = `${import.meta.env.BASE_URL}media-sites/anilist.svg`;
 const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
 
 type Props = {
+  canManageTitle: boolean;
   loading: boolean;
   hydrating: boolean;
   title: TitleDetail | null;
@@ -161,6 +162,7 @@ type Props = {
 };
 
 export function SeriesOverviewView({
+  canManageTitle,
   loading,
   hydrating,
   title,
@@ -248,7 +250,7 @@ export function SeriesOverviewView({
     React.useState<Record<string, boolean>>({});
   const [autoSearchInterstitialMovieLoadingByCollection, setAutoSearchInterstitialMovieLoadingByCollection] =
     React.useState<Record<string, boolean>>({});
-  const searchPrerequisiteNotice = !hasDownloadClients && showSearchPrerequisiteNotice
+  const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
   const { primaryQueueItemByEpisodeId } = React.useMemo(() => {
@@ -808,32 +810,34 @@ export function SeriesOverviewView({
         </CardContent>
       </Card>
 
-      <OverviewControlPanel
-        monitored={title.monitored}
-        monitoredUpdating={monitoredUpdating}
-        searchMonitoredLoading={searchMonitoredLoading}
-        refreshAndScanLoading={refreshAndScanLoading}
-        deleteLoading={deleteLoading}
-        onToggleMonitoring={onSetTitleMonitored ? () => void onSetTitleMonitored(!title.monitored) : undefined}
-        onSearchMonitored={onSearchMonitored ? () => void onSearchMonitored() : undefined}
-        onRefreshAndScan={onRefreshAndScan ? () => void onRefreshAndScan() : undefined}
-        onRequestDelete={onRequestDeleteTitle}
-        onHistory={handleOpenTitleHistory}
-        searchNotice={searchPrerequisiteNotice}
-        settingsPanel={
-          onUpdateTitleOptions && qualityProfiles && defaultRootFolder ? (
-            <TitleSettingsPanel
-              title={title}
-              qualityProfiles={qualityProfiles}
-              defaultRootFolder={defaultRootFolder}
-              rootFolders={rootFolders ?? []}
-              onUpdateTitleOptions={onUpdateTitleOptions}
-              onTitleChanged={onTitleChanged}
-              onOpenFixMatch={onOpenFixMatch}
-            />
-          ) : undefined
-        }
-      />
+      {canManageTitle ? (
+        <OverviewControlPanel
+          monitored={title.monitored}
+          monitoredUpdating={monitoredUpdating}
+          searchMonitoredLoading={searchMonitoredLoading}
+          refreshAndScanLoading={refreshAndScanLoading}
+          deleteLoading={deleteLoading}
+          onToggleMonitoring={onSetTitleMonitored ? () => void onSetTitleMonitored(!title.monitored) : undefined}
+          onSearchMonitored={onSearchMonitored ? () => void onSearchMonitored() : undefined}
+          onRefreshAndScan={onRefreshAndScan ? () => void onRefreshAndScan() : undefined}
+          onRequestDelete={onRequestDeleteTitle}
+          onHistory={handleOpenTitleHistory}
+          searchNotice={searchPrerequisiteNotice}
+          settingsPanel={
+            onUpdateTitleOptions && qualityProfiles && defaultRootFolder ? (
+              <TitleSettingsPanel
+                title={title}
+                qualityProfiles={qualityProfiles}
+                defaultRootFolder={defaultRootFolder}
+                rootFolders={rootFolders ?? []}
+                onUpdateTitleOptions={onUpdateTitleOptions}
+                onTitleChanged={onTitleChanged}
+                onOpenFixMatch={onOpenFixMatch}
+              />
+            ) : undefined
+          }
+        />
+      ) : null}
 
       <div>
         <Card className="relative overflow-hidden">
@@ -843,7 +847,7 @@ export function SeriesOverviewView({
                 <FolderOpen className="h-4 w-4" />
                 {t("title.seasonsAndEpisodes")}
               </CardTitle>
-              {onOpenManualImport && completedDownloads && completedDownloads.length > 0 ? (
+              {canManageTitle && onOpenManualImport && completedDownloads && completedDownloads.length > 0 ? (
                 <Button
                   className="w-full sm:w-auto"
                   variant="outline"
@@ -879,21 +883,21 @@ export function SeriesOverviewView({
                     mediaFilesByEpisode={mediaFilesByEpisode}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
-                    onRefreshSubtitles={onRefreshSubtitles}
+                    onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
                     releaseBlocklistEntries={releaseBlocklistEntries}
                     searchResultsByEpisode={episodePanel.searchResultsByEpisode}
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
                     searchBlockedByEpisode={searchBlockedByEpisode}
                     autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}
-                    onRunEpisodeSearch={handleRunEpisodeSearch}
-                    onOpenEpisodeHistory={handleOpenEpisodeHistory}
-                    onQueueFromEpisodeSearch={handleQueueFromEpisodeSearch}
-                    onAutoSearchEpisode={handleAutoSearchEpisode}
-                    onSetCollectionMonitored={onSetCollectionMonitored}
-                    onSetEpisodeMonitored={onSetEpisodeMonitored}
+                    onRunEpisodeSearch={canManageTitle ? handleRunEpisodeSearch : undefined}
+                    onOpenEpisodeHistory={canManageTitle ? handleOpenEpisodeHistory : undefined}
+                    onQueueFromEpisodeSearch={canManageTitle ? handleQueueFromEpisodeSearch : undefined}
+                    onAutoSearchEpisode={canManageTitle ? handleAutoSearchEpisode : undefined}
+                    onSetCollectionMonitored={canManageTitle ? onSetCollectionMonitored : undefined}
+                    onSetEpisodeMonitored={canManageTitle ? onSetEpisodeMonitored : undefined}
                     seasonSearchResults={seasonSearchResultsByCollection?.[collection.id]}
                     seasonSearchLoading={seasonSearchLoadingByCollection?.[collection.id] === true}
-                    onRunSeasonSearch={onRunSeasonSearch ? () => {
+                    onRunSeasonSearch={canManageTitle && onRunSeasonSearch ? () => {
                       if (!hasDownloadClients) {
                         setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
                         return;
@@ -907,14 +911,14 @@ export function SeriesOverviewView({
                       return onRunSeasonSearch(collection);
                     } : undefined}
                     searchBlocked={searchBlockedByCollection[collection.id] === true}
-                    onQueueFromSeasonSearch={onQueueFromSeasonSearch}
-                    onDeleteFile={onDeleteFile}
+                    onQueueFromSeasonSearch={canManageTitle ? onQueueFromSeasonSearch : undefined}
+                    onDeleteFile={canManageTitle ? onDeleteFile : undefined}
                     interstitialSearchResults={interstitialSearchResultsByCollection[collection.id]}
                     interstitialSearchLoading={interstitialSearchLoadingByCollection[collection.id] === true}
                     interstitialSearchAttempted={interstitialSearchAttemptedByCollection[collection.id] === true}
-                    onRunInterstitialMovieSearch={handleRunInterstitialMovieSearch}
-                    onQueueFromInterstitialMovieSearch={handleQueueFromInterstitialMovieSearch}
-                    onAutoSearchInterstitialMovie={onAutoSearchInterstitialMovie ? handleAutoSearchInterstitialMovie : undefined}
+                    onRunInterstitialMovieSearch={canManageTitle ? handleRunInterstitialMovieSearch : undefined}
+                    onQueueFromInterstitialMovieSearch={canManageTitle ? handleQueueFromInterstitialMovieSearch : undefined}
+                    onAutoSearchInterstitialMovie={canManageTitle && onAutoSearchInterstitialMovie ? handleAutoSearchInterstitialMovie : undefined}
                     autoSearchInterstitialMovieLoading={autoSearchInterstitialMovieLoadingByCollection[collection.id] === true}
                   />
                 );

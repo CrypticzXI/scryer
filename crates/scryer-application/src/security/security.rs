@@ -76,22 +76,18 @@ impl AppUseCase {
     pub(crate) fn entitlement_claim_string(entitlement: &Entitlement) -> &'static str {
         match entitlement {
             Entitlement::ViewCatalog => "view_catalog",
-            Entitlement::MonitorTitle => "monitor_title",
             Entitlement::ManageTitle => "manage_title",
-            Entitlement::TriggerActions => "trigger_actions",
+            Entitlement::ManageUsers => "manage_users",
             Entitlement::ManageConfig => "manage_config",
-            Entitlement::ViewHistory => "view_history",
         }
     }
 
     fn parse_entitlement_claim(raw: &str) -> Option<Entitlement> {
         match raw.trim().to_lowercase().replace('-', "_").as_str() {
             "viewcatalog" | "view_catalog" => Some(Entitlement::ViewCatalog),
-            "monitortitle" | "monitor_title" => Some(Entitlement::MonitorTitle),
             "managetitle" | "manage_title" => Some(Entitlement::ManageTitle),
-            "triggeractions" | "trigger_actions" => Some(Entitlement::TriggerActions),
+            "manageusers" | "manage_users" => Some(Entitlement::ManageUsers),
             "manageconfig" | "manage_config" => Some(Entitlement::ManageConfig),
-            "viewhistory" | "view_history" => Some(Entitlement::ViewHistory),
             _ => None,
         }
     }

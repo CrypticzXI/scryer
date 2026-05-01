@@ -176,11 +176,9 @@ pub(crate) fn parse_entitlements(raw_entitlements: &[String]) -> GqlResult<Vec<E
         let normalized = raw.trim().to_lowercase().replace('-', "_");
         let entitlement = match normalized.as_str() {
             "viewcatalog" | "view_catalog" => Entitlement::ViewCatalog,
-            "monitortitle" | "monitor_title" => Entitlement::MonitorTitle,
             "managetitle" | "manage_title" => Entitlement::ManageTitle,
-            "triggeractions" | "trigger_actions" => Entitlement::TriggerActions,
+            "manageusers" | "manage_users" => Entitlement::ManageUsers,
             "manageconfig" | "manage_config" => Entitlement::ManageConfig,
-            "viewhistory" | "view_history" => Entitlement::ViewHistory,
             other => {
                 return Err(Error::new(format!("unknown entitlement: {other}")));
             }
@@ -206,14 +204,14 @@ mod tests {
         let parsed = parse_entitlements(&[
             "View_Catalog".into(),
             "manage_title".into(),
-            "VIEWHISTORY".into(),
+            "manage_users".into(),
         ])
         .expect("entitlements should parse");
 
         assert_eq!(parsed.len(), 3);
         assert!(parsed.contains(&Entitlement::ViewCatalog));
         assert!(parsed.contains(&Entitlement::ManageTitle));
-        assert!(parsed.contains(&Entitlement::ViewHistory));
+        assert!(parsed.contains(&Entitlement::ManageUsers));
     }
 
     #[test]

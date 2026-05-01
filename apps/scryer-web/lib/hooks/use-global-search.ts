@@ -15,7 +15,10 @@ import {
   titlesByExternalIdsQuery,
   titlesQuery,
 } from "@/lib/graphql/queries";
-import { scryerFetch } from "@/lib/graphql/urql-client";
+import {
+  isAbortError,
+  makeAbortableFetch,
+} from "@/lib/graphql/urql-client";
 import { addTitleMutation } from "@/lib/graphql/mutations";
 import {
   ANIME_INTER_SEASON_MOVIES_KEY,
@@ -635,9 +638,7 @@ export function useGlobalSearch({
       autocompleteAbortRef.current?.abort();
       const abortController = new AbortController();
       autocompleteAbortRef.current = abortController;
-      const { signal } = abortController;
-      const abortableFetch: typeof fetch = (input, init) =>
-        scryerFetch(input, { ...init, signal });
+      const abortableFetch = makeAbortableFetch(abortController.signal);
       let directCatalogEntries: TitleRecord[] = [];
       let promotedCatalogEntries: TitleRecord[] = [];
 
@@ -737,12 +738,6 @@ export function useGlobalSearch({
 
       // Surface errors from either leg (suppress AbortError — the request
       // was intentionally cancelled by a newer autocomplete keystroke).
-      const isAbortError = (err: unknown): boolean =>
-        err != null &&
-        typeof err === "object" &&
-        "networkError" in err &&
-        (err as { networkError?: { name?: string } }).networkError?.name === "AbortError";
-
       if (catalogResult.status === "rejected" && !isAbortError(catalogResult.reason)) {
         const msg = catalogResult.reason instanceof Error ? catalogResult.reason.message : t("status.apiError");
         setGlobalStatus(msg);

@@ -2562,7 +2562,7 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
@@ -2612,7 +2612,7 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let title = self
             .services
@@ -3326,7 +3326,7 @@ impl AppUseCase {
         id: &str,
         monitored: bool,
     ) -> AppResult<Title> {
-        require(actor, &Entitlement::MonitorTitle)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         self.apply_title_monitoring_change(Some(actor.id.clone()), id, monitored)
             .await
@@ -3338,7 +3338,7 @@ impl AppUseCase {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<Collection> {
-        require(actor, &Entitlement::MonitorTitle)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let collection = self
             .apply_collection_monitoring_change(
@@ -3358,7 +3358,7 @@ impl AppUseCase {
         episode_id: &str,
         monitored: bool,
     ) -> AppResult<Episode> {
-        require(actor, &Entitlement::MonitorTitle)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let episode = self
             .apply_episode_monitoring_change(Some(actor.id.clone()), episode_id, monitored, true)

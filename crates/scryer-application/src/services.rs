@@ -1236,7 +1236,7 @@ impl AppUseCase {
         actor: &User,
         limit: usize,
     ) -> AppResult<Vec<ImportRecord>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         self.services.workflow.imports.list_imports(limit).await
     }
 
@@ -1397,12 +1397,12 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn get_title_for_trigger_actions(
+    pub async fn get_title_for_download_actions(
         &self,
         actor: &User,
         title_id: &str,
     ) -> AppResult<Option<Title>> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         self.services.catalog.titles.get_by_id(title_id).await
     }
 
@@ -1426,7 +1426,7 @@ impl AppUseCase {
         actor: &User,
         download_client_item_id: &str,
     ) -> AppResult<CompletedDownload> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let download_client_item_id = download_client_item_id.trim();
         if download_client_item_id.is_empty() {
             return Err(AppError::Validation(

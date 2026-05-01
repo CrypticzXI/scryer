@@ -41,15 +41,16 @@ services:
       - crates/scryer/.env
     environment:
       SCRYER_BIND: 0.0.0.0:8080
-      SCRYER_METRICS: "true"
-      SCRYER_DB_PATH: sqlite:///config/scryer.db
+#      SCRYER_METRICS: "true"
       SCRYER_WEB_UI_URL: http://nodejs:3000
-      SCRYER_AUTH_ENABLED: "false"
-      SCRYER_BACKGROUND_LIBRARY_REFRESH: "false"
-      SCRYER_SQLITE_MAX_CONNECTIONS: "16"
+#      SCRYER_AUTH_ENABLED: "false"
+#      SCRYER_BACKGROUND_LIBRARY_REFRESH: "false"
+#      SCRYER_SQLITE_MAX_CONNECTIONS: "16"
       RUST_LOG: "${RUST_LOG:-info,scryer_application::app_usecase_catalog=debug,scryer_application::app_usecase_library=debug}"
       CARGO_TARGET_DIR: /cargo-target
       SCRYER_SMG_REGISTRATION_SECRET: ${SCRYER_SMG_REGISTRATION_SECRET}
+      # Optional local registry override for plugin-dev work. Leave unset to use the published registry.
+      SCRYER_PLUGIN_REGISTRY_PATH: ${SCRYER_PLUGIN_REGISTRY_PATH:-}
     command: >
       sh -c '
         set -eu
@@ -57,6 +58,8 @@ services:
       '
     volumes:
       - .:/workspace
+      # Only needed when SCRYER_PLUGIN_REGISTRY_PATH points at a sibling repo checkout.
+      - ..:/workspace-parent:ro
       - scryer-cargo-registry:/usr/local/cargo/registry
       - scryer-cargo-git:/usr/local/cargo/git
       - scryer-config:/config

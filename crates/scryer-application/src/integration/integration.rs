@@ -1540,7 +1540,7 @@ impl AppUseCase {
         include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageTitle)?;
         self.collect_download_queue_items(
             include_all_activity,
             include_history_only,
@@ -1560,7 +1560,7 @@ impl AppUseCase {
         include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
         self.collect_download_queue_items_for_title(
             title_id,
             include_all_activity,
@@ -1579,7 +1579,7 @@ impl AppUseCase {
         offset: usize,
         filter: DownloadImportFilter,
     ) -> AppResult<DownloadImportPage> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let limit = limit.clamp(1, 100);
         let items = self
@@ -1633,7 +1633,7 @@ impl AppUseCase {
         actor: &User,
         filter: DownloadImportFilter,
     ) -> AppResult<i64> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let count = self
             .collect_download_history_items(true)
@@ -1675,7 +1675,7 @@ impl AppUseCase {
         scryer_submitted_only: bool,
         sort: Option<DownloadHistorySort>,
     ) -> AppResult<DownloadHistoryPage> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let limit = limit.clamp(1, 50);
         let normalized_client_ids = client_ids.map(|ids| {
@@ -1734,7 +1734,7 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
         self.collect_download_snapshot_items(true, true, true).await
     }
 
@@ -1745,7 +1745,7 @@ impl AppUseCase {
         client_type: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadQueueItem>> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let target_download_client_item_id = download_client_item_id.trim();
         if target_download_client_item_id.is_empty() {
@@ -1784,7 +1784,7 @@ impl AppUseCase {
         download_client_item_id: &str,
     ) -> AppResult<Option<SubmissionScope>> {
         if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            require(actor, &Entitlement::ManageConfig)?;
+            require(actor, &Entitlement::ManageTitle)?;
         }
 
         let submission = self
@@ -1804,7 +1804,7 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<DownloadQueueItem>>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
         let (tx, rx) = broadcast::channel(32);
         let app = self.clone();
         let actor = actor.clone();
@@ -1943,7 +1943,7 @@ impl AppUseCase {
         download_client_item_id: String,
         files: Option<Vec<crate::ManualImportFileMapping>>,
     ) -> AppResult<String> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let source_ref = download_client_item_id.trim().to_string();
         if source_ref.is_empty() {
@@ -2039,7 +2039,7 @@ impl AppUseCase {
         completed: &CompletedDownload,
         override_title_id: Option<&str>,
     ) -> AppResult<scryer_domain::ImportResult> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         // If a title_id override is provided, inject it into the parameters
         let mut completed = completed.clone();
@@ -2064,7 +2064,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let handle = self
             .runtime
             .acquisition
@@ -2088,7 +2088,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let handle = self
             .runtime
             .acquisition
@@ -2112,7 +2112,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let handle = self
             .runtime
             .acquisition
@@ -2138,7 +2138,7 @@ impl AppUseCase {
         title_id: &str,
         scope: SubmissionScope,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let title = self
             .services
             .catalog
@@ -2187,7 +2187,7 @@ impl AppUseCase {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
             self.services
                 .integrations
@@ -2216,7 +2216,7 @@ impl AppUseCase {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
             self.services
                 .integrations
@@ -2247,7 +2247,7 @@ impl AppUseCase {
         download_client_item_id: &str,
         is_history: bool,
     ) -> AppResult<crate::DownloadQueueCommandRecord> {
-        require(actor, &Entitlement::TriggerActions)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let client_type = self.normalize_download_client_type(client_type)?;
         let command = self
             .services

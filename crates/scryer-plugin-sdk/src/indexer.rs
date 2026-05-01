@@ -675,6 +675,7 @@ fn fixture_descriptor(
         version: "0.0.0".to_string(),
         sdk_version: crate::SDK_VERSION.to_string(),
         sdk_constraint: crate::current_sdk_constraint(),
+        socket_permissions: vec![],
         provider: ProviderDescriptor::Indexer(IndexerDescriptor {
             provider_type: provider_type.to_string(),
             provider_aliases: vec![],

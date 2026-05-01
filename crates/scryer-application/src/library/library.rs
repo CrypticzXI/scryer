@@ -311,7 +311,7 @@ impl AppUseCase {
         actor: &User,
         session_id: &str,
     ) -> AppResult<CancelLibraryScanResult> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ManageConfig)?;
 
         let session = self
             .runtime
@@ -353,7 +353,7 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<LibraryScanSession> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ManageConfig)?;
 
         let (_coordinator, session) =
             LibraryScanCoordinator::start(self.clone(), facet.clone(), LibraryScanMode::Full, None)
@@ -399,7 +399,7 @@ impl AppUseCase {
         session_id_override: Option<String>,
         mode: LibraryScanMode,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ManageConfig)?;
 
         let (_coordinator, session) = LibraryScanCoordinator::start(
             self.clone(),
@@ -664,7 +664,7 @@ impl AppUseCase {
         facet: MediaFacet,
         session_id: &str,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ManageConfig)?;
 
         let (_coordinator, session) = LibraryScanCoordinator::start(
             self.clone(),

@@ -1,10 +1,10 @@
 import { Loader2 } from "lucide-react";
+import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FilterChipButton } from "@/components/common/filter-chip-button";
-import { Input } from "@/components/ui/input";
 import { HistoryEventTable } from "@/components/common/history-event-table";
-import type { TitleHistoryEvent } from "@/lib/types";
+import type { TitleHistoryEvent, TitleRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventIcon } from "@/components/common/history-event-icon";
 import { getTitleHistoryFilterLabel } from "@/components/common/title-history-event-meta";
@@ -16,10 +16,10 @@ export function TitleHistoryView({
   error,
   activeFilters,
   availableFilters,
-  titleFilterInput,
+  selectedTitle,
   currentPage,
   pageSize,
-  onTitleFilterInputChange,
+  onSelectedTitleChange,
   onToggleFilter,
   onClearFilters,
   onPreviousPage,
@@ -34,10 +34,10 @@ export function TitleHistoryView({
   error: string | null;
   activeFilters: string[];
   availableFilters: string[];
-  titleFilterInput: string;
+  selectedTitle: TitleRecord | null;
   currentPage: number;
   pageSize: number;
-  onTitleFilterInputChange: (value: string) => void;
+  onSelectedTitleChange: (title: TitleRecord | null) => void;
   onToggleFilter: (eventType: string) => void;
   onClearFilters: () => void;
   onPreviousPage: () => void;
@@ -85,10 +85,12 @@ export function TitleHistoryView({
             </Button>
           </div>
         </div>
-        <Input
-          value={titleFilterInput}
-          onChange={(event) => onTitleFilterInputChange(event.target.value)}
+        <TitleAutocompletePicker
+          className="w-full"
           placeholder={t("title.filterPlaceholder")}
+          selectedTitle={selectedTitle}
+          selectedTitleId={selectedTitle?.id ?? null}
+          onSelectedTitleChange={onSelectedTitleChange}
         />
         <div className="flex flex-wrap gap-2">
           <FilterChipButton

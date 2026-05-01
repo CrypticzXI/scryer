@@ -34,6 +34,7 @@ import type {
   ParsedQualityProfileEntry,
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
+import { buildViewPath } from "@/lib/utils/routing";
 import type { ContentViewMode } from "./media-content/content-view-mode";
 
 type Facet = "movie" | "series" | "anime";
@@ -85,12 +86,23 @@ function CompactTableIcon() {
   );
 }
 
+function isMediaSettingsSection(section: ContentSettingsSection): boolean {
+  return (
+    section === "settings" ||
+    section === "general" ||
+    section === "quality" ||
+    section === "renaming" ||
+    section === "routing"
+  );
+}
+
 export function MediaContentView({
   state,
 }: {
   state: {
     view: ViewId;
     contentSettingsSection: ContentSettingsSection;
+    canManageConfig: boolean;
     contentSettingsLabel: string;
     moviesPath: string;
     setMoviesPath: (value: string) => void;
@@ -231,6 +243,7 @@ export function MediaContentView({
   const {
     view,
     contentSettingsSection,
+    canManageConfig,
     contentSettingsLabel,
     rootFolders,
     saveRootFolders,
@@ -330,6 +343,10 @@ export function MediaContentView({
     openBulkTitleEdit,
     openBulkTitleDelete,
   } = state;
+  const effectiveContentSettingsSection =
+    !canManageConfig && isMediaSettingsSection(contentSettingsSection)
+      ? "overview"
+      : contentSettingsSection;
 
   const scopeLabel =
     activeQualityScopeId === "movie"
@@ -338,11 +355,21 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
-  const hasConfiguredRootFolders = rootFolders.some(
-    (folder) => folder.path.trim().length > 0,
-  );
+  const hasConfiguredRootFolders = mediaSettingsLoading
+    ? null
+    : rootFolders.some((folder) => folder.path.trim().length > 0);
   const showInitialScanAction =
-    monitoredTitles.length === 0 && hasConfiguredRootFolders;
+    canManageConfig &&
+    monitoredTitles.length === 0 &&
+    hasConfiguredRootFolders === true;
+  const showConfigureRootFoldersAction =
+    canManageConfig &&
+    monitoredTitles.length === 0 &&
+    hasConfiguredRootFolders === false;
+  const configureRootFoldersHref =
+    view === "movies" || view === "series" || view === "anime"
+      ? buildViewPath(view, undefined, "settings")
+      : undefined;
 
   const mediaLibrarySettingsTitle =
     view === "series" ? t("settings.seriesLibrarySettings") : t("settings.moviesLibrarySettings");
@@ -496,7 +523,7 @@ export function MediaContentView({
 
   return (
     <div className="space-y-4">
-      {contentSettingsSection === "quality" ? (
+      {effectiveContentSettingsSection === "quality" ? (
         <QualitySettingsPanel
           contentSettingsLabel={contentSettingsLabel}
           mediaSettingsLoading={mediaSettingsLoading}
@@ -514,7 +541,7 @@ export function MediaContentView({
           saveCategoryQualityProfileOverride={saveCategoryQualityProfileOverride}
           onFacetPersonaSave={handleFacetPersonaSave}
         />
-      ) : contentSettingsSection === "renaming" ? (
+      ) : effectiveContentSettingsSection === "renaming" ? (
         <RenameSettingsPanel
           activeQualityScopeId={activeQualityScopeId}
           mediaSettingsLoading={mediaSettingsLoading}
@@ -527,7 +554,7 @@ export function MediaContentView({
           handleRenameMissingMetadataPolicyChange={handleRenameMissingMetadataPolicyChange}
           updateCategoryMediaProfileSettings={updateCategoryMediaProfileSettings}
         />
-      ) : contentSettingsSection === "routing" ? (
+      ) : effectiveContentSettingsSection === "routing" ? (
         <div className="space-y-4">
           <IndexerRoutingPanel
             scopeLabel={scopeLabel}
@@ -553,7 +580,7 @@ export function MediaContentView({
             moveDownloadClientInScope={moveDownloadClientInScope}
           />
         </div>
-      ) : contentSettingsSection === "settings" || contentSettingsSection === "general" ? (
+      ) : effectiveContentSettingsSection === "settings" || effectiveContentSettingsSection === "general" ? (
         <div className="space-y-4">
           {view === "movies" || view === "series" || view === "anime" ? (
             <MediaLibrarySettingsPanel
@@ -708,6 +735,8 @@ export function MediaContentView({
                       onBulkDelete={openBulkTitleDelete}
                       bulkActionBusy={bulkActionBusy}
                       showScanLibraryAction={showInitialScanAction}
+                      showConfigureRootsAction={showConfigureRootFoldersAction}
+                      configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
@@ -732,6 +761,8 @@ export function MediaContentView({
                     isDeletingById={isDeletingCatalogTitleById}
                     isTogglingMonitoredById={isTogglingTitleMonitoredById}
                     showScanLibraryAction={showInitialScanAction}
+                    showConfigureRootsAction={showConfigureRootFoldersAction}
+                    configureRootsHref={configureRootFoldersHref}
                     onScanLibrary={scanLibrary}
                     scanLibraryLoading={libraryScanLoading}
                     scanLibraryDisabled={libraryScanDisabled}

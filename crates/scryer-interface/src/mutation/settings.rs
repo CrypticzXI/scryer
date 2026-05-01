@@ -2,12 +2,13 @@ use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
-    UpdateGeneralSettings as AppUpdateGeneralSettings,
+    SecuritySettings as AppSecuritySettings, UpdateGeneralSettings as AppUpdateGeneralSettings,
+    UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 use scryer_domain::Entitlement;
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
 use crate::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
     from_media_settings, from_quality_profile_settings, from_service_settings,
@@ -64,6 +65,19 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+    }
+}
+
+fn from_security_settings(
+    settings: AppSecuritySettings,
+    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
+) -> SecuritySettingsPayload {
+    SecuritySettingsPayload {
+        form_login_enabled: settings.form_login_enabled,
+        skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
+        env_override_active: auth_runtime.env_override_active,
+        env_override_description: auth_runtime.env_override_description.clone(),
     }
 }
 
@@ -298,6 +312,33 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_general_settings(settings))
+    }
+
+    async fn update_security_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateSecuritySettingsInput,
+    ) -> GqlResult<SecuritySettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+
+        let settings = app
+            .update_security_settings(
+                &actor,
+                AppUpdateSecuritySettings {
+                    form_login_enabled: input.form_login_enabled,
+                    skip_login_for_local_ips: input.skip_login_for_local_ips,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let snapshot = auth_runtime.apply_saved_security_settings(
+            settings.form_login_enabled,
+            settings.skip_login_for_local_ips,
+        );
+
+        Ok(from_security_settings(settings, &snapshot))
     }
 
     async fn upsert_delay_profile(
@@ -632,11 +673,11 @@ impl SettingsMutations {
     /// Issue a JWT for the default admin user without credentials.
     /// Retained for compatibility when authentication is disabled.
     async fn dev_auto_login(&self, ctx: &Context<'_>) -> GqlResult<LoginPayload> {
-        let api_ctx = ctx.data_unchecked::<crate::context::ApiContext>();
-        if api_ctx.auth_enabled {
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        if auth_runtime.snapshot().effective_form_login_enabled {
             return Err(Error::new("authentication is enabled"));
         }
-        let app = &api_ctx.app;
+        let app = app_from_ctx(ctx)?;
         let user = app
             .find_or_create_default_user()
             .await

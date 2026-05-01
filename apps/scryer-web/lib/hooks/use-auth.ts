@@ -1,23 +1,15 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { decodeJwtPayload, isTokenExpired } from "@/lib/utils/jwt";
-
-const LOGIN_MUTATION = `mutation Login($input: LoginInput!) {
-  login(input: $input) { token expiresAt }
-}`;
-const AUTO_LOGIN_MUTATION = `mutation DevAutoLogin { devAutoLogin { token expiresAt } }`;
-const ME_QUERY = `query Me {
-  me {
-    id
-    username
-    entitlements
-  }
-}`;
+import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
+import { loginMutation } from "@/lib/graphql/mutations";
+import type { AuthRuntimeState } from "@/lib/types/settings";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
 
 type AuthUser = { id: string; username: string; entitlements: string[] };
+type AuthLoginOptions = { persistSession?: boolean };
+type AuthLoginResult = { token: string; user: AuthUser | null };
 
 // Module-level token ref so getAuthToken() can be called outside React
 let currentToken: string | null = null;
@@ -26,11 +18,42 @@ export function getAuthToken(): string | null {
   return currentToken;
 }
 
+export function clearClientAuthSession() {
+  clearPersistedAuthToken();
+}
+
+function persistAuthToken(token: string) {
+  sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+  currentToken = token;
+}
+
+function clearPersistedAuthToken() {
+  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  currentToken = null;
+}
+
+function applyAuthenticatedSession(
+  token: string,
+  user: AuthUser | null,
+  setToken: (value: string | null) => void,
+  setUser: (value: AuthUser | null) => void,
+) {
+  persistAuthToken(token);
+  setToken(token);
+  setUser(user);
+}
+
 export type AuthState = {
   token: string | null;
   user: AuthUser | null;
   loading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  effectiveFormLoginEnabled: boolean | null;
+  login: (
+    username: string,
+    password: string,
+    options?: AuthLoginOptions,
+  ) => Promise<AuthLoginResult>;
+  adoptSession: (token: string, user: AuthUser | null) => void;
   logout: () => void;
 };
 
@@ -49,6 +72,7 @@ export function useAuth(): AuthState {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -56,7 +80,48 @@ export function useAuth(): AuthState {
     initialized.current = true;
 
     (async () => {
-      // 1. Try module-level token (same SPA session)
+      const loadUserFromBypass = async (options?: { clearToken?: boolean }) => {
+        if (options?.clearToken) {
+          clearPersistedAuthToken();
+          setToken(null);
+        }
+
+        try {
+          const { data, error } = await backendClient.query(meQuery, {}).toPromise();
+          if (error) throw error;
+          return data?.me ?? null;
+        } catch {
+          return null;
+        }
+      };
+
+      let runtimeState: AuthRuntimeState | null = null;
+
+      try {
+        const { data, error } = await backendClient.query(authRuntimeStateQuery, {}).toPromise();
+        if (error) throw error;
+        runtimeState = data?.authRuntimeState ?? null;
+        setEffectiveFormLoginEnabled(
+          typeof runtimeState?.effectiveFormLoginEnabled === "boolean"
+            ? runtimeState.effectiveFormLoginEnabled
+            : null,
+        );
+      } catch {
+        // Fall back to the existing token/bootstrap path when the public
+        // runtime-state probe is temporarily unavailable.
+      }
+
+      if (runtimeState?.effectiveFormLoginEnabled === false) {
+        clearPersistedAuthToken();
+        setToken(null);
+        setUser(await loadUserFromBypass());
+
+        setLoading(false);
+        return;
+      }
+
+      // When auth is enabled, or the runtime mode is temporarily unknown,
+      // prefer preserving an existing valid session over clearing it.
       if (currentToken) {
         const authUser = userFromToken(currentToken);
         if (authUser) {
@@ -68,7 +133,6 @@ export function useAuth(): AuthState {
         currentToken = null;
       }
 
-      // 2. Check sessionStorage for a persisted token
       const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
       if (stored) {
         const authUser = userFromToken(stored);
@@ -82,70 +146,66 @@ export function useAuth(): AuthState {
         sessionStorage.removeItem(SESSION_STORAGE_KEY);
       }
 
-      // 3. No-auth bootstrap: request an auto-login JWT when authentication is disabled.
-      try {
-        // In auth-disabled mode the backend resolves `me` as the default admin
-        // user even without a JWT, so prefer that over the legacy auto-login
-        // mutation. This avoids showing the login page when auth is disabled
-        // but the browser never received a token.
-        const { data } = await backendClient.query(ME_QUERY, {}).toPromise();
-        if (data?.me) {
-          setToken(null);
-          setUser(data.me);
-          setLoading(false);
-          return;
+      if (
+        runtimeState?.effectiveFormLoginEnabled !== true ||
+        runtimeState?.skipLoginForLocalIps === true
+      ) {
+        let bypassUser = await loadUserFromBypass();
+        if (
+          !bypassUser &&
+          runtimeState?.skipLoginForLocalIps === true &&
+          currentToken
+        ) {
+          bypassUser = await loadUserFromBypass({ clearToken: true });
         }
-      } catch {
-        // Fall through to the legacy bootstrap below.
-      }
-
-      // 4. Legacy no-auth bootstrap: request an auto-login JWT when supported.
-      try {
-        const { data } = await backendClient.mutation(AUTO_LOGIN_MUTATION, {}).toPromise();
-        if (data?.devAutoLogin?.token) {
-          const devToken = data.devAutoLogin.token;
-          const authUser = userFromToken(devToken);
-          if (authUser) {
-            sessionStorage.setItem(SESSION_STORAGE_KEY, devToken);
-            currentToken = devToken;
-            setToken(devToken);
-            setUser(authUser);
-            setLoading(false);
-            return;
-          }
-        }
-      } catch {
-        // Expected when authentication is enabled.
+        setUser(bypassUser);
       }
 
       setLoading(false);
     })();
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const { data, error } = await backendClient.mutation(LOGIN_MUTATION, {
+  const login = useCallback(async (
+    username: string,
+    password: string,
+    options?: AuthLoginOptions,
+  ) => {
+    const { data, error } = await backendClient.mutation(loginMutation, {
       input: { username, password },
     }).toPromise();
     if (error || !data?.login) {
       throw error ?? new Error("Login failed");
     }
     const newToken = data.login.token;
-    sessionStorage.setItem(SESSION_STORAGE_KEY, newToken);
-    currentToken = newToken;
-    setToken(newToken);
+    const nextUser = data.login.user ?? userFromToken(newToken);
 
-    const authUser = userFromToken(newToken);
-    if (authUser) {
-      setUser(authUser);
+    if (options?.persistSession !== false) {
+      applyAuthenticatedSession(newToken, nextUser, setToken, setUser);
     }
+
+    return {
+      token: newToken,
+      user: nextUser,
+    };
+  }, []);
+
+  const adoptSession = useCallback((nextToken: string, nextUser: AuthUser | null) => {
+    applyAuthenticatedSession(nextToken, nextUser, setToken, setUser);
   }, []);
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
-    currentToken = null;
+    clearPersistedAuthToken();
     setToken(null);
     setUser(null);
   }, []);
 
-  return { token, user, loading, login, logout };
+  return {
+    token,
+    user,
+    loading,
+    effectiveFormLoginEnabled,
+    login,
+    adoptSession,
+    logout,
+  };
 }

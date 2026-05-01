@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SettingsOverviewContainer } from "@/components/containers/settings/settings-overview-container";
+import { SettingsSecurityContainer } from "@/components/containers/settings/settings-security-container";
 import { SettingsUsersContainer } from "@/components/containers/settings/settings-users-container";
 import { SettingsIndexersContainer } from "@/components/containers/settings/settings-indexers-container";
 import { SettingsDownloadClientsContainer } from "@/components/containers/settings/settings-download-clients-container";
@@ -58,6 +59,7 @@ export const SettingsContainer = memo(function SettingsContainer({
     settingsSection === "indexers" ||
     settingsSection === "notifications" ||
     settingsSection === "subtitles";
+  const subscribeToProviderCatalog = showPluginsLink;
 
   useProviderCatalogSubscription(
     useCallback((families: ProviderCatalogFamily[]) => {
@@ -74,6 +76,7 @@ export const SettingsContainer = memo(function SettingsContainer({
         return next;
       });
     }, []),
+    subscribeToProviderCatalog,
   );
 
   return (
@@ -86,6 +89,8 @@ export const SettingsContainer = memo(function SettingsContainer({
                 ? t("settings.profile")
                 : settingsSection === "general"
                   ? t("settings.general")
+                : settingsSection === "security"
+                  ? t("settings.security")
                 : settingsSection === "users"
                   ? t("settings.users")
                 : settingsSection === "indexers"
@@ -130,6 +135,8 @@ export const SettingsContainer = memo(function SettingsContainer({
             uiLanguage={uiLanguage}
             onSelectLanguage={onSelectLanguage}
           />
+        ) : settingsSection === "security" ? (
+          <SettingsSecurityContainer />
         ) : settingsSection === "users" ? (
           <SettingsUsersContainer />
         ) : settingsSection === "indexers" ? (

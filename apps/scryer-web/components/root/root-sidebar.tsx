@@ -57,6 +57,7 @@ type RootSidebarProps = {
   pendingImportCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
   pluginUpdateCount: number;
+  scryerVersion: string | null;
   children?: React.ReactNode;
   onNavigate: (
     nextView: ViewId,
@@ -83,9 +84,14 @@ const settingsEntries: Array<{
     requiredEntitlement: "manage_config",
   },
   {
+    id: "security",
+    label: (t) => t("settings.security"),
+    requiredEntitlement: "manage_users",
+  },
+  {
     id: "users",
     label: (t) => t("settings.users"),
-    requiredEntitlement: "manage_config",
+    requiredEntitlement: "manage_users",
   },
   {
     id: "qualityProfiles",
@@ -212,6 +218,7 @@ function RootSidebarContent({
   pendingImportCounts,
   manualImportRequiredCount,
   pluginUpdateCount,
+  scryerVersion,
   children,
   onNavigate,
 }: RootSidebarProps) {
@@ -224,10 +231,23 @@ function RootSidebarContent({
   const cycleTheme = React.useCallback(() => {
     setTheme(getNextTheme(theme));
   }, [theme, setTheme]);
+  const canManageConfig = entitlements.includes("manage_config");
+  const canManageTitle = entitlements.includes("manage_title");
+  const canAccessFacetImport = canManageTitle;
+  const canAccessMediaSettings = canManageConfig;
 
   const visibleSettingsEntries = React.useMemo(
     () => settingsEntries.filter((e) => !e.requiredEntitlement || entitlements.includes(e.requiredEntitlement)),
     [entitlements],
+  );
+  const visibleTopNav = React.useMemo(
+    () =>
+      topNav.filter(
+        (item) =>
+          (item.id !== "system" || canManageConfig) &&
+          (item.id !== "activity" || canManageTitle),
+      ),
+    [canManageConfig, canManageTitle, topNav],
   );
 
   const hasImportsForView = React.useCallback(
@@ -244,6 +264,14 @@ function RootSidebarContent({
   const visibleActivitySubPages = React.useMemo(
     () => ACTIVITY_SUB_PAGES.filter((entry) => entry.id !== "import" || hasActivityImportBadge),
     [hasActivityImportBadge],
+  );
+  const hasVisibleActivitySubnav = React.useMemo(
+    () => visibleActivitySubPages.some((entry) => entry.id !== "activity"),
+    [visibleActivitySubPages],
+  );
+  const visibleWantedSubPages = React.useMemo(
+    () => WANTED_SUB_PAGES.filter((entry) => entry.id !== "history" || canManageTitle),
+    [canManageTitle],
   );
 
   const handleNavigate = React.useCallback(
@@ -273,8 +301,11 @@ function RootSidebarContent({
   );
 
   const currentTopLevelLabel = React.useMemo(
-    () => topNav.find((item) => item.id === view)?.label ?? t("nav.library"),
-    [topNav, t, view],
+    () =>
+      visibleTopNav.find((item) => item.id === view)?.label ??
+      topNav.find((item) => item.id === view)?.label ??
+      t("nav.library"),
+    [topNav, t, view, visibleTopNav],
   );
 
   const currentSubsectionLabel = React.useMemo(() => {
@@ -288,10 +319,13 @@ function RootSidebarContent({
       }
 
       if (contentSettingsSection === "import") {
-        return t("nav.import");
+        return canAccessFacetImport ? t("nav.import") : getMediaOverviewLabel(view, t);
       }
 
       if (isSettingsSubPage(contentSettingsSection)) {
+        if (!canAccessMediaSettings) {
+          return getMediaOverviewLabel(view, t);
+        }
         const mediaSettingsLabel = MEDIA_SETTINGS_SUB_PAGES.find(
           (subPage) => subPage.id === contentSettingsSection,
         )?.labelKey;
@@ -306,14 +340,14 @@ function RootSidebarContent({
     }
 
     if (view === "activity") {
-      return ACTIVITY_SUB_PAGES.find((entry) => entry.id === activitySection)?.labelKey
-        ? t(ACTIVITY_SUB_PAGES.find((entry) => entry.id === activitySection)!.labelKey)
+      return visibleActivitySubPages.find((entry) => entry.id === activitySection)?.labelKey
+        ? t(visibleActivitySubPages.find((entry) => entry.id === activitySection)!.labelKey)
         : null;
     }
 
     if (view === "wanted") {
-      return WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)?.labelKey
-        ? t(WANTED_SUB_PAGES.find((entry) => entry.id === wantedSection)!.labelKey)
+      return visibleWantedSubPages.find((entry) => entry.id === wantedSection)?.labelKey
+        ? t(visibleWantedSubPages.find((entry) => entry.id === wantedSection)!.labelKey)
         : null;
     }
 
@@ -325,7 +359,11 @@ function RootSidebarContent({
     activitySection,
     t,
     view,
+    canAccessFacetImport,
+    canAccessMediaSettings,
+    visibleActivitySubPages,
     visibleSettingsEntries,
+    visibleWantedSubPages,
     wantedSection,
   ]);
 
@@ -339,7 +377,7 @@ function RootSidebarContent({
         <SidebarContent className="overflow-y-auto rounded-lg bg-background">
           <SidebarGroup>
             <SidebarMenu className="space-y-1">
-              {topNav.map((item, index) => {
+              {visibleTopNav.map((item, index) => {
                 const Icon = item.icon;
                 const isMediaSection = ["movies", "series", "anime"].includes(item.id);
                 const isSettingsTop = item.id === "settings";
@@ -355,9 +393,9 @@ function RootSidebarContent({
                   isActiveMediaSection ||
                   isActiveSettingsSection ||
                   isActiveSystemSection ||
-                  isActiveActivitySection ||
+                  (isActiveActivitySection && hasVisibleActivitySubnav) ||
                   isActiveWantedSection;
-                const showSeparator = index < topNav.length - 1;
+                const showSeparator = index < visibleTopNav.length - 1;
                 if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
                   return (
                     <React.Fragment key={item.id}>
@@ -398,14 +436,39 @@ function RootSidebarContent({
                               return;
                             }
                             if (isActivityTop) {
-                              handleNavigate(event, "activity", undefined, undefined, undefined, undefined, activitySection);
+                              handleNavigate(
+                                event,
+                                "activity",
+                                undefined,
+                                undefined,
+                                undefined,
+                                undefined,
+                                visibleActivitySubPages.some((entry) => entry.id === activitySection)
+                                  ? activitySection
+                                  : "activity",
+                              );
                               return;
                             }
                             if (isWantedTop) {
-                              handleNavigate(event, "wanted", undefined, undefined, undefined, wantedSection);
+                              handleNavigate(
+                                event,
+                                "wanted",
+                                undefined,
+                                undefined,
+                                undefined,
+                                canManageTitle || wantedSection !== "history" ? wantedSection : "wanted",
+                              );
                               return;
                             }
-                            handleNavigate(event, item.id, undefined, contentSettingsSection);
+                            handleNavigate(
+                              event,
+                              item.id,
+                              undefined,
+                              (canAccessFacetImport || contentSettingsSection !== "import") &&
+                                (canAccessMediaSettings || !isSettingsSubPage(contentSettingsSection))
+                                ? contentSettingsSection
+                                : "overview",
+                            );
                           }}
                         >
                           <Icon className="h-4 w-4" />
@@ -475,7 +538,7 @@ function RootSidebarContent({
                                 </SidebarMenuSubItem>
                               ))
                             ) : isWantedTop ? (
-                              WANTED_SUB_PAGES.map((entry) => (
+                              visibleWantedSubPages.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
                                     isActive={wantedSection === entry.id}
@@ -506,7 +569,7 @@ function RootSidebarContent({
                                     {getMediaOverviewLabel(item.id, t)}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
-                                {hasImportsForView(item.id) ? (
+                                {canAccessFacetImport && hasImportsForView(item.id) ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       isActive={contentSettingsSection === "import"}
@@ -521,35 +584,37 @@ function RootSidebarContent({
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                <SidebarMenuSubItem>
-                                  <Collapsible open={isSettingsSubPage(contentSettingsSection)}>
-                                    <SidebarMenuSubButton
-                                      isActive={isSettingsSubPage(contentSettingsSection)}
-                                      onClick={(event) => {
-                                        handleNavigate(event, item.id, undefined, "general");
-                                      }}
-                                    >
-                                      {getMediaSettingsLabel(item.id, t)}
-                                      <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${isSettingsSubPage(contentSettingsSection) ? "rotate-90" : ""}`} />
-                                    </SidebarMenuSubButton>
-                                    <CollapsibleContent>
-                                      <SidebarMenuSub>
-                                        {MEDIA_SETTINGS_SUB_PAGES.map((subPage) => (
-                                          <SidebarMenuSubItem key={subPage.id}>
-                                            <SidebarMenuSubButton
-                                              isActive={contentSettingsSection === subPage.id}
-                                              onClick={(event) => {
-                                                handleNavigate(event, item.id, undefined, subPage.id);
-                                              }}
-                                            >
-                                              {t(subPage.labelKey)}
-                                            </SidebarMenuSubButton>
-                                          </SidebarMenuSubItem>
-                                        ))}
-                                      </SidebarMenuSub>
-                                    </CollapsibleContent>
-                                  </Collapsible>
-                                </SidebarMenuSubItem>
+                                {canAccessMediaSettings ? (
+                                  <SidebarMenuSubItem>
+                                    <Collapsible open={isSettingsSubPage(contentSettingsSection)}>
+                                      <SidebarMenuSubButton
+                                        isActive={isSettingsSubPage(contentSettingsSection)}
+                                        onClick={(event) => {
+                                          handleNavigate(event, item.id, undefined, "general");
+                                        }}
+                                      >
+                                        {getMediaSettingsLabel(item.id, t)}
+                                        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${isSettingsSubPage(contentSettingsSection) ? "rotate-90" : ""}`} />
+                                      </SidebarMenuSubButton>
+                                      <CollapsibleContent>
+                                        <SidebarMenuSub>
+                                          {MEDIA_SETTINGS_SUB_PAGES.map((subPage) => (
+                                            <SidebarMenuSubItem key={subPage.id}>
+                                              <SidebarMenuSubButton
+                                                isActive={contentSettingsSection === subPage.id}
+                                                onClick={(event) => {
+                                                  handleNavigate(event, item.id, undefined, subPage.id);
+                                                }}
+                                              >
+                                                {t(subPage.labelKey)}
+                                              </SidebarMenuSubButton>
+                                            </SidebarMenuSubItem>
+                                          ))}
+                                        </SidebarMenuSub>
+                                      </CollapsibleContent>
+                                    </Collapsible>
+                                  </SidebarMenuSubItem>
+                                ) : null}
                               </>
                             )}
                         </SidebarMenuSub>
@@ -564,28 +629,35 @@ function RootSidebarContent({
           </SidebarGroup>
         </SidebarContent>
         <SidebarFooter className="px-2 py-1.5">
-          {themeMounted ? (
-            <button
-              type="button"
-              onClick={cycleTheme}
-              aria-label={`Switch theme (current: ${getThemeLabel(theme)})`}
-              className={cn(
-                "flex w-fit items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                theme === "pride" && "text-pink-200 hover:text-pink-100",
-              )}
-            >
-              {theme === "light" ? (
-                <Sun className="h-4 w-4" />
-              ) : theme === "dark" ? (
-                <Moon className="h-4 w-4" />
-              ) : theme === "pride" ? (
-                <Rainbow className="h-4 w-4" />
-              ) : (
-                <Monitor className="h-4 w-4" />
-              )}
-              Theme
-            </button>
-          ) : null}
+          <div className="flex items-center justify-between gap-2">
+            {themeMounted ? (
+              <button
+                type="button"
+                onClick={cycleTheme}
+                aria-label={`Switch theme (current: ${getThemeLabel(theme)})`}
+                className={cn(
+                  "flex w-fit items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  theme === "pride" && "text-pink-200 hover:text-pink-100",
+                )}
+              >
+                {theme === "light" ? (
+                  <Sun className="h-4 w-4" />
+                ) : theme === "dark" ? (
+                  <Moon className="h-4 w-4" />
+                ) : theme === "pride" ? (
+                  <Rainbow className="h-4 w-4" />
+                ) : (
+                  <Monitor className="h-4 w-4" />
+                )}
+                Theme
+              </button>
+            ) : null}
+            {scryerVersion ? (
+              <span className="shrink-0 text-[11px] text-sidebar-foreground/45 group-data-[collapsible=icon]:hidden">
+                v{scryerVersion}
+              </span>
+            ) : null}
+          </div>
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="relative bg-background md:ml-4">

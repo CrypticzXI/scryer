@@ -82,6 +82,40 @@ const ko: LocaleDictionary = {
   settings: "설정",
   "settings.profile": "프로필",
   "settings.general": "일반",
+  "settings.security": "Security",
+  "settings.securityDescription":
+    "Choose whether Scryer requires a signed-in user session.",
+  "settings.securityEnableFormLogin": "Form login",
+  "settings.securityEnableFormLoginHelp":
+    "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
+  "settings.securitySkipLocalIps": "Skip for local IPs",
+  "settings.securitySkipLocalIpsHelp":
+    "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
+  "settings.securitySavedPreference": "Saved preference",
+  "settings.securityEffectiveMode": "Effective runtime mode",
+  "settings.securityOverrideTitle": "Deployment override active",
+  "settings.securityOverrideDescription":
+    "Environment configuration is currently overriding the saved preference. Change the deployment config and restart Scryer for a different runtime mode.",
+  "settings.securityOverrideReason": "Override source: {{override}}",
+  "settings.securityModeEnabled": "Form login enabled",
+  "settings.securityModeDisabled": "Open admin mode",
+  "settings.securityConfirmTitle": "Enable form login?",
+  "settings.securityConfirmDescription":
+    "Sign in with an account that can manage settings before Scryer starts requiring login.",
+  "settings.securityConfirmUsername": "Username",
+  "settings.securityConfirmPassword": "Password",
+  "settings.securityConfirmAction": "Enable",
+  "settings.securityDisableConfirmTitle": "Disable form login?",
+  "settings.securityDisableConfirmDescription":
+    "Scryer will return to open admin mode after reload.",
+  "settings.securityDisableConfirmAction": "Disable",
+  "settings.securityCredentialsInvalid": "Invalid username or password.",
+  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityEnabledSuccess": "Form login enabled.",
+  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityPreferenceSaved": "Security preference saved.",
+  "settings.securityLoadFailed": "Failed to load security settings.",
+  "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "사용자",
   "settings.indexers": "인덱서",
   "settings.qualityProfiles": "품질 프로필",
@@ -527,6 +561,9 @@ const ko: LocaleDictionary = {
   "title.noFilesTracked": "추적 중인 파일이 없습니다.",
   "title.noFilesTrackedHint":
     "디스크에 있는 파일을 감지하려면 라이브러리 스캔을 실행하세요.",
+  "title.configureRootFoldersHint":
+    "이 라이브러리를 스캔하기 전에 패싯 설정에서 루트 데이터 폴더를 구성하세요.",
+  "title.configureRootFoldersButton": "루트 데이터 폴더 구성",
   "title.descriptionUnavailable": "설명이 없습니다.",
   "title.canon": "정사",
   "title.mixed": "혼합",

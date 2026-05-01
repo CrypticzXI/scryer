@@ -77,6 +77,7 @@ export function SettingsPluginsContainer() {
     _setPlugins(next);
   }, []);
   const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
+  const [upgradingPluginIds, setUpgradingPluginIds] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
 
@@ -88,6 +89,16 @@ export function SettingsPluginsContainer() {
 
   const endPluginMutation = useCallback((pluginId: string) => {
     setMutatingPluginIds((current) => current.filter((id) => id !== pluginId));
+  }, []);
+
+  const beginPluginUpgrade = useCallback((pluginId: string) => {
+    setUpgradingPluginIds((current) => (
+      current.includes(pluginId) ? current : [...current, pluginId]
+    ));
+  }, []);
+
+  const endPluginUpgrade = useCallback((pluginId: string) => {
+    setUpgradingPluginIds((current) => current.filter((id) => id !== pluginId));
   }, []);
 
   const refreshPlugins = useCallback(async () => {
@@ -183,6 +194,7 @@ export function SettingsPluginsContainer() {
 
   const upgradePlugin = async (plugin: RegistryPluginRecord) => {
     beginPluginMutation(plugin.id);
+    beginPluginUpgrade(plugin.id);
     try {
       const { error } = await client
         .mutation(upgradePluginMutation, {
@@ -196,6 +208,7 @@ export function SettingsPluginsContainer() {
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
+      endPluginUpgrade(plugin.id);
       endPluginMutation(plugin.id);
     }
   };
@@ -235,6 +248,7 @@ export function SettingsPluginsContainer() {
       <SettingsPluginsSection
         plugins={plugins}
         mutatingPluginIds={mutatingPluginIds}
+        upgradingPluginIds={upgradingPluginIds}
         pluginErrors={pluginErrors}
         refreshing={refreshing}
         onRefreshRegistry={refreshRegistry}

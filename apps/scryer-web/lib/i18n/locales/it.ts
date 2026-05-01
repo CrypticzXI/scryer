@@ -82,6 +82,40 @@ const it: LocaleDictionary = {
   settings: "Impostazioni",
   "settings.profile": "Profilo",
   "settings.general": "Generali",
+  "settings.security": "Security",
+  "settings.securityDescription":
+    "Choose whether Scryer requires a signed-in user session.",
+  "settings.securityEnableFormLogin": "Form login",
+  "settings.securityEnableFormLoginHelp":
+    "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
+  "settings.securitySkipLocalIps": "Skip for local IPs",
+  "settings.securitySkipLocalIpsHelp":
+    "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
+  "settings.securitySavedPreference": "Saved preference",
+  "settings.securityEffectiveMode": "Effective runtime mode",
+  "settings.securityOverrideTitle": "Deployment override active",
+  "settings.securityOverrideDescription":
+    "Environment configuration is currently overriding the saved preference. Change the deployment config and restart Scryer for a different runtime mode.",
+  "settings.securityOverrideReason": "Override source: {{override}}",
+  "settings.securityModeEnabled": "Form login enabled",
+  "settings.securityModeDisabled": "Open admin mode",
+  "settings.securityConfirmTitle": "Enable form login?",
+  "settings.securityConfirmDescription":
+    "Sign in with an account that can manage settings before Scryer starts requiring login.",
+  "settings.securityConfirmUsername": "Username",
+  "settings.securityConfirmPassword": "Password",
+  "settings.securityConfirmAction": "Enable",
+  "settings.securityDisableConfirmTitle": "Disable form login?",
+  "settings.securityDisableConfirmDescription":
+    "Scryer will return to open admin mode after reload.",
+  "settings.securityDisableConfirmAction": "Disable",
+  "settings.securityCredentialsInvalid": "Invalid username or password.",
+  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityEnabledSuccess": "Form login enabled.",
+  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityPreferenceSaved": "Security preference saved.",
+  "settings.securityLoadFailed": "Failed to load security settings.",
+  "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "Utenti",
   "settings.indexers": "Indexer",
   "settings.qualityProfiles": "Profili qualità",
@@ -549,6 +583,9 @@ const it: LocaleDictionary = {
   "title.noFilesTracked": "Nessun file tracciato.",
   "title.noFilesTrackedHint":
     "Esegui una scansione della libreria per rilevare i file presenti sul disco.",
+  "title.configureRootFoldersHint":
+    "Configura le cartelle radice dei dati nelle impostazioni di questa sezione prima di analizzare questa libreria.",
+  "title.configureRootFoldersButton": "Configura cartelle radice",
   "title.descriptionUnavailable": "Nessuna descrizione disponibile.",
   "title.canon": "Canonico",
   "title.mixed": "Misto",

@@ -9,7 +9,28 @@ use crate::{
     NotificationScopeIdUpdate,
 };
 
+fn parse_subscribable_notification_event_type(event_type: &str) -> AppResult<NotificationEventType> {
+    let parsed = NotificationEventType::parse(event_type).ok_or_else(|| {
+        AppError::Validation(format!("unknown notification event type: {event_type}"))
+    })?;
+
+    if crate::notifications::dispatcher::supported_notification_event_types()
+        .iter()
+        .any(|candidate| candidate == &parsed)
+    {
+        Ok(parsed)
+    } else {
+        Err(AppError::Validation(format!(
+            "notification event type is not subscribable: {event_type}"
+        )))
+    }
+}
+
 impl AppUseCase {
+    pub fn subscribable_notification_event_types(&self) -> &'static [NotificationEventType] {
+        crate::notifications::dispatcher::supported_notification_event_types()
+    }
+
     pub async fn list_notification_channels(
         &self,
         actor: &scryer_domain::User,
@@ -181,9 +202,7 @@ impl AppUseCase {
     ) -> AppResult<NotificationSubscription> {
         crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
 
-        let parsed_event_type = NotificationEventType::parse(&event_type).ok_or_else(|| {
-            AppError::Validation(format!("unknown notification event type: {event_type}"))
-        })?;
+        let parsed_event_type = parse_subscribable_notification_event_type(&event_type)?;
 
         // Validate channel exists
         let ch_repo = self.notification_channels()?;
@@ -228,9 +247,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("notification subscription {id}")))?;
 
         if let Some(et) = event_type {
-            let parsed = NotificationEventType::parse(&et).ok_or_else(|| {
-                AppError::Validation(format!("unknown notification event type: {et}"))
-            })?;
+            let parsed = parse_subscribable_notification_event_type(&et)?;
             sub.event_type = parsed;
         }
         if let Some(s) = scope {

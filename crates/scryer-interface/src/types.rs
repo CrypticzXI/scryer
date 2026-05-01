@@ -1931,6 +1931,8 @@ pub struct PendingImportItemPayload {
     pub facet: MediaFacetValue,
     pub status: PendingImportStatusValue,
     pub title_id: Option<String>,
+    pub title_name: Option<String>,
+    pub title_slug: Option<String>,
     pub display_name: String,
     pub path: String,
     pub folder_path: Option<String>,
@@ -2113,6 +2115,21 @@ pub struct AcquisitionSettingsPayload {
 pub struct GeneralSettingsPayload {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SecuritySettingsPayload {
+    pub form_login_enabled: bool,
+    pub skip_login_for_local_ips: bool,
+    pub effective_form_login_enabled: bool,
+    pub env_override_active: bool,
+    pub env_override_description: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct AuthRuntimeStatePayload {
+    pub effective_form_login_enabled: bool,
+    pub skip_login_for_local_ips: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2514,6 +2531,12 @@ pub struct UpdateServiceSettingsInput {
 pub struct UpdateGeneralSettingsInput {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateSecuritySettingsInput {
+    pub form_login_enabled: bool,
+    pub skip_login_for_local_ips: bool,
 }
 
 #[derive(InputObject, Clone)]

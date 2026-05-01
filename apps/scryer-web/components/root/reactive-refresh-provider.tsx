@@ -248,6 +248,17 @@ function graphQlErrorAlias(value: unknown): string | null {
   return typeof value.path[0] === "string" ? value.path[0] : null;
 }
 
+function isTitleOverviewNativePartialHistoryError(
+  actionPlan: ReactiveRefreshQueryActionPlan,
+  graphQlErrors: CombinedError["graphQLErrors"],
+): actionPlan is Extract<ReactiveRefreshQueryActionPlan, { kind: "titleOverviewNative" }> {
+  return actionPlan.kind === "titleOverviewNative"
+    && graphQlErrors.length > 0
+    && graphQlErrors.every(
+      (graphQlError) => graphQlErrorAlias(graphQlError) === actionPlan.titleEventsAlias,
+    );
+}
+
 function routeActionScopedErrors(
   actionPlans: ReactiveRefreshQueryActionPlan[],
   error: CombinedError,
@@ -368,6 +379,12 @@ export function ReactiveRefreshProvider({
               titleOverviewDownloadFeedbackWarningsByKey.set(actionKey, warning);
               return;
             }
+          }
+          if (
+            actionPlan
+            && isTitleOverviewNativePartialHistoryError(actionPlan, actionError.graphQLErrors)
+          ) {
+            return;
           }
 
           failedActionKeys.add(actionKey);

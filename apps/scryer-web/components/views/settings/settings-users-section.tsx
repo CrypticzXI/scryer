@@ -79,7 +79,7 @@ export function SettingsUsersSection({
         </CardHeader>
         <CardContent>
           <form className="space-y-3" onSubmit={createUser}>
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label htmlFor="settings-user-username" className="mb-2 block">
                   {t("settings.username")}
@@ -105,7 +105,7 @@ export function SettingsUsersSection({
                   required
                 />
               </div>
-              <div>
+              <div className="md:col-span-2">
                 <Label className="mb-2 block">{t("settings.entitlements")}</Label>
                 <div className="grid rounded border border-border bg-background/40 p-2">
                   {ALL_ENTITLEMENTS.map((entitlement) => (
@@ -205,7 +205,7 @@ export function SettingsUsersSection({
                           aria-label={t("settings.newPassword")}
                         />
                         <Button
-                          variant="secondary"
+                          variant="primary"
                           size="sm"
                           className="min-w-44"
                           onClick={() => void setUserPassword(user.id)}

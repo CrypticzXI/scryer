@@ -118,6 +118,12 @@
           "type": "string",
           "default": ""
         },
+        "socket_permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SocketPermission"
+          }
+        },
         "provider": {
           "$ref": "#/$defs/ProviderDescriptor"
         }
@@ -128,6 +134,42 @@
         "version",
         "sdk_version",
         "provider"
+      ]
+    },
+    "SocketPermission": {
+      "type": "object",
+      "properties": {
+        "host_pattern": {
+          "type": "string"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        },
+        "tls_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SocketTlsMode"
+          }
+        }
+      },
+      "required": [
+        "host_pattern",
+        "ports",
+        "tls_modes"
+      ]
+    },
+    "SocketTlsMode": {
+      "type": "string",
+      "enum": [
+        "plain",
+        "starttls",
+        "tls"
       ]
     },
     "ProviderDescriptor": {

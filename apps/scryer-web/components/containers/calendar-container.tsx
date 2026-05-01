@@ -6,6 +6,7 @@ import { FACETS_BY_ID } from "@/lib/facets/registry";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { CalendarEpisodeItem } from "@/components/views/calendar-view";
 
 const CalendarView = lazy(() =>
@@ -24,6 +25,7 @@ export const CalendarContainer = memo(function CalendarContainer({
   onOpenOverview,
 }: CalendarContainerProps) {
   const t = useTranslate();
+  const isMobile = useIsMobile();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [calendarEpisodes, setCalendarEpisodes] = useState<CalendarEpisodeItem[]>([]);
@@ -60,6 +62,10 @@ export const CalendarContainer = memo(function CalendarContainer({
     },
     [onOpenOverview],
   );
+
+  if (isMobile) {
+    return null;
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">

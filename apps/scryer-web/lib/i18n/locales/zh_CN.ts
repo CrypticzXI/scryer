@@ -80,6 +80,40 @@ const zh_CN: LocaleDictionary = {
   settings: "设置",
   "settings.profile": "配置",
   "settings.general": "通用",
+  "settings.security": "Security",
+  "settings.securityDescription":
+    "Choose whether Scryer requires a signed-in user session.",
+  "settings.securityEnableFormLogin": "Form login",
+  "settings.securityEnableFormLoginHelp":
+    "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
+  "settings.securitySkipLocalIps": "Skip for local IPs",
+  "settings.securitySkipLocalIpsHelp":
+    "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
+  "settings.securitySavedPreference": "Saved preference",
+  "settings.securityEffectiveMode": "Effective runtime mode",
+  "settings.securityOverrideTitle": "Deployment override active",
+  "settings.securityOverrideDescription":
+    "Environment configuration is currently overriding the saved preference. Change the deployment config and restart Scryer for a different runtime mode.",
+  "settings.securityOverrideReason": "Override source: {{override}}",
+  "settings.securityModeEnabled": "Form login enabled",
+  "settings.securityModeDisabled": "Open admin mode",
+  "settings.securityConfirmTitle": "Enable form login?",
+  "settings.securityConfirmDescription":
+    "Sign in with an account that can manage settings before Scryer starts requiring login.",
+  "settings.securityConfirmUsername": "Username",
+  "settings.securityConfirmPassword": "Password",
+  "settings.securityConfirmAction": "Enable",
+  "settings.securityDisableConfirmTitle": "Disable form login?",
+  "settings.securityDisableConfirmDescription":
+    "Scryer will return to open admin mode after reload.",
+  "settings.securityDisableConfirmAction": "Disable",
+  "settings.securityCredentialsInvalid": "Invalid username or password.",
+  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityEnabledSuccess": "Form login enabled.",
+  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityPreferenceSaved": "Security preference saved.",
+  "settings.securityLoadFailed": "Failed to load security settings.",
+  "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "用户",
   "settings.indexers": "索引器",
   "settings.qualityProfiles": "质量配置",
@@ -506,6 +540,9 @@ const zh_CN: LocaleDictionary = {
   "title.noFilesTracked": "没有已跟踪的文件。",
   "title.noFilesTrackedHint":
     "运行一次资料库扫描以检测磁盘上的文件。",
+  "title.configureRootFoldersHint":
+    "扫描此资料库之前，请先在该分面设置中配置根数据文件夹。",
+  "title.configureRootFoldersButton": "配置根数据文件夹",
   "title.descriptionUnavailable": "暂无简介。",
   "title.canon": "正传",
   "title.mixed": "混合",

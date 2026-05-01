@@ -708,6 +708,24 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 validation_json: None,
             },
             SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.form_login_enabled".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.skip_login_for_local_ips".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
                 category: "media".into(),
                 scope: "system".into(),
                 key_name: "quality.profiles".into(),
@@ -3711,6 +3729,173 @@ async fn graphql_typed_general_settings_rejects_invalid_days() {
             .as_array()
             .is_some_and(|errors| !errors.is_empty()),
         "expected validation errors: {body}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_auth_runtime_state_is_public() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        query AuthRuntimeState {
+          authRuntimeState {
+            effectiveFormLoginEnabled
+            skipLoginForLocalIps
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["authRuntimeState"]["effectiveFormLoginEnabled"],
+        false
+    );
+    assert_eq!(
+        body["data"]["authRuntimeState"]["skipLoginForLocalIps"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_defaults() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        query SecuritySettings {
+          securitySettings {
+            formLoginEnabled
+            skipLoginForLocalIps
+            effectiveFormLoginEnabled
+            envOverrideActive
+            envOverrideDescription
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["securitySettings"]["formLoginEnabled"], false);
+    assert_eq!(
+        body["data"]["securitySettings"]["skipLoginForLocalIps"],
+        false
+    );
+    assert_eq!(
+        body["data"]["securitySettings"]["effectiveFormLoginEnabled"],
+        false
+    );
+    assert_eq!(body["data"]["securitySettings"]["envOverrideActive"], false);
+    assert!(body["data"]["securitySettings"]["envOverrideDescription"].is_null());
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_round_trip_updates_runtime() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: { formLoginEnabled: true, skipLoginForLocalIps: true }) {
+            formLoginEnabled
+            skipLoginForLocalIps
+            effectiveFormLoginEnabled
+            envOverrideActive
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["formLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["skipLoginForLocalIps"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["envOverrideActive"],
+        false
+    );
+
+    let auth_runtime = schema_exec(
+        &ctx,
+        r#"
+        query AuthRuntimeState {
+          authRuntimeState {
+            effectiveFormLoginEnabled
+            skipLoginForLocalIps
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    assert_no_errors(&auth_runtime);
+    assert_eq!(
+        auth_runtime["data"]["authRuntimeState"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        auth_runtime["data"]["authRuntimeState"]["skipLoginForLocalIps"],
+        true
+    );
+
+    let me_without_auth = gql(&ctx, "{ me { username } }", json!({})).await;
+    assert_no_errors(&me_without_auth);
+    assert!(me_without_auth["data"]["me"].is_null());
+
+    let auto_login = gql(
+        &ctx,
+        r#"mutation { devAutoLogin { token user { username } } }"#,
+        json!({}),
+    )
+    .await;
+    assert!(
+        auto_login["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected devAutoLogin to fail after auth was enabled: {auto_login}"
+    );
+
+    let read = schema_exec(
+        &ctx,
+        r#"
+        query SecuritySettings {
+          securitySettings {
+            formLoginEnabled
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], true);
+    assert_eq!(
+        read["data"]["securitySettings"]["effectiveFormLoginEnabled"],
+        true
     );
 }
 

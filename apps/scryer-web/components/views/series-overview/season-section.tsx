@@ -12,10 +12,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Table,
   TableBody,
@@ -76,19 +77,21 @@ const EMPTY_BLOCKLIST_ENTRIES: TitleReleaseBlocklistEntry[] = [];
 function EpisodeTableActionButton({
   label,
   tone,
+  showTitleAttribute = true,
   className,
   children,
   ...props
 }: React.ComponentProps<typeof Button> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "auto" | "search">;
+  showTitleAttribute?: boolean;
 }) {
   return (
     <Button
       type="button"
       size="icon-sm"
       variant="secondary"
-      title={label}
+      title={showTitleAttribute ? label : undefined}
       aria-label={label}
       className={cn(
         boxedActionButtonBaseClass,
@@ -221,10 +224,12 @@ type EpisodePanelContentProps = {
   episodeResults: Release[];
   linkedMovie?: InterstitialMovieMetadata | null;
   onDeleteFile?: (fileId: string) => void;
-  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
-  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onRunEpisodeSearch?: (episode: CollectionEpisode) => void;
   onTabChange: (tab: EpisodePanelTab | "history") => void;
+  showHistoryTab: boolean;
+  showSearchTab: boolean;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   searchBlocked: boolean;
   subtitleDownloads: ExternalSubtitleRecord[];
@@ -243,6 +248,8 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
   onRefreshSubtitles,
   onRunEpisodeSearch,
   onTabChange,
+  showHistoryTab,
+  showSearchTab,
   releaseBlocklistEntries,
   searchBlocked,
   subtitleDownloads,
@@ -265,8 +272,12 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
     >
       <TabsList className="flex w-full flex-nowrap overflow-x-auto">
         <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
-        <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
-        <TabsTrigger value="history" className="shrink-0">{t("history.title")}</TabsTrigger>
+        {showSearchTab ? (
+          <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
+        ) : null}
+        {showHistoryTab ? (
+          <TabsTrigger value="history" className="shrink-0">{t("history.title")}</TabsTrigger>
+        ) : null}
         <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
       </TabsList>
       <TabsContent value="details">
@@ -279,7 +290,8 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
           onDeleteFile={onDeleteFile}
         />
       </TabsContent>
-      <TabsContent value="search">
+      {showSearchTab ? (
+        <TabsContent value="search">
         {searchBlocked ? (
           <TitleSearchDownloadClientNotice />
         ) : (
@@ -288,7 +300,7 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => onRunEpisodeSearch(episode)}
+              onClick={() => onRunEpisodeSearch?.(episode)}
               disabled={episodeLoading}
               aria-label={t("label.search")}
             >
@@ -309,11 +321,12 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
         ) : (
           <SearchResultBuckets
             results={episodeResults}
-            onQueue={(release) => onQueueFromEpisodeSearch(episode, release)}
+            onQueue={(release) => onQueueFromEpisodeSearch?.(episode, release)}
             requireCandidateToken
           />
         )}
-      </TabsContent>
+        </TabsContent>
+      ) : null}
       <TabsContent value="blocklist">
         <EpisodeBlocklistPanel entries={filteredBlocklistEntries} />
       </TabsContent>
@@ -334,10 +347,10 @@ type EpisodeRowProps = {
   linkedMovie?: InterstitialMovieMetadata | null;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onDeleteFile?: (fileId: string) => void;
-  onOpenHistory: (episode: CollectionEpisode) => void;
-  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onOpenHistory?: (episode: CollectionEpisode) => void;
+  onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
-  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
+  onRunEpisodeSearch?: (episode: CollectionEpisode) => void;
   onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
   queueItem?: DownloadQueueItem;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
@@ -395,7 +408,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
     (tab: EpisodePanelTab) => {
       setActiveTab(tab);
       setIsPanelOpen(true);
-      if (tab === "search" && (searchBlocked || !hasSearchResults)) {
+      if (tab === "search" && onRunEpisodeSearch && (searchBlocked || !hasSearchResults)) {
         onRunEpisodeSearch(episode);
       }
     },
@@ -412,17 +425,23 @@ const EpisodeRow = React.memo(function EpisodeRow({
   }, [activeTab, isPanelOpen, openPanelTab]);
 
   const handleToggleEpisodeSearch = React.useCallback(() => {
+    if (!onRunEpisodeSearch || !onQueueFromEpisodeSearch) {
+      return;
+    }
     if (isPanelOpen && activeTab === "search") {
       setIsPanelOpen(false);
       return;
     }
 
     openPanelTab("search");
-  }, [activeTab, isPanelOpen, openPanelTab]);
+  }, [activeTab, isPanelOpen, onQueueFromEpisodeSearch, onRunEpisodeSearch, openPanelTab]);
 
   const handleEpisodeTabChange = React.useCallback(
     (tab: EpisodePanelTab | "history") => {
       if (tab === "history") {
+        if (!onOpenHistory) {
+          return;
+        }
         setIsPanelOpen(true);
         onOpenHistory(episode);
         return;
@@ -461,6 +480,8 @@ const EpisodeRow = React.memo(function EpisodeRow({
       onRefreshSubtitles={onRefreshSubtitles}
       onRunEpisodeSearch={onRunEpisodeSearch}
       onTabChange={handleEpisodeTabChange}
+      showHistoryTab={Boolean(onOpenHistory)}
+      showSearchTab={Boolean(onRunEpisodeSearch && onQueueFromEpisodeSearch)}
       releaseBlocklistEntries={releaseBlocklistEntries}
       searchBlocked={searchBlocked}
       subtitleDownloads={subtitleDownloads}
@@ -482,7 +503,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
         <div className="flex items-start gap-3">
           <button
             type="button"
-            disabled={episodeToggling}
+            disabled={!onSetEpisodeMonitored || episodeToggling}
             aria-label={t("title.episodeMonitored")}
             className={cn(
               "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
@@ -555,16 +576,18 @@ const EpisodeRow = React.memo(function EpisodeRow({
                   <span>{t("label.search")}</span>
                 </Button>
               ) : null}
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
-                onClick={handleToggleEpisodeSearch}
-              >
-                <Search className="h-4 w-4" />
-                <span>{t("label.interactiveSearch")}</span>
-              </Button>
+              {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="primary"
+                  className="w-full border border-sky-500/70 bg-sky-600 text-white hover:bg-sky-500 focus-visible:ring-sky-300/70 dark:border-sky-400/50 dark:bg-sky-500 dark:hover:bg-sky-400"
+                  onClick={handleToggleEpisodeSearch}
+                >
+                  <Search className="h-4 w-4" />
+                  <span>{t("label.interactiveSearch")}</span>
+                </Button>
+              ) : null}
             </div>
             {isPanelOpen ? (
               <div className="mt-3 border-t border-border pt-3">
@@ -640,47 +663,53 @@ const EpisodeRow = React.memo(function EpisodeRow({
           </div>
         </TableCell>
         <TableCell className="text-right">
-          <div className="inline-flex items-center justify-end gap-2">
-            {onAutoSearchEpisode ? (
-              <HoverCard openDelay={3000} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <EpisodeTableActionButton
-                    tone="auto"
-                    onClick={handleAutoSearchClick}
-                    disabled={autoSearching}
-                    label={t("label.search")}
-                  >
-                    {autoSearching ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Zap className="h-4 w-4" />
-                    )}
-                  </EpisodeTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent>
-                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+          <TooltipProvider>
+            <div className="inline-flex items-center justify-end gap-2">
+              {onAutoSearchEpisode ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <EpisodeTableActionButton
+                        tone="auto"
+                        onClick={handleAutoSearchClick}
+                        disabled={autoSearching}
+                        label={t("label.search")}
+                        showTitleAttribute={false}
+                      >
+                        {autoSearching ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Zap className="h-4 w-4" />
+                        )}
+                      </EpisodeTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
                     {t("help.autoSearchTooltip")}
-                  </p>
-                </HoverCardContent>
-              </HoverCard>
-            ) : null}
-            <HoverCard openDelay={3000} closeDelay={75}>
-              <HoverCardTrigger asChild>
-                <EpisodeTableActionButton
-                  tone="search"
-                  onClick={handleToggleEpisodeSearch}
-                  label={t("label.search")}
-                >
-                  <Search className="h-4 w-4" />
-                </EpisodeTableActionButton>
-              </HoverCardTrigger>
-              <HoverCardContent>
-                <p className="max-w-[18rem] whitespace-normal break-words text-sm">
-                  {t("help.interactiveSearchTooltip")}
-                </p>
-              </HoverCardContent>
-            </HoverCard>
-          </div>
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+              {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <EpisodeTableActionButton
+                        tone="search"
+                        onClick={handleToggleEpisodeSearch}
+                        label={t("label.search")}
+                        showTitleAttribute={false}
+                      >
+                        <Search className="h-4 w-4" />
+                      </EpisodeTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
+                    {t("help.interactiveSearchTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+            </div>
+          </TooltipProvider>
         </TableCell>
       </TableRow>
       {isPanelOpen ? (
@@ -747,9 +776,9 @@ export function SeasonSection({
   searchLoadingByEpisode: Record<string, boolean>;
   searchBlockedByEpisode: Record<string, boolean>;
   autoSearchLoadingByEpisode: Record<string, boolean>;
-  onRunEpisodeSearch: (episode: CollectionEpisode) => void;
-  onOpenEpisodeHistory: (episode: CollectionEpisode) => void;
-  onQueueFromEpisodeSearch: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
+  onRunEpisodeSearch?: (episode: CollectionEpisode) => void;
+  onOpenEpisodeHistory?: (episode: CollectionEpisode) => void;
+  onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
   onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
@@ -909,7 +938,7 @@ export function SeasonSection({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={seasonToggling}
+              disabled={!onSetCollectionMonitored || seasonToggling}
               aria-label={t("title.seasonMonitored")}
               className={cn(
                 "inline-flex size-6 shrink-0 items-center justify-center rounded transition-colors",
@@ -960,29 +989,34 @@ export function SeasonSection({
               />
             ) : null}
             {onRunSeasonSearch && collection.collectionType !== "interstitial" ? (
-              <HoverCard openDelay={600} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <EpisodeTableActionButton
-                    tone="auto"
-                    aria-label={t("series.searchSeason")}
-                    disabled={seasonSearchLoading === true}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRunSeasonSearch();
-                    }}
-                    label={t("series.searchSeason")}
-                  >
-                    {seasonSearchLoading === true ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Zap className="h-4 w-4" />
-                    )}
-                  </EpisodeTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent side="left" className="w-auto p-2 text-xs">
-                  {t("help.seasonSearchTooltip")}
-                </HoverCardContent>
-              </HoverCard>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <EpisodeTableActionButton
+                        tone="auto"
+                        aria-label={t("series.searchSeason")}
+                        showTitleAttribute={false}
+                        disabled={seasonSearchLoading === true}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRunSeasonSearch();
+                        }}
+                        label={t("series.searchSeason")}
+                      >
+                        {seasonSearchLoading === true ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Zap className="h-4 w-4" />
+                        )}
+                      </EpisodeTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="left" sideOffset={8} className="w-auto text-left">
+                    {t("help.seasonSearchTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             ) : null}
           </div>
         </div>

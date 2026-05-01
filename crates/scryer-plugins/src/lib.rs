@@ -3,6 +3,7 @@ mod download_client_adapter;
 mod indexer_adapter;
 mod loader;
 mod notification_adapter;
+mod socket_host;
 mod subtitle_adapter;
 mod types;
 

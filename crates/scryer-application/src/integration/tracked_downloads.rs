@@ -1534,7 +1534,7 @@ mod tests {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
-            entitlements: vec![Entitlement::TriggerActions],
+            entitlements: vec![Entitlement::ManageTitle],
         }
     }
 

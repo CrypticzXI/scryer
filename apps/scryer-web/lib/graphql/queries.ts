@@ -1449,6 +1449,16 @@ export const generalSettingsQuery = `query GeneralSettings {
   }
 }`;
 
+export const securitySettingsQuery = `query SecuritySettings {
+  securitySettings {
+    formLoginEnabled
+    skipLoginForLocalIps
+    effectiveFormLoginEnabled
+    envOverrideActive
+    envOverrideDescription
+  }
+}`;
+
 export const delayProfilesQuery = `query DelayProfiles {
   delayProfiles {
     id
@@ -1518,6 +1528,13 @@ export const meQuery = `query Me {
   }
 }`;
 
+export const authRuntimeStateQuery = `query AuthRuntimeState {
+  authRuntimeState {
+    effectiveFormLoginEnabled
+    skipLoginForLocalIps
+  }
+}`;
+
 export const importHistoryQuery = `query ImportHistory($limit: Int) {
   importHistory(limit: $limit) {${IMPORT_HISTORY_FIELDS}
   }
@@ -1575,6 +1592,10 @@ export const smgVersionCompatibilityNoticeQuery = `query SmgVersionCompatibility
     message
     upgradeDeadline
   }
+}`;
+
+export const scryerVersionQuery = `query ScryerVersion {
+  scryerVersion
 }`;
 
 export const serviceLogsQuery = `query ServiceLogs($limit: Int) {
@@ -1826,6 +1847,8 @@ export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue
       facet
       status
       titleId
+      titleName
+      titleSlug
       displayName
       path
       folderPath

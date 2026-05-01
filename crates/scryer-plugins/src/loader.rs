@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
+use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::types::{
     ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL,
@@ -1773,6 +1774,13 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
+    build_plugin_with_socket_host(manifest, &SocketHost::disabled())
+}
+
+fn build_plugin_with_socket_host(
+    manifest: Manifest,
+    socket_host: &SocketHost,
+) -> Result<extism::Plugin, extism::Error> {
     // Wasmtime's filesystem cache is not race-free when multiple identical
     // modules compile concurrently in the same process. Serialize the build
     // step so parallel provider/client loading does not emit cache rename
@@ -1784,6 +1792,7 @@ pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism:
     extism::PluginBuilder::new(manifest)
         .with_wasi(true)
         .with_http_response_headers(true)
+        .with_functions(socket_host.functions())
         .build()
 }
 
@@ -1957,6 +1966,8 @@ impl WasmNotificationPluginProvider {
             Some(&config.config_json),
         );
         manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
+        let socket_host =
+            SocketHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
 
         // Inject config_json key-value pairs
         match parse_config_json_entries(&config.config_json) {
@@ -1974,12 +1985,13 @@ impl WasmNotificationPluginProvider {
             }
         }
 
-        match build_plugin(manifest) {
+        match build_plugin_with_socket_host(manifest, &socket_host) {
             Ok(plugin) => {
                 let client = WasmNotificationClient::new(
                     plugin,
                     loaded.descriptor.clone(),
                     config.name.clone(),
+                    Some(socket_host),
                 );
                 Some(Arc::new(client))
             }
@@ -2289,6 +2301,7 @@ mod tests {
             version: "0.1.0".to_string(),
             sdk_version: "1.0.0".to_string(),
             sdk_constraint: ">=1.0.0, <2.0.0".to_string(),
+            socket_permissions: vec![],
             provider,
         }
     }

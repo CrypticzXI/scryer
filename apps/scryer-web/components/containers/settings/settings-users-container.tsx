@@ -24,15 +24,14 @@ function normalizeEntitlementValue(value: string): string {
     case "viewcatalog":
       return "view_catalog";
     case "monitortitle":
-      return "monitor_title";
     case "managetitle":
-      return "manage_title";
     case "triggeractions":
-      return "trigger_actions";
+    case "viewhistory":
+      return "manage_title";
+    case "manageusers":
+      return "manage_users";
     case "manageconfig":
       return "manage_config";
-    case "viewhistory":
-      return "view_history";
     default:
       return normalized;
   }
@@ -157,6 +156,8 @@ export function SettingsUsersContainer() {
 
   const setUserEntitlements = async (userId: string, entitlements?: string[]) => {
     const resolvedEntitlements = entitlements ?? userEntitlementDrafts[userId] ?? [];
+    const updatedUserName =
+      settingsUsers.find((candidate) => candidate.id === userId)?.username ?? userId;
     setMutatingUserId(userId);
     try {
       const { error } = await client.mutation(setUserEntitlementsMutation, {
@@ -166,7 +167,7 @@ export function SettingsUsersContainer() {
         },
       }).toPromise();
       if (error) throw error;
-      setGlobalStatus(t("user.entitlementsUpdated"));
+      setGlobalStatus(t("user.entitlementsUpdated", { name: updatedUserName }));
       await refreshUsers();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));

@@ -2,12 +2,15 @@ use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    DownloadImportFilter, PendingImportCounts, ReleaseDecisionsQuery, TitleHistoryFilter,
-    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
+    DownloadImportFilter, PendingImportCounts, ReleaseDecisionsQuery, SCRYER_VERSION,
+    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{Entitlement, PolicyInput, TitleHistoryEventType};
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, current_user_from_ctx, to_gql_error,
+};
 use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
@@ -111,6 +114,28 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+    }
+}
+
+fn from_security_settings(
+    settings: scryer_application::SecuritySettings,
+    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
+) -> SecuritySettingsPayload {
+    SecuritySettingsPayload {
+        form_login_enabled: settings.form_login_enabled,
+        skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
+        env_override_active: auth_runtime.env_override_active,
+        env_override_description: auth_runtime.env_override_description.clone(),
+    }
+}
+
+fn from_auth_runtime_state(
+    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
+) -> AuthRuntimeStatePayload {
+    AuthRuntimeStatePayload {
+        effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
+        skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
     }
 }
 
@@ -733,7 +758,7 @@ impl QueryRoot {
             }
         };
         let activity_import_count = async {
-            if actor.has_entitlement(&Entitlement::ManageConfig) {
+            if actor.has_entitlement(&Entitlement::ManageTitle) {
                 app.count_download_import_items(&actor, DownloadImportFilter::All)
                     .await
             } else {
@@ -883,6 +908,15 @@ impl QueryRoot {
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
+            || actor.has_entitlement(&Entitlement::ManageTitle);
+        if title_id.is_some() {
+            if !can_view_title_progress {
+                return Err(Error::new("insufficient entitlements"));
+            }
+        } else if !actor.has_entitlement(&Entitlement::ManageTitle) {
+            return Err(Error::new("insufficient entitlements"));
+        }
         let items = match title_id {
             Some(title_id) => {
                 app.list_download_queue_for_title(
@@ -1011,6 +1045,23 @@ impl QueryRoot {
             .await
             .map_err(to_gql_error)?;
         Ok(from_general_settings(settings))
+    }
+
+    async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        let settings = app
+            .get_security_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_security_settings(settings, &auth_runtime.snapshot()))
+    }
+
+    async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        Ok(from_auth_runtime_state(&auth_runtime.snapshot()))
     }
 
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {
@@ -1258,6 +1309,11 @@ impl QueryRoot {
         Ok(from_system_health(health))
     }
 
+    async fn scryer_version(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        let _actor = actor_from_ctx(ctx)?;
+        Ok(SCRYER_VERSION.to_string())
+    }
+
     async fn smg_version_compatibility_notice(
         &self,
         ctx: &Context<'_>,
@@ -1373,7 +1429,7 @@ impl QueryRoot {
     ) -> GqlResult<Vec<ImportRecordPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewHistory) {
+        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageTitle) {
             return Err(Error::new("insufficient entitlements"));
         }
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
@@ -1396,7 +1452,7 @@ impl QueryRoot {
     ) -> GqlResult<ManualImportPreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::TriggerActions) {
+        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageTitle) {
             return Err(async_graphql::Error::new("insufficient entitlements"));
         }
 
@@ -1433,8 +1489,8 @@ impl QueryRoot {
     }
 
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
-        match ctx.data_opt::<scryer_domain::User>() {
-            Some(user) => Ok(Some(from_user(user.clone()))),
+        match current_user_from_ctx(ctx) {
+            Some(user) => Ok(Some(from_user(user))),
             None => Ok(None),
         }
     }
@@ -1952,11 +2008,13 @@ impl QueryRoot {
     }
 
     async fn notification_event_types(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
+        let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
             return Err(Error::new("insufficient entitlements"));
         }
-        Ok(scryer_domain::NotificationEventType::all()
+        Ok(app
+            .subscribable_notification_event_types()
             .iter()
             .map(|e| e.as_str().to_string())
             .collect())

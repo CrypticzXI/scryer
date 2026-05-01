@@ -13,7 +13,7 @@ impl AppUseCase {
 
         let titles = self.services.catalog.titles.list(None, None).await?;
         let users = self.services.identity.users.list_all().await?;
-        let recent_activity = self.recent_activity(actor, 12, 0).await?;
+        let recent_activity = self.recent_activity_page(12, 0).await?;
 
         let mut titles_movie = 0usize;
         let mut titles_series = 0usize;
@@ -252,13 +252,37 @@ impl AppUseCase {
         self.ensure_default_admin("admin", "admin").await
     }
 
+    pub async fn migrate_user_entitlements(&self) -> AppResult<u32> {
+        let users = self.services.identity.users.list_all().await?;
+        let mut migrated = 0u32;
+
+        for user in users {
+            if !user.has_entitlement(&Entitlement::ManageConfig)
+                || user.has_entitlement(&Entitlement::ManageUsers)
+            {
+                continue;
+            }
+
+            let mut entitlements = user.entitlements.clone();
+            entitlements.push(Entitlement::ManageUsers);
+            self.services
+                .identity
+                .users
+                .update_entitlements(&user.id, entitlements)
+                .await?;
+            migrated += 1;
+        }
+
+        Ok(migrated)
+    }
+
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
         self.services.identity.users.list_all().await
     }
 
     pub async fn get_user(&self, actor: &User, user_id: &str) -> AppResult<Option<User>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
         self.services.identity.users.get_by_id(user_id).await
     }
 
@@ -269,7 +293,7 @@ impl AppUseCase {
         password: String,
         entitlements: Vec<Entitlement>,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
 
         let username = username.trim().to_string();
         if username.is_empty() {
@@ -361,7 +385,7 @@ impl AppUseCase {
         user_id: &str,
         password: String,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
 
         if user_id == actor.id {
             return Err(AppError::Validation(
@@ -408,7 +432,7 @@ impl AppUseCase {
         user_id: &str,
         entitlements: Vec<Entitlement>,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
 
         if entitlements.is_empty() {
             return Err(AppError::Validation(
@@ -450,7 +474,7 @@ impl AppUseCase {
     }
 
     pub async fn delete_user(&self, actor: &User, user_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        require(actor, &Entitlement::ManageUsers)?;
 
         let user = self
             .services

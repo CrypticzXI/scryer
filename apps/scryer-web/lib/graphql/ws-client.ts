@@ -32,3 +32,7 @@ export const wsClient = createClient({
     );
   },
 });
+
+export function disposeWsClient() {
+  wsClient.dispose();
+}

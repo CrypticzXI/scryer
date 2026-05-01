@@ -10,6 +10,9 @@ semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+extism-pdk = "1.4"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 extism = { workspace = true }
 url = "2"

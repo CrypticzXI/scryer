@@ -25,7 +25,7 @@ use crate::types::{SettingDefinitionSeed, SettingsValueRecord};
 
 const DEFAULT_SQLITE_MAX_CONNECTIONS: u32 = 16;
 const MAX_SQLITE_CONNECTIONS_CAP: u32 = 64;
-const SQLITE_SLOW_STATEMENT_WARN_MS: u64 = 500;
+const SQLITE_SLOW_STATEMENT_WARN_MS: u64 = 1000;
 
 fn sqlite_max_connections_from_env() -> u32 {
     std::env::var("SCRYER_SQLITE_MAX_CONNECTIONS")

@@ -1,26 +1,36 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { Input } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 
+function resolveRedirectTarget(value: string | null): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+
+  return value;
+}
+
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { serviceRestarting } = useBackendRestarting();
   const { login, user, loading: authLoading } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
 
   // Redirect to home if already authenticated
   useEffect(() => {
     if (!serviceRestarting && !authLoading && user) {
-      navigate("/", { replace: true });
+      navigate(redirectTarget, { replace: true });
     }
-  }, [authLoading, user, navigate, serviceRestarting]);
+  }, [authLoading, user, navigate, redirectTarget, serviceRestarting]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -29,14 +39,14 @@ export default function LoginPage() {
       setSubmitting(true);
       try {
         await login(username, password);
-        navigate("/", { replace: true });
+        navigate(redirectTarget, { replace: true });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Invalid username or password.");
       } finally {
         setSubmitting(false);
       }
     },
-    [login, username, password, navigate],
+    [login, navigate, password, redirectTarget, username],
   );
 
   if (serviceRestarting) {

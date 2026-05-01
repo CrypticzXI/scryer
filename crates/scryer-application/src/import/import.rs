@@ -4248,7 +4248,7 @@ pub async fn execute_manual_import(
     completed: Option<&CompletedDownload>,
     files: Vec<ManualImportFileMapping>,
 ) -> AppResult<Vec<ManualImportFileResult>> {
-    require(actor, &Entitlement::TriggerActions)?;
+    require(actor, &Entitlement::ManageTitle)?;
     let title = app
         .services
         .catalog

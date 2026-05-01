@@ -53,6 +53,7 @@ import type {
   TitleOverviewNativeSnapshot,
 } from "@/lib/title-overview-loader";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import { useAuth } from "@/lib/hooks/use-auth";
 
 export type TitleDetail = {
   id: string;
@@ -249,6 +250,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const auth = useAuth();
+  const canManageTitle = auth.user?.entitlements.includes("manage_title") === true;
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
   const [title, setTitle] = React.useState<TitleDetail | null>(null);
@@ -1034,6 +1037,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   return (
     <>
       <SeriesOverviewView
+        canManageTitle={canManageTitle}
         loading={loading}
         hydrating={hydrating}
         title={title}

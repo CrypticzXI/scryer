@@ -1,4 +1,5 @@
 import type { ConfigFieldDef } from "./indexers";
+import type { TitleRecord } from "./titles";
 
 export type NotificationChannel = {
   id: string;
@@ -30,10 +31,22 @@ export type NotificationSubscription = {
 
 export type NotificationSubscriptionDraft = {
   channelId: string;
-  eventType: string;
+  eventTypes: string[];
   scope: string;
-  scopeId: string;
+  facetScopeIds: string[];
+  titleScopeId: string;
+  titleScopeTitle: TitleRecord | null;
   isEnabled: boolean;
+};
+
+export type NotificationSubscriptionRow = {
+  id: string;
+  channelId: string;
+  eventTypes: string[];
+  scope: string;
+  scopeId: string | null;
+  isEnabled: boolean;
+  subscriptionIds: string[];
 };
 
 export type NotificationProviderType = {

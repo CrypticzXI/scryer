@@ -1425,6 +1425,7 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
         version: "0.2.0".to_string(),
         sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
         sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
         provider: scryer_plugin_sdk::ProviderDescriptor::Indexer(
             scryer_plugin_sdk::IndexerDescriptor {
                 provider_type: "alpha".to_string(),
@@ -1476,6 +1477,7 @@ fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_overrid
         version: "0.2.0".to_string(),
         sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
         sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
         provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
             scryer_plugin_sdk::NotificationDescriptor {
                 provider_type: "jellyfin".to_string(),

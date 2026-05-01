@@ -49,6 +49,7 @@ export type RegistryPluginRecord = {
 type SettingsPluginsSectionProps = {
   plugins: RegistryPluginRecord[];
   mutatingPluginIds: string[];
+  upgradingPluginIds: string[];
   pluginErrors: Partial<Record<string, string>>;
   refreshing: boolean;
   onRefreshRegistry: () => void;
@@ -191,6 +192,7 @@ function PluginFilters({
 function PluginTable({
   plugins,
   mutatingPluginIds,
+  upgradingPluginIds,
   pluginErrors,
   showActions,
   onTogglePlugin,
@@ -201,6 +203,7 @@ function PluginTable({
 }: {
   plugins: RegistryPluginRecord[];
   mutatingPluginIds: string[];
+  upgradingPluginIds: string[];
   pluginErrors: Partial<Record<string, string>>;
   showActions: "installed" | "available";
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
@@ -229,6 +232,7 @@ function PluginTable({
       <TableBody>
         {plugins.map((plugin) => {
           const isBusy = mutatingPluginIds.includes(plugin.id);
+          const isUpgrading = upgradingPluginIds.includes(plugin.id);
           const actionError = pluginErrors[plugin.id];
           const displayVersion =
             showActions === "installed" && plugin.installedVersion
@@ -314,7 +318,11 @@ function PluginTable({
                           onClick={() => onUpgradePlugin(plugin)}
                           label={t("settings.pluginUpgrade", { version: plugin.version })}
                         >
-                          <ArrowUpCircle className="h-4 w-4" />
+                          {isUpgrading ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ArrowUpCircle className="h-4 w-4" />
+                          )}
                         </PluginActionButton>
                       )}
                       {canUninstallPlugin(plugin) && (
@@ -355,6 +363,7 @@ function PluginTable({
 export function SettingsPluginsSection({
   plugins,
   mutatingPluginIds,
+  upgradingPluginIds,
   pluginErrors,
   refreshing,
   onRefreshRegistry,
@@ -421,13 +430,14 @@ export function SettingsPluginsSection({
                 onChange={setInstalledFilters}
               />
             </div>
-            <PluginTable
-              plugins={filteredInstalled}
-              mutatingPluginIds={mutatingPluginIds}
-              pluginErrors={pluginErrors}
-              showActions="installed"
-              onTogglePlugin={onTogglePlugin}
-              onInstallPlugin={onInstallPlugin}
+              <PluginTable
+                plugins={filteredInstalled}
+                mutatingPluginIds={mutatingPluginIds}
+                upgradingPluginIds={upgradingPluginIds}
+                pluginErrors={pluginErrors}
+                showActions="installed"
+                onTogglePlugin={onTogglePlugin}
+                onInstallPlugin={onInstallPlugin}
               onUninstallPlugin={onUninstallPlugin}
               onUpgradePlugin={onUpgradePlugin}
               emptyMessage={t("settings.pluginsNoInstalled")}
@@ -443,13 +453,14 @@ export function SettingsPluginsSection({
                 onChange={setAvailableFilters}
               />
             </div>
-            <PluginTable
-              plugins={filteredAvailable}
-              mutatingPluginIds={mutatingPluginIds}
-              pluginErrors={pluginErrors}
-              showActions="available"
-              onTogglePlugin={onTogglePlugin}
-              onInstallPlugin={onInstallPlugin}
+              <PluginTable
+                plugins={filteredAvailable}
+                mutatingPluginIds={mutatingPluginIds}
+                upgradingPluginIds={upgradingPluginIds}
+                pluginErrors={pluginErrors}
+                showActions="available"
+                onTogglePlugin={onTogglePlugin}
+                onInstallPlugin={onInstallPlugin}
               onUninstallPlugin={onUninstallPlugin}
               onUpgradePlugin={onUpgradePlugin}
               emptyMessage={t("settings.pluginsNoAvailable")}

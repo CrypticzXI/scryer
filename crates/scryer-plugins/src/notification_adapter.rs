@@ -8,6 +8,7 @@ use scryer_application::{
 use scryer_domain::NotificationEventType as DomainNotificationEventType;
 use tracing::warn;
 
+use crate::socket_host::SocketHost;
 use crate::types::{
     EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationActor,
     PluginNotificationApp, PluginNotificationApplicationUpdate, PluginNotificationDownload,
@@ -21,14 +22,21 @@ pub struct WasmNotificationClient {
     plugin: Arc<Mutex<extism::Plugin>>,
     descriptor: PluginDescriptor,
     channel_name: String,
+    socket_host: Option<SocketHost>,
 }
 
 impl WasmNotificationClient {
-    pub fn new(plugin: extism::Plugin, descriptor: PluginDescriptor, channel_name: String) -> Self {
+    pub fn new(
+        plugin: extism::Plugin,
+        descriptor: PluginDescriptor,
+        channel_name: String,
+        socket_host: Option<SocketHost>,
+    ) -> Self {
         Self {
             plugin: Arc::new(Mutex::new(plugin)),
             descriptor,
             channel_name,
+            socket_host,
         }
     }
 }
@@ -213,15 +221,18 @@ impl NotificationClient for WasmNotificationClient {
         let channel_name = self.channel_name.clone();
 
         let plugin = Arc::clone(&self.plugin);
+        let socket_host = self.socket_host.clone();
         let output = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<&str, String>(EXPORT_NOTIFICATION_SEND, &input)
-                .map_err(|e| {
-                    AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_SEND}() failed: {e}"))
-                })
+            let output = guard.call::<&str, String>(EXPORT_NOTIFICATION_SEND, &input);
+            if let Some(socket_host) = socket_host {
+                socket_host.cleanup();
+            }
+            output.map_err(|e| {
+                AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_SEND}() failed: {e}"))
+            })
         })
         .await
         .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;

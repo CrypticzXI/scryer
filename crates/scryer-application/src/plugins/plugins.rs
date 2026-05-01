@@ -10,7 +10,7 @@ use scryer_plugin_sdk::{
     validate_plugin_descriptor_sdk_contract, validate_sdk_contract,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::{path::PathBuf, sync::LazyLock};
 use tracing::warn;
 
 /// Registry plugin entry merged with local installation state.
@@ -516,6 +516,8 @@ fn validate_downloaded_plugin_descriptor(
 
 const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/scryer-media/scryer-plugins/main/registry.json";
+const REGISTRY_URL_ENV: &str = "SCRYER_PLUGIN_REGISTRY_URL";
+const REGISTRY_PATH_ENV: &str = "SCRYER_PLUGIN_REGISTRY_PATH";
 
 const LEGACY_INDEXER_PLUGIN_TYPE: &str = "indexer";
 const USENET_INDEXER_PLUGIN_TYPE: &str = "usenet_indexer";
@@ -528,6 +530,22 @@ fn current_scryer_version() -> &'static semver::Version {
             .expect("CARGO_PKG_VERSION must be a valid semver version")
     });
     &VERSION
+}
+
+fn plugin_registry_url() -> String {
+    std::env::var(REGISTRY_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string())
+}
+
+fn plugin_registry_path_override() -> Option<PathBuf> {
+    std::env::var(REGISTRY_PATH_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn is_indexer_plugin_type(plugin_type: &str) -> bool {
@@ -1452,14 +1470,41 @@ impl AppUseCase {
 
     /// Internal registry refresh (no auth check) for use by startup and background tasks.
     pub async fn refresh_plugin_registry_internal(&self) -> AppResult<()> {
-        let body = reqwest::get(DEFAULT_REGISTRY_URL)
-            .await
-            .map_err(|e| AppError::Repository(format!("failed to fetch plugin registry: {e}")))?
-            .text()
-            .await
-            .map_err(|e| {
-                AppError::Repository(format!("failed to read plugin registry body: {e}"))
-            })?;
+        let body = if let Some(path) = plugin_registry_path_override() {
+            match std::fs::read_to_string(&path) {
+                Ok(body) => body,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to read local plugin registry override; falling back to remote registry"
+                    );
+                    let url = plugin_registry_url();
+                    reqwest::get(&url)
+                        .await
+                        .map_err(|e| {
+                            AppError::Repository(format!("failed to fetch plugin registry: {e}"))
+                        })?
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            AppError::Repository(format!(
+                                "failed to read plugin registry body: {e}"
+                            ))
+                        })?
+                }
+            }
+        } else {
+            let url = plugin_registry_url();
+            reqwest::get(&url)
+                .await
+                .map_err(|e| AppError::Repository(format!("failed to fetch plugin registry: {e}")))?
+                .text()
+                .await
+                .map_err(|e| {
+                    AppError::Repository(format!("failed to read plugin registry body: {e}"))
+                })?
+        };
 
         let manifest: RegistryManifest = serde_json::from_str(&body)
             .map_err(|e| AppError::Validation(format!("invalid plugin registry JSON: {e}")))?;

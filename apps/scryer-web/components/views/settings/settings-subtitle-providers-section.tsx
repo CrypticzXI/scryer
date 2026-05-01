@@ -238,6 +238,11 @@ function DynamicSubtitleConfigField({
   hasStoredSecretValue: boolean;
 }) {
   const t = useTranslate();
+  const requiredMarker = field.required ? (
+    <span aria-hidden="true" className="text-destructive">
+      *
+    </span>
+  ) : null;
 
   if (field.fieldType === "bool") {
     return (
@@ -251,7 +256,10 @@ function DynamicSubtitleConfigField({
           className="accent-primary"
         />
         <div className="space-y-1">
-          <span className="text-sm font-medium">{field.label}</span>
+          <span className="inline-flex items-center gap-2 text-sm font-medium">
+            {field.label}
+            {requiredMarker}
+          </span>
           {field.helpText ? (
             <p className="text-xs text-muted-foreground">{field.helpText}</p>
           ) : null}
@@ -263,7 +271,10 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
         <Select
           value={value || field.defaultValue || ""}
           onValueChange={(nextValue) => onChange(field.key, nextValue)}
@@ -289,7 +300,10 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label>
-        <Label className="mb-2 block">{field.label}</Label>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
         <Textarea
           value={value}
           onChange={(event) => onChange(field.key, event.target.value)}
@@ -311,7 +325,10 @@ function DynamicSubtitleConfigField({
 
   return (
     <label>
-      <Label className="mb-2 block">{field.label}</Label>
+      <Label className="mb-2 inline-flex items-center gap-2">
+        {field.label}
+        {requiredMarker}
+      </Label>
       <Input
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}

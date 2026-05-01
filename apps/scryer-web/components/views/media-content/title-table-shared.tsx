@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Loader2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -522,19 +523,21 @@ export function StatusBadge({
 export function TitleTableActionButton({
   label,
   tone,
+  showTitleAttribute = true,
   className,
   children,
   ...props
 }: React.ComponentProps<typeof Button> & {
   label: string;
   tone: BoxedActionButtonTone;
+  showTitleAttribute?: boolean;
 }) {
   return (
     <Button
       type="button"
       size="icon-sm"
       variant="secondary"
-      title={label}
+      title={showTitleAttribute ? label : undefined}
       aria-label={label}
       className={cn(
         boxedActionButtonBaseClass,
@@ -552,6 +555,8 @@ export function TitleTableEmptyState({
   colSpan,
   t,
   showScanAction = false,
+  showConfigureRootsAction = false,
+  configureRootsHref,
   scanLoading = false,
   scanDisabled = false,
   onScan,
@@ -559,6 +564,8 @@ export function TitleTableEmptyState({
   colSpan: number;
   t: Translate;
   showScanAction?: boolean;
+  showConfigureRootsAction?: boolean;
+  configureRootsHref?: string;
   scanLoading?: boolean;
   scanDisabled?: boolean;
   onScan?: () => Promise<void> | void;
@@ -566,7 +573,21 @@ export function TitleTableEmptyState({
   return (
     <TableRow>
       <TableCell colSpan={colSpan} className="py-8">
-        {showScanAction && onScan ? (
+        {showConfigureRootsAction && configureRootsHref ? (
+          <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
+            <p className="text-sm font-medium text-foreground">
+              {t("settings.rootFoldersEmpty")}
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("title.configureRootFoldersHint")}
+            </p>
+            <Button asChild type="button" variant="primary" className="mt-4">
+              <Link to={configureRootsHref}>
+                {t("title.configureRootFoldersButton")}
+              </Link>
+            </Button>
+          </div>
+        ) : showScanAction && onScan ? (
           <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
             <p className="text-sm font-medium text-foreground">{t("title.noManaged")}</p>
             <p className="mt-1 text-sm text-muted-foreground">{t("title.noFilesTrackedHint")}</p>

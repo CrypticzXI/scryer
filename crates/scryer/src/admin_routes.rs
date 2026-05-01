@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use axum::Json;
 use axum::http::{HeaderMap, StatusCode};
@@ -6,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use scryer_application::AppUseCase;
 use scryer_domain::{Entitlement, NewIndexerConfig};
 use scryer_infrastructure::SqliteSettingsStore;
+use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::{map_app_error, resolve_actor_with_entitlement};
@@ -196,14 +198,16 @@ pub(crate) struct AdminSettingsQuery {
 pub(crate) async fn admin_settings_list(
     database: SqliteSettingsStore,
     app_use_case: AppUseCase,
-    auth_enabled: bool,
+    auth_runtime: AuthRuntimeStateHandle,
     headers: HeaderMap,
+    remote_addr: SocketAddr,
     query: AdminSettingsQuery,
 ) -> Response {
     let _actor = match resolve_actor_with_entitlement(
         &app_use_case,
-        auth_enabled,
+        &auth_runtime,
         &headers,
+        Some(remote_addr),
         Entitlement::ManageConfig,
     )
     .await

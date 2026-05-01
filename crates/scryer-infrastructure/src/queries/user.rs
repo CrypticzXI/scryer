@@ -2,6 +2,53 @@ use scryer_application::{AppError, AppResult};
 use scryer_domain::{Entitlement, User};
 use serde_json;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::collections::HashSet;
+
+fn canonical_stored_entitlement_token(entitlement: &Entitlement) -> &'static str {
+    match entitlement {
+        Entitlement::ViewCatalog => "ViewCatalog",
+        Entitlement::ManageTitle => "ManageTitle",
+        Entitlement::ManageUsers => "ManageUsers",
+        Entitlement::ManageConfig => "ManageConfig",
+    }
+}
+
+fn parse_stored_entitlement_token(raw: &str) -> Option<Entitlement> {
+    match raw.trim().to_lowercase().replace(['-', ' '], "_").as_str() {
+        "viewcatalog" | "view_catalog" => Some(Entitlement::ViewCatalog),
+        "monitortitle" | "monitor_title" => Some(Entitlement::ManageTitle),
+        "managetitle" | "manage_title" => Some(Entitlement::ManageTitle),
+        "triggeractions" | "trigger_actions" => Some(Entitlement::ManageTitle),
+        "manageusers" | "manage_users" => Some(Entitlement::ManageUsers),
+        "manageconfig" | "manage_config" => Some(Entitlement::ManageConfig),
+        "viewhistory" | "view_history" => Some(Entitlement::ManageTitle),
+        _ => None,
+    }
+}
+
+fn parse_stored_entitlements(raw: &str) -> AppResult<(Vec<Entitlement>, bool)> {
+    let tokens: Vec<String> =
+        serde_json::from_str(raw).map_err(|err| AppError::Repository(err.to_string()))?;
+    let mut seen = HashSet::new();
+    let mut entitlements = Vec::with_capacity(tokens.len());
+    let mut changed = false;
+
+    for token in tokens {
+        let entitlement = parse_stored_entitlement_token(&token).ok_or_else(|| {
+            AppError::Repository(format!("unknown stored entitlement token: {token}"))
+        })?;
+        if canonical_stored_entitlement_token(&entitlement) != token {
+            changed = true;
+        }
+        if seen.insert(entitlement.clone()) {
+            entitlements.push(entitlement);
+        } else {
+            changed = true;
+        }
+    }
+
+    Ok((entitlements, changed))
+}
 
 pub(crate) async fn create_user_query(pool: &SqlitePool, user: &User) -> AppResult<User> {
     let entitlements_json = serde_json::to_string(&user.entitlements)
@@ -32,8 +79,14 @@ pub(crate) async fn get_user_by_id_query(pool: &SqlitePool, id: &str) -> AppResu
 
     match row {
         Some((id, username, entitlements_raw, password_hash)) => {
-            let entitlements: Vec<Entitlement> = serde_json::from_str(&entitlements_raw)
-                .map_err(|err| AppError::Repository(err.to_string()))?;
+            let (entitlements, changed) = parse_stored_entitlements(&entitlements_raw)?;
+            if changed {
+                let entitlements_json = serde_json::to_string(&entitlements)
+                    .map_err(|err| AppError::Repository(err.to_string()))?;
+                return update_user_entitlements_query(pool, &id, &entitlements_json)
+                    .await
+                    .map(Some);
+            }
             Ok(Some(User {
                 id,
                 username,
@@ -56,8 +109,7 @@ async fn get_user_by_id_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> AppRes
 
     match row {
         Some((id, username, entitlements_raw, password_hash)) => {
-            let entitlements: Vec<Entitlement> = serde_json::from_str(&entitlements_raw)
-                .map_err(|err| AppError::Repository(err.to_string()))?;
+            let (entitlements, _) = parse_stored_entitlements(&entitlements_raw)?;
             Ok(Some(User {
                 id,
                 username,
@@ -83,8 +135,14 @@ pub(crate) async fn get_user_by_username_query(
 
     match row {
         Some((id, username, entitlements_raw, password_hash)) => {
-            let entitlements: Vec<Entitlement> = serde_json::from_str(&entitlements_raw)
-                .map_err(|err| AppError::Repository(err.to_string()))?;
+            let (entitlements, changed) = parse_stored_entitlements(&entitlements_raw)?;
+            if changed {
+                let entitlements_json = serde_json::to_string(&entitlements)
+                    .map_err(|err| AppError::Repository(err.to_string()))?;
+                return update_user_entitlements_query(pool, &id, &entitlements_json)
+                    .await
+                    .map(Some);
+            }
             Ok(Some(User {
                 id,
                 username,
@@ -104,18 +162,24 @@ pub(crate) async fn list_users_query(pool: &SqlitePool) -> AppResult<Vec<User>> 
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    rows.into_iter()
-        .map(|(id, username, entitlements_json, password_hash)| {
-            let entitlements: Vec<Entitlement> = serde_json::from_str(&entitlements_json)
+    let mut users = Vec::with_capacity(rows.len());
+    for (id, username, entitlements_json, password_hash) in rows {
+        let (entitlements, changed) = parse_stored_entitlements(&entitlements_json)?;
+        if changed {
+            let next_entitlements_json = serde_json::to_string(&entitlements)
                 .map_err(|err| AppError::Repository(err.to_string()))?;
-            Ok(User {
-                id,
-                username,
-                password_hash,
-                entitlements,
-            })
-        })
-        .collect()
+            users.push(update_user_entitlements_query(pool, &id, &next_entitlements_json).await?);
+            continue;
+        }
+        users.push(User {
+            id,
+            username,
+            password_hash,
+            entitlements,
+        });
+    }
+
+    Ok(users)
 }
 
 pub(crate) async fn update_user_entitlements_query(

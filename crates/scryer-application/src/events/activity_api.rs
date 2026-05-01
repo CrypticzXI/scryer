@@ -677,7 +677,7 @@ impl AppUseCase {
         actor: &User,
         input: PolicyInput,
     ) -> AppResult<PolicyOutput> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
 
         let mut reason_codes = vec!["default_policy_evaluation".to_string()];
         if input.has_existing_file {
@@ -710,7 +710,7 @@ impl AppUseCase {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<HistoryEvent>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let offset = offset.max(0) as usize;
         let limit = limit.max(1) as usize;
         let user_facing_event_types = user_facing_domain_event_types();
@@ -728,13 +728,11 @@ impl AppUseCase {
         Ok(history.into_iter().skip(offset).take(limit).collect())
     }
 
-    pub async fn recent_activity(
+    pub(crate) async fn recent_activity_page(
         &self,
-        actor: &User,
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<ActivityEvent>> {
-        require(actor, &Entitlement::ViewHistory)?;
         let offset = offset.max(0) as usize;
         let limit = limit.max(1) as usize;
         let user_facing_event_types = user_facing_domain_event_types();
@@ -751,12 +749,22 @@ impl AppUseCase {
         Ok(activities.into_iter().skip(offset).take(limit).collect())
     }
 
+    pub async fn recent_activity(
+        &self,
+        actor: &User,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<ActivityEvent>> {
+        require(actor, &Entitlement::ManageTitle)?;
+        self.recent_activity_page(limit, offset).await
+    }
+
     pub async fn list_domain_events(
         &self,
         actor: &User,
         filter: &DomainEventFilter,
     ) -> AppResult<Vec<DomainEvent>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         self.services.events.domain_events.list(filter).await
     }
 
@@ -766,7 +774,7 @@ impl AppUseCase {
         after_sequence: i64,
         limit: usize,
     ) -> AppResult<Vec<(i64, ActivityEvent)>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let user_facing_event_types = user_facing_domain_event_types();
         let events = self
             .services
@@ -791,7 +799,7 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<ActivityEvent>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         let actor = actor.clone();
@@ -840,12 +848,12 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<i64>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         Ok(self.runtime.events.domain_event_broadcast.subscribe())
     }
 
     pub fn subscribe_import_history(&self, actor: &User) -> AppResult<broadcast::Receiver<()>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         Ok(self.runtime.events.import_history_broadcast.subscribe())
     }
 
@@ -939,7 +947,7 @@ impl AppUseCase {
         actor: &User,
         filter: &TitleHistoryFilter,
     ) -> AppResult<TitleHistoryPage> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         project_title_history_page(self, filter).await
     }
 
@@ -951,7 +959,7 @@ impl AppUseCase {
         limit: usize,
         offset: usize,
     ) -> AppResult<TitleHistoryPage> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         project_title_history_page(
             self,
             &TitleHistoryFilter {
@@ -974,7 +982,7 @@ impl AppUseCase {
         episode_id: &str,
         limit: usize,
     ) -> AppResult<Vec<TitleHistoryRecord>> {
-        require(actor, &Entitlement::ViewHistory)?;
+        require(actor, &Entitlement::ManageTitle)?;
         project_episode_title_history(self, episode_id, limit).await
     }
 }

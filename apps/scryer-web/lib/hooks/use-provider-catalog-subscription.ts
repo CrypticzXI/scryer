@@ -22,6 +22,7 @@ function isProviderCatalogFamily(value: string): value is ProviderCatalogFamily 
 
 export function useProviderCatalogSubscription(
   onChanged: (families: ProviderCatalogFamily[]) => void,
+  enabled = true,
 ) {
   const onChangedRef = useRef(onChanged);
 
@@ -30,6 +31,7 @@ export function useProviderCatalogSubscription(
   });
 
   useDeferredWsSubscription<{ data?: { providerCatalogChanged?: string[] } }>({
+    enabled,
     requestKey: "providerCatalogChanged",
     request: { query: providerCatalogChangedSubscription },
     onNext(result) {

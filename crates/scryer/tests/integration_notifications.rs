@@ -5,7 +5,7 @@ mod common;
 use async_graphql::Request;
 use async_trait::async_trait;
 use chrono::Utc;
-use common::TestContext;
+use common::{TestContext, disabled_auth_runtime_handle};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, NotificationClient, NotificationMediaUpdateTypePayload,
@@ -121,7 +121,7 @@ impl FakeNotificationProvider {
                     key: "path_mappings".to_string(),
                     label: "Path Mappings".to_string(),
                     field_type: ConfigFieldType::Multiline,
-                    required: true,
+                    required: false,
                     default_value: None,
                     value_source: ConfigFieldValueSource::User,
                     host_binding: None,
@@ -184,7 +184,7 @@ async fn schema_exec(
     _ctx: &TestContext,
     query: &str,
 ) -> Value {
-    let schema = build_schema(app.clone(), false);
+    let schema = build_schema(app.clone(), disabled_auth_runtime_handle());
     let user = default_user(app).await;
     let response = schema.execute(Request::new(query).data(user)).await;
     serde_json::to_value(&response).expect("serialize GraphQL response")
@@ -756,6 +756,75 @@ async fn update_subscription_rejects_unknown_event_type() {
 }
 
 #[tokio::test]
+async fn create_subscription_rejects_unsubscribable_event_type() {
+    let ctx = TestContext::new().await;
+    let app = app_with_notifications(&ctx);
+    let user = default_user(&app).await;
+
+    let channel = app
+        .create_notification_channel(&user, "Ch".into(), "webhook".into(), "{}".into(), true)
+        .await
+        .unwrap();
+
+    let err = app
+        .create_notification_subscription(
+            &user,
+            channel.id,
+            "test".into(),
+            "global".into(),
+            None,
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)));
+}
+
+#[tokio::test]
+async fn notification_event_types_query_returns_only_dispatchable_subscription_events() {
+    let ctx = TestContext::new().await;
+    let app = app_with_notifications(&ctx);
+
+    let body = schema_exec(
+        &app,
+        &ctx,
+        r#"
+        query NotificationEventTypes {
+          notificationEventTypes
+        }
+        "#,
+    )
+    .await;
+
+    assert_no_errors(&body);
+    let event_types = body["data"]["notificationEventTypes"]
+        .as_array()
+        .expect("event type array")
+        .iter()
+        .map(|value| value.as_str().expect("event type string"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        event_types,
+        vec![
+            "title_added",
+            "title_deleted",
+            "grab",
+            "download",
+            "import_complete",
+            "import_rejected",
+            "upgrade",
+            "rename",
+            "file_deleted_for_upgrade",
+            "file_deleted",
+            "post_processing_completed",
+            "subtitle_downloaded",
+            "subtitle_search_failed",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
     let ctx = TestContext::new().await;
     let provider = Arc::new(FakeNotificationProvider::jellyfin());
@@ -798,7 +867,7 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
             .any(|field| {
                 field["key"] == "path_mappings"
                     && field["fieldType"] == "multiline"
-                    && field["required"] == true
+                    && field["required"] == false
             }),
         "expected path_mappings multiline field in {jellyfin}"
     );

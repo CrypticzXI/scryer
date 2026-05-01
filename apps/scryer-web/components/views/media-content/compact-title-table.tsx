@@ -13,10 +13,11 @@ import {
   Zap,
 } from "lucide-react";
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -68,6 +69,8 @@ type CompactTitleTableProps = {
   onBulkDelete: () => void;
   bulkActionBusy: boolean;
   showScanLibraryAction?: boolean;
+  showConfigureRootsAction?: boolean;
+  configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
@@ -97,6 +100,8 @@ export function CompactTitleTable({
   onBulkDelete,
   bulkActionBusy,
   showScanLibraryAction = false,
+  showConfigureRootsAction = false,
+  configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
@@ -383,50 +388,53 @@ export function CompactTitleTable({
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
           <TableCell className="text-center align-middle py-1.5">
-            <div
-              data-ui="row-actions"
-              className="inline-flex items-center justify-end gap-1"
-            >
-              <HoverCard openDelay={3000} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <TitleTableActionButton
-                    tone="auto"
-                    label={t("label.search")}
-                    onClick={() => handleQueueExisting(item)}
-                    disabled={autoQueueLoading || bulkActionBusy}
-                    className="size-7 rounded-sm"
-                  >
-                    {autoQueueLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
-                    ) : (
-                      <Zap className="h-3.5 w-3.5" />
-                    )}
-                  </TitleTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent>
-                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+            <TooltipProvider>
+              <div
+                data-ui="row-actions"
+                className="inline-flex items-center justify-end gap-1"
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TitleTableActionButton
+                        tone="auto"
+                        label={t("label.search")}
+                        showTitleAttribute={false}
+                        onClick={() => handleQueueExisting(item)}
+                        disabled={autoQueueLoading || bulkActionBusy}
+                        className="size-7 rounded-sm"
+                      >
+                        {autoQueueLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
+                        ) : (
+                          <Zap className="h-3.5 w-3.5" />
+                        )}
+                      </TitleTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
                     {t("help.autoSearchTooltip")}
-                  </p>
-                </HoverCardContent>
-              </HoverCard>
-              <HoverCard openDelay={3000} closeDelay={75}>
-                <HoverCardTrigger asChild>
-                  <TitleTableActionButton
-                    tone="search"
-                    label={t("label.interactiveSearch")}
-                    onClick={() => handleToggleInteractiveSearch(item)}
-                    disabled={bulkActionBusy}
-                    className="size-7 rounded-sm"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                  </TitleTableActionButton>
-                </HoverCardTrigger>
-                <HoverCardContent>
-                  <p className="max-w-[18rem] whitespace-normal break-words text-sm">
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TitleTableActionButton
+                        tone="search"
+                        label={t("label.interactiveSearch")}
+                        showTitleAttribute={false}
+                        onClick={() => handleToggleInteractiveSearch(item)}
+                        disabled={bulkActionBusy}
+                        className="size-7 rounded-sm"
+                      >
+                        <Search className="h-3.5 w-3.5" />
+                      </TitleTableActionButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
                     {t("help.interactiveSearchTooltip")}
-                  </p>
-                </HoverCardContent>
-              </HoverCard>
+                  </TooltipContent>
+                </Tooltip>
               {onToggleMonitored ? (
                 <TitleTableActionButton
                   tone={item.monitored ? "disabled" : "enabled"}
@@ -461,7 +469,8 @@ export function CompactTitleTable({
                   <Trash2 className="h-3.5 w-3.5" />
                 )}
               </TitleTableActionButton>
-            </div>
+              </div>
+            </TooltipProvider>
           </TableCell>
         </TableRow>
         {isPanelOpen ? (
@@ -686,6 +695,8 @@ export function CompactTitleTable({
               colSpan={columnCount}
               t={t}
               showScanAction={showScanLibraryAction}
+              showConfigureRootsAction={showConfigureRootsAction}
+              configureRootsHref={configureRootsHref}
               onScan={onScanLibrary}
               scanLoading={scanLibraryLoading}
               scanDisabled={scanLibraryDisabled}

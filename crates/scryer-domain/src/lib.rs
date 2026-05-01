@@ -2088,11 +2088,9 @@ pub struct RuleSet {
 #[serde(rename_all = "snake_case")]
 pub enum Entitlement {
     ViewCatalog,
-    MonitorTitle,
     ManageTitle,
-    TriggerActions,
+    ManageUsers,
     ManageConfig,
-    ViewHistory,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2116,11 +2114,9 @@ impl User {
     pub fn all_entitlements() -> Vec<Entitlement> {
         vec![
             Entitlement::ViewCatalog,
-            Entitlement::MonitorTitle,
             Entitlement::ManageTitle,
-            Entitlement::TriggerActions,
+            Entitlement::ManageUsers,
             Entitlement::ManageConfig,
-            Entitlement::ViewHistory,
         ]
     }
 
@@ -2838,7 +2834,7 @@ mod tests {
     fn admin_has_all_entitlements() {
         let admin = User::new_admin("root");
         assert!(admin.has_entitlement(&Entitlement::ManageConfig));
-        assert!(admin.has_entitlement(&Entitlement::ViewHistory));
+        assert!(admin.has_entitlement(&Entitlement::ManageUsers));
     }
 }
 

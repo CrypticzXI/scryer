@@ -819,6 +819,8 @@ pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImport
         facet: MediaFacetValue::from_domain(item.facet),
         status: PendingImportStatusValue::from_application(item.status),
         title_id: item.title_id,
+        title_name: item.title_name,
+        title_slug: item.title_slug,
         display_name: item.display_name,
         path: item.path,
         folder_path: item.folder_path,

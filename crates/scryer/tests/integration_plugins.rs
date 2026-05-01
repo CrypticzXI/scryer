@@ -35,8 +35,11 @@ struct RealPluginFixture {
     name: &'static str,
     description: &'static str,
     version: &'static str,
+    sdk_version: &'static str,
+    sdk_constraint: &'static str,
     plugin_type: &'static str,
     provider_type: &'static str,
+    scryer_constraint: Option<&'static str>,
     request_path: &'static str,
     wasm_path: std::path::PathBuf,
 }
@@ -93,8 +96,11 @@ fn bundled_test_indexer_fixture() -> RealPluginFixture {
         name: "Test",
         description: "A test plugin",
         version: "0.1.0",
+        sdk_version: "1.0.0",
+        sdk_constraint: ">=1.0.0, <2.0.0",
         plugin_type: "indexer",
         provider_type: "test",
+        scryer_constraint: None,
         request_path: "/fixtures/test-indexer/plugin.wasm",
         wasm_path: repo_root()
             .join("crates")
@@ -120,10 +126,39 @@ fn torrent_rss_dist_fixture() -> Option<RealPluginFixture> {
         plugin_id: "torrent-rss",
         name: "Torrent RSS Feed Indexer",
         description: "Generic torrent RSS indexer",
-        version: "0.1.4",
+        version: "0.1.5",
+        sdk_version: "1.4.0",
+        sdk_constraint: ">=1.4.0, <1.5.0",
         plugin_type: "torrent_indexer",
         provider_type: "torrent_rss",
+        scryer_constraint: Some(">=0.8.2"),
         request_path: "/dist/torrent_rss_indexer.wasm",
+        wasm_path,
+    })
+}
+
+fn email_dist_fixture() -> Option<RealPluginFixture> {
+    let wasm_path = repo_root()
+        .parent()
+        .expect("workspace root")
+        .join("scryer-plugins")
+        .join("dist")
+        .join("email_notification.wasm");
+    if !wasm_path.exists() {
+        return None;
+    }
+
+    Some(RealPluginFixture {
+        plugin_id: "email",
+        name: "Email",
+        description: "Plaintext SMTP email notification plugin with plain, STARTTLS, and TLS delivery modes",
+        version: "0.1.0",
+        sdk_version: "1.4.0",
+        sdk_constraint: ">=1.4.0, <1.5.0",
+        plugin_type: "notification",
+        provider_type: "email",
+        scryer_constraint: Some(">=0.12.2"),
+        request_path: "/dist/email_notification.wasm",
         wasm_path,
     })
 }
@@ -143,20 +178,29 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
         .mount(&ctx.nzbgeek_server)
         .await;
 
+    let mut release = serde_json::json!({
+        "version": fixture.version,
+        "sdk_version": fixture.sdk_version,
+        "sdk_constraint": fixture.sdk_constraint,
+        "builtin": false,
+        "wasm_url": format!("{}{}", ctx.nzbgeek_server.uri(), fixture.request_path),
+    });
+    if let Some(scryer_constraint) = fixture.scryer_constraint {
+        release["scryer_constraint"] = serde_json::json!(scryer_constraint);
+    }
+
     let registry_json = serde_json::json!({
         "schema_version": 1,
-        "plugins": [registry_plugin_entry(
-            fixture.plugin_id,
-            fixture.name,
-            fixture.description,
-            fixture.plugin_type,
-            fixture.provider_type,
-            fixture.version,
-            false,
-            Some(format!("{}{}", ctx.nzbgeek_server.uri(), fixture.request_path)),
-        )]
-    })
-    .to_string();
+        "plugins": [{
+            "id": fixture.plugin_id,
+            "name": fixture.name,
+            "description": fixture.description,
+            "plugin_type": fixture.plugin_type,
+            "provider_type": fixture.provider_type,
+            "official": true,
+            "releases": [release],
+        }]
+    }).to_string();
     ctx.customization
         .store_registry_cache(&registry_json)
         .await
@@ -171,12 +215,17 @@ async fn assert_real_registry_plugin_install_exposes_provider_type(fixture: &Rea
     assert_eq!(installation.provider_type, fixture.provider_type);
     assert_eq!(installation.plugin_type, fixture.plugin_type);
 
-    let provider_types = available_provider_types(&ctx.app, fixture.plugin_type);
-    assert!(
-        provider_types.contains(&fixture.provider_type.to_string()),
-        "{} should be available after install, got {provider_types:?}",
-        fixture.provider_type
-    );
+    if matches!(
+        fixture.plugin_type,
+        "indexer" | "usenet_indexer" | "torrent_indexer" | "download_client"
+    ) {
+        let provider_types = available_provider_types(&ctx.app, fixture.plugin_type);
+        assert!(
+            provider_types.contains(&fixture.provider_type.to_string()),
+            "{} should be available after install, got {provider_types:?}",
+            fixture.provider_type
+        );
+    }
 
     let plugins = ctx.app.list_available_plugins(&admin()).await.unwrap();
     let installed_plugin = plugins
@@ -334,6 +383,18 @@ async fn install_real_torrent_rss_plugin_exposes_provider_type() {
     let Some(fixture) = torrent_rss_dist_fixture() else {
         eprintln!(
             "skipping torrent RSS install regression: sibling scryer-plugins dist artifact is unavailable"
+        );
+        return;
+    };
+
+    assert_real_registry_plugin_install_exposes_provider_type(&fixture).await;
+}
+
+#[tokio::test]
+async fn install_real_email_plugin_exposes_provider_type() {
+    let Some(fixture) = email_dist_fixture() else {
+        eprintln!(
+            "skipping email install regression: sibling scryer-plugins dist artifact is unavailable"
         );
         return;
     };

@@ -1,4 +1,4 @@
-import type { Client } from "urql";
+import type { Client, CombinedError } from "urql";
 
 import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-timeout";
 import type { Facet } from "@/lib/types";
@@ -34,6 +34,32 @@ export type ResolvedTitleOverviewTarget = {
   slug: string | null;
 };
 
+function graphQlErrorAlias(
+  error: CombinedError["graphQLErrors"][number],
+): string | null {
+  if (!Array.isArray(error.path) || error.path.length === 0) {
+    return null;
+  }
+
+  return typeof error.path[0] === "string" ? error.path[0] : null;
+}
+
+function isTitleOverviewPartialOverviewError(
+  error: CombinedError,
+  data: unknown,
+): boolean {
+  if (error.networkError || !data || error.graphQLErrors.length === 0) {
+    return false;
+  }
+
+  return error.graphQLErrors.every(
+    (graphQlError) => {
+      const alias = graphQlErrorAlias(graphQlError);
+      return alias === "titleEvents" || alias === "setupStatus";
+    },
+  );
+}
+
 // Canonical base loader for title overview pages. Overview containers may
 // derive view-specific state locally, but should not duplicate the underlying
 // network-only title detail fetch and normalization.
@@ -56,7 +82,7 @@ export async function fetchTitleOverviewNativeSnapshot<
     )
     .toPromise();
 
-  if (error) {
+  if (error && !isTitleOverviewPartialOverviewError(error, data)) {
     throw error;
   }
 
@@ -66,7 +92,7 @@ export async function fetchTitleOverviewNativeSnapshot<
     titleEvents: (data?.titleEvents ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
-    hasDownloadClients: data?.setupStatus?.hasDownloadClients === true,
+    hasDownloadClients: data?.setupStatus?.hasDownloadClients !== false,
   };
 }
 

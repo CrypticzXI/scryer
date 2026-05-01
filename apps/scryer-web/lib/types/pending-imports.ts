@@ -18,6 +18,8 @@ export type PendingImportItem = {
   facet: "movie" | "series" | "anime";
   status: PendingImportStatus;
   titleId?: string | null;
+  titleName?: string | null;
+  titleSlug?: string | null;
   displayName: string;
   path: string;
   folderPath?: string | null;

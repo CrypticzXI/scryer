@@ -35,6 +35,19 @@ export type GeneralSettings = {
   historyRetentionDays: number;
 };
 
+export type SecuritySettings = {
+  formLoginEnabled: boolean;
+  skipLoginForLocalIps: boolean;
+  effectiveFormLoginEnabled: boolean;
+  envOverrideActive: boolean;
+  envOverrideDescription: string | null;
+};
+
+export type AuthRuntimeState = {
+  effectiveFormLoginEnabled: boolean;
+  skipLoginForLocalIps: boolean;
+};
+
 export type MediaSettings = {
   scope: "movie" | "series" | "anime";
   libraryPath: string;

@@ -63,5 +63,8 @@ export function showIndexerBaseUrlField(
 export function showIndexerApiKeyField(
   provider: ProviderTypeInfo | null | undefined,
 ): boolean {
+  if (provider?.providerType === "animetosho") {
+    return false;
+  }
   return !providerDerivesBaseUrlFromConfig(provider);
 }

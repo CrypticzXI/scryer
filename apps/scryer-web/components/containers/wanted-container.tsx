@@ -26,6 +26,7 @@ import type {
   PendingReleaseItem,
   Release,
   ReleaseDecisionItem,
+  TitleRecord,
   WantedItem,
   WantedMediaType,
   WantedStatus,
@@ -93,8 +94,7 @@ export const WantedContainer = memo(function WantedContainer({
   const [statusFilter, setStatusFilter] = useState<WantedStatus | undefined>(undefined);
   const [mediaTypeFilter, setMediaTypeFilter] = useState<WantedMediaType | undefined>(undefined);
   const [latestDecisionCodeFilter, setLatestDecisionCodeFilter] = useState<string | undefined>(undefined);
-  const [titleFilterInput, setTitleFilterInput] = useState("");
-  const [titleSearch, setTitleSearch] = useState<string | undefined>(undefined);
+  const [selectedTitle, setSelectedTitle] = useState<TitleRecord | null>(null);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -183,7 +183,7 @@ export const WantedContainer = memo(function WantedContainer({
         .query(wantedItemsQuery, {
           status: statusFilter,
           mediaType: mediaTypeFilter,
-          titleSearch,
+          titleId: selectedTitle?.id,
           latestDecisionCode: latestDecisionCodeFilter,
           limit,
           offset,
@@ -202,7 +202,7 @@ export const WantedContainer = memo(function WantedContainer({
     client,
     statusFilter,
     mediaTypeFilter,
-    titleSearch,
+    selectedTitle,
     latestDecisionCodeFilter,
     offset,
     t,
@@ -215,15 +215,10 @@ export const WantedContainer = memo(function WantedContainer({
     }
   }, [refreshItems, wantedSection]);
 
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      const normalized = titleFilterInput.trim();
-      setOffset(0);
-      setTitleSearch(normalized.length > 0 ? normalized : undefined);
-    }, 250);
-
-    return () => window.clearTimeout(handle);
-  }, [titleFilterInput]);
+  const handleSelectedTitleChange = useCallback((title: TitleRecord | null) => {
+    setOffset(0);
+    setSelectedTitle(title);
+  }, []);
 
   // --- Cutoff data fetching ---
 
@@ -525,8 +520,8 @@ export const WantedContainer = memo(function WantedContainer({
           setMediaTypeFilter,
           latestDecisionCodeFilter,
           setLatestDecisionCodeFilter,
-          titleFilterInput,
-          setTitleFilterInput,
+          selectedTitle,
+          setSelectedTitle: handleSelectedTitleChange,
           offset,
           setOffset,
           limit,

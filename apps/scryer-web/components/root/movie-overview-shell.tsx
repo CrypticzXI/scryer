@@ -8,6 +8,7 @@ import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
 import { buildRouteCommands } from "@/components/root/route-commands";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
+import { useAuth } from "@/lib/hooks/use-auth";
 import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
@@ -45,6 +46,7 @@ export function MovieOverviewShell() {
   const [searchParams] = useSearchParams();
   const titleId = searchParams.get("id") ?? "";
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const { uiLanguage, t } = useLanguage(searchParams);
 
@@ -111,10 +113,11 @@ export function MovieOverviewShell() {
     return buildRouteCommands({
       t,
       pendingImportCounts: null,
+      entitlements: user?.entitlements ?? [],
       activityImportCount: 0,
       onNavigate: navigateTo,
     });
-  }, [navigateTo, t]);
+  }, [navigateTo, t, user?.entitlements]);
 
   const routeCommandPaletteConfig = useMemo(
     () => ({
@@ -152,6 +155,7 @@ export function MovieOverviewShell() {
                   pendingImportCounts={null}
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}
+                  scryerVersion={null}
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

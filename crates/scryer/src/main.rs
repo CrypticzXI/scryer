@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -39,6 +39,7 @@ use scryer_infrastructure::{
     SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor, SqliteWorkflowStore,
     WeaverDownloadClient, start_weaver_subscription_bridge,
 };
+use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -69,10 +70,22 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AuthModeConfig {
-    auth_enabled: bool,
+    env_override_form_login_enabled: Option<bool>,
+    env_override_description: Option<String>,
     used_legacy_dev_auto_login: bool,
+}
+
+impl AuthModeConfig {
+    fn env_override_active(&self) -> bool {
+        self.env_override_form_login_enabled.is_some()
+    }
+
+    fn effective_form_login_enabled(&self, saved_form_login_enabled: bool) -> bool {
+        self.env_override_form_login_enabled
+            .unwrap_or(saved_form_login_enabled)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -309,7 +322,7 @@ async fn main() {
             maybe_open_browser(&url);
             if let Err(error) = axum_server::bind_rustls(addr, rustls_config)
                 .handle(handle)
-                .serve(splash_app.into_make_service())
+                .serve(splash_app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
             {
                 tracing::error!(error = %error, "TLS server failed");
@@ -330,9 +343,12 @@ async fn main() {
             let url = format!("http://{addr}{}", startup_base_path.ui_root());
             tracing::info!("open the web UI at {url}");
             maybe_open_browser(&url);
-            if let Err(error) = axum::serve(listener, splash_app)
-                .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
-                .await
+            if let Err(error) = axum::serve(
+                listener,
+                splash_app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
+            .await
             {
                 tracing::error!(error = %error, "server failed");
                 std::process::exit(1);
@@ -713,6 +729,10 @@ async fn bootstrap_application(
         tracing::warn!(error = %e, "failed to refresh plugin registry on startup");
     }
 
+    if let Err(e) = app_use_case.migrate_user_entitlements().await {
+        tracing::warn!(error = %e, "failed to migrate stored user entitlements on startup");
+    }
+
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {
         tracing::warn!(error = %e, "failed to migrate legacy persona preferences on startup");
     }
@@ -750,12 +770,25 @@ async fn bootstrap_application(
         tracing::warn!(error = %e, "failed to normalize routing settings on startup");
     }
 
+    let saved_security_settings = app_use_case
+        .security_settings()
+        .await
+        .map_err(|error| format!("failed to load security settings: {error}"))?;
     let auth_mode = resolve_auth_mode_from_env();
+    let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
+        form_login_enabled: saved_security_settings.form_login_enabled,
+        skip_login_for_local_ips: saved_security_settings.skip_login_for_local_ips,
+        effective_form_login_enabled: auth_mode
+            .effective_form_login_enabled(saved_security_settings.form_login_enabled),
+        env_override_active: auth_mode.env_override_active(),
+        env_override_description: auth_mode.env_override_description.clone(),
+        epoch: 0,
+    });
     let log_buf_snapshot = log_ring_buffer.clone();
     let log_buf_subscribe = log_ring_buffer.clone();
     let schema = build_schema_with_log_buffer(
         app_use_case.clone(),
-        auth_mode.auth_enabled,
+        auth_runtime.clone(),
         Some(LogBuffer::new(
             move |limit| log_buf_snapshot.snapshot(limit),
             move || log_buf_subscribe.subscribe(),
@@ -831,7 +864,7 @@ async fn bootstrap_application(
             "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
         );
     }
-    if auth_mode.auth_enabled {
+    if auth_runtime.snapshot().effective_form_login_enabled {
         tracing::info!("running with authentication enabled");
         bootstrap_admin_password(&app_use_case).await;
     } else {
@@ -848,13 +881,14 @@ async fn bootstrap_application(
     let auth_state = AuthState {
         app: app_use_case.clone(),
         schema: schema.clone(),
-        auth_enabled: auth_mode.auth_enabled,
+        auth_runtime: auth_runtime.clone(),
     };
 
     let cors_for_layer = cors.clone();
     let admin_migrations_db = settings_store.as_ref().clone();
     let admin_settings_db = settings_store.as_ref().clone();
     let admin_settings_app = app_use_case.clone();
+    let admin_settings_auth_runtime = auth_runtime.clone();
     let ws_auth_state = auth_state.clone();
 
     // WebSocket route must be outside CompressionLayer — compression wraps the
@@ -880,12 +914,15 @@ async fn bootstrap_application(
         .route(
             "/admin/settings",
             get(
-                move |headers: HeaderMap, Query(query): Query<AdminSettingsQuery>| {
+                move |headers: HeaderMap,
+                      ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+                      Query(query): Query<AdminSettingsQuery>| {
                     admin_settings_list(
                         admin_settings_db.clone(),
                         admin_settings_app.clone(),
-                        auth_mode.auth_enabled,
+                        admin_settings_auth_runtime.clone(),
                         headers,
+                        remote_addr,
                         query,
                     )
                 },
@@ -1163,7 +1200,8 @@ fn resolve_auth_mode(
 ) -> AuthModeConfig {
     if let Some(auth_enabled) = auth_enabled_raw.and_then(parse_env_bool_value) {
         return AuthModeConfig {
-            auth_enabled,
+            env_override_form_login_enabled: Some(auth_enabled),
+            env_override_description: Some(format!("SCRYER_AUTH_ENABLED={auth_enabled}")),
             used_legacy_dev_auto_login: false,
         };
     }
@@ -1174,7 +1212,9 @@ fn resolve_auth_mode(
     );
 
     AuthModeConfig {
-        auth_enabled: false,
+        env_override_form_login_enabled: used_legacy_dev_auto_login.then_some(false),
+        env_override_description: used_legacy_dev_auto_login
+            .then_some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
         used_legacy_dev_auto_login,
     }
 }
@@ -1799,7 +1839,8 @@ mod tests {
         assert_eq!(
             resolve_auth_mode(None, None),
             AuthModeConfig {
-                auth_enabled: false,
+                env_override_form_login_enabled: None,
+                env_override_description: None,
                 used_legacy_dev_auto_login: false,
             }
         );
@@ -1810,7 +1851,8 @@ mod tests {
         assert_eq!(
             resolve_auth_mode(Some("true"), Some("true")),
             AuthModeConfig {
-                auth_enabled: true,
+                env_override_form_login_enabled: Some(true),
+                env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
             }
         );
@@ -1821,7 +1863,8 @@ mod tests {
         assert_eq!(
             resolve_auth_mode(Some("false"), Some("true")),
             AuthModeConfig {
-                auth_enabled: false,
+                env_override_form_login_enabled: Some(false),
+                env_override_description: Some("SCRYER_AUTH_ENABLED=false".to_string()),
                 used_legacy_dev_auto_login: false,
             }
         );
@@ -1832,7 +1875,8 @@ mod tests {
         assert_eq!(
             resolve_auth_mode(None, Some("true")),
             AuthModeConfig {
-                auth_enabled: false,
+                env_override_form_login_enabled: Some(false),
+                env_override_description: Some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
                 used_legacy_dev_auto_login: true,
             }
         );
@@ -1843,7 +1887,8 @@ mod tests {
         assert_eq!(
             resolve_auth_mode(Some("garbage"), None),
             AuthModeConfig {
-                auth_enabled: false,
+                env_override_form_login_enabled: None,
+                env_override_description: None,
                 used_legacy_dev_auto_login: false,
             }
         );

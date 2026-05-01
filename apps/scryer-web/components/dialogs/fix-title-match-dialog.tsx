@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { useTranslate } from "@/lib/context/translate-context";
 import { fixTitleMatchMutation } from "@/lib/graphql/mutations";
 import { searchMetadataQuery } from "@/lib/graphql/queries";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 
 type FixableTitle = {
@@ -32,8 +33,17 @@ type Props = {
   onFixed?: (warnings: string[]) => Promise<void> | void;
 };
 
-function metadataTypeForFacet(facet: string | null | undefined): "movie" | "series" {
-  return (facet ?? "").toLowerCase() === "movie" ? "movie" : "series";
+function metadataTypeForFacet(
+  facet: string | null | undefined,
+): "movie" | "series" | "anime" {
+  switch ((facet ?? "").toLowerCase()) {
+    case "movie":
+      return "movie";
+    case "anime":
+      return "anime";
+    default:
+      return "series";
+  }
 }
 
 function currentTvdbId(title: FixableTitle | null): string | null {
@@ -75,6 +85,7 @@ export function FixTitleMatchDialog({
 
   React.useEffect(() => {
     if (!open || !title) {
+      setSearching(false);
       return undefined;
     }
 
@@ -86,6 +97,9 @@ export function FixTitleMatchDialog({
       return undefined;
     }
 
+    const abortController = new AbortController();
+    const abortableFetch = makeAbortableFetch(abortController.signal);
+    let active = true;
     const timeoutId = window.setTimeout(() => {
       setSearching(true);
       setError(null);
@@ -94,10 +108,11 @@ export function FixTitleMatchDialog({
           query: trimmed,
           type: metadataTypeForFacet(title.facet),
           limit: 8,
-        })
+        }, { fetch: abortableFetch })
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
+          if (!active) return;
           const items = (data?.searchMetadata ?? []) as MetadataTvdbSearchItem[];
           setResults(items);
           setSelectedTvdbId((current) =>
@@ -109,14 +124,25 @@ export function FixTitleMatchDialog({
           );
         })
         .catch((err: unknown) => {
+          if (!active || isAbortError(err)) {
+            return;
+          }
           setResults([]);
           setSelectedTvdbId(null);
           setError(err instanceof Error ? err.message : t("title.fixMatchSearchFailed"));
         })
-        .finally(() => setSearching(false));
+        .finally(() => {
+          if (active) {
+            setSearching(false);
+          }
+        });
     }, 220);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+      abortController.abort();
+    };
   }, [client, open, query, t, title]);
 
   const handleApply = React.useCallback(async () => {

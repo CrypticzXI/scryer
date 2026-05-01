@@ -211,11 +211,9 @@ fn admin_has_all_entitlements() {
     let admin = User::new_admin("root");
     assert!(admin.has_all_entitlements());
     assert!(admin.has_entitlement(&Entitlement::ViewCatalog));
-    assert!(admin.has_entitlement(&Entitlement::MonitorTitle));
     assert!(admin.has_entitlement(&Entitlement::ManageTitle));
-    assert!(admin.has_entitlement(&Entitlement::TriggerActions));
+    assert!(admin.has_entitlement(&Entitlement::ManageUsers));
     assert!(admin.has_entitlement(&Entitlement::ManageConfig));
-    assert!(admin.has_entitlement(&Entitlement::ViewHistory));
 }
 
 #[test]
@@ -224,12 +222,12 @@ fn user_with_limited_entitlements() {
         id: Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ViewHistory],
+        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
     };
     assert!(user.has_entitlement(&Entitlement::ViewCatalog));
-    assert!(user.has_entitlement(&Entitlement::ViewHistory));
+    assert!(user.has_entitlement(&Entitlement::ManageTitle));
     assert!(!user.has_entitlement(&Entitlement::ManageConfig));
-    assert!(!user.has_entitlement(&Entitlement::TriggerActions));
+    assert!(!user.has_entitlement(&Entitlement::ManageUsers));
     assert!(!user.has_all_entitlements());
 }
 

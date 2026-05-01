@@ -4437,7 +4437,7 @@ async fn user_crud_queries_work() {
     let updated = UserRepository::update_entitlements(
         &catalog,
         &created.id,
-        vec![Entitlement::ManageTitle, Entitlement::ViewHistory],
+        vec![Entitlement::ManageTitle, Entitlement::ManageUsers],
     )
     .await
     .expect("update entitlements");

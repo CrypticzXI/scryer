@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ChevronDown, Loader2, Search } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -23,6 +24,7 @@ import {
   pendingImportsQuery,
   searchMetadataQuery,
 } from "@/lib/graphql/queries";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type {
   PendingImportBindingEpisode,
   PendingImportBindingPreview,
@@ -33,6 +35,7 @@ import type {
 } from "@/lib/types";
 import { pendingImportFacetValueForView } from "@/lib/types";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import { buildOverviewDetailPath } from "@/lib/utils/routing";
 
 type PendingImportsContainerProps = {
   view: ViewId;
@@ -69,6 +72,39 @@ function summarizePendingImport(item: PendingImportItem): string {
   }
 
   return parts.join(" • ");
+}
+
+function viewForPendingImportFacet(
+  facet: PendingImportItem["facet"],
+): Extract<ViewId, "movies" | "series" | "anime"> {
+  switch (facet) {
+    case "movie":
+      return "movies";
+    case "series":
+      return "series";
+    case "anime":
+      return "anime";
+  }
+}
+
+function pendingImportKnownTitleHref(item: PendingImportItem): string | null {
+  const titleId = item.titleId?.trim();
+  if (!titleId) {
+    return null;
+  }
+
+  const titleSlug = item.titleSlug?.trim() || null;
+  const path = buildOverviewDetailPath(viewForPendingImportFacet(item.facet), titleSlug);
+  if (titleSlug) {
+    return path;
+  }
+
+  const params = new URLSearchParams({ id: titleId });
+  return `${path}?${params.toString()}`;
+}
+
+function pendingImportKnownTitleLabel(item: PendingImportItem): string {
+  return item.titleName?.trim() || item.titleId?.trim() || "";
 }
 
 function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string {
@@ -320,7 +356,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    let cancelled = false;
+    const abortController = new AbortController();
+    const abortableFetch = makeAbortableFetch(abortController.signal);
+    let active = true;
     const timeoutId = window.setTimeout(() => {
       setSearching(true);
       client
@@ -329,20 +367,20 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           type: facet?.tvdbSearchType ?? "movie",
           limit: 8,
           year: activeItem?.yearHint ?? null,
-        })
+        }, { fetch: abortableFetch })
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) {
             throw queryError;
           }
-          if (cancelled) {
+          if (!active) {
             return;
           }
           const items = (data?.searchMetadata ?? []) as MetadataSearchResult[];
           setSearchResults(items);
         })
         .catch((err: unknown) => {
-          if (cancelled) {
+          if (!active || isAbortError(err)) {
             return;
           }
           setSearchResults([]);
@@ -351,15 +389,16 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           );
         })
         .finally(() => {
-          if (!cancelled) {
+          if (active) {
             setSearching(false);
           }
         });
     }, 220);
 
     return () => {
-      cancelled = true;
+      active = false;
       window.clearTimeout(timeoutId);
+      abortController.abort();
     };
   }, [
     activeItem?.yearHint,
@@ -611,6 +650,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         const isResolving = resolvingItemId === item.id;
         const isIgnoring = ignoringItemId === item.id;
         const isBusy = isResolving || isIgnoring || (isActive && bindingLoading);
+        const knownTitleHref = pendingImportKnownTitleHref(item);
+        const knownTitleLabel = pendingImportKnownTitleLabel(item);
 
         return (
           <Card key={item.id} className="border-border/80 bg-card/60">
@@ -659,7 +700,16 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
               {item.titleId ? (
                 <div>
                   <span className="font-medium text-foreground">Known title:</span>{" "}
-                  <span className="break-all text-muted-foreground">{item.titleId}</span>
+                  {knownTitleHref ? (
+                    <Link
+                      to={knownTitleHref}
+                      className="break-all text-primary underline-offset-4 hover:underline"
+                    >
+                      {knownTitleLabel}
+                    </Link>
+                  ) : (
+                    <span className="break-all text-muted-foreground">{knownTitleLabel}</span>
+                  )}
                 </div>
               ) : null}
               {isActive ? (

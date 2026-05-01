@@ -10,9 +10,10 @@ use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL,
-    SETUP_COMPLETE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
+    HISTORY_RETENTION_DAYS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
+    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -132,6 +133,18 @@ pub struct GeneralSettings {
 pub struct UpdateGeneralSettings {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecuritySettings {
+    pub form_login_enabled: bool,
+    pub skip_login_for_local_ips: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateSecuritySettings {
+    pub form_login_enabled: bool,
+    pub skip_login_for_local_ips: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1345,6 +1358,22 @@ impl AppUseCase {
         })
     }
 
+    async fn load_security_settings(&self) -> AppResult<SecuritySettings> {
+        let form_login_enabled = self
+            .read_setting_bool_value(FORM_LOGIN_ENABLED_KEY, None)
+            .await?
+            .unwrap_or(false);
+        let skip_login_for_local_ips = self
+            .read_setting_bool_value(SKIP_LOGIN_FOR_LOCAL_IPS_KEY, None)
+            .await?
+            .unwrap_or(false);
+
+        Ok(SecuritySettings {
+            form_login_enabled,
+            skip_login_for_local_ips,
+        })
+    }
+
     pub(crate) async fn subtitle_settings(&self) -> AppResult<SubtitleSettings> {
         self.load_subtitle_settings().await
     }
@@ -1355,6 +1384,10 @@ impl AppUseCase {
 
     pub(crate) async fn general_settings(&self) -> AppResult<GeneralSettings> {
         self.load_general_settings().await
+    }
+
+    pub async fn security_settings(&self) -> AppResult<SecuritySettings> {
+        self.load_security_settings().await
     }
 
     pub(crate) async fn delay_profiles(&self) -> AppResult<Vec<crate::DelayProfile>> {
@@ -1387,6 +1420,11 @@ impl AppUseCase {
     pub async fn get_general_settings(&self, actor: &User) -> AppResult<GeneralSettings> {
         require(actor, &Entitlement::ManageConfig)?;
         self.load_general_settings().await
+    }
+
+    pub async fn get_security_settings(&self, actor: &User) -> AppResult<SecuritySettings> {
+        require(actor, &Entitlement::ManageUsers)?;
+        self.load_security_settings().await
     }
 
     pub async fn setup_complete(&self) -> AppResult<bool> {
@@ -2369,6 +2407,43 @@ impl AppUseCase {
         Ok(GeneralSettings {
             keep_history_forever: input.keep_history_forever,
             history_retention_days,
+        })
+    }
+
+    pub async fn update_security_settings(
+        &self,
+        actor: &User,
+        input: UpdateSecuritySettings,
+    ) -> AppResult<SecuritySettings> {
+        require(actor, &Entitlement::ManageUsers)?;
+
+        self.upsert_system_setting_json(
+            FORM_LOGIN_ENABLED_KEY,
+            &input.form_login_enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+            &input.skip_login_for_local_ips,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "security_settings",
+            None,
+            vec![
+                FORM_LOGIN_ENABLED_KEY.to_string(),
+                SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
+            ],
+        )
+        .await;
+
+        Ok(SecuritySettings {
+            form_login_enabled: input.form_login_enabled,
+            skip_login_for_local_ips: input.skip_login_for_local_ips,
         })
     }
 
