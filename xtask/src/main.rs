@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use tempfile::NamedTempFile;
@@ -62,6 +62,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Release(ReleaseArgs),
+    ReleaseValidateData,
     Ci(CiArgs),
     Stack(StackArgs),
     Nzbget(NzbgetArgs),
@@ -314,6 +315,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Release(args) => run_release(&ctx, args),
+        Commands::ReleaseValidateData => run_release_validate_data(&ctx),
         Commands::Ci(args) => match args.command {
             CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
         },
@@ -794,47 +796,6 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
 
     let builtin_plugin_paths = refresh_builtin_plugins(ctx)?;
 
-    let release_stamp = ctx.path(".claude/release-validation-timestamp");
-    step("Checking release group validation status");
-    let validation_due = release_validation_due(&release_stamp)?;
-    if let Some(days) = validation_due {
-        ok(format!(
-            "Last validated {days}d ago — skipping (runs monthly)"
-        ));
-    } else {
-        println!("   No previous validation found or re-validation is due");
-        require_command("claude")?;
-    }
-
-    let smg_dir = ctx.repo_root.join("../smg");
-    let mut trash_scraper_bin = None::<NamedTempFile>;
-    let mut trash_scraper_output = None::<NamedTempFile>;
-    let mut trash_scraper = None::<Child>;
-    if validation_due.is_none() {
-        if !smg_dir.is_dir() {
-            bail!(
-                "smg repo not found at {} — required for trash guide scraper",
-                smg_dir.display()
-            );
-        }
-        step("Building trash guide scraper");
-        let bin = NamedTempFile::new()?;
-        let mut build = ctx.release_command_in("go", &smg_dir);
-        build.args(["build", "-o"]);
-        build.arg(bin.path());
-        build.arg("./cmd/scrape-trash-guides");
-        run_checked(&mut build)?;
-        ok("Trash guide scraper built");
-
-        let output = NamedTempFile::new()?;
-        step("Starting trash guide scraper (background)");
-        let mut command = ctx.command(bin.path());
-        command.arg("-o").arg(output.path());
-        trash_scraper = Some(command.spawn()?);
-        trash_scraper_bin = Some(bin);
-        trash_scraper_output = Some(output);
-    }
-
     step("Running web and Rust validation in parallel");
     let (web_tx, web_rx) = mpsc::channel();
     let (rust_tx, rust_rx) = mpsc::channel();
@@ -863,54 +824,6 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     web_result?;
     rust_result?;
     ok("Parallel validation passed");
-
-    if let Some(mut scraper) = trash_scraper {
-        let output = trash_scraper_output
-            .as_ref()
-            .ok_or_else(|| anyhow!("trash guide scraper output missing"))?;
-        let prompt_file = ctx.path("scripts/prompts/validate-release-data.md");
-
-        step("Waiting for trash guide scraper");
-        let status = scraper.wait()?;
-        if !status.success() {
-            bail!("Trash guide scraper failed");
-        }
-        let output_size = fs::metadata(output.path())?.len();
-        if output_size == 0 {
-            bail!("Trash guide scraper produced empty output");
-        }
-        ok(format!(
-            "Trash guide scraper complete ({output_size} bytes)"
-        ));
-
-        step("Spawning Claude to validate release group data");
-        let combined_prompt = NamedTempFile::new()?;
-        let mut prompt = fs::read_to_string(&prompt_file)?;
-        prompt.push_str("\n\n<trash-guides-json>\n");
-        prompt.push_str(&fs::read_to_string(output.path())?);
-        prompt.push_str("\n</trash-guides-json>\n");
-        fs::write(combined_prompt.path(), &prompt)?;
-
-        let mut command = ctx.release_command("claude");
-        command.env("CLAUDECODE", "").arg("-p").arg(prompt).args([
-            "--model",
-            "claude-opus-4-6",
-            "--max-turns",
-            "30",
-            "--allowedTools",
-            "Read,Edit,Write,Glob,Grep,Bash(cargo nextest*),Bash(ls*)",
-        ]);
-        run_checked(&mut command)?;
-        if let Some(parent) = release_stamp.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(
-            &release_stamp,
-            Utc::now().format("%Y-%m-%dT%H:%M:%S%z").to_string(),
-        )?;
-        ok("Release group validation complete");
-        drop(trash_scraper_bin);
-    }
 
     step(format!(
         "Updating all workspace crate versions to {next_version}"
@@ -1014,25 +927,79 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     Ok(())
 }
 
-fn release_validation_due(path: &Path) -> Result<Option<i64>> {
-    if !path.exists() {
-        return Ok(None);
+fn run_release_validate_data(ctx: &TaskContext) -> Result<()> {
+    let release_stamp = ctx.path(".claude/release-validation-timestamp");
+    require_command("claude")?;
+
+    let smg_dir = ctx.repo_root.join("../smg");
+    if !smg_dir.is_dir() {
+        bail!(
+            "smg repo not found at {} — required for trash guide scraper",
+            smg_dir.display()
+        );
     }
-    let stamp = fs::read_to_string(path)?;
-    let stamp = stamp.trim();
-    if stamp.is_empty() {
-        return Ok(None);
+
+    step("Building trash guide scraper");
+    let bin_dir = tempfile::tempdir()?;
+    let bin_path = bin_dir.path().join("scrape-trash-guides");
+    let mut build = ctx.release_command_in("go", &smg_dir);
+    build.args(["build", "-o"]);
+    build.arg(&bin_path);
+    build.arg("./cmd/scrape-trash-guides");
+    run_checked(&mut build)?;
+    if !bin_path.is_file() {
+        bail!(
+            "trash guide scraper build did not produce {}",
+            bin_path.display()
+        );
     }
-    let parsed = DateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%z")
-        .or_else(|_| DateTime::parse_from_rfc3339(stamp))
-        .with_context(|| format!("failed to parse release validation timestamp: {stamp}"))?;
-    let elapsed = Utc::now().signed_duration_since(parsed.with_timezone(&Utc));
-    let days = elapsed.num_days();
-    if elapsed < Duration::days(30) {
-        Ok(Some(days))
-    } else {
-        Ok(None)
+    ok("Trash guide scraper built");
+
+    let output = NamedTempFile::new()?;
+    step("Starting trash guide scraper");
+    let mut command = ctx.command(&bin_path);
+    command.arg("-o").arg(output.path());
+    let mut scraper = command.spawn()?;
+
+    step("Waiting for trash guide scraper");
+    let status = scraper.wait()?;
+    if !status.success() {
+        bail!("Trash guide scraper failed");
     }
+    let output_size = fs::metadata(output.path())?.len();
+    if output_size == 0 {
+        bail!("Trash guide scraper produced empty output");
+    }
+    ok(format!(
+        "Trash guide scraper complete ({output_size} bytes)"
+    ));
+
+    let prompt_file = ctx.path("scripts/prompts/validate-release-data.md");
+    step("Spawning Claude to validate release group data");
+    let mut prompt = fs::read_to_string(&prompt_file)?;
+    prompt.push_str("\n\n<trash-guides-json>\n");
+    prompt.push_str(&fs::read_to_string(output.path())?);
+    prompt.push_str("\n</trash-guides-json>\n");
+
+    let mut claude = ctx.release_command("claude");
+    claude.env("CLAUDECODE", "").arg("-p").arg(prompt).args([
+        "--model",
+        "claude-opus-4-6",
+        "--max-turns",
+        "30",
+        "--allowedTools",
+        "Read,Edit,Write,Glob,Grep,Bash(cargo nextest*),Bash(ls*)",
+    ]);
+    run_checked(&mut claude)?;
+    if let Some(parent) = release_stamp.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &release_stamp,
+        Utc::now().format("%Y-%m-%dT%H:%M:%S%z").to_string(),
+    )?;
+    ok("Release group validation complete");
+    Ok(())
 }
 
 fn run_scryer_web_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
