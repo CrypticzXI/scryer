@@ -1068,6 +1068,7 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         "RUSTSEC-2026-0094",
         "RUSTSEC-2026-0095",
         "RUSTSEC-2026-0096",
+        "RUSTSEC-2026-0114",
     ];
     warn(format!(
         "Ignoring advisories pending upstream fixes: {}",
