@@ -1,4 +1,4 @@
-# Release Group Database Validation
+# TRaSH Guides Release Group Database Validation
 
 You are validating and updating the scryer release group database before a release.
 The database is at `crates/scryer-application/src/quality/release_group_db.rs`.

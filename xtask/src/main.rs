@@ -62,7 +62,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Release(ReleaseArgs),
-    ReleaseValidateData,
+    ValidateTrashGuides,
     Ci(CiArgs),
     Stack(StackArgs),
     Nzbget(NzbgetArgs),
@@ -315,7 +315,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Release(args) => run_release(&ctx, args),
-        Commands::ReleaseValidateData => run_release_validate_data(&ctx),
+        Commands::ValidateTrashGuides => run_validate_trash_guides(&ctx),
         Commands::Ci(args) => match args.command {
             CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
         },
@@ -927,8 +927,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_release_validate_data(ctx: &TaskContext) -> Result<()> {
-    let release_stamp = ctx.path(".claude/release-validation-timestamp");
+fn run_validate_trash_guides(ctx: &TaskContext) -> Result<()> {
+    let release_stamp = ctx.path(".claude/trash-guides-validation-timestamp");
     require_command("claude")?;
 
     let smg_dir = ctx.repo_root.join("../smg");
@@ -974,7 +974,7 @@ fn run_release_validate_data(ctx: &TaskContext) -> Result<()> {
         "Trash guide scraper complete ({output_size} bytes)"
     ));
 
-    let prompt_file = ctx.path("scripts/prompts/validate-release-data.md");
+    let prompt_file = ctx.path("scripts/prompts/validate-trash-guides.md");
     step("Spawning Claude to validate release group data");
     let mut prompt = fs::read_to_string(&prompt_file)?;
     prompt.push_str("\n\n<trash-guides-json>\n");

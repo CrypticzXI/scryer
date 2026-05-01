@@ -140,7 +140,7 @@ pub fn apply_release_group_scoring_with_context(
 //
 // Sourced from TRaSH Guides (github.com/TRaSH-Guides/Guides) and community
 // sources. Maintained at release time via AI-validated review — see
-// scripts/prompts/validate-release-data.md.
+// scripts/prompts/validate-trash-guides.md.
 //
 // Tiers follow TRaSH scoring:
 //   Tier 01 → Gold    (best quality for that source context)
