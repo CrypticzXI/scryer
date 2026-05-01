@@ -183,7 +183,7 @@ export function MediaContentView({
     addTvdbCandidateToCatalog: (candidate: TvdbSearchItem) => Promise<void> | void;
     titleFilter: string;
     setTitleFilter: (value: string) => void;
-    refreshTitles: () => Promise<void> | void;
+    refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
     titleStatus: string;
     monitoredTitles: TitleRecord[];
@@ -343,6 +343,14 @@ export function MediaContentView({
     openBulkTitleEdit,
     openBulkTitleDelete,
   } = state;
+  const [titleFilterInputValue, setTitleFilterInputValue] = React.useState(titleFilter);
+  const deferredMonitoredTitles = React.useDeferredValue(monitoredTitles);
+
+  React.useEffect(() => {
+    setTitleFilterInputValue((current) => (
+      current === titleFilter ? current : titleFilter
+    ));
+  }, [titleFilter]);
   const effectiveContentSettingsSection =
     !canManageConfig && isMediaSettingsSection(contentSettingsSection)
       ? "overview"
@@ -501,14 +509,24 @@ export function MediaContentView({
 
   const handleTitleFilterChange = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      setTitleFilter(event.target.value);
+      const nextValue = event.target.value;
+      setTitleFilterInputValue(nextValue);
+      React.startTransition(() => {
+        setTitleFilter(nextValue);
+      });
     },
     [setTitleFilter],
   );
 
   const handleRefreshTitles = React.useCallback(() => {
-    void refreshTitles();
-  }, [refreshTitles]);
+    const nextQuery = titleFilterInputValue;
+    if (titleFilter !== nextQuery) {
+      React.startTransition(() => {
+        setTitleFilter(nextQuery);
+      });
+    }
+    void refreshTitles(nextQuery);
+  }, [refreshTitles, setTitleFilter, titleFilter, titleFilterInputValue]);
 
   const handleLibraryScan = React.useCallback(() => {
     void scanLibrary();
@@ -624,7 +642,7 @@ export function MediaContentView({
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
                 <Input
                   placeholder={t("title.filterPlaceholder")}
-                  value={titleFilter}
+                  value={titleFilterInputValue}
                   onChange={handleTitleFilterChange}
                   className="w-full sm:flex-1"
                 />
@@ -695,7 +713,7 @@ export function MediaContentView({
                 if (effectiveViewMode === "poster") {
                   return (
                     <PosterGrid
-                      titles={monitoredTitles}
+                      titles={deferredMonitoredTitles}
                       isMovieView={isMovieView}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
@@ -713,7 +731,7 @@ export function MediaContentView({
                   return (
                     <CompactTitleTable
                       view={view}
-                      titles={monitoredTitles}
+                      titles={deferredMonitoredTitles}
                       titleLoading={titleLoading}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
@@ -747,7 +765,7 @@ export function MediaContentView({
                 return (
                   <TitleTable
                     view={view}
-                    titles={monitoredTitles}
+                    titles={deferredMonitoredTitles}
                     titleLoading={titleLoading}
                     resolvedProfileName={resolvedProfileName}
                     qualityProfiles={qualityProfiles}

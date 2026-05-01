@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Eye, EyeOff } from "lucide-react";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -59,7 +60,7 @@ type PosterGridProps = {
   overviewTargetView: ViewId;
 };
 
-export function PosterGrid({
+export const PosterGrid = React.memo(function PosterGrid({
   titles,
   isMovieView,
   resolvedProfileName,
@@ -94,7 +95,7 @@ export function PosterGrid({
       ))}
     </div>
   );
-}
+});
 
 type PosterCardProps = {
   title: TitleRecord;
@@ -107,7 +108,7 @@ type PosterCardProps = {
   isMobile: boolean;
 };
 
-function PosterCard({
+const PosterCard = React.memo(function PosterCard({
   title,
   isMovieView,
   resolvedProfileName,
@@ -124,7 +125,7 @@ function PosterCard({
     : resolveDisplayedQualityLabel(title, qualityProfiles, resolvedProfileName);
   const posterClassName = isMobile
     ? "h-full w-full object-cover"
-    : "h-full w-full object-cover transition-[filter,transform] duration-150 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
+    : "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
 
   return (
     <div className="cv-auto-poster group">
@@ -199,4 +200,4 @@ function PosterCard({
       </div>
     </div>
   );
-}
+});

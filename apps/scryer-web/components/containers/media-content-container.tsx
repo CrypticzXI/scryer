@@ -751,8 +751,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [activeFacet, client, setMonitoredTitles, setTitleLoading, setTitleStatus, t],
   );
 
-  const refreshTitles = React.useCallback(async () => {
-    await reloadTitles(titleFilter);
+  const refreshTitles = React.useCallback(async (query?: string) => {
+    await reloadTitles(query ?? titleFilter);
   }, [reloadTitles, titleFilter]);
 
   const applyRefreshedTitleRecord = React.useCallback(
