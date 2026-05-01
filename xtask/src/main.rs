@@ -390,10 +390,10 @@ fn rustup_toolchain_from_file(path: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let document = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?
-        .parse::<TomlValue>()
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let document = toml::from_str::<TomlValue>(
+        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(document
         .get("toolchain")
         .and_then(|toolchain| toolchain.get("channel"))
