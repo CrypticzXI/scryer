@@ -9,6 +9,7 @@ import {
 } from "@/lib/graphql/queries";
 import {
   applyMediaRenameMutation,
+  clearTitleReleaseBlocklistEntryMutation,
   deleteMediaFileMutation,
   deleteTitleMutation,
   queueExistingMutation,
@@ -112,10 +113,12 @@ import type { TitleHistoryEvent } from "@/lib/types";
 export type { TitleHistoryEvent };
 
 export type TitleReleaseBlocklistEntry = {
+  id: string;
   sourceHint: string | null;
   sourceTitle: string | null;
   errorMessage: string | null;
   attemptedAt: string;
+  episodeIds: string[];
 };
 
 export type TitleMediaFile = {
@@ -229,6 +232,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [blocklistEntries, setBlocklistEntries] = React.useState<
     TitleReleaseBlocklistEntry[]
   >([]);
+  const [clearingReleaseBlocklistEntryId, setClearingReleaseBlocklistEntryId] =
+    React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   const [searchResults, setSearchResults] = React.useState<Release[]>([]);
@@ -514,6 +519,30 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       await refreshTitleDetail();
     },
     [titleId, client, refreshTitleDetail],
+  );
+
+  const handleClearReleaseBlocklistEntry = React.useCallback(
+    async (entryId: string) => {
+      setClearingReleaseBlocklistEntryId(entryId);
+      try {
+        const { error } = await client
+          .mutation(clearTitleReleaseBlocklistEntryMutation, {
+            input: { id: entryId },
+          })
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        await refreshTitleDetail();
+      } catch (error: unknown) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setClearingReleaseBlocklistEntryId((current) =>
+          current === entryId ? null : current,
+        );
+      }
+    },
+    [client, refreshTitleDetail, setGlobalStatus, t],
   );
 
   const handleDeleteMediaFile = React.useCallback((fileId: string) => {
@@ -1004,6 +1033,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         onTriggerMismatchRecovery={triggerMismatchRecovery}
         onRequestDeleteTitle={handleRequestDeleteTitle}
         blocklistEntries={blocklistEntries}
+        clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
+        onClearReleaseBlocklistEntry={
+          canManageTitle ? handleClearReleaseBlocklistEntry : undefined
+        }
         mediaFiles={mediaFiles}
         subtitleDownloads={subtitleDownloads}
         onDeleteFile={handleDeleteMediaFile}

@@ -903,10 +903,12 @@ pub struct ReleaseDownloadFailureSignature {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitleReleaseBlocklistEntry {
+    pub id: String,
     pub source_hint: Option<String>,
     pub source_title: Option<String>,
     pub error_message: Option<String>,
     pub attempted_at: String,
+    pub episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

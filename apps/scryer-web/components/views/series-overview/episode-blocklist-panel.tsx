@@ -1,11 +1,19 @@
 import type { TitleReleaseBlocklistEntry } from "@/components/containers/series-overview-container";
+import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
+import { Loader2 } from "lucide-react";
 import { formatDate } from "./helpers";
 
 export function EpisodeBlocklistPanel({
   entries,
+  canClear = false,
+  clearingEntryId = null,
+  onClear,
 }: {
   entries: TitleReleaseBlocklistEntry[];
+  canClear?: boolean;
+  clearingEntryId?: string | null;
+  onClear?: (entryId: string) => Promise<void> | void;
 }) {
   const t = useTranslate();
   if (entries.length === 0) {
@@ -20,23 +28,37 @@ export function EpisodeBlocklistPanel({
     <div className="space-y-2">
       {entries.map((entry) => (
         <div
-          key={`${entry.sourceHint ?? ""}-${entry.attemptedAt}-${entry.sourceTitle ?? ""}`}
+          key={entry.id}
           className="rounded-lg border border-border bg-background/35 p-3"
         >
-          <p className="break-words text-sm text-card-foreground">
-            {entry.sourceTitle || t("episode.untitledRelease")}
-          </p>
-          {entry.sourceHint ? (
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground/60">
-              {entry.sourceHint}
-            </p>
-          ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
-            {entry.errorMessage ? (
-              <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
-                {entry.errorMessage}
-              </span>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="break-words text-sm text-card-foreground">
+                {entry.sourceTitle || t("episode.untitledRelease")}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
+                {entry.errorMessage ? (
+                  <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
+                    {entry.errorMessage}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            {canClear && onClear ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-8 shrink-0 px-3"
+                disabled={clearingEntryId === entry.id}
+                onClick={() => onClear(entry.id)}
+              >
+                {clearingEntryId === entry.id ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : null}
+                <span>{t("label.clear")}</span>
+              </Button>
             ) : null}
           </div>
         </div>

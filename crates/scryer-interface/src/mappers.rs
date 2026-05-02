@@ -403,10 +403,12 @@ pub(crate) fn from_title_release_blocklist_entry(
     entry: TitleReleaseBlocklistEntry,
 ) -> TitleReleaseBlocklistEntryPayload {
     TitleReleaseBlocklistEntryPayload {
+        id: entry.id,
         source_hint: entry.source_hint,
         source_title: entry.source_title,
         error_message: entry.error_message,
         attempted_at: entry.attempted_at,
+        episode_ids: entry.episode_ids,
     }
 }
 

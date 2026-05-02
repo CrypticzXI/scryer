@@ -1309,6 +1309,48 @@ fn enrichment_fills_split_video_codec_and_audio_channels() {
 }
 
 #[test]
+fn parser_canonicalizes_h264_family_video_codec_tokens() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    for raw in [
+        "Movie.Title.2024.1080p.BluRay.h264-GRP",
+        "Movie.Title.2024.1080p.BluRay.x264-GRP",
+        "Movie.Title.2024.1080p.BluRay.AVC-GRP",
+    ] {
+        let analysis = analyze_release_for_target(raw, &target);
+        let candidate = analysis.best_candidate().expect("best candidate");
+
+        assert_eq!(
+            candidate.projected.video_codec.as_deref(),
+            Some("H.264"),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn parser_canonicalizes_h265_family_video_codec_tokens() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    for raw in [
+        "Movie.Title.2024.2160p.WEB-DL.hevc-GRP",
+        "Movie.Title.2024.2160p.WEB-DL.h265-GRP",
+        "Movie.Title.2024.2160p.WEB-DL.x265-GRP",
+    ] {
+        let analysis = analyze_release_for_target(raw, &target);
+        let candidate = analysis.best_candidate().expect("best candidate");
+
+        assert_eq!(
+            candidate.projected.video_codec.as_deref(),
+            Some("H.265"),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
 fn enrichment_extracts_split_dts_ma_audio() {
     let mut target = context(ContextFacetHint::Movie, "The Wizard of Oz");
     target.known_years.push(1939);

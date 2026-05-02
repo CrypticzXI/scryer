@@ -83,12 +83,19 @@ fn normalize_source_none() {
 fn normalize_codec_h264() {
     assert_eq!(normalize_codec(Some("H264")), Some("H.264".to_string()));
     assert_eq!(normalize_codec(Some("h264")), Some("H.264".to_string()));
+    assert_eq!(normalize_codec(Some("AVC")), Some("H.264".to_string()));
+    assert_eq!(normalize_codec(Some("AVC1")), Some("H.264".to_string()));
+    assert_eq!(normalize_codec(Some("x264")), Some("H.264".to_string()));
 }
 
 #[test]
 fn normalize_codec_h265() {
     assert_eq!(normalize_codec(Some("H265")), Some("H.265".to_string()));
     assert_eq!(normalize_codec(Some("h265")), Some("H.265".to_string()));
+    assert_eq!(normalize_codec(Some("HEVC")), Some("H.265".to_string()));
+    assert_eq!(normalize_codec(Some("HEV1")), Some("H.265".to_string()));
+    assert_eq!(normalize_codec(Some("HVC1")), Some("H.265".to_string()));
+    assert_eq!(normalize_codec(Some("x265")), Some("H.265".to_string()));
 }
 
 #[test]
@@ -114,6 +121,23 @@ fn normalize_list_trims() {
 fn normalize_list_filters_empty() {
     let result = normalize_list(vec!["DDP".into(), "".into(), "  ".into()]);
     assert_eq!(result, vec!["DDP"]);
+}
+
+#[test]
+fn parse_profile_normalizes_video_codec_lists() {
+    let profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"video_codec_allowlist":["h264","hevc"],"video_codec_blocklist":["avc","x265"]}}"#,
+    )
+    .expect("should parse");
+
+    assert_eq!(
+        profile.criteria.video_codec_allowlist,
+        vec!["H.264".to_string(), "H.265".to_string()]
+    );
+    assert_eq!(
+        profile.criteria.video_codec_blocklist,
+        vec!["H.264".to_string(), "H.265".to_string()]
+    );
 }
 
 // ── resolve_archival_quality ──────────────────────────────────────────────
@@ -265,6 +289,55 @@ fn source_blocklist_blocks() {
         d.block_codes
             .contains(&"source_in_profile_blocklist".to_string())
     );
+}
+
+#[test]
+fn video_codec_allowlist_accepts_h264_family_aliases() {
+    let profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"video_codec_allowlist":["H264"],"allow_upgrades":true,"allow_unknown_quality":true}}"#,
+    )
+    .unwrap();
+    let w = balanced_weights();
+
+    for raw in [
+        "Movie.2024.1080p.WEB-DL.H264",
+        "Movie.2024.1080p.WEB-DL.x264",
+        "Movie.2024.1080p.WEB-DL.AVC",
+    ] {
+        let release = parse_release_metadata(raw);
+        let d = evaluate_against_profile(&profile, &release, false, &w);
+        assert!(d.allowed, "{raw}");
+        assert!(
+            d.scoring_log
+                .iter()
+                .any(|e| e.code == "video_codec_preferred_0"),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn video_codec_blocklist_blocks_h264_family_aliases() {
+    let profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"video_codec_blocklist":["H264"],"allow_upgrades":true,"allow_unknown_quality":true}}"#,
+    )
+    .unwrap();
+    let w = balanced_weights();
+
+    for raw in [
+        "Movie.2024.1080p.WEB-DL.H264",
+        "Movie.2024.1080p.WEB-DL.x264",
+        "Movie.2024.1080p.WEB-DL.AVC",
+    ] {
+        let release = parse_release_metadata(raw);
+        let d = evaluate_against_profile(&profile, &release, false, &w);
+        assert!(!d.allowed, "{raw}");
+        assert!(
+            d.block_codes
+                .contains(&"video_codec_in_profile_blocklist".to_string()),
+            "{raw}"
+        );
+    }
 }
 
 #[test]

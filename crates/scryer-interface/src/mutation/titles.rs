@@ -171,6 +171,19 @@ impl TitleMutations {
         .map_err(to_gql_error)
     }
 
+    async fn clear_title_release_blocklist_entry(
+        &self,
+        ctx: &Context<'_>,
+        input: ClearTitleReleaseBlocklistEntryInput,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.clear_title_release_blocklist_entry(&actor, &input.id)
+            .await
+            .map(|_| true)
+            .map_err(to_gql_error)
+    }
+
     async fn set_title_monitored(
         &self,
         ctx: &Context<'_>,

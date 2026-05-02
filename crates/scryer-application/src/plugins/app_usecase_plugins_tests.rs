@@ -2,6 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::PluginHostBindingId;
 use std::collections::HashMap;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
@@ -182,6 +183,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
 struct MockPluginProvider {
     types: Vec<String>,
     builtin_types: Vec<String>,
+    disabled_builtin_types: StdArc<StdMutex<Vec<String>>>,
     default_urls: HashMap<String, String>,
     plugin_names: HashMap<String, String>,
     plugin_versions: HashMap<String, String>,
@@ -196,6 +198,7 @@ impl MockPluginProvider {
         Self {
             types: vec![],
             builtin_types: vec![],
+            disabled_builtin_types: StdArc::new(StdMutex::new(vec![])),
             default_urls: HashMap::new(),
             plugin_names: HashMap::new(),
             plugin_versions: HashMap::new(),
@@ -228,6 +231,21 @@ impl MockPluginProvider {
         self.builtin_types.push(pt.to_string());
         self
     }
+
+    fn runtime_provider_types(&self) -> Vec<String> {
+        let disabled = self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled builtin types lock");
+        self.types
+            .iter()
+            .filter(|provider_type| {
+                !self.builtin_types.iter().any(|builtin| builtin == *provider_type)
+                    || !disabled.iter().any(|value| value == *provider_type)
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 impl IndexerPluginProvider for MockPluginProvider {
@@ -236,11 +254,19 @@ impl IndexerPluginProvider for MockPluginProvider {
     }
 
     fn available_provider_types(&self) -> Vec<String> {
-        self.types.clone()
+        self.runtime_provider_types()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
-        self.builtin_types.clone()
+        let disabled = self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled builtin types lock");
+        self.builtin_types
+            .iter()
+            .filter(|provider_type| !disabled.iter().any(|value| value == *provider_type))
+            .cloned()
+            .collect()
     }
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -266,8 +292,12 @@ impl IndexerPluginProvider for MockPluginProvider {
     fn reload_plugins(
         &self,
         _external_wasm_bytes: &[ExternalPluginWasm<'_>],
-        _disabled_builtins: &[String],
+        disabled_builtins: &[String],
     ) -> Result<(), String> {
+        *self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled builtin types lock") = disabled_builtins.to_vec();
         self.reload_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -1049,6 +1079,26 @@ async fn toggle_disables_enabled_plugin() {
 
     let result = h.app.toggle_plugin(&admin(), "alpha", false).await.unwrap();
     assert!(!result.is_enabled);
+}
+
+#[tokio::test]
+async fn list_available_keeps_disabled_builtin_plugin_installed() {
+    let provider = MockPluginProvider::new().with_builtin_provider("torznab", "Torznab", None);
+    let h = bootstrap_plugins(Some(provider));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("torznab", "1.0.0", true, true));
+
+    h.app.toggle_plugin(&admin(), "torznab", false).await.unwrap();
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    let torznab = result.iter().find(|plugin| plugin.id == "torznab").unwrap();
+    assert!(torznab.is_installed);
+    assert!(!torznab.is_enabled);
+    assert!(torznab.builtin);
+    assert_eq!(torznab.source_kind.as_deref(), Some("bundled"));
 }
 
 #[tokio::test]

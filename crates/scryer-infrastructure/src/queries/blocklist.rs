@@ -57,10 +57,32 @@ pub(crate) async fn list_blocklist_for_title_query(
     limit: usize,
 ) -> AppResult<Vec<BlocklistRow>> {
     let rows = sqlx::query_as::<_, BlocklistRow>(
-        "SELECT id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at
-         FROM blocklist
-         WHERE title_id = ?
-         ORDER BY created_at DESC
+        "SELECT
+             b.id,
+             b.title_id,
+             COALESCE(
+                 (
+                     SELECT rda.source_title
+                     FROM release_download_attempts rda
+                     WHERE rda.title_id = b.title_id
+                       AND b.source_hint IS NOT NULL
+                       AND rda.source_hint = b.source_hint
+                       AND rda.source_title IS NOT NULL
+                       AND TRIM(rda.source_title) <> ''
+                     ORDER BY LENGTH(rda.source_title) DESC, rda.attempted_at DESC
+                     LIMIT 1
+                 ),
+                 b.source_title
+             ) AS source_title,
+             b.source_hint,
+             b.quality,
+             b.download_id,
+             b.reason,
+             b.data_json,
+             b.created_at
+         FROM blocklist b
+         WHERE b.title_id = ?
+         ORDER BY b.created_at DESC
          LIMIT ?",
     )
     .bind(title_id)
@@ -83,9 +105,31 @@ pub(crate) async fn list_blocklist_all_query(
         .map_err(|err| AppError::Repository(err.to_string()))?;
 
     let rows = sqlx::query_as::<_, BlocklistRow>(
-        "SELECT id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at
-         FROM blocklist
-         ORDER BY created_at DESC
+        "SELECT
+             b.id,
+             b.title_id,
+             COALESCE(
+                 (
+                     SELECT rda.source_title
+                     FROM release_download_attempts rda
+                     WHERE rda.title_id = b.title_id
+                       AND b.source_hint IS NOT NULL
+                       AND rda.source_hint = b.source_hint
+                       AND rda.source_title IS NOT NULL
+                       AND TRIM(rda.source_title) <> ''
+                     ORDER BY LENGTH(rda.source_title) DESC, rda.attempted_at DESC
+                     LIMIT 1
+                 ),
+                 b.source_title
+             ) AS source_title,
+             b.source_hint,
+             b.quality,
+             b.download_id,
+             b.reason,
+             b.data_json,
+             b.created_at
+         FROM blocklist b
+         ORDER BY b.created_at DESC
          LIMIT ? OFFSET ?",
     )
     .bind(limit as i64)

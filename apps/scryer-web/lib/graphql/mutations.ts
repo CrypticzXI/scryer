@@ -1198,6 +1198,10 @@ export const blocklistExternalSubtitleMutation = `mutation BlocklistExternalSubt
   blocklistExternalSubtitle(input: $input)
 }`;
 
+export const clearTitleReleaseBlocklistEntryMutation = `mutation ClearTitleReleaseBlocklistEntry($input: ClearTitleReleaseBlocklistEntryInput!) {
+  clearTitleReleaseBlocklistEntry(input: $input)
+}`;
+
 // ── Import retry mutations ────────────────────────────────────────────────
 
 export const retryImportMutation = `mutation RetryImport($input: RetryImportInput!) {

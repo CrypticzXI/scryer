@@ -130,6 +130,8 @@ type Props = {
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
+  clearingReleaseBlocklistEntryId?: string | null;
+  onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onTitleChanged?: () => Promise<void>;
   onBackToList?: () => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
@@ -174,6 +176,8 @@ export function SeriesOverviewView({
   subtitleDownloads,
   onRefreshSubtitles,
   releaseBlocklistEntries,
+  clearingReleaseBlocklistEntryId,
+  onClearReleaseBlocklistEntry,
   onTitleChanged,
   onBackToList,
   onSetCollectionMonitored,
@@ -404,7 +408,7 @@ export function SeriesOverviewView({
 
       const input = {
         titleId: title.id,
-        scope: releaseQueueScopeInput(release, { episode: episode.id }),
+        scope: { episode: episode.id },
         candidateToken: release.candidateToken,
       };
       return retryWithReplaceOnConflict(
@@ -885,6 +889,10 @@ export function SeriesOverviewView({
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
                     releaseBlocklistEntries={releaseBlocklistEntries}
+                    clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
+                    onClearReleaseBlocklistEntry={
+                      canManageTitle ? onClearReleaseBlocklistEntry : undefined
+                    }
                     searchResultsByEpisode={episodePanel.searchResultsByEpisode}
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
                     searchBlockedByEpisode={searchBlockedByEpisode}
@@ -939,6 +947,64 @@ export function SeriesOverviewView({
           ) : null}
         </Card>
       </div>
+
+      <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">
+          <span className="inline-flex items-center gap-2">
+            {t("title.blockedReleases")}
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {releaseBlocklistEntries.length}
+            </span>
+          </span>
+        </summary>
+        <div className="border-t border-border p-4">
+          {releaseBlocklistEntries.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("title.noBlockedReleases")}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {releaseBlocklistEntries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="rounded-lg border border-border bg-background/35 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm text-card-foreground">
+                        {entry.sourceTitle || t("episode.untitledRelease")}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
+                        {entry.errorMessage ? (
+                          <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
+                            {entry.errorMessage}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {canManageTitle && onClearReleaseBlocklistEntry ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="h-8 shrink-0 px-3"
+                        disabled={clearingReleaseBlocklistEntryId === entry.id}
+                        onClick={() => onClearReleaseBlocklistEntry(entry.id)}
+                      >
+                        {clearingReleaseBlocklistEntryId === entry.id ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : null}
+                        <span>{t("label.clear")}</span>
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
 
       {title ? (
         <TitleHistoryModal

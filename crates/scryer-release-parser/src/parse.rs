@@ -5045,9 +5045,9 @@ fn detect_compound_metadata(token: &str) -> CompoundMetadata {
     if token.contains("H266") || token.contains("VVC") {
         metadata.video_codec = Some("VVC");
     } else if token.contains("X265") || token.contains("H265") || token.contains("HEVC") {
-        metadata.video_codec = Some("HEVC");
+        metadata.video_codec = Some("H.265");
     } else if contains_any(token, &["X264", "H264", "AVC1", "AVC"]) {
-        metadata.video_codec = Some("AVC");
+        metadata.video_codec = Some("H.264");
     } else if token.contains("AV1") {
         metadata.video_codec = Some("AV1");
     } else if token.contains("VP9") {

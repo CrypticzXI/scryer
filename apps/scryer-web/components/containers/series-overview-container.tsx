@@ -6,6 +6,7 @@ import {
   seriesOverviewSettingsInitQuery,
 } from "@/lib/graphql/queries";
 import {
+  clearTitleReleaseBlocklistEntryMutation,
   deleteMediaFileMutation,
   deleteTitleMutation,
   scanTitleLibraryMutation,
@@ -144,10 +145,12 @@ import type { TitleHistoryEvent } from "@/lib/types";
 export type { TitleHistoryEvent };
 
 export type TitleReleaseBlocklistEntry = {
+  id: string;
   sourceHint: string | null;
   sourceTitle: string | null;
   errorMessage: string | null;
   attemptedAt: string;
+  episodeIds: string[];
 };
 
 export type CollectionEpisode = {
@@ -280,6 +283,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [hydratingFromActivity, setHydratingFromActivity] = React.useState(false);
   const [hasDownloadClients, setHasDownloadClients] = React.useState(true);
   const [downloadFeedbackWarning, setDownloadFeedbackWarning] = React.useState<string | null>(null);
+  const [clearingReleaseBlocklistEntryId, setClearingReleaseBlocklistEntryId] =
+    React.useState<string | null>(null);
   const [showSearchPrerequisiteNotice, setShowSearchPrerequisiteNotice] =
     React.useState(false);
   const [monitoredUpdating, setMonitoredUpdating] = React.useState(false);
@@ -461,6 +466,27 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     }
     void refreshDownloadFeedback();
   }, [applyNativeTitleDetailSnapshot, client, refreshDownloadFeedback, titleId]);
+
+  const handleClearReleaseBlocklistEntry = React.useCallback(async (entryId: string) => {
+    setClearingReleaseBlocklistEntryId(entryId);
+    try {
+      const { error } = await client
+        .mutation(clearTitleReleaseBlocklistEntryMutation, { input: { id: entryId } })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      await refreshTitleDetail();
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.apiError"),
+      );
+    } finally {
+      setClearingReleaseBlocklistEntryId((current) =>
+        current === entryId ? null : current,
+      );
+    }
+  }, [client, refreshTitleDetail, setGlobalStatus, t]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1048,6 +1074,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={refreshTitleDetail}
         releaseBlocklistEntries={releaseBlocklistEntries}
+        clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
+        onClearReleaseBlocklistEntry={handleClearReleaseBlocklistEntry}
         onTitleChanged={refreshTitleDetail}
         onBackToList={onBackToList}
         onSetCollectionMonitored={handleSetCollectionMonitored}

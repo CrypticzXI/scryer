@@ -244,10 +244,12 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     createdAt`;
 
   const TITLE_RELEASE_BLOCKLIST_FIELDS = `
+    id
     sourceHint
     sourceTitle
     errorMessage
-    attemptedAt`;
+    attemptedAt
+    episodeIds`;
 
 const EXTERNAL_SUBTITLE_FIELDS = `
     id

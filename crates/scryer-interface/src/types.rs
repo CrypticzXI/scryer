@@ -1555,10 +1555,12 @@ pub struct JobRunPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct TitleReleaseBlocklistEntryPayload {
+    pub id: String,
     pub source_hint: Option<String>,
     pub source_title: Option<String>,
     pub error_message: Option<String>,
     pub attempted_at: String,
+    pub episode_ids: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2801,6 +2803,11 @@ pub struct DeleteTitleInput {
     pub delete_files_on_disk: Option<bool>,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct ClearTitleReleaseBlocklistEntryInput {
+    pub id: String,
 }
 
 #[derive(InputObject)]

@@ -166,6 +166,46 @@ fn map_completed_download(
     }
 }
 
+fn map_history_item_from_completed(
+    item: PluginCompletedDownload,
+    client_id: &str,
+    client_name: &str,
+    client_type: &str,
+) -> DownloadQueueItem {
+    let info_hash = item.info_hash.clone();
+    let download_client_item_id = info_hash.unwrap_or_else(|| item.client_item_id.clone());
+    DownloadQueueItem {
+        id: format!("{client_type}:{download_client_item_id}"),
+        title_id: None,
+        episode_id: None,
+        title_name: item.name,
+        facet: None,
+        client_id: client_id.to_string(),
+        client_name: client_name.to_string(),
+        client_type: client_type.to_string(),
+        state: DownloadQueueState::Completed,
+        progress_percent: 100,
+        size_bytes: item.size_bytes,
+        remaining_seconds: Some(0),
+        queued_at: None,
+        last_updated_at: item.completed_at,
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id,
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: false,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    }
+}
+
 fn plugin_call_error(operation: &str, error: extism::Error) -> AppError {
     let root_cause = error.root_cause().to_string();
     let detail = if root_cause.trim().is_empty() || root_cause == error.to_string() {
@@ -519,29 +559,55 @@ impl DownloadClient for WasmDownloadClient {
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        let items: Vec<PluginDownloadItem> =
-            decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_HISTORY)?;
-
-        Ok(items
-            .into_iter()
-            .filter(|item| {
-                matches!(
-                    item.state,
-                    DownloadItemState::Completed
-                        | DownloadItemState::Seeding
-                        | DownloadItemState::Failed
-                        | DownloadItemState::Error
-                )
-            })
-            .map(|item| {
-                map_queue_item(
-                    item,
-                    &self.client_id,
-                    &self.client_name,
-                    self.descriptor.provider_type(),
-                )
-            })
-            .collect())
+        match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY) {
+            Ok(items) => Ok(items
+                .into_iter()
+                .filter(|item| {
+                    matches!(
+                        item.state,
+                        DownloadItemState::Completed
+                            | DownloadItemState::Seeding
+                            | DownloadItemState::Failed
+                            | DownloadItemState::Error
+                    )
+                })
+                .map(|item| {
+                    map_queue_item(
+                        item,
+                        &self.client_id,
+                        &self.client_name,
+                        self.descriptor.provider_type(),
+                    )
+                })
+                .collect()),
+            Err(primary_error) => {
+                let items: Vec<PluginCompletedDownload> =
+                    decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_HISTORY).map_err(
+                        |fallback_error| {
+                            AppError::Repository(format!(
+                                "{primary_error}; legacy completed-download history decode also failed: {fallback_error}"
+                            ))
+                        },
+                    )?;
+                debug!(
+                    client_id = %self.client_id,
+                    client_name = %self.client_name,
+                    provider_type = self.descriptor.provider_type(),
+                    "download history used legacy completed-download envelope fallback"
+                );
+                Ok(items
+                    .into_iter()
+                    .map(|item| {
+                        map_history_item_from_completed(
+                            item,
+                            &self.client_id,
+                            &self.client_name,
+                            self.descriptor.provider_type(),
+                        )
+                    })
+                    .collect())
+            }
+        }
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
@@ -865,5 +931,33 @@ mod tests {
                 .iter()
                 .any(|entry| entry.mode == DownloadIsolationMode::Label)
         );
+    }
+
+    #[test]
+    fn completed_history_fallback_maps_to_completed_queue_item() {
+        let queue_item = map_history_item_from_completed(
+            PluginCompletedDownload {
+                client_item_id: "native-1".to_string(),
+                info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                name: "Example Release".to_string(),
+                dest_dir: "/downloads/series".to_string(),
+                category: Some("series".to_string()),
+                output_kind: None,
+                content_paths: vec!["/downloads/series/Example.Release.mkv".to_string()],
+                size_bytes: Some(1234),
+                completed_at: Some("2026-05-02T00:00:00Z".to_string()),
+                parameters: vec![],
+            },
+            "client-1",
+            "qBittorrent",
+            "qbittorrent",
+        );
+
+        assert_eq!(queue_item.id, "qbittorrent:abcdef0123456789abcdef0123456789abcdef01");
+        assert_eq!(queue_item.title_name, "Example Release");
+        assert_eq!(queue_item.client_name, "qBittorrent");
+        assert_eq!(queue_item.state, DownloadQueueState::Completed);
+        assert_eq!(queue_item.progress_percent, 100);
+        assert_eq!(queue_item.remaining_seconds, Some(0));
     }
 }

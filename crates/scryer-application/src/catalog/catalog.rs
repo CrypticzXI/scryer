@@ -31,6 +31,40 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
 ];
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
 
+fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
+    let Some(raw) = data_json else {
+        return Vec::new();
+    };
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+
+    let mut ids = Vec::new();
+
+    if let Some(episode_id) = value.get("episode_id").and_then(serde_json::Value::as_str) {
+        let trimmed = episode_id.trim();
+        if !trimmed.is_empty() {
+            ids.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(episode_ids) = value.get("episode_ids").and_then(serde_json::Value::as_array) {
+        for episode_id in episode_ids
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !ids.iter().any(|existing| existing == episode_id) {
+                ids.push(episode_id.to_string());
+            }
+        }
+    }
+
+    ids
+}
+
 fn title_external_id_value(title: &Title, source: &str) -> Option<String> {
     if source == "imdb"
         && let Some(imdb_id) = title.imdb_id.as_deref()
@@ -869,11 +903,60 @@ impl AppUseCase {
     ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
         require(actor, &Entitlement::ViewCatalog)?;
         let bounded_limit = limit.clamp(1, 1_000);
-        self.services
+        let submissions = self
+            .services
             .workflow
-            .release_attempts
-            .list_failed_release_signatures_for_title(title_id, bounded_limit)
+            .download_submissions
+            .list_for_title(title_id)
             .await
+            .unwrap_or_default();
+        let episode_ids_by_download_id: HashMap<String, Vec<String>> = submissions
+            .into_iter()
+            .filter_map(|submission| {
+                let episode_ids = submission.scope.episode_ids()?.to_vec();
+                if episode_ids.is_empty() {
+                    None
+                } else {
+                    Some((submission.download_client_item_id, episode_ids))
+                }
+            })
+            .collect();
+        let entries = self
+            .services
+            .workflow
+            .blocklist_repo
+            .list_for_title(title_id, bounded_limit)
+            .await?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let mut episode_ids = blocklist_episode_ids(entry.data_json.as_deref());
+                if episode_ids.is_empty()
+                    && let Some(download_id) = entry.download_id.as_deref()
+                    && let Some(submission_episode_ids) = episode_ids_by_download_id.get(download_id)
+                {
+                    episode_ids = submission_episode_ids.clone();
+                }
+
+                TitleReleaseBlocklistEntry {
+                    id: entry.id,
+                    source_hint: entry.source_hint,
+                    source_title: entry.source_title,
+                    error_message: entry.reason,
+                    attempted_at: entry.created_at,
+                    episode_ids,
+                }
+            })
+            .collect())
+    }
+
+    pub async fn clear_title_release_blocklist_entry(
+        &self,
+        actor: &User,
+        id: &str,
+    ) -> AppResult<()> {
+        require(actor, &Entitlement::ManageTitle)?;
+        self.services.workflow.blocklist_repo.remove(id).await
     }
 
     /// Return the configured root folders for a facet.
@@ -2470,12 +2553,52 @@ impl AppUseCase {
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
-                        source_hint_for_attempt,
-                        source_title_for_attempt,
+                        source_hint_for_attempt.clone(),
+                        source_title_for_attempt.clone(),
                         ReleaseDownloadAttemptOutcome::Failed,
-                        Some(error_message),
+                        Some(error_message.clone()),
                         source_password,
                     )
+                    .await;
+                let blocklist_episode_ids = match &scope {
+                    SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+                    SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+                    SubmissionScope::Collection { collection_id } => self
+                        .services
+                        .catalog
+                        .shows
+                        .list_episodes_for_collection(collection_id)
+                        .await
+                        .map(|episodes| episodes.into_iter().map(|episode| episode.id).collect())
+                        .unwrap_or_default(),
+                    SubmissionScope::Title | SubmissionScope::Orphan => Vec::new(),
+                };
+                let mut blocklist_data = HashMap::new();
+                if !blocklist_episode_ids.is_empty() {
+                    blocklist_data.insert(
+                        "episode_ids".to_string(),
+                        serde_json::json!(blocklist_episode_ids),
+                    );
+                }
+                if let SubmissionScope::Collection { collection_id } = &scope {
+                    blocklist_data.insert(
+                        "collection_id".to_string(),
+                        serde_json::json!(collection_id),
+                    );
+                }
+                let _ = self
+                    .services
+                    .workflow
+                    .blocklist_repo
+                    .add(&NewBlocklistEntry {
+                        title_id: title.id.clone(),
+                        source_title: source_title_for_attempt.clone(),
+                        source_hint: source_hint_for_attempt.clone(),
+                        quality: None,
+                        download_id: None,
+                        reason: Some(error_message.clone()),
+                        data: blocklist_data,
+                    })
                     .await;
                 drop(dedupe_guard);
                 drop(scope_guard);

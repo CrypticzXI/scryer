@@ -445,6 +445,8 @@ type Props = {
   onTriggerMismatchRecovery: () => Promise<void>;
   onRequestDeleteTitle?: () => void;
   blocklistEntries: TitleReleaseBlocklistEntry[];
+  clearingReleaseBlocklistEntryId?: string | null;
+  onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   mediaFiles: TitleMediaFile[];
   downloadQueueItems: DownloadQueueItem[];
   subtitleDownloads: ExternalSubtitleRecord[];
@@ -491,6 +493,8 @@ export function MovieOverviewView({
   onTriggerMismatchRecovery,
   onRequestDeleteTitle,
   blocklistEntries = [],
+  clearingReleaseBlocklistEntryId = null,
+  onClearReleaseBlocklistEntry,
   mediaFiles = [],
   downloadQueueItems = [],
   subtitleDownloads = [],
@@ -1062,23 +1066,37 @@ export function MovieOverviewView({
             <div className="space-y-2">
               {blocklistEntries.map((entry) => (
                 <div
-                  key={`${entry.sourceHint ?? ""}-${entry.attemptedAt}-${entry.sourceTitle ?? ""}`}
-                  className="rounded-lg border border-border bg-background/30 p-3"
+                  key={entry.id}
+                  className="rounded-lg border border-border bg-background/35 p-3"
                 >
-                  <p className="break-words text-sm text-card-foreground">
-                    {entry.sourceTitle || t("episode.untitledRelease")}
-                  </p>
-                  {entry.sourceHint ? (
-                    <p className="mt-1 break-all font-mono text-xs text-muted-foreground/60">
-                      {entry.sourceHint}
-                    </p>
-                  ) : null}
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    <span className="text-muted-foreground/60">{formatDateTime(entry.attemptedAt)}</span>
-                    {entry.errorMessage ? (
-                      <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
-                        {entry.errorMessage}
-                      </span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm text-card-foreground">
+                        {entry.sourceTitle || t("episode.untitledRelease")}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-muted-foreground/60">{formatDateTime(entry.attemptedAt)}</span>
+                        {entry.errorMessage ? (
+                          <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
+                            {entry.errorMessage}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {canManageTitle && onClearReleaseBlocklistEntry ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="h-8 shrink-0 px-3"
+                        disabled={clearingReleaseBlocklistEntryId === entry.id}
+                        onClick={() => onClearReleaseBlocklistEntry(entry.id)}
+                      >
+                        {clearingReleaseBlocklistEntryId === entry.id ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : null}
+                        <span>{t("label.clear")}</span>
+                      </Button>
                     ) : null}
                   </div>
                 </div>

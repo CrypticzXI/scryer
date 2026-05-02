@@ -281,8 +281,8 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> QualityProfile {
             allow_unknown_quality: criteria.allow_unknown_quality,
             source_allowlist: normalize_list(criteria.source_allowlist),
             source_blocklist: normalize_list(criteria.source_blocklist),
-            video_codec_allowlist: normalize_list(criteria.video_codec_allowlist),
-            video_codec_blocklist: normalize_list(criteria.video_codec_blocklist),
+            video_codec_allowlist: normalize_codec_list(criteria.video_codec_allowlist),
+            video_codec_blocklist: normalize_codec_list(criteria.video_codec_blocklist),
             audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
             audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
             atmos_preferred: criteria.atmos_preferred,
@@ -384,6 +384,14 @@ fn normalize_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn normalize_codec_list(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter_map(|value| normalize_codec(Some(value.trim())))
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
 fn is_in_list(candidate: &str, list: &[String]) -> bool {
     list.iter().any(|value| value == candidate)
 }
@@ -411,8 +419,8 @@ fn normalize_source(raw: Option<&str>) -> Option<String> {
 
 fn normalize_codec(raw: Option<&str>) -> Option<String> {
     raw.map(|value| match value.to_ascii_uppercase().as_str() {
-        "H264" => "H.264".to_string(),
-        "H265" => "H.265".to_string(),
+        "AVC" | "AVC1" | "H264" | "H.264" | "X264" => "H.264".to_string(),
+        "HEVC" | "HEV1" | "H265" | "H.265" | "HVC1" | "X265" => "H.265".to_string(),
         value => value.to_string(),
     })
 }

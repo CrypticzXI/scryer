@@ -2692,10 +2692,17 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
         Ok(attempts
             .into_iter()
             .map(|attempt| TitleReleaseBlocklistEntry {
+                id: format!(
+                    "failed-attempt:{}:{}:{}",
+                    attempt.attempted_at,
+                    attempt.source_title.as_deref().unwrap_or_default(),
+                    attempt.source_hint.as_deref().unwrap_or_default(),
+                ),
                 source_hint: attempt.source_hint,
                 source_title: attempt.source_title,
                 error_message: attempt.error_message,
                 attempted_at: attempt.attempted_at,
+                episode_ids: Vec::new(),
             })
             .collect())
     }

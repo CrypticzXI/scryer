@@ -9468,6 +9468,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
         r#"
         query($titleId: String!) {
           titleReleaseBlocklist(titleId: $titleId) {
+            id
             sourceHint
             sourceTitle
             errorMessage
@@ -9493,6 +9494,125 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
                 })
         }),
         "expected invalid nzb release to appear in titleReleaseBlocklist: {blocklist_body}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_title_release_blocklist_entry_can_be_cleared() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "movie").await;
+    let source_hint = format!("{}/invalid-clear.nzb", ctx.nzbget_server.uri());
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let candidate_token = ctx
+        .app
+        .issue_release_candidate_token(
+            &admin,
+            &title_id,
+            &scryer_application::SubmissionScope::Title,
+            &scryer_application::QueuedReleaseSelection {
+                source_hint: Some(source_hint.clone()),
+                source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
+                source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
+            },
+        )
+        .await
+        .expect("issue candidate token");
+
+    Mock::given(method("GET"))
+        .and(path("/invalid-clear.nzb"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not xml"))
+        .mount(&ctx.nzbget_server)
+        .await;
+
+    let queue_body = gql(
+        &ctx,
+        r#"
+        mutation($input: QueueDownloadInput!) {
+          queueExistingTitleDownload(input: $input) {
+            jobId
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "candidateToken": candidate_token,
+                "scope": { "title": true },
+            }
+        }),
+    )
+    .await;
+
+    assert!(
+        queue_body.get("errors").is_some(),
+        "expected queue mutation to fail for invalid nzb xml: {queue_body}"
+    );
+
+    let blocklist_before = gql(
+        &ctx,
+        r#"
+        query($titleId: String!) {
+          titleReleaseBlocklist(titleId: $titleId) {
+            id
+            sourceHint
+          }
+        }
+        "#,
+        json!({ "titleId": title_id }),
+    )
+    .await;
+
+    assert_no_errors(&blocklist_before);
+    let entry_id = blocklist_before["data"]["titleReleaseBlocklist"]
+        .as_array()
+        .and_then(|entries| {
+            entries.iter().find_map(|entry| {
+                (entry["sourceHint"].as_str() == Some(source_hint.as_str()))
+                    .then(|| entry["id"].as_str().map(ToOwned::to_owned))
+                    .flatten()
+            })
+        })
+        .expect("blocklist entry id");
+
+    let clear_body = gql(
+        &ctx,
+        r#"
+        mutation($input: ClearTitleReleaseBlocklistEntryInput!) {
+          clearTitleReleaseBlocklistEntry(input: $input)
+        }
+        "#,
+        json!({ "input": { "id": entry_id } }),
+    )
+    .await;
+
+    assert_no_errors(&clear_body);
+    assert_eq!(
+        clear_body["data"]["clearTitleReleaseBlocklistEntry"].as_bool(),
+        Some(true)
+    );
+
+    let blocklist_after = gql(
+        &ctx,
+        r#"
+        query($titleId: String!) {
+          titleReleaseBlocklist(titleId: $titleId) {
+            sourceHint
+          }
+        }
+        "#,
+        json!({ "titleId": title_id }),
+    )
+    .await;
+
+    assert_no_errors(&blocklist_after);
+    let entries_after = blocklist_after["data"]["titleReleaseBlocklist"]
+        .as_array()
+        .expect("blocklist entries array");
+    assert!(
+        !entries_after
+            .iter()
+            .any(|entry| entry["sourceHint"].as_str() == Some(source_hint.as_str())),
+        "expected cleared release to be removed from titleReleaseBlocklist: {blocklist_after}"
     );
 }
 

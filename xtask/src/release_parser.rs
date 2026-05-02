@@ -821,8 +821,8 @@ fn normalize_opt(value: Option<&str>) -> Option<String> {
 
 fn normalize_video_codec(value: Option<&str>) -> Option<String> {
     normalize_opt(value).map(|value| match value.as_str() {
-        "hevc" | "h265" | "h.265" => "h.265".to_string(),
-        "avc" | "h264" | "h.264" => "h.264".to_string(),
+        "h265" | "h.265" => "h.265".to_string(),
+        "h264" | "h.264" => "h.264".to_string(),
         other => other.to_string(),
     })
 }

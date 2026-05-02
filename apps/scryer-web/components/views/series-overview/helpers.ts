@@ -239,6 +239,14 @@ export function blocklistEntryMatchesEpisode(
   episode: CollectionEpisode,
   collection: TitleCollection,
 ): boolean {
+  if (entry.episodeIds.includes(episode.id)) {
+    return true;
+  }
+
+  if (entry.episodeIds.length === 0 && extractEpisodeKeysFromReleaseTitle(entry.sourceTitle).size === 0) {
+    return true;
+  }
+
   const season = parseNumberToken(episode.seasonNumber) ?? parseNumberToken(collection.collectionIndex);
   const episodeNumber = parseNumberToken(episode.episodeNumber);
   if (season == null || episodeNumber == null) {

@@ -854,6 +854,19 @@ async fn record_failed_release_outcome(
             .await;
 
         if let Some(reason) = blocklist_reason.clone() {
+            let mut blocklist_data = HashMap::new();
+            if !attribution.episode_ids.is_empty() {
+                blocklist_data.insert(
+                    "episode_ids".to_string(),
+                    serde_json::json!(attribution.episode_ids),
+                );
+            }
+            if let Some(collection_id) = attribution.collection_id.as_deref() {
+                blocklist_data.insert(
+                    "collection_id".to_string(),
+                    serde_json::json!(collection_id),
+                );
+            }
             match app
                 .services
                 .workflow
@@ -865,7 +878,7 @@ async fn record_failed_release_outcome(
                     quality: quality.clone(),
                     download_id: download_id.clone(),
                     reason: Some(reason),
-                    data: Default::default(),
+                    data: blocklist_data,
                 })
                 .await
             {

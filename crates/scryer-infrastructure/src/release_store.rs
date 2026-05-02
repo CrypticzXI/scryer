@@ -77,10 +77,17 @@ impl ReleaseAttemptRepository for SqliteReleaseStore {
             .await?
             .into_iter()
             .map(|record| TitleReleaseBlocklistEntry {
+                id: format!(
+                    "failed-attempt:{}:{}:{}",
+                    record.attempted_at,
+                    record.source_title.as_deref().unwrap_or_default(),
+                    record.source_hint.as_deref().unwrap_or_default(),
+                ),
                 source_hint: record.source_hint,
                 source_title: record.source_title,
                 error_message: record.error_message,
                 attempted_at: record.attempted_at,
+                episode_ids: Vec::new(),
             })
             .collect(),
         )

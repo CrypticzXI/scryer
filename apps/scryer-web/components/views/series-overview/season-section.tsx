@@ -217,12 +217,15 @@ function renderEpisodeQualityCell(
 
 type EpisodePanelContentProps = {
   activeTab: EpisodePanelTab;
+  canClearBlocklistEntries: boolean;
   collection: TitleCollection;
+  clearingReleaseBlocklistEntryId?: string | null;
   episode: CollectionEpisode;
   episodeFiles: EpisodeMediaFile[];
   episodeLoading: boolean;
   episodeResults: Release[];
   linkedMovie?: InterstitialMovieMetadata | null;
+  onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
   onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -237,12 +240,15 @@ type EpisodePanelContentProps = {
 
 const EpisodePanelContent = React.memo(function EpisodePanelContent({
   activeTab,
+  canClearBlocklistEntries,
   collection,
+  clearingReleaseBlocklistEntryId,
   episode,
   episodeFiles,
   episodeLoading,
   episodeResults,
   linkedMovie,
+  onClearReleaseBlocklistEntry,
   onDeleteFile,
   onQueueFromEpisodeSearch,
   onRefreshSubtitles,
@@ -328,7 +334,12 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
         </TabsContent>
       ) : null}
       <TabsContent value="blocklist">
-        <EpisodeBlocklistPanel entries={filteredBlocklistEntries} />
+        <EpisodeBlocklistPanel
+          entries={filteredBlocklistEntries}
+          canClear={canClearBlocklistEntries}
+          clearingEntryId={clearingReleaseBlocklistEntryId}
+          onClear={onClearReleaseBlocklistEntry}
+        />
       </TabsContent>
     </Tabs>
   );
@@ -337,6 +348,7 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
 type EpisodeRowProps = {
   autoSearching: boolean;
   collection: TitleCollection;
+  clearingReleaseBlocklistEntryId?: string | null;
   episode: CollectionEpisode;
   episodeFiles: EpisodeMediaFile[];
   episodeResults: Release[];
@@ -346,6 +358,7 @@ type EpisodeRowProps = {
   isMobile: boolean;
   linkedMovie?: InterstitialMovieMetadata | null;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => void;
+  onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
   onOpenHistory?: (episode: CollectionEpisode) => void;
   onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
@@ -362,6 +375,7 @@ type EpisodeRowProps = {
 const EpisodeRow = React.memo(function EpisodeRow({
   autoSearching,
   collection,
+  clearingReleaseBlocklistEntryId,
   episode,
   episodeFiles,
   episodeResults,
@@ -371,6 +385,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
   isMobile,
   linkedMovie,
   onAutoSearchEpisode,
+  onClearReleaseBlocklistEntry,
   onDeleteFile,
   onOpenHistory,
   onQueueFromEpisodeSearch,
@@ -469,12 +484,15 @@ const EpisodeRow = React.memo(function EpisodeRow({
   const panelContent = isPanelOpen ? (
     <EpisodePanelContent
       activeTab={activeTab}
+      canClearBlocklistEntries={Boolean(onClearReleaseBlocklistEntry)}
       collection={collection}
+      clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
       episode={episode}
       episodeFiles={episodeFiles}
       episodeLoading={searchLoading}
       episodeResults={episodeResults}
       linkedMovie={linkedMovie}
+      onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
       onDeleteFile={onDeleteFile}
       onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
       onRefreshSubtitles={onRefreshSubtitles}
@@ -735,6 +753,7 @@ export function SeasonSection({
   mediaFilesByEpisode,
   downloadQueueItemByEpisodeId,
   releaseBlocklistEntries,
+  clearingReleaseBlocklistEntryId,
   subtitleDownloads,
   onRefreshSubtitles,
   searchResultsByEpisode,
@@ -745,6 +764,7 @@ export function SeasonSection({
   onQueueFromEpisodeSearch,
   autoSearchLoadingByEpisode,
   onAutoSearchEpisode,
+  onClearReleaseBlocklistEntry,
   onSetCollectionMonitored,
   onSetEpisodeMonitored,
   seasonSearchResults,
@@ -772,10 +792,12 @@ export function SeasonSection({
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
+  clearingReleaseBlocklistEntryId?: string | null;
   searchResultsByEpisode: Record<string, Release[]>;
   searchLoadingByEpisode: Record<string, boolean>;
   searchBlockedByEpisode: Record<string, boolean>;
   autoSearchLoadingByEpisode: Record<string, boolean>;
+  onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onRunEpisodeSearch?: (episode: CollectionEpisode) => void;
   onOpenEpisodeHistory?: (episode: CollectionEpisode) => void;
   onQueueFromEpisodeSearch?: (episode: CollectionEpisode, release: Release) => Promise<void> | void;
@@ -1147,6 +1169,7 @@ export function SeasonSection({
                       key={episode.id}
                       autoSearching={autoSearchLoadingByEpisode[episode.id] === true}
                       collection={collection}
+                      clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                       episode={episode}
                       episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
                       episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
@@ -1156,6 +1179,7 @@ export function SeasonSection({
                       isMobile={true}
                       linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
                       onAutoSearchEpisode={onAutoSearchEpisode}
+                      onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                       onDeleteFile={onDeleteFile}
                       onOpenHistory={onOpenEpisodeHistory}
                       onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}
@@ -1190,6 +1214,7 @@ export function SeasonSection({
                         key={episode.id}
                         autoSearching={autoSearchLoadingByEpisode[episode.id] === true}
                         collection={collection}
+                        clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                         episode={episode}
                         episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
                         episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
@@ -1199,6 +1224,7 @@ export function SeasonSection({
                         isMobile={false}
                         linkedMovie={linkedMovieByEpisodeId[episode.id] ?? null}
                         onAutoSearchEpisode={onAutoSearchEpisode}
+                        onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
                         onDeleteFile={onDeleteFile}
                         onOpenHistory={onOpenEpisodeHistory}
                         onQueueFromEpisodeSearch={onQueueFromEpisodeSearch}

@@ -1222,16 +1222,7 @@ impl AppUseCase {
             None => vec![],
         };
         let builtin_by_key = self.builtin_seed_by_key();
-        let effective_installations = installations
-            .iter()
-            .filter(|installation| {
-                !installation.is_builtin
-                    || builtin_by_key.contains_key(&builtin_lookup_key(
-                        &installation.plugin_type,
-                        &installation.provider_type,
-                    ))
-            })
-            .collect::<Vec<_>>();
+        let effective_installations = installations.iter().collect::<Vec<_>>();
 
         let mut result = Vec::new();
 
