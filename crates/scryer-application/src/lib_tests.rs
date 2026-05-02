@@ -2623,6 +2623,11 @@ struct MockReleaseAttemptRepo {
     attempts: Arc<Mutex<Vec<MockReleaseAttemptRecord>>>,
 }
 
+#[derive(Default)]
+struct MockBlocklistRepo {
+    entries: Arc<Mutex<Vec<BlocklistEntry>>>,
+}
+
 #[async_trait]
 impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
     async fn record_release_attempt(
@@ -2729,6 +2734,83 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
                     })
             })
             .and_then(|attempt| attempt.source_password.clone()))
+    }
+}
+
+#[async_trait]
+impl BlocklistRepository for MockBlocklistRepo {
+    async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String> {
+        let id = Id::new().0;
+        let data_json = if entry.data.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&entry.data)
+                    .map_err(|err| AppError::Repository(err.to_string()))?,
+            )
+        };
+        self.entries.lock().await.push(BlocklistEntry {
+            id: id.clone(),
+            title_id: entry.title_id.clone(),
+            source_title: entry.source_title.clone(),
+            source_hint: entry.source_hint.clone(),
+            quality: entry.quality.clone(),
+            download_id: entry.download_id.clone(),
+            reason: entry.reason.clone(),
+            data_json,
+            created_at: Utc::now().to_rfc3339(),
+        });
+        Ok(id)
+    }
+
+    async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>> {
+        let mut entries: Vec<_> = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .filter(|entry| entry.title_id == title_id)
+            .cloned()
+            .collect();
+        entries.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        entries.truncate(limit);
+        Ok(entries)
+    }
+
+    async fn list_all(&self, limit: usize, offset: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
+        let mut entries = self.entries.lock().await.clone();
+        entries.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        let total = entries.len() as i64;
+        let page = entries.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
+    }
+
+    async fn remove(&self, id: &str) -> AppResult<()> {
+        self.entries.lock().await.retain(|entry| entry.id != id);
+        Ok(())
+    }
+
+    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
+        Ok(self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .any(|entry| {
+                entry.title_id == title_id
+                    && entry
+                        .source_title
+                        .as_deref()
+                        .is_some_and(|value| value == source_title)
+            }))
+    }
+
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.entries
+            .lock()
+            .await
+            .retain(|entry| entry.title_id != title_id);
+        Ok(())
     }
 }
 
@@ -3850,6 +3932,7 @@ fn bootstrap_with_cleanup_tracking_and_tracked_handle(
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_download_submissions(download_submissions)
     .with_pending_releases(pending_releases)
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_tracked_download_handle(tracked_download_handle)
     .build_partial_for_tests();
 
@@ -3905,6 +3988,7 @@ fn bootstrap_with_cleanup_tracking_and_indexer(
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_download_submissions(download_submissions)
     .with_pending_releases(pending_releases)
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
