@@ -49,7 +49,10 @@ fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
         }
     }
 
-    if let Some(episode_ids) = value.get("episode_ids").and_then(serde_json::Value::as_array) {
+    if let Some(episode_ids) = value
+        .get("episode_ids")
+        .and_then(serde_json::Value::as_array)
+    {
         for episode_id in episode_ids
             .iter()
             .filter_map(serde_json::Value::as_str)
@@ -933,7 +936,8 @@ impl AppUseCase {
                 let mut episode_ids = blocklist_episode_ids(entry.data_json.as_deref());
                 if episode_ids.is_empty()
                     && let Some(download_id) = entry.download_id.as_deref()
-                    && let Some(submission_episode_ids) = episode_ids_by_download_id.get(download_id)
+                    && let Some(submission_episode_ids) =
+                        episode_ids_by_download_id.get(download_id)
                 {
                     episode_ids = submission_episode_ids.clone();
                 }

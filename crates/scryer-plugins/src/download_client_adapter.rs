@@ -559,7 +559,8 @@ impl DownloadClient for WasmDownloadClient {
         .await
         .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
 
-        match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY) {
+        match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY)
+        {
             Ok(items) => Ok(items
                 .into_iter()
                 .filter(|item| {
@@ -953,7 +954,10 @@ mod tests {
             "qbittorrent",
         );
 
-        assert_eq!(queue_item.id, "qbittorrent:abcdef0123456789abcdef0123456789abcdef01");
+        assert_eq!(
+            queue_item.id,
+            "qbittorrent:abcdef0123456789abcdef0123456789abcdef01"
+        );
         assert_eq!(queue_item.title_name, "Example Release");
         assert_eq!(queue_item.client_name, "qBittorrent");
         assert_eq!(queue_item.state, DownloadQueueState::Completed);

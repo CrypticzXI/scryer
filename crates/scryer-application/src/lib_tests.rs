@@ -2791,18 +2791,13 @@ impl BlocklistRepository for MockBlocklistRepo {
     }
 
     async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
-        Ok(self
-            .entries
-            .lock()
-            .await
-            .iter()
-            .any(|entry| {
-                entry.title_id == title_id
-                    && entry
-                        .source_title
-                        .as_deref()
-                        .is_some_and(|value| value == source_title)
-            }))
+        Ok(self.entries.lock().await.iter().any(|entry| {
+            entry.title_id == title_id
+                && entry
+                    .source_title
+                    .as_deref()
+                    .is_some_and(|value| value == source_title)
+        }))
     }
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {

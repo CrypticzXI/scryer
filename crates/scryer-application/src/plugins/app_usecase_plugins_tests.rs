@@ -2,8 +2,8 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::PluginHostBindingId;
 use std::collections::HashMap;
-use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
 // ── Mock: PluginInstallationRepository ───────────────────────────────────────
@@ -240,7 +240,10 @@ impl MockPluginProvider {
         self.types
             .iter()
             .filter(|provider_type| {
-                !self.builtin_types.iter().any(|builtin| builtin == *provider_type)
+                !self
+                    .builtin_types
+                    .iter()
+                    .any(|builtin| builtin == *provider_type)
                     || !disabled.iter().any(|value| value == *provider_type)
             })
             .cloned()
@@ -1091,7 +1094,10 @@ async fn list_available_keeps_disabled_builtin_plugin_installed() {
         .await
         .push(make_installation("torznab", "1.0.0", true, true));
 
-    h.app.toggle_plugin(&admin(), "torznab", false).await.unwrap();
+    h.app
+        .toggle_plugin(&admin(), "torznab", false)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     let torznab = result.iter().find(|plugin| plugin.id == "torznab").unwrap();
