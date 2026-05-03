@@ -2785,6 +2785,40 @@ impl BlocklistRepository for MockBlocklistRepo {
         Ok((page, total))
     }
 
+    async fn has_recorded_download_failure(
+        &self,
+        title_id: &str,
+        download_id: Option<&str>,
+        source_title: Option<&str>,
+        source_hint: Option<&str>,
+    ) -> AppResult<bool> {
+        let entries = self.entries.lock().await;
+        let download_id = download_id.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(download_id) = download_id {
+            return Ok(entries.iter().any(|entry| {
+                entry.title_id == title_id && entry.download_id.as_deref() == Some(download_id)
+            }));
+        }
+
+        let normalized_source_title = source_title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase);
+        let normalized_source_hint = source_hint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if normalized_source_title.is_none() || normalized_source_hint.is_none() {
+            return Ok(false);
+        }
+
+        Ok(entries.iter().any(|entry| {
+            entry.title_id == title_id
+                && entry.source_title == normalized_source_title
+                && entry.source_hint == normalized_source_hint
+        }))
+    }
+
     async fn remove(&self, id: &str) -> AppResult<()> {
         self.entries.lock().await.retain(|entry| entry.id != id);
         Ok(())
@@ -2821,6 +2855,7 @@ struct TrackingWantedItemRepo {
     store: Arc<Mutex<Vec<WantedItem>>>,
     release_decisions: Arc<Mutex<Vec<ReleaseDecision>>>,
     title_facets: Arc<Mutex<HashMap<String, MediaFacet>>>,
+    status_update_calls: Arc<Mutex<Vec<String>>>,
     upsert_calls: Arc<AtomicUsize>,
 }
 
@@ -2834,6 +2869,15 @@ impl TrackingWantedItemRepo {
 
     fn upsert_call_count(&self) -> usize {
         self.upsert_calls.load(Ordering::SeqCst)
+    }
+
+    async fn status_update_call_count_for(&self, id: &str) -> usize {
+        self.status_update_calls
+            .lock()
+            .await
+            .iter()
+            .filter(|existing| existing.as_str() == id)
+            .count()
     }
 }
 
@@ -2914,6 +2958,8 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         item.current_score = current_score;
         item.grabbed_release = grabbed_release.map(str::to_string);
         item.updated_at = Utc::now().to_rfc3339();
+        drop(store);
+        self.status_update_calls.lock().await.push(id.to_string());
         Ok(())
     }
 
@@ -10803,7 +10849,185 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
 }
 
 #[tokio::test]
-async fn tracked_download_failure_requeues_episode_items_after_failed_season_pack() {
+async fn process_download_failure_returns_already_handled_for_duplicate_failed_download() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Duplicate Failed Download".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let wanted = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        search_phase: "initial".to_string(),
+        next_search_at: Some((Utc::now() + chrono::Duration::hours(6)).to_rfc3339()),
+        last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
+        search_count: 1,
+        baseline_date: Some(
+            (Utc::now() - chrono::Duration::days(14))
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+        status: WantedStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": "Duplicate.Failed.Release.1080p.WEB-DL",
+                "score": 100,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_wanted_item(&wanted)
+        .await
+        .expect("seed wanted item");
+    let wanted_id = wanted.id.clone();
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "failed-duplicate".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Duplicate.Failed.Release.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record failed submission");
+
+    let first = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: Some(wanted.clone()),
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "failed-duplicate".to_string(),
+            release_title: "Duplicate.Failed.Release.1080p.WEB-DL".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+    assert_ne!(
+        first,
+        crate::acquisition_workflow::FailureHandlingOutcome::AlreadyHandled
+    );
+
+    let second = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: Some(wanted),
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "failed-duplicate".to_string(),
+            release_title: "Duplicate.Failed.Release.1080p.WEB-DL".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        second,
+        crate::acquisition_workflow::FailureHandlingOutcome::AlreadyHandled
+    );
+
+    assert_eq!(
+        wanted_items.status_update_call_count_for(&wanted_id).await,
+        1,
+        "duplicate failure should not reschedule the wanted item twice"
+    );
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(
+        blocklist[0].download_id.as_deref(),
+        Some("failed-duplicate")
+    );
+
+    let failed_attempts = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed release attempts");
+    assert_eq!(failed_attempts.len(), 1);
+
+    let history = app
+        .list_title_history(
+            &user,
+            &TitleHistoryFilter {
+                event_types: Some(vec![
+                    TitleHistoryEventType::DownloadFailed,
+                    TitleHistoryEventType::Blocklisted,
+                ]),
+                title_ids: Some(vec![title.id.clone()]),
+                title_search: None,
+                download_id: Some("failed-duplicate".to_string()),
+                episode_id: None,
+                group_by_event: false,
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .expect("list title history");
+    assert_eq!(history.total_count, 2);
+}
+
+#[tokio::test]
+async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_once() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -10934,6 +11158,37 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
         .await
         .expect("record failed season pack submission");
 
+    let grabbed_wanted = wanted_items
+        .get_wanted_item_by_id(
+            expected_wanted_ids
+                .first()
+                .expect("expected wanted ids should contain seeded episodes"),
+        )
+        .await
+        .expect("get grabbed wanted")
+        .expect("grabbed wanted should exist");
+
+    let first = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: Some(grabbed_wanted),
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "failed-season-pack".to_string(),
+            release_title: "Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        first,
+        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+    );
+
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
         id: "nzbget:failed-season-pack".to_string(),
         client_id: "primary".to_string(),
@@ -10964,9 +11219,9 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
         scryer_domain::TrackedDownloadState::Failed
     );
 
-    for wanted_id in expected_wanted_ids {
+    for wanted_id in &expected_wanted_ids {
         let wanted = wanted_items
-            .get_wanted_item_by_id(&wanted_id)
+            .get_wanted_item_by_id(wanted_id)
             .await
             .expect("get wanted item")
             .expect("wanted item exists");
@@ -10982,7 +11237,34 @@ async fn tracked_download_failure_requeues_episode_items_after_failed_season_pac
                 .expect("original next search should parse");
         assert!(next_search_at < original_next_search_at);
         assert!(next_search_at <= Utc::now());
+        assert_eq!(
+            wanted_items.status_update_call_count_for(wanted_id).await,
+            1,
+            "duplicate season-pack failure should only requeue each episode once"
+        );
     }
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(
+        blocklist[0].download_id.as_deref(),
+        Some("failed-season-pack")
+    );
+
+    let failed_attempts = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed release attempts");
+    assert_eq!(failed_attempts.len(), 1);
 
     let history = app
         .list_title_history(

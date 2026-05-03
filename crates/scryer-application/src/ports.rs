@@ -974,6 +974,14 @@ pub trait BlocklistRepository: Send + Sync {
 
     async fn list_all(&self, limit: usize, offset: usize) -> AppResult<(Vec<BlocklistEntry>, i64)>;
 
+    async fn has_recorded_download_failure(
+        &self,
+        title_id: &str,
+        download_id: Option<&str>,
+        source_title: Option<&str>,
+        source_hint: Option<&str>,
+    ) -> AppResult<bool>;
+
     async fn remove(&self, id: &str) -> AppResult<()>;
 
     async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool>;

@@ -171,6 +171,57 @@ pub(crate) async fn is_blocklisted_query(
     Ok(exists)
 }
 
+pub(crate) async fn has_recorded_download_failure_query(
+    pool: &SqlitePool,
+    title_id: &str,
+    download_id: Option<&str>,
+    source_title: Option<&str>,
+    source_hint: Option<&str>,
+) -> AppResult<bool> {
+    if let Some(download_id) = download_id.map(str::trim).filter(|value| !value.is_empty()) {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                 SELECT 1 FROM blocklist
+                 WHERE title_id = ? AND download_id = ?
+             )",
+        )
+        .bind(title_id)
+        .bind(download_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+        return Ok(exists);
+    }
+
+    let Some(source_title) = source_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    let Some(source_hint) = source_hint.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+             SELECT 1 FROM blocklist
+             WHERE title_id = ?
+               AND LOWER(TRIM(COALESCE(source_title, ''))) = ?
+               AND TRIM(COALESCE(source_hint, '')) = ?
+         )",
+    )
+    .bind(title_id)
+    .bind(source_title)
+    .bind(source_hint)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(exists)
+}
+
 pub(crate) async fn delete_blocklist_for_title_query(
     pool: &SqlitePool,
     title_id: &str,

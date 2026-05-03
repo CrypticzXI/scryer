@@ -864,6 +864,13 @@ pub(crate) enum DbCommand {
         offset: usize,
         reply: Sender<AppResult<(Vec<BlocklistEntry>, i64)>>,
     },
+    HasRecordedDownloadFailure {
+        title_id: String,
+        download_id: Option<String>,
+        source_title: Option<String>,
+        source_hint: Option<String>,
+        reply: Sender<AppResult<bool>>,
+    },
     DeleteBlocklistEntry {
         id: String,
         reply: Sender<AppResult<()>>,
@@ -2856,6 +2863,24 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             (entries, total)
                         });
                     let _ = reply.send(res);
+                }
+                DbCommand::HasRecordedDownloadFailure {
+                    title_id,
+                    download_id,
+                    source_title,
+                    source_hint,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        blocklist_queries::has_recorded_download_failure_query(
+                            &pool,
+                            &title_id,
+                            download_id.as_deref(),
+                            source_title.as_deref(),
+                            source_hint.as_deref(),
+                        )
+                        .await,
+                    );
                 }
                 DbCommand::DeleteBlocklistEntry { id, reply } => {
                     let _ = reply

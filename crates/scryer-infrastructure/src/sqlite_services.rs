@@ -2985,6 +2985,29 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
+    pub async fn has_recorded_download_failure(
+        &self,
+        title_id: &str,
+        download_id: Option<&str>,
+        source_title: Option<&str>,
+        source_hint: Option<&str>,
+    ) -> AppResult<bool> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::HasRecordedDownloadFailure {
+                title_id: title_id.to_string(),
+                download_id: download_id.map(str::to_string),
+                source_title: source_title.map(str::to_string),
+                source_hint: source_hint.map(str::to_string),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
     pub async fn delete_blocklist_entry(&self, id: &str) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender

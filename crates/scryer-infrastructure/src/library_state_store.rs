@@ -540,6 +540,18 @@ impl BlocklistRepository for SqliteLibraryStateStore {
         self.db.list_blocklist_all(limit, offset).await
     }
 
+    async fn has_recorded_download_failure(
+        &self,
+        title_id: &str,
+        download_id: Option<&str>,
+        source_title: Option<&str>,
+        source_hint: Option<&str>,
+    ) -> AppResult<bool> {
+        self.db
+            .has_recorded_download_failure(title_id, download_id, source_title, source_hint)
+            .await
+    }
+
     async fn remove(&self, id: &str) -> AppResult<()> {
         self.db.delete_blocklist_entry(id).await
     }

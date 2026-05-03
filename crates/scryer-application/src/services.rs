@@ -45,6 +45,51 @@ impl DownloadSubmissionGuardTable {
     }
 }
 
+/// In-process guard table for failed-download handling dedupe.
+///
+/// This serializes same-process races between the grabbed-item failure sweep and
+/// tracked-download failure processing while the persisted blocklist row remains
+/// the authoritative record of whether failure side effects already ran.
+#[derive(Clone, Default)]
+pub struct DownloadFailureGuardTable {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl DownloadFailureGuardTable {
+    async fn acquire_key(&self, key: String) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(existing) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&created));
+                created
+            }
+        };
+
+        lock.lock_owned().await
+    }
+
+    pub async fn acquire(
+        &self,
+        title_id: Option<&str>,
+        client_id: &str,
+        client_type: &str,
+        client_item_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let title_id = title_id.map(str::trim).filter(|value| !value.is_empty())?;
+        let key = format!(
+            "{title_id}:{}:{}:{}",
+            client_id.trim(),
+            client_type.trim().to_ascii_lowercase(),
+            client_item_id.trim()
+        );
+        Some(self.acquire_key(key).await)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct PluginOperationGuardTable {
     locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
@@ -391,6 +436,7 @@ pub struct AppRuntimeCatalogState {
 pub struct AppRuntimeAcquisitionState {
     pub acquisition_wake: Arc<tokio::sync::Notify>,
     pub download_submission_guards: DownloadSubmissionGuardTable,
+    pub download_failure_guards: DownloadFailureGuardTable,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
@@ -462,6 +508,7 @@ impl Default for AppRuntimeState {
             acquisition: AppRuntimeAcquisitionState {
                 acquisition_wake: Arc::new(tokio::sync::Notify::new()),
                 download_submission_guards: DownloadSubmissionGuardTable::default(),
+                download_failure_guards: DownloadFailureGuardTable::default(),
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),

@@ -181,8 +181,11 @@ fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
 
 #[test]
 fn external_overrides_builtin_same_provider() {
+    let wasm_bytes =
+        scryer_plugins::builtins::decode_builtin_wasm(scryer_plugins::builtins::NZBGEEK)
+            .expect("builtin WASM should decode");
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_external_bytes(scryer_plugins::builtins::NZBGEEK.wasm)
+        .with_external_bytes(&wasm_bytes)
         .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
 
     // Only one entry for "nzbgeek", not duplicated.
@@ -229,13 +232,15 @@ fn subtitle_builtins_are_empty() {
 
 #[test]
 fn newznab_family_builtins_include_rss_search_path() {
-    for (name, wasm_bytes) in [
-        ("nzbgeek", scryer_plugins::builtins::NZBGEEK.wasm),
-        ("newznab", scryer_plugins::builtins::NEWZNAB.wasm),
-        ("torznab", scryer_plugins::builtins::TORZNAB.wasm),
+    for (name, asset) in [
+        ("nzbgeek", scryer_plugins::builtins::NZBGEEK),
+        ("newznab", scryer_plugins::builtins::NEWZNAB),
+        ("torznab", scryer_plugins::builtins::TORZNAB),
     ] {
+        let wasm_bytes = scryer_plugins::builtins::decode_builtin_wasm(asset)
+            .expect("builtin WASM should decode");
         assert!(
-            bytes_contain(wasm_bytes, b"rss_search: fetching recent releases"),
+            bytes_contain(&wasm_bytes, b"rss_search: fetching recent releases"),
             "{name} builtin WASM is missing the RSS search path"
         );
     }

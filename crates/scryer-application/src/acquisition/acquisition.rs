@@ -705,6 +705,7 @@ pub(crate) enum FailureHandlingOutcome {
     RequeuedFreshSearch,
     RequeuedDeferred,
     RecordedOnly,
+    AlreadyHandled,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1414,6 +1415,66 @@ pub(crate) async fn process_download_failure(
                 .as_ref()
                 .map(|submission| submission.title_id.clone())
         });
+    let download_id = normalized_non_empty_owned(Some(context.client_item_id.clone()));
+    let normalized_source_title =
+        normalize_release_attempt_title(Some(context.release_title.as_str()));
+    let normalized_source_hint = failed_submission
+        .as_ref()
+        .and_then(|submission| normalize_release_attempt_hint(submission.source_hint.as_deref()))
+        .or_else(|| normalize_release_attempt_hint(Some(context.client_item_id.as_str())));
+    let quality = failed_submission
+        .as_ref()
+        .and_then(|submission| release_quality_hint(submission.source_title.as_deref()))
+        .or_else(|| release_quality_hint(Some(context.release_title.as_str())));
+    let _failure_guard = app
+        .runtime
+        .acquisition
+        .download_failure_guards
+        .acquire(
+            resolved_title_id.as_deref(),
+            &context.client_id,
+            &context.client_type,
+            &context.client_item_id,
+        )
+        .await;
+
+    if let Some(title_id) = resolved_title_id.as_deref() {
+        match app
+            .services
+            .workflow
+            .blocklist_repo
+            .has_recorded_download_failure(
+                title_id,
+                download_id.as_deref(),
+                normalized_source_title.as_deref(),
+                normalized_source_hint.as_deref(),
+            )
+            .await
+        {
+            Ok(true) => {
+                info!(
+                    title_id,
+                    client_id = context.client_id.as_str(),
+                    client_type = context.client_type.as_str(),
+                    download_client_item_id = context.client_item_id.as_str(),
+                    release_title = context.release_title.as_str(),
+                    "skipping duplicate failed download handling; failure already recorded"
+                );
+                return FailureHandlingOutcome::AlreadyHandled;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    title_id,
+                    client_id = context.client_id.as_str(),
+                    client_type = context.client_type.as_str(),
+                    download_client_item_id = context.client_item_id.as_str(),
+                    error = %error,
+                    "failed to check for duplicate failed download blocklist entry"
+                );
+            }
+        }
+    }
 
     let failed_collection_items = if let Some(submission) = failed_submission.as_ref() {
         match resolve_failed_collection_episode_wanted_items(app, submission).await {
@@ -1569,22 +1630,14 @@ pub(crate) async fn process_download_failure(
     };
 
     let blocklist_reason = format!("download client failure: {}", context.reason);
-    let source_hint = failed_submission
-        .as_ref()
-        .and_then(|submission| submission.source_hint.clone())
-        .or_else(|| Some(context.client_item_id.clone()));
-    let quality = failed_submission
-        .as_ref()
-        .and_then(|submission| release_quality_hint(submission.source_title.as_deref()))
-        .or_else(|| release_quality_hint(Some(context.release_title.as_str())));
 
     record_failed_release_outcome(
         app,
         resolved_title_id.as_deref(),
         &attribution,
-        Some(context.release_title.clone()),
-        source_hint,
-        Some(context.client_item_id.clone()),
+        normalized_source_title.clone(),
+        normalized_source_hint.clone(),
+        download_id.clone(),
         Some(context.client_id.clone()),
         context.client_name.clone(),
         Some(context.client_type.clone()),

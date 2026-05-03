@@ -1,34 +1,34 @@
 #[derive(Clone, Copy, Debug)]
 pub struct BuiltinPluginAsset {
-    pub wasm: &'static [u8],
+    pub wasm_zstd: &'static [u8],
     pub descriptor_json: &'static str,
     pub description: &'static str,
 }
 
 /// Built-in NZBGeek indexer plugin asset pair.
 pub const NZBGEEK: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm: include_bytes!("../builtins/nzbgeek_indexer.wasm"),
+    wasm_zstd: include_bytes!("../builtins/nzbgeek_indexer.wasm.zst"),
     descriptor_json: include_str!("../builtins/nzbgeek_indexer.descriptor.json"),
     description: include_str!("../builtins/nzbgeek_indexer.description.txt"),
 };
 
 /// Built-in generic Newznab indexer plugin asset pair.
 pub const NEWZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm: include_bytes!("../builtins/newznab_indexer.wasm"),
+    wasm_zstd: include_bytes!("../builtins/newznab_indexer.wasm.zst"),
     descriptor_json: include_str!("../builtins/newznab_indexer.descriptor.json"),
     description: include_str!("../builtins/newznab_indexer.description.txt"),
 };
 
 /// Built-in AnimeTosho indexer plugin asset pair.
 pub const ANIMETOSHO: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm: include_bytes!("../builtins/animetosho_indexer.wasm"),
+    wasm_zstd: include_bytes!("../builtins/animetosho_indexer.wasm.zst"),
     descriptor_json: include_str!("../builtins/animetosho_indexer.descriptor.json"),
     description: include_str!("../builtins/animetosho_indexer.description.txt"),
 };
 
 /// Built-in Torznab indexer plugin asset pair.
 pub const TORZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm: include_bytes!("../builtins/torznab_indexer.wasm"),
+    wasm_zstd: include_bytes!("../builtins/torznab_indexer.wasm.zst"),
     descriptor_json: include_str!("../builtins/torznab_indexer.descriptor.json"),
     description: include_str!("../builtins/torznab_indexer.description.txt"),
 };
@@ -37,6 +37,11 @@ pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NZBGEEK, NEWZNAB, ANIMETOS
 pub const SUBTITLE_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const DOWNLOAD_CLIENT_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const NOTIFICATION_BUILTINS: &[BuiltinPluginAsset] = &[];
+
+pub fn decode_builtin_wasm(asset: BuiltinPluginAsset) -> Result<Vec<u8>, String> {
+    zstd::decode_all(asset.wasm_zstd)
+        .map_err(|error| format!("failed to decompress built-in WASM asset: {error}"))
+}
 
 pub fn builtin_description_for_provider(provider_type: &str) -> Option<&'static str> {
     let key = provider_type.trim().to_ascii_lowercase();

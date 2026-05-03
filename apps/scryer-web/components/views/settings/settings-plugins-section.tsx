@@ -345,6 +345,32 @@ function PluginTable({
                   <div className="max-w-[300px] whitespace-normal break-words text-xs text-muted-foreground">
                     {plugin.description}
                   </div>
+                  {(sourceLink || showDocsLink) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      {sourceLink && (
+                        <a
+                          href={sourceLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-primary hover:underline"
+                        >
+                          {t("settings.pluginSource")}
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                      {showDocsLink && plugin.docsUrl && (
+                        <a
+                          href={plugin.docsUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-primary hover:underline"
+                        >
+                          {t("settings.pluginDocs")}
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               </TableCell>
               <TableCell className="text-sm">{categoryLabel(plugin.pluginType, t)}</TableCell>
@@ -394,32 +420,6 @@ function PluginTable({
                     </span>
                   )}
                 </div>
-                {(sourceLink || showDocsLink) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                    {sourceLink && (
-                      <a
-                        href={sourceLink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-primary hover:underline"
-                      >
-                        {t("settings.pluginSource")}
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                    {showDocsLink && plugin.docsUrl && (
-                      <a
-                        href={plugin.docsUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-primary hover:underline"
-                      >
-                        {t("settings.pluginDocs")}
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                  </div>
-                )}
               </TableCell>
               {showActions === "installed" && (
                 <TableCell className="text-center">

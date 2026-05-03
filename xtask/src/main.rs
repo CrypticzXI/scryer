@@ -1,19 +1,34 @@
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sigstore::{
+    cosign::{CosignCapabilities, bundle::SignedArtifactBundle},
+    crypto::{CosignVerificationKey, SigningScheme},
+    trust::{TrustRoot, sigstore::SigstoreTrustRoot},
+};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use tempfile::NamedTempFile;
 use toml::Value as TomlValue;
 use toml_edit::{DocumentMut, value};
+use x509_cert::{
+    Certificate,
+    der::DecodePem,
+    ext::{
+        Extension,
+        pkix::{SubjectAltName, name::GeneralName},
+    },
+};
 
 mod corpus;
 mod profile;
@@ -47,6 +62,15 @@ const OFFICIAL_PLUGIN_CATALOG_URL: &str =
     "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv2/catalog-v2.json";
 const BUILTIN_ASSET_DIR: &str = "crates/scryer-plugins/builtins";
 const OFFICIAL_PLUGIN_REPO: &str = "scryer-media/scryer-plugins";
+const OFFICIAL_RELEASE_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
+const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
+const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
+const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
+
+type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
+
+static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
+    OnceLock::new();
 
 struct BuiltinPluginSpec {
     plugin_id: &'static str,
@@ -68,6 +92,8 @@ struct CatalogV2Entry {
 #[derive(Clone, Debug, Deserialize)]
 struct RequiredSignerV2 {
     github_repository: String,
+    #[serde(default)]
+    github_workflow: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1181,7 +1207,7 @@ struct BuiltinAssetPaths {
 fn builtin_asset_paths(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> BuiltinAssetPaths {
     let dir = ctx.path(BUILTIN_ASSET_DIR);
     BuiltinAssetPaths {
-        wasm: dir.join(format!("{}.wasm", spec.artifact_stem)),
+        wasm: dir.join(format!("{}.wasm.zst", spec.artifact_stem)),
         descriptor_json: dir.join(format!("{}.descriptor.json", spec.artifact_stem)),
         description: dir.join(format!("{}.description.txt", spec.artifact_stem)),
     }
@@ -1192,11 +1218,7 @@ fn builtin_plugin_paths(ctx: &TaskContext) -> Vec<PathBuf> {
         .iter()
         .flat_map(|spec| {
             let paths = builtin_asset_paths(ctx, spec);
-            [
-                paths.wasm,
-                paths.descriptor_json,
-                paths.description,
-            ]
+            [paths.wasm, paths.descriptor_json, paths.description]
         })
         .collect()
 }
@@ -1224,63 +1246,144 @@ fn decode_possibly_zstd_bytes(url: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn regex_escape_literal(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(
-            ch,
-            '\\' | '.'
-                | '+'
-                | '*'
-                | '?'
-                | '('
-                | ')'
-                | '['
-                | ']'
-                | '{'
-                | '}'
-                | '^'
-                | '$'
-                | '|'
-        ) {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
+fn verify_signed_blob(
+    raw: &[u8],
+    bundle_raw: &[u8],
+    required_signer: &RequiredSignerV2,
+) -> Result<()> {
+    let bundle_text = std::str::from_utf8(bundle_raw).context("invalid Sigstore bundle UTF-8")?;
+    let rekor_keys = cached_rekor_verification_keys()?;
+    let bundle = SignedArtifactBundle::new_verified(bundle_text, rekor_keys.as_ref())
+        .map_err(|error| anyhow!("Sigstore Rekor bundle verification failed: {error}"))?;
+    let cert_pem = normalize_bundle_cert(&bundle.cert)?;
+    <sigstore::cosign::Client as CosignCapabilities>::verify_blob(
+        &cert_pem,
+        &bundle.base64_signature,
+        raw,
+    )
+    .map_err(|error| anyhow!("Sigstore blob signature verification failed: {error}"))?;
+    verify_signer_identity(&cert_pem, required_signer)?;
+    Ok(())
 }
 
-fn cosign_verify_blob(ctx: &TaskContext, repo: &str, blob: &Path, bundle: &Path) -> Result<()> {
-    let identity_pattern = format!(
-        "^https://github\\.com/{}/\\.github/workflows/.*@refs/(tags|heads)/.*$",
-        regex_escape_literal(repo)
-    );
-    run_checked(
-        ctx.command("cosign")
-            .arg("verify-blob")
-            .arg("--bundle")
-            .arg(bundle)
-            .arg("--certificate-identity-regexp")
-            .arg(identity_pattern)
-            .arg("--certificate-oidc-issuer")
-            .arg("https://token.actions.githubusercontent.com")
-            .arg(blob),
-    )
+fn cached_rekor_verification_keys() -> Result<Arc<RekorVerificationKeys>> {
+    REKOR_VERIFICATION_KEYS
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("failed to build Tokio runtime: {error}"))?;
+            let trust_root = runtime
+                .block_on(SigstoreTrustRoot::new(None))
+                .map_err(|error| format!("failed to load Sigstore trust root: {error}"))?;
+            let rekor_keys = trust_root
+                .rekor_keys()
+                .map_err(|error| format!("failed to load Sigstore Rekor public keys: {error}"))?;
+            parse_rekor_verification_keys(rekor_keys)
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+fn parse_rekor_verification_keys(keys: BTreeMap<String, &[u8]>) -> Result<RekorVerificationKeys> {
+    let parsed = keys
+        .into_iter()
+        .filter_map(|(key_id, key)| {
+            CosignVerificationKey::from_der(key, &SigningScheme::default())
+                .ok()
+                .map(|key| (key_id, key))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if parsed.is_empty() {
+        bail!("failed to parse any Rekor public keys from the Sigstore trust root");
+    }
+    Ok(parsed)
+}
+
+fn normalize_bundle_cert(cert: &str) -> Result<String> {
+    if cert.contains("-----BEGIN CERTIFICATE-----") {
+        return Ok(cert.to_string());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(cert.as_bytes())
+        .context("invalid base64 Sigstore certificate")?;
+    String::from_utf8(decoded).context("invalid Sigstore certificate UTF-8")
+}
+
+fn cert_extension_utf8(cert: &Certificate, oid: &str) -> Result<Option<String>> {
+    let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
+        return Ok(None);
+    };
+    extensions
+        .iter()
+        .find(|ext: &&Extension| ext.extn_id.to_string() == oid)
+        .map(|ext| {
+            String::from_utf8(ext.extn_value.clone().into_bytes())
+                .map_err(|_| anyhow!("Sigstore certificate extension {oid} is not valid UTF-8"))
+        })
+        .transpose()
+}
+
+fn cert_subject_uri(cert: &Certificate) -> Result<Option<String>> {
+    let san = cert
+        .tbs_certificate
+        .get::<SubjectAltName>()
+        .map_err(|error| anyhow!("failed to read certificate SAN: {error}"))?
+        .map(|(_, san)| san);
+    let Some(san) = san else {
+        return Ok(None);
+    };
+    Ok(san.0.iter().find_map(|name| match name {
+        GeneralName::UniformResourceIdentifier(uri) => Some(uri.to_string()),
+        _ => None,
+    }))
+}
+
+fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSignerV2) -> Result<()> {
+    let cert = Certificate::from_pem(cert_pem.as_bytes())
+        .map_err(|error| anyhow!("failed to parse Sigstore certificate: {error}"))?;
+    let repository = cert_extension_utf8(&cert, SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID)?;
+    if repository.as_deref() != Some(required_signer.github_repository.as_str()) {
+        bail!(
+            "Sigstore signer repo mismatch: expected '{}', got '{}'",
+            required_signer.github_repository,
+            repository.unwrap_or_else(|| "<missing>".to_string())
+        );
+    }
+
+    if let Some(expected_workflow) = required_signer.github_workflow.as_deref() {
+        let workflow_name = cert_extension_utf8(&cert, SIGSTORE_GITHUB_WORKFLOW_NAME_OID)?;
+        let workflow_ref = cert_extension_utf8(&cert, SIGSTORE_GITHUB_WORKFLOW_REF_OID)?;
+        let subject_uri = cert_subject_uri(&cert)?;
+        let matched = workflow_name.as_deref() == Some(expected_workflow)
+            || workflow_ref
+                .as_deref()
+                .is_some_and(|value| value.contains(expected_workflow))
+            || subject_uri
+                .as_deref()
+                .is_some_and(|value| value.contains(expected_workflow));
+        if !matched {
+            bail!(
+                "Sigstore workflow mismatch for '{}'",
+                required_signer.github_repository
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn fetch_verified_bytes(
-    ctx: &TaskContext,
-    repo: &str,
+    _ctx: &TaskContext,
+    required_signer: &RequiredSignerV2,
     url: &str,
     bundle_url: &str,
 ) -> Result<Vec<u8>> {
     let blob_bytes = fetch_url_bytes(url)?;
     let bundle_bytes = fetch_url_bytes(bundle_url)?;
-    let blob = NamedTempFile::new()?;
-    let bundle = NamedTempFile::new()?;
-    fs::write(blob.path(), &blob_bytes)?;
-    fs::write(bundle.path(), &bundle_bytes)?;
-    cosign_verify_blob(ctx, repo, blob.path(), bundle.path())?;
+    verify_signed_blob(&blob_bytes, &bundle_bytes, required_signer)?;
     Ok(blob_bytes)
 }
 
@@ -1314,9 +1417,13 @@ fn manifest_asset_url(manifest_url: &str, asset: &str) -> Result<String> {
 }
 
 fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()> {
+    let catalog_signer = RequiredSignerV2 {
+        github_repository: OFFICIAL_PLUGIN_REPO.to_string(),
+        github_workflow: Some(OFFICIAL_RELEASE_WORKFLOW.to_string()),
+    };
     let catalog_bytes = fetch_verified_bytes(
         ctx,
-        OFFICIAL_PLUGIN_REPO,
+        &catalog_signer,
         OFFICIAL_PLUGIN_CATALOG_URL,
         &bundle_url_for(OFFICIAL_PLUGIN_CATALOG_URL),
     )?;
@@ -1326,10 +1433,15 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
         .plugins
         .iter()
         .find(|entry| entry.id == spec.plugin_id)
-        .ok_or_else(|| anyhow!("builtin plugin '{}' missing from official catalog", spec.plugin_id))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "builtin plugin '{}' missing from official catalog",
+                spec.plugin_id
+            )
+        })?;
     let child_bytes = fetch_verified_bytes(
         ctx,
-        &entry.required_signer.github_repository,
+        &entry.required_signer,
         &entry.child_catalog_url,
         &bundle_url_for(&entry.child_catalog_url),
     )?;
@@ -1346,7 +1458,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
     let release = latest_catalog_release(spec.plugin_id, &child.releases)?;
     let manifest_bytes = fetch_verified_bytes(
         ctx,
-        &entry.required_signer.github_repository,
+        &entry.required_signer,
         &release.artifact_manifest_url,
         &bundle_url_for(&release.artifact_manifest_url),
     )?;
@@ -1364,7 +1476,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
         manifest_asset_url(&release.artifact_manifest_url, &manifest.signature)?;
     let compressed_wasm = fetch_verified_bytes(
         ctx,
-        &entry.required_signer.github_repository,
+        &entry.required_signer,
         &artifact_url,
         &artifact_bundle_url,
     )?;
@@ -1380,8 +1492,12 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
             manifest.compression
         );
     }
-    let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice())
-        .with_context(|| format!("failed to decompress builtin artifact for {}", spec.plugin_id))?;
+    let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice()).with_context(|| {
+        format!(
+            "failed to decompress builtin artifact for {}",
+            spec.plugin_id
+        )
+    })?;
     require_blake3_bytes("builtin wasm", &manifest.wasm_digest, &wasm_bytes)?;
     let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
@@ -1407,15 +1523,18 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
             fs::create_dir_all(parent)?;
         }
     }
-    fs::write(&paths.wasm, &wasm_bytes)
+    fs::write(&paths.wasm, &compressed_wasm)
         .with_context(|| format!("failed to write {}", paths.wasm.display()))?;
     fs::write(
         &paths.descriptor_json,
         serde_json::to_string_pretty(&descriptor)? + "\n",
     )
     .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
-    fs::write(&paths.description, format!("{}\n", child.description.trim()))
-        .with_context(|| format!("failed to write {}", paths.description.display()))?;
+    fs::write(
+        &paths.description,
+        format!("{}\n", child.description.trim()),
+    )
+    .with_context(|| format!("failed to write {}", paths.description.display()))?;
 
     ok(format!(
         "synced builtin {} {} from official catalog",
@@ -1725,8 +1844,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                         &next_version,
                         &tag_name,
                     );
-                    let final_cache_dir_relative =
-                        relative_to_repo_root(ctx, &final_cache_dir)?;
+                    let final_cache_dir_relative = relative_to_repo_root(ctx, &final_cache_dir)?;
                     let catalog_checksum_sha256 = fetch_catalog_checksum(&catalog_url)?;
                     cache_builtin_artifacts(&final_cache_dir, &refreshed_builtin_paths)?;
                     write_release_dry_run_cache(
@@ -2090,11 +2208,21 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     run_streaming(&mut fmt, prefix)?;
     prefixed_ok(prefix, "cargo fmt passed");
 
-    prefixed_step(prefix, "Running cargo clippy --fix for scryer production binary packages");
+    prefixed_step(
+        prefix,
+        "Running cargo clippy --fix for scryer production binary packages",
+    );
     let mut clippy_fix = ctx.release_command_in("cargo", &ctx.repo_root);
     clippy_fix.arg("clippy");
     add_prod_package_args(&mut clippy_fix);
-    clippy_fix.args(["--fix", "--allow-dirty", "--allow-staged", "--", "-D", "warnings"]);
+    clippy_fix.args([
+        "--fix",
+        "--allow-dirty",
+        "--allow-staged",
+        "--",
+        "-D",
+        "warnings",
+    ]);
     run_streaming(&mut clippy_fix, prefix)?;
     prefixed_ok(prefix, "cargo clippy --fix complete");
 

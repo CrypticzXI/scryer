@@ -20,8 +20,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
+    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
+    HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
     RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
     TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,

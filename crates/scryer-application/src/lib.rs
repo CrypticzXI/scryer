@@ -84,10 +84,10 @@ pub use library::recycle_bin;
 pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
 pub use plugins::catalog::decompress_zstd as plugin_wasm_decompress_zstd;
 pub use plugins::catalog::verify_split_digest as plugin_wasm_verify_split_digest;
+pub use plugins::managed_rules;
 pub use plugins::plugins::RUNTIME_PLUGIN_LOAD_CONCURRENCY;
 pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
-pub use plugins::managed_rules;
 pub use quality::release_dedup;
 pub use services::{
     PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,

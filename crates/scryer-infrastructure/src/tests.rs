@@ -93,16 +93,16 @@ fn test_descriptor_json(
                 capabilities: Default::default(),
             },
         ),
-        "subtitle_provider" => scryer_plugin_sdk::ProviderDescriptor::Subtitle(
-            scryer_plugin_sdk::SubtitleDescriptor {
+        "subtitle_provider" => {
+            scryer_plugin_sdk::ProviderDescriptor::Subtitle(scryer_plugin_sdk::SubtitleDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
                 config_fields: Vec::new(),
                 default_base_url: None,
                 allowed_hosts: Vec::new(),
                 capabilities: Default::default(),
-            },
-        ),
+            })
+        }
         other => panic!("unsupported test plugin type: {other}"),
     };
 

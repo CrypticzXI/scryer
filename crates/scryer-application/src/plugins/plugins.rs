@@ -1492,17 +1492,18 @@ impl AppUseCase {
             tasks.spawn(async move {
                 let plugin_id = installation.plugin_id.clone();
                 let version = installation.version.clone();
-                let loaded =
-                    load_runtime_plugin_from_persisted_installation_payload(&installation, &payload)
-                        .await;
+                let loaded = load_runtime_plugin_from_persisted_installation_payload(
+                    &installation,
+                    &payload,
+                )
+                .await;
                 (plugin_id, version, loaded)
             });
         }
         while let Some(result) = tasks.join_next().await {
-            let (plugin_id, version, loaded) = result
-                .map_err(|error| {
-                    AppError::Repository(format!("runtime plugin load task panicked: {error}"))
-                })?;
+            let (plugin_id, version, loaded) = result.map_err(|error| {
+                AppError::Repository(format!("runtime plugin load task panicked: {error}"))
+            })?;
             match loaded {
                 Ok(runtime_plugin) => runtime_plugins.push(runtime_plugin),
                 Err(error) => {
@@ -2315,7 +2316,7 @@ impl AppUseCase {
                 break;
             };
             let app = self.clone();
-            let refreshed_at = now.clone();
+            let refreshed_at = now;
             refresh_tasks.spawn(async move {
                 app.refresh_child_catalog_source_entry(entry, refreshed_at)
                     .await
@@ -2336,7 +2337,7 @@ impl AppUseCase {
 
             if let Some(entry) = remaining_entries.next() {
                 let app = self.clone();
-                let refreshed_at = now.clone();
+                let refreshed_at = now;
                 refresh_tasks.spawn(async move {
                     app.refresh_child_catalog_source_entry(entry, refreshed_at)
                         .await

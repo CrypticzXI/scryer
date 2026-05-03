@@ -278,10 +278,11 @@ impl WasmIndexerPluginProvider {
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
         let descriptor = apply_builtin_indexer_overrides(descriptor);
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
         if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
             return Err("built-in indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, asset.wasm.to_vec()))
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -379,7 +380,6 @@ impl WasmIndexerPluginProvider {
         }
         self
     }
-
 }
 
 fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
@@ -1518,6 +1518,7 @@ impl WasmSubtitlePluginProvider {
         asset: crate::builtins::BuiltinPluginAsset,
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
         if !validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
@@ -1525,7 +1526,7 @@ impl WasmSubtitlePluginProvider {
         ) {
             return Err("built-in subtitle provider descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, asset.wasm.to_vec()))
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -2931,9 +2932,11 @@ mod tests {
                 "expected builtin indexer provider '{provider_type}' to be available"
             );
         }
-        assert!(build_subtitle_plugin_provider(&[], &[])
-            .builtin_provider_types()
-            .is_empty());
+        assert!(
+            build_subtitle_plugin_provider(&[], &[])
+                .builtin_provider_types()
+                .is_empty()
+        );
     }
 
     #[test]

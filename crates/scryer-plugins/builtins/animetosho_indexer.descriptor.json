@@ -11,10 +11,10 @@
     "capabilities": {
       "rss": true,
       "supported_ids": {
-        "anime": [
+        "movie": [
           "anidb_id"
         ],
-        "movie": [
+        "anime": [
           "anidb_id"
         ]
       },
