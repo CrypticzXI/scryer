@@ -430,6 +430,19 @@ impl IndexerPluginProvider for MockPluginProvider {
         Ok(())
     }
 
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        *self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled builtin types lock") = disabled_builtins.to_vec();
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
         self.upsert_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -1041,6 +1054,15 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 struct MockDownloadClientPluginProvider {
@@ -1122,6 +1144,15 @@ impl DownloadClientPluginProvider for MockDownloadClientPluginProvider {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 struct MockNotificationPluginProvider {
@@ -1193,6 +1224,15 @@ impl NotificationPluginProvider for MockNotificationPluginProvider {
     fn reload_plugins(
         &self,
         _external_wasm_bytes: &[ExternalPluginWasm<'_>],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
         _disabled_builtins: &[String],
     ) -> Result<(), String> {
         self.reload_count.fetch_add(1, Ordering::Relaxed);
