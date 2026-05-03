@@ -131,6 +131,8 @@ cargo xtask release --dry-run
 
 `cargo xtask release` handles: cargo update, audit, clippy, tests, npm audit fix, lint, version bumping all workspace crates, cargo check, signed tag, and push. CI builds and publishes the release on tag push. The legacy shell script is only a compatibility wrapper.
 
+`cargo xtask release --dry-run` validates the pending app release without bumping Cargo versions in the live worktree. It writes a reusable cache marker under `tmp/xtask-release-dry-run.json` plus cached bundled-plugin artifacts under `tmp/xtask-release-dry-run-builtins/`. A subsequent real `cargo xtask release` on the same clean commit and release args can reuse that cache only if the computed next tag still matches and the published central `catalog-v2.json` checksum is unchanged; otherwise xtask falls back to a full validation run.
+
 ## Reporting Issues
 
 File bug reports and feature requests in the [GitHub Issues](https://github.com/scryer-media/scryer/issues) tab.

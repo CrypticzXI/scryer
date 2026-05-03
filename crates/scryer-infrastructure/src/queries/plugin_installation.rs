@@ -1,5 +1,8 @@
 use scryer_application::AppResult;
-use scryer_domain::{PluginInstallation, PluginSourceKind};
+use scryer_domain::{
+    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PluginSourceKind,
+    PluginSupportTier,
+};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 #[derive(Clone, Debug)]
@@ -18,7 +21,33 @@ fn parse_source_kind(value: &str) -> PluginSourceKind {
     match value {
         "bundled" => PluginSourceKind::Bundled,
         "downloaded" => PluginSourceKind::Downloaded,
+        "manual" => PluginSourceKind::Manual,
         _ => PluginSourceKind::Downloaded,
+    }
+}
+
+fn source_kind_label(value: PluginSourceKind) -> &'static str {
+    match value {
+        PluginSourceKind::Bundled => "bundled",
+        PluginSourceKind::Downloaded => "downloaded",
+        PluginSourceKind::Manual => "manual",
+    }
+}
+
+fn parse_support_tier(value: &str) -> PluginSupportTier {
+    match value {
+        "official" => PluginSupportTier::Official,
+        "verified_community" => PluginSupportTier::VerifiedCommunity,
+        "unverified" => PluginSupportTier::Unverified,
+        _ => PluginSupportTier::Official,
+    }
+}
+
+fn support_tier_label(value: PluginSupportTier) -> &'static str {
+    match value {
+        PluginSupportTier::Official => "official",
+        PluginSupportTier::VerifiedCommunity => "verified_community",
+        PluginSupportTier::Unverified => "unverified",
     }
 }
 
@@ -52,6 +81,13 @@ fn row_to_plugin_installation(row: &sqlx::sqlite::SqliteRow) -> PluginInstallati
         source_kind: parse_source_kind(&row.get::<String, _>("source_kind")),
         wasm_sha256: row.get("wasm_sha256"),
         source_url: row.get("source_url"),
+        support_tier: parse_support_tier(&row.get::<String, _>("support_tier")),
+        publisher: row.get("publisher"),
+        docs_url: row.get("docs_url"),
+        source_repo: row.get("source_repo"),
+        manifest_url: row.get("manifest_url"),
+        wasm_digest: row.get("wasm_digest"),
+        artifact_digest: row.get("artifact_digest"),
         installed_at,
         updated_at,
     }
@@ -63,7 +99,9 @@ pub(crate) async fn list_plugin_installations_query(
     let rows = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, installed_at, updated_at
+                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_type != '__cache'
          ORDER BY is_builtin DESC, name ASC",
@@ -82,7 +120,9 @@ pub(crate) async fn get_plugin_installation_query(
     let row = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, installed_at, updated_at
+                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_id = ?",
     )
@@ -101,7 +141,9 @@ async fn get_plugin_installation_tx(
     let row = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, installed_at, updated_at
+                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_id = ?",
     )
@@ -126,8 +168,10 @@ pub(crate) async fn create_plugin_installation_query(
         "INSERT INTO plugin_installations
             (id, plugin_id, name, description, version, sdk_version, sdk_constraint,
              scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-             source_kind, wasm_bytes, wasm_sha256, source_url, installed_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             source_kind, wasm_bytes, wasm_sha256, source_url, support_tier, publisher,
+             docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+             installed_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&installation.id)
     .bind(&installation.plugin_id)
@@ -141,13 +185,17 @@ pub(crate) async fn create_plugin_installation_query(
     .bind(&installation.provider_type)
     .bind(installation.is_enabled as i32)
     .bind(installation.is_builtin as i32)
-    .bind(match installation.source_kind {
-        PluginSourceKind::Bundled => "bundled",
-        PluginSourceKind::Downloaded => "downloaded",
-    })
+    .bind(source_kind_label(installation.source_kind))
     .bind(wasm_bytes)
     .bind(&installation.wasm_sha256)
     .bind(&installation.source_url)
+    .bind(support_tier_label(installation.support_tier))
+    .bind(&installation.publisher)
+    .bind(&installation.docs_url)
+    .bind(&installation.source_repo)
+    .bind(&installation.manifest_url)
+    .bind(&installation.wasm_digest)
+    .bind(&installation.artifact_digest)
     .bind(installation.installed_at.to_rfc3339())
     .bind(installation.updated_at.to_rfc3339())
     .execute(&mut *tx)
@@ -184,6 +232,8 @@ pub(crate) async fn update_plugin_installation_query(
              wasm_bytes = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_bytes) END,
              wasm_sha256 = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_sha256) END,
              source_url = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, source_url) END,
+             support_tier = ?, publisher = ?, docs_url = ?, source_repo = ?,
+             manifest_url = ?, wasm_digest = ?, artifact_digest = ?,
              updated_at = ?
          WHERE plugin_id = ?",
     )
@@ -197,25 +247,20 @@ pub(crate) async fn update_plugin_installation_query(
     .bind(&installation.provider_type)
     .bind(installation.is_enabled as i32)
     .bind(installation.is_builtin as i32)
-    .bind(match installation.source_kind {
-        PluginSourceKind::Bundled => "bundled",
-        PluginSourceKind::Downloaded => "downloaded",
-    })
-    .bind(match installation.source_kind {
-        PluginSourceKind::Bundled => "bundled",
-        PluginSourceKind::Downloaded => "downloaded",
-    })
+    .bind(source_kind_label(installation.source_kind))
+    .bind(source_kind_label(installation.source_kind))
     .bind(wasm_bytes)
-    .bind(match installation.source_kind {
-        PluginSourceKind::Bundled => "bundled",
-        PluginSourceKind::Downloaded => "downloaded",
-    })
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.wasm_sha256)
-    .bind(match installation.source_kind {
-        PluginSourceKind::Bundled => "bundled",
-        PluginSourceKind::Downloaded => "downloaded",
-    })
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.source_url)
+    .bind(support_tier_label(installation.support_tier))
+    .bind(&installation.publisher)
+    .bind(&installation.docs_url)
+    .bind(&installation.source_repo)
+    .bind(&installation.manifest_url)
+    .bind(&installation.wasm_digest)
+    .bind(&installation.artifact_digest)
     .bind(installation.updated_at.to_rfc3339())
     .bind(&installation.plugin_id)
     .execute(&mut *tx)
@@ -254,7 +299,9 @@ pub(crate) async fn get_enabled_plugin_wasm_bytes_query(
     let rows = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_bytes, wasm_sha256, source_url, installed_at, updated_at
+                source_kind, wasm_bytes, wasm_sha256, source_url, support_tier, publisher,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                installed_at, updated_at
          FROM plugin_installations
          WHERE is_enabled = 1 AND plugin_type != '__cache'",
     )
@@ -327,6 +374,152 @@ pub(crate) async fn seed_builtin_query(
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
     Ok(())
+}
+
+fn parse_optional_datetime(value: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+    value.and_then(|raw| {
+        chrono::DateTime::parse_from_rfc3339(&raw)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .ok()
+    })
+}
+
+fn row_to_plugin_catalog_source(row: &sqlx::sqlite::SqliteRow) -> PluginCatalogSource {
+    use sqlx::Row;
+
+    let updated_at: String = row.get("updated_at");
+    let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+
+    PluginCatalogSource {
+        source_key: row.get("source_key"),
+        source_kind: row.get("source_kind"),
+        source_url: row.get("source_url"),
+        github_repo: row.get("github_repo"),
+        support_tier: parse_support_tier(&row.get::<String, _>("support_tier")),
+        catalog_json: row.get("catalog_json"),
+        last_success_at: parse_optional_datetime(row.get("last_success_at")),
+        last_error: row.get("last_error"),
+        updated_at,
+    }
+}
+
+pub(crate) async fn upsert_plugin_catalog_source_query(
+    pool: &SqlitePool,
+    source: &PluginCatalogSource,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO plugin_catalog_sources
+            (source_key, source_kind, source_url, github_repo, support_tier, catalog_json,
+             last_success_at, last_error, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_key) DO UPDATE SET
+             source_kind = excluded.source_kind,
+             source_url = excluded.source_url,
+             github_repo = excluded.github_repo,
+             support_tier = excluded.support_tier,
+             catalog_json = excluded.catalog_json,
+             last_success_at = excluded.last_success_at,
+             last_error = excluded.last_error,
+             updated_at = excluded.updated_at",
+    )
+    .bind(&source.source_key)
+    .bind(&source.source_kind)
+    .bind(&source.source_url)
+    .bind(&source.github_repo)
+    .bind(support_tier_label(source.support_tier))
+    .bind(&source.catalog_json)
+    .bind(source.last_success_at.map(|dt| dt.to_rfc3339()))
+    .bind(&source.last_error)
+    .bind(source.updated_at.to_rfc3339())
+    .execute(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn list_plugin_catalog_sources_query(
+    pool: &SqlitePool,
+) -> AppResult<Vec<PluginCatalogSource>> {
+    let rows = sqlx::query(
+        "SELECT source_key, source_kind, source_url, github_repo, support_tier, catalog_json,
+                last_success_at, last_error, updated_at
+         FROM plugin_catalog_sources
+         ORDER BY source_kind ASC, source_key ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(rows.iter().map(row_to_plugin_catalog_source).collect())
+}
+
+pub(crate) async fn get_plugin_catalog_source_query(
+    pool: &SqlitePool,
+    source_key: &str,
+) -> AppResult<Option<PluginCatalogSource>> {
+    let row = sqlx::query(
+        "SELECT source_key, source_kind, source_url, github_repo, support_tier, catalog_json,
+                last_success_at, last_error, updated_at
+         FROM plugin_catalog_sources
+         WHERE source_key = ?",
+    )
+    .bind(source_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(row.as_ref().map(row_to_plugin_catalog_source))
+}
+
+fn row_to_plugin_catalog_status(row: &sqlx::sqlite::SqliteRow) -> PluginCatalogStatusRecord {
+    use sqlx::Row;
+
+    let checked_at: String = row.get("checked_at");
+    let checked_at = chrono::DateTime::parse_from_rfc3339(&checked_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+
+    PluginCatalogStatusRecord {
+        status_key: row.get("status_key"),
+        status_json: row.get("status_json"),
+        checked_at,
+    }
+}
+
+pub(crate) async fn upsert_plugin_catalog_status_query(
+    pool: &SqlitePool,
+    status: &PluginCatalogStatusRecord,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO plugin_catalog_status (status_key, status_json, checked_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(status_key) DO UPDATE SET
+             status_json = excluded.status_json,
+             checked_at = excluded.checked_at",
+    )
+    .bind(&status.status_key)
+    .bind(&status.status_json)
+    .bind(status.checked_at.to_rfc3339())
+    .execute(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn get_plugin_catalog_status_query(
+    pool: &SqlitePool,
+    status_key: &str,
+) -> AppResult<Option<PluginCatalogStatusRecord>> {
+    let row = sqlx::query(
+        "SELECT status_key, status_json, checked_at
+         FROM plugin_catalog_status
+         WHERE status_key = ?",
+    )
+    .bind(status_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    Ok(row.as_ref().map(row_to_plugin_catalog_status))
 }
 
 pub(crate) async fn store_registry_cache_query(pool: &SqlitePool, json: &str) -> AppResult<()> {

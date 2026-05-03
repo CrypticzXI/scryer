@@ -1,0 +1,70 @@
+name: plugin-sdk
+
+on:
+  push:
+    tags:
+      - "plugin-sdk-v*"
+
+concurrency:
+  group: plugin-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.94"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: true
+
+      - name: Verify SDK tag and metadata
+        run: |
+          set -euo pipefail
+          export VERSION="${GITHUB_REF_NAME#plugin-sdk-v}"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          expected = os.environ["VERSION"]
+          manifest = tomllib.loads(pathlib.Path("crates/scryer-plugin-sdk/Cargo.toml").read_text())
+          package_version = manifest["package"]["version"]
+          source = pathlib.Path("crates/scryer-plugin-sdk/src/lib.rs").read_text()
+          match = re.search(r'pub const SDK_VERSION: &str = "([^"]+)";', source)
+          runtime_version = match.group(1) if match else None
+          if package_version != expected:
+              raise SystemExit(f"Cargo.toml version {package_version} does not match tag {expected}")
+          if runtime_version != expected:
+              raise SystemExit(f"SDK_VERSION {runtime_version} does not match tag {expected}")
+          PY
+
+      - name: Test SDK
+        run: cargo test --locked -p scryer-plugin-sdk
+
+      - name: Package SDK
+        run: cargo package --locked -p scryer-plugin-sdk
+
+      - name: Publish SDK
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "CARGO_REGISTRY_TOKEN is required to publish scryer-plugin-sdk."
+            exit 1
+          fi
+          cargo publish --locked -p scryer-plugin-sdk

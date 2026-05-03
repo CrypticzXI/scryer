@@ -45,6 +45,30 @@ impl DownloadSubmissionGuardTable {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct PluginOperationGuardTable {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl PluginOperationGuardTable {
+    pub async fn acquire(&self, plugin_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = plugin_id.trim().to_ascii_lowercase();
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(existing) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&created));
+                created
+            }
+        };
+
+        lock.lock_owned().await
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ProviderCatalogFamily {
     Subtitle,
@@ -123,6 +147,11 @@ pub struct AppRuntimeHealthState {
 }
 
 #[derive(Clone)]
+pub struct AppRuntimePluginState {
+    pub plugin_operation_guards: PluginOperationGuardTable,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeState {
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
@@ -130,6 +159,7 @@ pub struct AppRuntimeState {
     pub library: AppRuntimeLibraryState,
     pub jobs: AppRuntimeJobState,
     pub health: AppRuntimeHealthState,
+    pub plugins: AppRuntimePluginState,
 }
 
 impl Default for AppRuntimeState {
@@ -178,6 +208,9 @@ impl Default for AppRuntimeState {
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            },
+            plugins: AppRuntimePluginState {
+                plugin_operation_guards: PluginOperationGuardTable::default(),
             },
         }
     }

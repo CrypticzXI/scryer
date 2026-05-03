@@ -1,7 +1,7 @@
 use async_graphql::{Context, Object, Result as GqlResult};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::{from_plugin_installation, from_registry_plugin};
+use crate::mappers::{from_manual_plugin_preview, from_plugin_installation, from_registry_plugin};
 use crate::types::*;
 
 #[derive(Default)]
@@ -16,7 +16,20 @@ impl PluginMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let plugins = app
-            .refresh_plugin_registry(&actor)
+            .refresh_plugin_catalog(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(plugins.into_iter().map(from_registry_plugin).collect())
+    }
+
+    async fn refresh_plugin_catalog(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<RegistryPluginPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let plugins = app
+            .refresh_plugin_catalog(&actor)
             .await
             .map_err(to_gql_error)?;
         Ok(plugins.into_iter().map(from_registry_plugin).collect())
@@ -72,6 +85,34 @@ impl PluginMutations {
         let actor = actor_from_ctx(ctx)?;
         let installation = app
             .upgrade_plugin(&actor, &input.plugin_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_installation(installation))
+    }
+
+    async fn inspect_manual_plugin_repo(
+        &self,
+        ctx: &Context<'_>,
+        input: ManualPluginRepoInput,
+    ) -> GqlResult<ManualPluginPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let preview = app
+            .inspect_manual_plugin_repo(&actor, &input.github_repo_url)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_manual_plugin_preview(preview))
+    }
+
+    async fn install_manual_plugin(
+        &self,
+        ctx: &Context<'_>,
+        input: ManualPluginRepoInput,
+    ) -> GqlResult<PluginInstallationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let installation = app
+            .install_manual_plugin(&actor, &input.github_repo_url)
             .await
             .map_err(to_gql_error)?;
         Ok(from_plugin_installation(installation))

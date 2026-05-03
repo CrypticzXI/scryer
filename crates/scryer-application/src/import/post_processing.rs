@@ -272,7 +272,10 @@ async fn execute_script(
 
     cmd.env("SCRYER_METADATA", env_json)
         .env("SCRYER_EVENT", "post_import")
-        .env("SCRYER_FILE_PATH", ctx.dest_path.to_string_lossy().as_ref())
+        .env(
+            "SCRYER_FILE_PATH",
+            ctx.dest_path.to_string_lossy().as_ref() as &str,
+        )
         .env("SCRYER_FACET", facet_str)
         .env("SCRYER_TITLE_NAME", &ctx.title_name)
         .env("SCRYER_TITLE_ID", &ctx.title_id)

@@ -3295,6 +3295,10 @@ pub struct RegistryPluginPayload {
     pub provider_type: String,
     pub author: String,
     pub official: bool,
+    pub publisher: Option<String>,
+    pub support_tier: String,
+    pub docs_url: Option<String>,
+    pub source_repo: Option<String>,
     pub builtin: bool,
     pub source_url: Option<String>,
     pub source_kind: Option<String>,
@@ -3342,13 +3346,41 @@ pub struct PluginInstallationPayload {
     pub is_builtin: bool,
     pub source_kind: String,
     pub source_url: Option<String>,
+    pub publisher: Option<String>,
+    pub support_tier: String,
+    pub docs_url: Option<String>,
+    pub source_repo: Option<String>,
+    pub manifest_url: Option<String>,
+    pub wasm_digest: Option<String>,
+    pub artifact_digest: Option<String>,
     pub installed_at: String,
     pub updated_at: String,
+}
+
+#[derive(SimpleObject)]
+pub struct PluginCatalogStatusPayload {
+    pub refresh_state: String,
+    pub github_available: bool,
+    pub last_checked_at: Option<String>,
+    pub outage_message: Option<String>,
+    pub blocked_actions: Vec<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct ManualPluginPreviewPayload {
+    pub github_repo_url: String,
+    pub plugin: RegistryPluginPayload,
 }
 
 #[derive(InputObject)]
 pub struct InstallPluginInput {
     pub plugin_id: String,
+}
+
+#[derive(InputObject)]
+pub struct ManualPluginRepoInput {
+    pub github_repo_url: String,
 }
 
 #[derive(InputObject)]

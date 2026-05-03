@@ -1482,6 +1482,59 @@ fn runtime_installation_sdk_contract_is_host_compatible(
     }
 }
 
+fn runtime_installation_is_catalog_official(
+    installation: &scryer_domain::PluginInstallation,
+) -> bool {
+    installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
+        && installation.support_tier == scryer_domain::PluginSupportTier::Official
+        && installation.wasm_digest.is_some()
+}
+
+fn runtime_installation_is_first_party(
+    installation: &scryer_domain::PluginInstallation,
+    registry: Option<&RuntimePluginRegistryManifest>,
+) -> bool {
+    runtime_installation_is_catalog_official(installation)
+        || runtime_installation_matches_official_registry(installation, registry)
+}
+
+async fn runtime_installation_wasm_digest_is_valid(
+    installation: &scryer_domain::PluginInstallation,
+    wasm_bytes: &[u8],
+) -> bool {
+    let Some(expected_digest) = installation.wasm_digest.clone() else {
+        return true;
+    };
+
+    let plugin_id = installation.plugin_id.clone();
+    let version = installation.version.clone();
+    let bytes = wasm_bytes.to_vec();
+    match tokio::task::spawn_blocking(move || scryer_application::plugin_wasm_blake3_digest(&bytes))
+        .await
+    {
+        Ok(actual_digest) if actual_digest.eq_ignore_ascii_case(&expected_digest) => true,
+        Ok(actual_digest) => {
+            tracing::warn!(
+                plugin_id = plugin_id.as_str(),
+                version = version.as_str(),
+                expected_digest = expected_digest.as_str(),
+                actual_digest = actual_digest.as_str(),
+                "skipping installed plugin with mismatched persisted wasm digest"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                plugin_id = plugin_id.as_str(),
+                version = version.as_str(),
+                error = %error,
+                "skipping installed plugin after wasm digest verification failed"
+            );
+            false
+        }
+    }
+}
+
 fn runtime_installation_scryer_constraint(
     installation: &scryer_domain::PluginInstallation,
     registry: Option<&RuntimePluginRegistryManifest>,
@@ -1532,29 +1585,33 @@ async fn load_runtime_plugin_state(
         .await
         .map_err(|error| error.to_string())?
         .and_then(|json| serde_json::from_str::<RuntimePluginRegistryManifest>(&json).ok());
-    let runtime_plugin_bytes = enabled_plugins
-        .into_iter()
-        .filter(|(installation, _)| {
-            installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
-        })
-        .filter(|(installation, _)| {
-            runtime_installation_sdk_contract_is_host_compatible(installation)
-        })
-        .filter(|(installation, _)| {
-            !runtime_installation_is_host_blocked_by_registry(installation, registry.as_ref())
-        })
-        .filter_map(|(installation, wasm_bytes)| {
-            wasm_bytes.map(|bytes| {
-                (
-                    bytes,
-                    runtime_installation_matches_official_registry(
-                        &installation,
-                        registry.as_ref(),
-                    ),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut runtime_plugin_bytes = Vec::new();
+    for (installation, wasm_bytes) in enabled_plugins {
+        if !matches!(
+            installation.source_kind,
+            scryer_domain::PluginSourceKind::Downloaded | scryer_domain::PluginSourceKind::Manual
+        ) {
+            continue;
+        }
+        if !runtime_installation_sdk_contract_is_host_compatible(&installation) {
+            continue;
+        }
+        if runtime_installation_is_host_blocked_by_registry(&installation, registry.as_ref()) {
+            continue;
+        }
+
+        let Some(bytes) = wasm_bytes else {
+            continue;
+        };
+        if !runtime_installation_wasm_digest_is_valid(&installation, &bytes).await {
+            continue;
+        }
+
+        runtime_plugin_bytes.push((
+            bytes,
+            runtime_installation_is_first_party(&installation, registry.as_ref()),
+        ));
+    }
 
     let disabled_builtin_plugins = customization_store
         .list_plugin_installations()

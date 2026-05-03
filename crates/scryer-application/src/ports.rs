@@ -1065,6 +1065,20 @@ pub trait PluginInstallationRepository: Send + Sync {
     ) -> AppResult<()>;
     async fn store_registry_cache(&self, json: &str) -> AppResult<()>;
     async fn get_registry_cache(&self) -> AppResult<Option<String>>;
+    async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()>;
+    async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>>;
+    async fn get_plugin_catalog_source(
+        &self,
+        source_key: &str,
+    ) -> AppResult<Option<PluginCatalogSource>>;
+    async fn upsert_plugin_catalog_status(
+        &self,
+        status: &PluginCatalogStatusRecord,
+    ) -> AppResult<()>;
+    async fn get_plugin_catalog_status(
+        &self,
+        status_key: &str,
+    ) -> AppResult<Option<PluginCatalogStatusRecord>>;
 }
 
 #[async_trait]

@@ -2843,7 +2843,7 @@ async fn execute_resolved_episode_import(
 
     let has_existing = existing_files
         .iter()
-        .any(|file| file.file_path == dest_path.to_string_lossy().as_ref());
+        .any(|file| file.file_path == dest_path.to_string_lossy().as_ref() as &str);
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
         &effective_parsed,

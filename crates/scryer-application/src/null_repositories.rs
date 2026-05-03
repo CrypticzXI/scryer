@@ -632,6 +632,35 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
     async fn get_registry_cache(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
+    async fn upsert_plugin_catalog_source(
+        &self,
+        _source: &scryer_domain::PluginCatalogSource,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn list_plugin_catalog_sources(
+        &self,
+    ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
+        Ok(vec![])
+    }
+    async fn get_plugin_catalog_source(
+        &self,
+        _source_key: &str,
+    ) -> AppResult<Option<scryer_domain::PluginCatalogSource>> {
+        Ok(None)
+    }
+    async fn upsert_plugin_catalog_status(
+        &self,
+        _status: &scryer_domain::PluginCatalogStatusRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn get_plugin_catalog_status(
+        &self,
+        _status_key: &str,
+    ) -> AppResult<Option<scryer_domain::PluginCatalogStatusRecord>> {
+        Ok(None)
+    }
 }
 
 #[derive(Default)]

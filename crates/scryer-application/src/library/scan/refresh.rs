@@ -44,9 +44,9 @@ fn movie_refresh_entry_to_library_file(entry: &MovieTopLevelEntry) -> LibraryFil
 fn movie_refresh_entry_contains_path(entry: &MovieTopLevelEntry, path: &str) -> bool {
     if entry.is_dir {
         path.starts_with(format!("{}/", entry.path.to_string_lossy()).as_str())
-            || path == entry.path.to_string_lossy().as_ref()
+            || path == entry.path.to_string_lossy().as_ref() as &str
     } else {
-        path == entry.path.to_string_lossy().as_ref()
+        path == entry.path.to_string_lossy().as_ref() as &str
     }
 }
 

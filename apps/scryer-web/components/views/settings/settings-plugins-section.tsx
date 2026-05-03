@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ArrowUpCircle, Download, Loader2, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,6 +36,10 @@ export type RegistryPluginRecord = {
   providerType: string;
   author: string;
   official: boolean;
+  publisher?: string | null;
+  supportTier?: string | null;
+  docsUrl?: string | null;
+  sourceRepo?: string | null;
   builtin: boolean;
   sourceUrl: string | null;
   sourceKind?: string | null;
@@ -44,14 +48,45 @@ export type RegistryPluginRecord = {
   isEnabled: boolean;
   installedVersion: string | null;
   updateAvailable: boolean;
+  defaultBaseUrl?: string | null;
+};
+
+export type PluginCatalogStatusRecord = {
+  refreshState: string;
+  githubAvailable: boolean;
+  lastCheckedAt?: string | null;
+  outageMessage?: string | null;
+  blockedActions: string[];
+  lastError?: string | null;
+};
+
+export type ManualPluginPreviewRecord = {
+  githubRepoUrl: string;
+  plugin: RegistryPluginRecord;
 };
 
 type SettingsPluginsSectionProps = {
   plugins: RegistryPluginRecord[];
+  catalogStatus: PluginCatalogStatusRecord | null;
   mutatingPluginIds: string[];
   upgradingPluginIds: string[];
   pluginErrors: Partial<Record<string, string>>;
   refreshing: boolean;
+  manualRepoUrl: string;
+  manualPreview: ManualPluginPreviewRecord | null;
+  manualBusy: boolean;
+  showManualInstall: boolean;
+  remoteActionsBlocked: {
+    refresh: boolean;
+    install: boolean;
+    installManual: boolean;
+    upgrade: boolean;
+    inspectManual: boolean;
+  };
+  onManualRepoUrlChange: (value: string) => void;
+  onToggleManualInstall: () => void;
+  onInspectManualPluginRepo: () => void;
+  onInstallManualPlugin: () => void;
   onRefreshRegistry: () => void;
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
   onInstallPlugin: (plugin: RegistryPluginRecord) => void;
@@ -199,6 +234,8 @@ function PluginTable({
   onInstallPlugin,
   onUninstallPlugin,
   onUpgradePlugin,
+  installBlocked,
+  upgradeBlocked,
   emptyMessage,
 }: {
   plugins: RegistryPluginRecord[];
@@ -210,6 +247,8 @@ function PluginTable({
   onInstallPlugin: (plugin: RegistryPluginRecord) => void;
   onUninstallPlugin: (plugin: RegistryPluginRecord) => void;
   onUpgradePlugin: (plugin: RegistryPluginRecord) => void;
+  installBlocked: boolean;
+  upgradeBlocked: boolean;
   emptyMessage: string;
 }) {
   const t = useTranslate();
@@ -280,12 +319,48 @@ function PluginTable({
                       {t("settings.pluginOfficial")}
                     </span>
                   )}
+                  {plugin.supportTier === "verified_community" && (
+                    <span className="rounded bg-cyan-900/40 px-1.5 py-0.5 text-xs text-cyan-300">
+                      {t("settings.pluginVerifiedCommunity")}
+                    </span>
+                  )}
+                  {plugin.supportTier === "unverified" && (
+                    <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
+                      {t("settings.pluginUnverified")}
+                    </span>
+                  )}
                   {isDownloadedBuiltinOverride(plugin) && (
                     <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
                       {t("settings.pluginOverride")}
                     </span>
                   )}
                 </div>
+                {(plugin.sourceRepo || plugin.docsUrl) && (
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                    {plugin.sourceRepo && (
+                      <a
+                        href={plugin.sourceRepo}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-primary hover:underline"
+                      >
+                        {t("settings.pluginSource")}
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                    {plugin.docsUrl && (
+                      <a
+                        href={plugin.docsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-primary hover:underline"
+                      >
+                        {t("settings.pluginDocs")}
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                )}
               </TableCell>
               {showActions === "installed" && (
                 <TableCell className="text-center">
@@ -314,7 +389,7 @@ function PluginTable({
                       {plugin.updateAvailable && (
                         <PluginActionButton
                           tone="upgrade"
-                          disabled={isBusy}
+                          disabled={isBusy || upgradeBlocked}
                           onClick={() => onUpgradePlugin(plugin)}
                           label={t("settings.pluginUpgrade", { version: plugin.version })}
                         >
@@ -339,7 +414,7 @@ function PluginTable({
                   ) : (
                     <PluginActionButton
                       tone="install"
-                      disabled={isBusy || installIsBlocked(plugin)}
+                      disabled={isBusy || installBlocked || installIsBlocked(plugin)}
                       onClick={() => onInstallPlugin(plugin)}
                       label={t("settings.pluginInstall")}
                     >
@@ -362,10 +437,20 @@ function PluginTable({
 
 export function SettingsPluginsSection({
   plugins,
+  catalogStatus,
   mutatingPluginIds,
   upgradingPluginIds,
   pluginErrors,
   refreshing,
+  manualRepoUrl,
+  manualPreview,
+  manualBusy,
+  showManualInstall,
+  remoteActionsBlocked,
+  onManualRepoUrlChange,
+  onToggleManualInstall,
+  onInspectManualPluginRepo,
+  onInstallManualPlugin,
   onRefreshRegistry,
   onTogglePlugin,
   onInstallPlugin,
@@ -411,11 +496,78 @@ export function SettingsPluginsSection({
             </span>
           )}
         </div>
-        <Button variant="outline" size="sm" disabled={refreshing} onClick={onRefreshRegistry}>
-          <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          {refreshing ? t("label.refreshing") : t("settings.pluginsRefresh")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={remoteActionsBlocked.installManual || remoteActionsBlocked.inspectManual}
+            onClick={onToggleManualInstall}
+          >
+            {t("settings.pluginInstallManually")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={refreshing || remoteActionsBlocked.refresh}
+            onClick={onRefreshRegistry}
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? t("label.refreshing") : t("settings.pluginsRefresh")}
+          </Button>
+        </div>
       </div>
+
+      {catalogStatus?.outageMessage && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+          {catalogStatus.outageMessage}
+        </div>
+      )}
+
+      {showManualInstall && (
+        <div className="rounded-xl border border-border bg-card/60 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-end">
+            <label className="flex-1 space-y-1 text-sm">
+              <span className="font-medium">{t("settings.pluginManualRepoUrl")}</span>
+              <input
+                value={manualRepoUrl}
+                onChange={(event) => onManualRepoUrlChange(event.target.value)}
+                placeholder="https://github.com/example/scryer-plugin-example"
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </label>
+            <Button
+              type="button"
+              disabled={manualBusy || remoteActionsBlocked.inspectManual || !manualRepoUrl.trim()}
+              onClick={onInspectManualPluginRepo}
+            >
+              {manualBusy ? t("label.loading") : t("settings.pluginInspectManual")}
+            </Button>
+          </div>
+          {pluginErrors.__manual && (
+            <p className="mt-2 text-sm text-destructive">{pluginErrors.__manual}</p>
+          )}
+          {manualPreview && (
+            <div className="mt-3 flex flex-col gap-3 rounded-lg border border-border p-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="font-medium">{manualPreview.plugin.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  {manualPreview.plugin.description}
+                </div>
+                <div className="mt-1 text-xs text-amber-300">
+                  {t("settings.pluginUnverified")}
+                </div>
+              </div>
+              <Button
+                type="button"
+                disabled={manualBusy || remoteActionsBlocked.installManual}
+                onClick={onInstallManualPlugin}
+              >
+                {t("settings.pluginInstall")}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {plugins.length === 0 ? (
         <p className="py-4 text-sm text-muted-foreground">{t("settings.pluginsNoPlugins")}</p>
@@ -438,10 +590,12 @@ export function SettingsPluginsSection({
                 showActions="installed"
                 onTogglePlugin={onTogglePlugin}
                 onInstallPlugin={onInstallPlugin}
-              onUninstallPlugin={onUninstallPlugin}
-              onUpgradePlugin={onUpgradePlugin}
-              emptyMessage={t("settings.pluginsNoInstalled")}
-            />
+                onUninstallPlugin={onUninstallPlugin}
+                onUpgradePlugin={onUpgradePlugin}
+                installBlocked={remoteActionsBlocked.install}
+                upgradeBlocked={remoteActionsBlocked.upgrade}
+                emptyMessage={t("settings.pluginsNoInstalled")}
+              />
           </div>
 
           <div className="space-y-3">
@@ -461,10 +615,12 @@ export function SettingsPluginsSection({
                 showActions="available"
                 onTogglePlugin={onTogglePlugin}
                 onInstallPlugin={onInstallPlugin}
-              onUninstallPlugin={onUninstallPlugin}
-              onUpgradePlugin={onUpgradePlugin}
-              emptyMessage={t("settings.pluginsNoAvailable")}
-            />
+                onUninstallPlugin={onUninstallPlugin}
+                onUpgradePlugin={onUpgradePlugin}
+                installBlocked={remoteActionsBlocked.install}
+                upgradeBlocked={remoteActionsBlocked.upgrade}
+                emptyMessage={t("settings.pluginsNoAvailable")}
+              />
           </div>
         </>
       )}

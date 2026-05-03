@@ -1,8 +1,15 @@
+use super::catalog::{
+    CentralCatalogEntry, ChildCatalog, ChildCatalogRelease, GitHubRepo, PluginReleaseManifest,
+    RequiredSigner, blake3_digest, decompress_zstd, github_outage_status_from_summary,
+    parse_and_validate_central_catalog, parse_and_validate_child_catalog,
+    parse_and_validate_release_manifest, plugin_manifest_asset_url, verify_digest,
+    verify_signed_blob,
+};
 use super::*;
 use crate::ProviderCatalogFamily;
 use chrono::Utc;
 use ring::digest as ring_digest;
-use scryer_domain::PluginSourceKind;
+use scryer_domain::{PluginSourceKind, PluginSupportTier};
 use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, host_version_matches_constraint,
     load_plugin_descriptor_from_wasm_bytes, plugin_descriptor_sdk_constraint,
@@ -11,7 +18,7 @@ use scryer_plugin_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::LazyLock};
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Registry plugin entry merged with local installation state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -25,6 +32,10 @@ pub struct RegistryPlugin {
     pub provider_type: String,
     pub author: String,
     pub official: bool,
+    pub publisher: Option<String>,
+    pub support_tier: PluginSupportTier,
+    pub docs_url: Option<String>,
+    pub source_repo: Option<String>,
     pub builtin: bool,
     pub source_url: Option<String>,
     pub source_kind: Option<String>,
@@ -40,6 +51,32 @@ pub struct RegistryPlugin {
     pub update_available: bool,
     /// When set, installing this plugin auto-creates an IndexerConfig with this URL.
     pub default_base_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginCatalogStatus {
+    pub refresh_state: String,
+    pub github_available: bool,
+    pub last_checked_at: Option<String>,
+    pub outage_message: Option<String>,
+    pub blocked_actions: Vec<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManualPluginPreview {
+    pub plugin: RegistryPlugin,
+    pub github_repo_url: String,
+}
+
+#[derive(Clone, Debug)]
+struct CatalogPluginResolution {
+    central: Option<CentralCatalogEntry>,
+    child: ChildCatalog,
+    release: ChildCatalogRelease,
+    source_kind: PluginSourceKind,
+    effective_support_tier: PluginSupportTier,
+    github_repo: GitHubRepo,
 }
 
 /// Community rule pack entry from the registry.
@@ -345,6 +382,25 @@ fn latest_compatible_release(entry: &RegistryEntry) -> Option<RegistryRelease> {
     })
 }
 
+fn latest_compatible_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
+    let sdk_version = current_sdk_version();
+    child
+        .releases
+        .iter()
+        .filter(|release| {
+            semver::VersionReq::parse(&release.sdk_constraint)
+                .map(|req| req.matches(&sdk_version))
+                .unwrap_or(false)
+        })
+        .filter_map(|release| {
+            semver::Version::parse(release.version.trim_start_matches('v'))
+                .ok()
+                .map(|version| (version, release))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, release)| release.clone())
+}
+
 fn latest_host_blocked_release(entry: &RegistryEntry) -> Option<RegistryRelease> {
     let latest = latest_release(entry)?;
     let selected = latest_compatible_release(entry)?;
@@ -388,6 +444,55 @@ fn installation_matches_official_registry(
             && entry.provider_type == installation.provider_type
             && installed_registry_release(entry, installation).is_some()
     })
+}
+
+fn installation_is_catalog_official(installation: &PluginInstallation) -> bool {
+    installation.source_kind == PluginSourceKind::Downloaded
+        && installation.support_tier == PluginSupportTier::Official
+        && installation.wasm_digest.is_some()
+}
+
+fn installation_is_first_party(
+    installation: &PluginInstallation,
+    registry: Option<&RegistryManifest>,
+) -> bool {
+    installation_is_catalog_official(installation)
+        || installation_matches_official_registry(installation, registry)
+}
+
+async fn installation_wasm_digest_is_valid(
+    installation: &PluginInstallation,
+    wasm_bytes: &[u8],
+) -> bool {
+    let Some(expected_digest) = installation.wasm_digest.clone() else {
+        return true;
+    };
+
+    let plugin_id = installation.plugin_id.clone();
+    let version = installation.version.clone();
+    let bytes = wasm_bytes.to_vec();
+    match tokio::task::spawn_blocking(move || blake3_digest(&bytes)).await {
+        Ok(actual_digest) if actual_digest.eq_ignore_ascii_case(&expected_digest) => true,
+        Ok(actual_digest) => {
+            warn!(
+                plugin_id = plugin_id.as_str(),
+                version = version.as_str(),
+                expected_digest = expected_digest.as_str(),
+                actual_digest = actual_digest.as_str(),
+                "skipping installed plugin with mismatched persisted wasm digest"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                plugin_id = plugin_id.as_str(),
+                version = version.as_str(),
+                error = %error,
+                "skipping installed plugin after wasm digest verification failed"
+            );
+            false
+        }
+    }
 }
 
 fn installation_is_host_blocked_by_registry(
@@ -518,6 +623,13 @@ const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/scryer-media/scryer-plugins/main/registry.json";
 const REGISTRY_URL_ENV: &str = "SCRYER_PLUGIN_REGISTRY_URL";
 const REGISTRY_PATH_ENV: &str = "SCRYER_PLUGIN_REGISTRY_PATH";
+const DEFAULT_CATALOG_URL: &str = "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv2/catalog-v2.min.json.zst";
+const CATALOG_URL_ENV: &str = "SCRYER_PLUGIN_CATALOG_URL";
+const GITHUB_STATUS_SUMMARY_URL: &str = "https://www.githubstatus.com/api/v2/summary.json";
+const CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog_v2";
+const CATALOG_STATUS_KEY: &str = "github_distribution";
+const CENTRAL_CATALOG_REPO: &str = "scryer-media/scryer-plugins";
+const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
 
 const LEGACY_INDEXER_PLUGIN_TYPE: &str = "indexer";
 const USENET_INDEXER_PLUGIN_TYPE: &str = "usenet_indexer";
@@ -538,6 +650,26 @@ fn plugin_registry_url() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string())
+}
+
+fn plugin_catalog_url() -> String {
+    std::env::var(CATALOG_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_CATALOG_URL.to_string())
+}
+
+fn bundle_url_for(url: &str) -> String {
+    format!("{url}.bundle")
+}
+
+fn child_catalog_source_key(plugin_id: &str) -> String {
+    format!("child:{plugin_id}")
+}
+
+fn manual_catalog_source_key(repo: &GitHubRepo) -> String {
+    format!("manual:{}", repo.slug())
 }
 
 fn plugin_registry_path_override() -> Option<PathBuf> {
@@ -611,6 +743,7 @@ fn source_kind_label(source_kind: PluginSourceKind) -> String {
     match source_kind {
         PluginSourceKind::Bundled => "bundled".to_string(),
         PluginSourceKind::Downloaded => "downloaded".to_string(),
+        PluginSourceKind::Manual => "manual".to_string(),
     }
 }
 
@@ -619,6 +752,19 @@ struct ValidatedDownloadedPlugin {
     descriptor: PluginDescriptor,
     sdk_constraint: String,
     scryer_constraint: Option<String>,
+}
+
+async fn fetch_plugin_bytes(url: &str, label: &str) -> AppResult<Vec<u8>> {
+    let response = reqwest::get(url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to download {label}: {error}")))?
+        .error_for_status()
+        .map_err(|error| AppError::Repository(format!("failed to download {label}: {error}")))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to read {label}: {error}")))?;
+    Ok(bytes.to_vec())
 }
 
 async fn download_registry_release_wasm(
@@ -631,12 +777,7 @@ async fn download_registry_release_wasm(
         ))
     })?;
 
-    let wasm_bytes = reqwest::get(wasm_url)
-        .await
-        .map_err(|error| AppError::Repository(format!("failed to download plugin WASM: {error}")))?
-        .bytes()
-        .await
-        .map_err(|error| AppError::Repository(format!("failed to read plugin WASM: {error}")))?;
+    let wasm_bytes = fetch_plugin_bytes(wasm_url, "plugin WASM").await?;
 
     if let Some(expected_sha) = release.wasm_sha256.as_deref() {
         let actual_sha =
@@ -920,20 +1061,30 @@ impl AppUseCase {
             .and_then(|json| serde_json::from_str::<RegistryManifest>(&json).ok());
 
         // Downloaded overrides take precedence over bundled builtins.
-        let external_bytes: Vec<(Vec<u8>, bool)> = enabled
-            .iter()
-            .filter(|(inst, _)| inst.source_kind == PluginSourceKind::Downloaded)
-            .filter(|(inst, _)| installation_sdk_contract_is_host_compatible(inst))
-            .filter(|(inst, _)| !installation_is_host_blocked_by_registry(inst, registry.as_ref()))
-            .filter_map(|(inst, wasm)| {
-                wasm.clone().map(|bytes| {
-                    (
-                        bytes,
-                        installation_matches_official_registry(inst, registry.as_ref()),
-                    )
-                })
-            })
-            .collect();
+        let mut external_bytes: Vec<(Vec<u8>, bool)> = Vec::new();
+        for (inst, wasm) in enabled {
+            if !matches!(
+                inst.source_kind,
+                PluginSourceKind::Downloaded | PluginSourceKind::Manual
+            ) {
+                continue;
+            }
+            if !installation_sdk_contract_is_host_compatible(&inst) {
+                continue;
+            }
+            if installation_is_host_blocked_by_registry(&inst, registry.as_ref()) {
+                continue;
+            }
+
+            let Some(bytes) = wasm else {
+                continue;
+            };
+            if !installation_wasm_digest_is_valid(&inst, &bytes).await {
+                continue;
+            }
+
+            external_bytes.push((bytes, installation_is_first_party(&inst, registry.as_ref())));
+        }
         let external_refs: Vec<ExternalPluginWasm<'_>> = external_bytes
             .iter()
             .map(|(bytes, first_party)| ExternalPluginWasm {
@@ -1226,7 +1377,71 @@ impl AppUseCase {
 
         let mut result = Vec::new();
 
+        for resolved in self.resolved_catalog_plugins().await.unwrap_or_default() {
+            let inst = effective_installations
+                .iter()
+                .copied()
+                .find(|installation| installation.plugin_id == resolved.child.id);
+            let plugin_type = merged_plugin_type(
+                &resolved.child.plugin_type,
+                inst.map(|i| i.plugin_type.as_str()),
+            );
+            let builtin = inst
+                .map(|installation| installation.is_builtin)
+                .unwrap_or_else(|| {
+                    builtin_by_key.contains_key(&builtin_lookup_key(
+                        &plugin_type,
+                        &resolved.child.provider_type,
+                    ))
+                });
+            let update_available = inst
+                .and_then(|installation| {
+                    semver::Version::parse(resolved.release.version.trim_start_matches('v'))
+                        .ok()
+                        .zip(semver::Version::parse(installation.version.as_str()).ok())
+                })
+                .is_some_and(|(selected_version, installed_version)| {
+                    selected_version > installed_version
+                });
+
+            result.push(RegistryPlugin {
+                id: resolved.child.id.clone(),
+                name: resolved.child.name.clone(),
+                description: resolved.child.description.clone(),
+                version: resolved.release.version.clone(),
+                latest_version: None,
+                plugin_type: plugin_type.clone(),
+                provider_type: resolved.child.provider_type.clone(),
+                author: resolved.child.publisher.clone(),
+                official: resolved.effective_support_tier == PluginSupportTier::Official,
+                publisher: Some(resolved.child.publisher.clone()),
+                support_tier: resolved.effective_support_tier,
+                docs_url: Some(resolved.child.docs_url.clone()),
+                source_repo: Some(resolved.child.source_repo.clone()),
+                builtin,
+                source_url: inst
+                    .and_then(|installation| installation.source_url.clone())
+                    .or_else(|| Some(resolved.release.artifact_manifest_url.clone())),
+                source_kind: inst
+                    .map(|installation| source_kind_label(installation.source_kind))
+                    .or_else(|| Some(source_kind_label(resolved.source_kind))),
+                blocked_reason: None,
+                wasm_url: Some(resolved.release.artifact_manifest_url.clone()),
+                wasm_sha256: inst.and_then(|installation| installation.wasm_sha256.clone()),
+                min_scryer_version: None,
+                default_base_url: self
+                    .default_base_url_for_plugin(&plugin_type, &resolved.child.provider_type),
+                is_installed: inst.is_some(),
+                is_enabled: inst.map(|i| i.is_enabled).unwrap_or(false),
+                installed_version: inst.map(|i| i.version.clone()),
+                update_available,
+            });
+        }
+
         for entry in &registry_entries {
+            if result.iter().any(|plugin| plugin.id == entry.id) {
+                continue;
+            }
             let inst = effective_installations
                 .iter()
                 .copied()
@@ -1314,6 +1529,14 @@ impl AppUseCase {
                 provider_type: entry.provider_type.clone(),
                 author: entry.author.clone(),
                 official: entry.official,
+                publisher: inst
+                    .and_then(|installation| installation.publisher.clone())
+                    .or_else(|| Some(entry.author.clone())),
+                support_tier: inst
+                    .map(|installation| installation.support_tier)
+                    .unwrap_or(PluginSupportTier::Official),
+                docs_url: inst.and_then(|installation| installation.docs_url.clone()),
+                source_repo: inst.and_then(|installation| installation.source_repo.clone()),
                 builtin,
                 source_url: inst
                     .and_then(|installation| installation.source_url.clone())
@@ -1347,6 +1570,10 @@ impl AppUseCase {
                     provider_type: inst.provider_type.clone(),
                     author: String::new(),
                     official: false,
+                    publisher: inst.publisher.clone(),
+                    support_tier: inst.support_tier,
+                    docs_url: inst.docs_url.clone(),
+                    source_repo: inst.source_repo.clone(),
                     builtin,
                     source_url: inst.source_url.clone(),
                     source_kind: Some(source_kind_label(inst.source_kind)),
@@ -1503,6 +1730,588 @@ impl AppUseCase {
         self.apply_plugin_registry_manifest(&manifest, &body).await
     }
 
+    pub async fn plugin_catalog_status(&self, actor: &User) -> AppResult<PluginCatalogStatus> {
+        require(actor, &Entitlement::ManageConfig)?;
+
+        let now = Utc::now();
+        let status = match fetch_plugin_bytes(GITHUB_STATUS_SUMMARY_URL, "GitHub Status").await {
+            Ok(raw) => github_outage_status_from_summary(&raw).unwrap_or_else(|| {
+                // Fail open if GitHub Status is malformed or missing fields we understand.
+                super::catalog::CatalogOutageStatus {
+                    github_available: true,
+                    blocked_actions: Vec::new(),
+                    message: None,
+                }
+            }),
+            Err(error) => {
+                debug!(error = %error, "GitHub Status unavailable; failing plugin catalog gating open");
+                super::catalog::CatalogOutageStatus {
+                    github_available: true,
+                    blocked_actions: Vec::new(),
+                    message: None,
+                }
+            }
+        };
+
+        let payload = serde_json::json!({
+            "githubAvailable": status.github_available,
+            "blockedActions": status.blocked_actions,
+            "message": status.message,
+        });
+        self.services
+            .customization
+            .plugin_installations
+            .upsert_plugin_catalog_status(&PluginCatalogStatusRecord {
+                status_key: CATALOG_STATUS_KEY.to_string(),
+                status_json: payload.to_string(),
+                checked_at: now,
+            })
+            .await?;
+
+        let last_error = self
+            .services
+            .customization
+            .plugin_installations
+            .list_plugin_catalog_sources()
+            .await?
+            .into_iter()
+            .find_map(|source| source.last_error);
+
+        Ok(PluginCatalogStatus {
+            refresh_state: if last_error.is_some() {
+                "degraded".to_string()
+            } else {
+                "ready".to_string()
+            },
+            github_available: status.github_available,
+            last_checked_at: Some(now.to_rfc3339()),
+            outage_message: status.message,
+            blocked_actions: status.blocked_actions,
+            last_error,
+        })
+    }
+
+    pub async fn refresh_plugin_catalog(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
+        require(actor, &Entitlement::ManageConfig)?;
+        self.refresh_plugin_catalog_internal().await?;
+        self.list_available_plugins(actor).await
+    }
+
+    pub async fn refresh_plugin_catalog_internal(&self) -> AppResult<()> {
+        let catalog_url = plugin_catalog_url();
+        let central_raw = self
+            .fetch_verified_catalog_bytes(
+                &catalog_url,
+                &RequiredSigner {
+                    github_repository: CENTRAL_CATALOG_REPO.to_string(),
+                    github_workflow: Some(CENTRAL_CATALOG_WORKFLOW.to_string()),
+                },
+                "central plugin catalog",
+            )
+            .await?;
+        let central = parse_and_validate_central_catalog(&central_raw)?;
+        let central_json = String::from_utf8(central_raw.clone()).map_err(|e| {
+            AppError::Validation(format!("central plugin catalog is not UTF-8: {e}"))
+        })?;
+        let now = Utc::now();
+        self.services
+            .customization
+            .plugin_installations
+            .upsert_plugin_catalog_source(&PluginCatalogSource {
+                source_key: CENTRAL_CATALOG_SOURCE_KEY.to_string(),
+                source_kind: "central".to_string(),
+                source_url: catalog_url,
+                github_repo: Some(CENTRAL_CATALOG_REPO.to_string()),
+                support_tier: PluginSupportTier::Official,
+                catalog_json: Some(central_json),
+                last_success_at: Some(now),
+                last_error: None,
+                updated_at: now,
+            })
+            .await?;
+
+        for entry in &central.plugins {
+            let source_key = child_catalog_source_key(&entry.id);
+            let source_repo = GitHubRepo::parse(&entry.source_repo)?;
+            let result = async {
+                let child_raw = self
+                    .fetch_verified_catalog_bytes(
+                        &entry.child_catalog_url,
+                        &entry.required_signer,
+                        "child plugin catalog",
+                    )
+                    .await?;
+                parse_and_validate_child_catalog(&child_raw, Some(entry), None)?;
+                String::from_utf8(child_raw).map_err(|e| {
+                    AppError::Validation(format!("child plugin catalog is not UTF-8: {e}"))
+                })
+            }
+            .await;
+
+            match result {
+                Ok(child_json) => {
+                    self.services
+                        .customization
+                        .plugin_installations
+                        .upsert_plugin_catalog_source(&PluginCatalogSource {
+                            source_key,
+                            source_kind: "child".to_string(),
+                            source_url: entry.child_catalog_url.clone(),
+                            github_repo: Some(source_repo.slug()),
+                            support_tier: entry.support_tier,
+                            catalog_json: Some(child_json),
+                            last_success_at: Some(now),
+                            last_error: None,
+                            updated_at: now,
+                        })
+                        .await?;
+                }
+                Err(error) => {
+                    warn!(
+                        plugin_id = entry.id.as_str(),
+                        error = %error,
+                        "verified child plugin catalog is unavailable"
+                    );
+                    self.services
+                        .customization
+                        .plugin_installations
+                        .upsert_plugin_catalog_source(&PluginCatalogSource {
+                            source_key,
+                            source_kind: "child".to_string(),
+                            source_url: entry.child_catalog_url.clone(),
+                            github_repo: Some(source_repo.slug()),
+                            support_tier: entry.support_tier,
+                            catalog_json: None,
+                            last_success_at: None,
+                            last_error: Some(error.to_string()),
+                            updated_at: now,
+                        })
+                        .await?;
+                }
+            }
+        }
+
+        self.publish_provider_catalog_changed(ProviderCatalogFamily::all().into_iter().collect());
+        Ok(())
+    }
+
+    async fn fetch_verified_catalog_bytes(
+        &self,
+        url: &str,
+        signer: &RequiredSigner,
+        label: &str,
+    ) -> AppResult<Vec<u8>> {
+        let raw = fetch_plugin_bytes(url, label).await?;
+        let bundle = fetch_plugin_bytes(&bundle_url_for(url), &format!("{label} bundle")).await?;
+        verify_signed_blob(raw.clone(), bundle, signer.clone()).await?;
+        if url.ends_with(".zst") {
+            decompress_zstd(raw).await
+        } else {
+            Ok(raw)
+        }
+    }
+
+    async fn resolved_catalog_plugins(&self) -> AppResult<Vec<CatalogPluginResolution>> {
+        let sources = self
+            .services
+            .customization
+            .plugin_installations
+            .list_plugin_catalog_sources()
+            .await?;
+        let central = sources
+            .iter()
+            .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
+            .and_then(|source| source.catalog_json.as_deref())
+            .and_then(|json| parse_and_validate_central_catalog(json.as_bytes()).ok());
+
+        let mut result = Vec::new();
+        if let Some(central) = central {
+            for entry in central.plugins {
+                let Some(child_json) = sources
+                    .iter()
+                    .find(|source| source.source_key == child_catalog_source_key(&entry.id))
+                    .and_then(|source| source.catalog_json.as_deref())
+                else {
+                    continue;
+                };
+                let child =
+                    parse_and_validate_child_catalog(child_json.as_bytes(), Some(&entry), None)?;
+                let Some(release) = latest_compatible_child_release(&child) else {
+                    continue;
+                };
+                let github_repo = GitHubRepo::parse(&child.source_repo)?;
+                result.push(CatalogPluginResolution {
+                    effective_support_tier: entry.support_tier,
+                    central: Some(entry),
+                    child,
+                    release,
+                    source_kind: PluginSourceKind::Downloaded,
+                    github_repo,
+                });
+            }
+        }
+
+        for source in sources
+            .iter()
+            .filter(|source| source.source_kind == "manual")
+            .filter_map(|source| {
+                source
+                    .catalog_json
+                    .as_deref()
+                    .zip(source.github_repo.as_deref())
+            })
+        {
+            let (child_json, repo_slug) = source;
+            let manual_repo = GitHubRepo::parse(repo_slug)?;
+            let child =
+                parse_and_validate_child_catalog(child_json.as_bytes(), None, Some(&manual_repo))?;
+            let Some(release) = latest_compatible_child_release(&child) else {
+                continue;
+            };
+            result.push(CatalogPluginResolution {
+                central: None,
+                child,
+                release,
+                source_kind: PluginSourceKind::Manual,
+                effective_support_tier: PluginSupportTier::Unverified,
+                github_repo: manual_repo,
+            });
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_catalog_release_wasm(
+        &self,
+        resolved: &CatalogPluginResolution,
+    ) -> AppResult<(Vec<u8>, PluginReleaseManifest, String)> {
+        let signer = resolved
+            .central
+            .as_ref()
+            .map(|central| central.required_signer.clone())
+            .unwrap_or_else(|| RequiredSigner {
+                github_repository: resolved.github_repo.slug(),
+                github_workflow: None,
+            });
+        let manifest_raw = self
+            .fetch_verified_catalog_bytes(
+                &resolved.release.artifact_manifest_url,
+                &signer,
+                "plugin release manifest",
+            )
+            .await?;
+        let manifest = parse_and_validate_release_manifest(
+            &manifest_raw,
+            &resolved.child,
+            &resolved.release,
+            &resolved.github_repo,
+        )?;
+        let artifact_url =
+            plugin_manifest_asset_url(&resolved.release.artifact_manifest_url, &manifest.artifact)?;
+        let artifact_bundle_url = plugin_manifest_asset_url(
+            &resolved.release.artifact_manifest_url,
+            &manifest.signature,
+        )?;
+        let artifact = fetch_plugin_bytes(&artifact_url, "plugin artifact").await?;
+        let artifact_bundle =
+            fetch_plugin_bytes(&artifact_bundle_url, "plugin artifact bundle").await?;
+        verify_signed_blob(artifact.clone(), artifact_bundle, signer).await?;
+        verify_digest(
+            "compressed plugin artifact",
+            &manifest.artifact_digest,
+            &artifact,
+        )?;
+        let wasm = decompress_zstd(artifact).await?;
+        verify_digest("decompressed plugin WASM", &manifest.wasm_digest, &wasm)?;
+        Ok((wasm, manifest, artifact_url))
+    }
+
+    async fn install_catalog_plugin(
+        &self,
+        resolved: CatalogPluginResolution,
+    ) -> AppResult<PluginInstallation> {
+        let (wasm_bytes, manifest, artifact_url) =
+            self.fetch_catalog_release_wasm(&resolved).await?;
+        let registry_release = RegistryRelease {
+            version: resolved.release.version.clone(),
+            sdk_version: String::new(),
+            sdk_constraint: resolved.release.sdk_constraint.clone(),
+            scryer_constraint: None,
+            legacy_min_scryer_version: None,
+            source_url: Some(resolved.child.source_repo.clone()),
+            wasm_url: Some(artifact_url.clone()),
+            wasm_sha256: None,
+        };
+        let validated = validate_downloaded_plugin_release(
+            &resolved.child.id,
+            &resolved.child.plugin_type,
+            &resolved.child.provider_type,
+            &registry_release,
+            &wasm_bytes,
+        )?;
+
+        let wasm_sha256 =
+            crate::to_hex(ring_digest::digest(&ring_digest::SHA256, &wasm_bytes).as_ref());
+        let now = Utc::now();
+        let installation = PluginInstallation {
+            id: Id::new().0,
+            plugin_id: resolved.child.id.clone(),
+            name: validated.descriptor.name.clone(),
+            description: resolved.child.description.clone(),
+            version: validated.descriptor.version.clone(),
+            sdk_version: validated.descriptor.sdk_version.clone(),
+            sdk_constraint: validated.sdk_constraint.clone(),
+            scryer_constraint: None,
+            plugin_type: validated.descriptor.plugin_type().to_string(),
+            provider_type: normalize_provider_key(validated.descriptor.provider_type()),
+            source_kind: resolved.source_kind,
+            is_enabled: true,
+            is_builtin: false,
+            wasm_sha256: Some(wasm_sha256),
+            source_url: Some(artifact_url),
+            support_tier: resolved.effective_support_tier,
+            publisher: Some(resolved.child.publisher.clone()),
+            docs_url: Some(resolved.child.docs_url.clone()),
+            source_repo: Some(resolved.child.source_repo.clone()),
+            manifest_url: Some(resolved.release.artifact_manifest_url.clone()),
+            wasm_digest: Some(manifest.wasm_digest),
+            artifact_digest: Some(manifest.artifact_digest),
+            installed_at: now,
+            updated_at: now,
+        };
+
+        let result = self
+            .services
+            .customization
+            .plugin_installations
+            .create_plugin_installation(&installation, Some(wasm_bytes.as_slice()))
+            .await?;
+
+        self.rebuild_plugin_provider().await?;
+        self.publish_provider_catalog_changed(ProviderCatalogFamily::all().into_iter().collect());
+        Ok(result)
+    }
+
+    async fn upgrade_catalog_plugin(
+        &self,
+        resolved: CatalogPluginResolution,
+        installation: PluginInstallation,
+    ) -> AppResult<PluginInstallation> {
+        let selected_version = semver::Version::parse(
+            resolved.release.version.trim_start_matches('v'),
+        )
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "invalid catalog version '{}': {e}",
+                resolved.release.version
+            ))
+        })?;
+        let installed_version = semver::Version::parse(&installation.version).map_err(|e| {
+            AppError::Validation(format!(
+                "invalid installed version '{}': {e}",
+                installation.version
+            ))
+        })?;
+        if selected_version <= installed_version {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' is already at version {} (selected release is {})",
+                resolved.child.id, installation.version, resolved.release.version
+            )));
+        }
+
+        let (wasm_bytes, manifest, artifact_url) =
+            self.fetch_catalog_release_wasm(&resolved).await?;
+        let registry_release = RegistryRelease {
+            version: resolved.release.version.clone(),
+            sdk_version: String::new(),
+            sdk_constraint: resolved.release.sdk_constraint.clone(),
+            scryer_constraint: None,
+            legacy_min_scryer_version: None,
+            source_url: Some(resolved.child.source_repo.clone()),
+            wasm_url: Some(artifact_url.clone()),
+            wasm_sha256: None,
+        };
+        let validated = validate_downloaded_plugin_release(
+            &resolved.child.id,
+            &resolved.child.plugin_type,
+            &resolved.child.provider_type,
+            &registry_release,
+            &wasm_bytes,
+        )?;
+
+        let wasm_sha256 =
+            crate::to_hex(ring_digest::digest(&ring_digest::SHA256, &wasm_bytes).as_ref());
+        let mut updated = installation;
+        updated.version = validated.descriptor.version.clone();
+        updated.name = validated.descriptor.name.clone();
+        updated.description = resolved.child.description.clone();
+        updated.sdk_version = validated.descriptor.sdk_version.clone();
+        updated.sdk_constraint = validated.sdk_constraint.clone();
+        updated.scryer_constraint = None;
+        updated.plugin_type = validated.descriptor.plugin_type().to_string();
+        updated.provider_type = normalize_provider_key(validated.descriptor.provider_type());
+        updated.source_kind = resolved.source_kind;
+        updated.wasm_sha256 = Some(wasm_sha256);
+        updated.source_url = Some(artifact_url);
+        updated.support_tier = resolved.effective_support_tier;
+        updated.publisher = Some(resolved.child.publisher.clone());
+        updated.docs_url = Some(resolved.child.docs_url.clone());
+        updated.source_repo = Some(resolved.child.source_repo.clone());
+        updated.manifest_url = Some(resolved.release.artifact_manifest_url.clone());
+        updated.wasm_digest = Some(manifest.wasm_digest);
+        updated.artifact_digest = Some(manifest.artifact_digest);
+        updated.updated_at = Utc::now();
+
+        let result = self
+            .services
+            .customization
+            .plugin_installations
+            .update_plugin_installation(&updated, Some(wasm_bytes.as_slice()))
+            .await?;
+
+        self.rebuild_plugin_provider().await?;
+        self.publish_provider_catalog_changed(provider_catalog_families_for_plugin_type(
+            &updated.plugin_type,
+        ));
+        Ok(result)
+    }
+
+    async fn resolve_manual_plugin_repo(
+        &self,
+        github_repo_url: &str,
+    ) -> AppResult<(CatalogPluginResolution, String)> {
+        let repo = GitHubRepo::parse(github_repo_url)?;
+        let child_url = repo.child_catalog_url();
+        let signer = RequiredSigner {
+            github_repository: repo.slug(),
+            github_workflow: None,
+        };
+        let child_raw = self
+            .fetch_verified_catalog_bytes(&child_url, &signer, "manual plugin child catalog")
+            .await?;
+        let child = parse_and_validate_child_catalog(&child_raw, None, Some(&repo))?;
+        let release = latest_compatible_child_release(&child).ok_or_else(|| {
+            AppError::Validation(format!(
+                "manual plugin repo '{}' has no SDK-compatible release",
+                repo.slug()
+            ))
+        })?;
+        let manifest_raw = self
+            .fetch_verified_catalog_bytes(
+                &release.artifact_manifest_url,
+                &signer,
+                "manual plugin release manifest",
+            )
+            .await?;
+        parse_and_validate_release_manifest(&manifest_raw, &child, &release, &repo)?;
+        let child_json = String::from_utf8(child_raw).map_err(|e| {
+            AppError::Validation(format!("manual child plugin catalog is not UTF-8: {e}"))
+        })?;
+        Ok((
+            CatalogPluginResolution {
+                central: None,
+                child,
+                release,
+                source_kind: PluginSourceKind::Manual,
+                effective_support_tier: PluginSupportTier::Unverified,
+                github_repo: repo,
+            },
+            child_json,
+        ))
+    }
+
+    pub async fn inspect_manual_plugin_repo(
+        &self,
+        actor: &User,
+        github_repo_url: &str,
+    ) -> AppResult<ManualPluginPreview> {
+        require(actor, &Entitlement::ManageConfig)?;
+        let (resolved, _) = self.resolve_manual_plugin_repo(github_repo_url).await?;
+        let plugin_type = resolved.child.plugin_type.clone();
+        Ok(ManualPluginPreview {
+            github_repo_url: format!("https://github.com/{}", resolved.github_repo.slug()),
+            plugin: RegistryPlugin {
+                id: resolved.child.id.clone(),
+                name: resolved.child.name.clone(),
+                description: resolved.child.description.clone(),
+                version: resolved.release.version.clone(),
+                latest_version: None,
+                plugin_type: plugin_type.clone(),
+                provider_type: resolved.child.provider_type.clone(),
+                author: resolved.child.publisher.clone(),
+                official: false,
+                publisher: Some(resolved.child.publisher.clone()),
+                support_tier: PluginSupportTier::Unverified,
+                docs_url: Some(resolved.child.docs_url.clone()),
+                source_repo: Some(resolved.child.source_repo.clone()),
+                builtin: false,
+                source_url: Some(resolved.release.artifact_manifest_url.clone()),
+                source_kind: Some(source_kind_label(PluginSourceKind::Manual)),
+                blocked_reason: None,
+                wasm_url: Some(resolved.release.artifact_manifest_url.clone()),
+                wasm_sha256: None,
+                min_scryer_version: None,
+                is_installed: self
+                    .services
+                    .customization
+                    .plugin_installations
+                    .get_plugin_installation(&resolved.child.id)
+                    .await?
+                    .is_some(),
+                is_enabled: false,
+                installed_version: None,
+                update_available: false,
+                default_base_url: self
+                    .default_base_url_for_plugin(&plugin_type, &resolved.child.provider_type),
+            },
+        })
+    }
+
+    pub async fn install_manual_plugin(
+        &self,
+        actor: &User,
+        github_repo_url: &str,
+    ) -> AppResult<PluginInstallation> {
+        require(actor, &Entitlement::ManageConfig)?;
+        let (resolved, child_json) = self.resolve_manual_plugin_repo(github_repo_url).await?;
+        let _operation_guard = self
+            .runtime
+            .plugins
+            .plugin_operation_guards
+            .acquire(&resolved.child.id)
+            .await;
+        if self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(&resolved.child.id)
+            .await?
+            .is_some()
+        {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' is already installed",
+                resolved.child.id
+            )));
+        }
+        let now = Utc::now();
+        self.services
+            .customization
+            .plugin_installations
+            .upsert_plugin_catalog_source(&PluginCatalogSource {
+                source_key: manual_catalog_source_key(&resolved.github_repo),
+                source_kind: "manual".to_string(),
+                source_url: resolved.github_repo.child_catalog_url(),
+                github_repo: Some(resolved.github_repo.slug()),
+                support_tier: PluginSupportTier::Unverified,
+                catalog_json: Some(child_json),
+                last_success_at: Some(now),
+                last_error: None,
+                updated_at: now,
+            })
+            .await?;
+        self.install_catalog_plugin(resolved).await
+    }
+
     /// Install a plugin from the registry.
     pub async fn install_plugin(
         &self,
@@ -1510,6 +2319,12 @@ impl AppUseCase {
         plugin_id: &str,
     ) -> AppResult<PluginInstallation> {
         require(actor, &Entitlement::ManageConfig)?;
+        let _operation_guard = self
+            .runtime
+            .plugins
+            .plugin_operation_guards
+            .acquire(plugin_id)
+            .await;
 
         if self
             .services
@@ -1522,6 +2337,15 @@ impl AppUseCase {
             return Err(AppError::Validation(format!(
                 "plugin '{plugin_id}' is already installed"
             )));
+        }
+
+        if let Some(resolved) = self
+            .resolved_catalog_plugins()
+            .await?
+            .into_iter()
+            .find(|plugin| plugin.child.id == plugin_id)
+        {
+            return self.install_catalog_plugin(resolved).await;
         }
 
         let registry_json = self
@@ -1570,6 +2394,13 @@ impl AppUseCase {
             is_builtin: false,
             wasm_sha256: selected_release.wasm_sha256.clone(),
             source_url: selected_release.source_url.clone(),
+            support_tier: scryer_domain::PluginSupportTier::Official,
+            publisher: Some(entry.author.clone()),
+            docs_url: None,
+            source_repo: None,
+            manifest_url: None,
+            wasm_digest: None,
+            artifact_digest: None,
             installed_at: now,
             updated_at: now,
         };
@@ -1781,6 +2612,12 @@ impl AppUseCase {
         plugin_id: &str,
     ) -> AppResult<PluginInstallation> {
         require(actor, &Entitlement::ManageConfig)?;
+        let _operation_guard = self
+            .runtime
+            .plugins
+            .plugin_operation_guards
+            .acquire(plugin_id)
+            .await;
 
         let installation = self
             .services
@@ -1789,6 +2626,15 @@ impl AppUseCase {
             .get_plugin_installation(plugin_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("plugin '{plugin_id}' not installed")))?;
+
+        if let Some(resolved) = self
+            .resolved_catalog_plugins()
+            .await?
+            .into_iter()
+            .find(|plugin| plugin.child.id == plugin_id)
+        {
+            return self.upgrade_catalog_plugin(resolved, installation).await;
+        }
 
         let registry_json = self
             .services

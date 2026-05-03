@@ -23,6 +23,9 @@ If runtime interfaces change (GraphQL, subscription payloads, gateway contract),
 ## Release requests
 
 - Release automation goes through `cargo xtask`.
+- For app releases, run `cargo xtask release --dry-run` first. Inspect the dry-run
+  result and only follow with the real `cargo xtask release` if the dry run
+  succeeds and the release should proceed.
 - If the user explicitly asks for a release or tag, treat that as approval to
   commit the in-scope dirty tree for that release with a sensible commit
   message before invoking the release flow.

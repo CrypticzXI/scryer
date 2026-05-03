@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use scryer_application::{
     AppResult, PluginInstallationRepository, PostProcessingScriptRepository, RuleSetRepository,
 };
-use scryer_domain::{PluginInstallation, PostProcessingScript, PostProcessingScriptRun, RuleSet};
+use scryer_domain::{
+    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PostProcessingScript,
+    PostProcessingScriptRun, RuleSet,
+};
 
 use crate::SqliteServices;
 use crate::queries::{
@@ -198,5 +201,34 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
 
     async fn get_registry_cache(&self) -> AppResult<Option<String>> {
         plugin_installation::get_registry_cache_query(&self.pool).await
+    }
+
+    async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()> {
+        plugin_installation::upsert_plugin_catalog_source_query(&self.pool, source).await
+    }
+
+    async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>> {
+        plugin_installation::list_plugin_catalog_sources_query(&self.pool).await
+    }
+
+    async fn get_plugin_catalog_source(
+        &self,
+        source_key: &str,
+    ) -> AppResult<Option<PluginCatalogSource>> {
+        plugin_installation::get_plugin_catalog_source_query(&self.pool, source_key).await
+    }
+
+    async fn upsert_plugin_catalog_status(
+        &self,
+        status: &PluginCatalogStatusRecord,
+    ) -> AppResult<()> {
+        plugin_installation::upsert_plugin_catalog_status_query(&self.pool, status).await
+    }
+
+    async fn get_plugin_catalog_status(
+        &self,
+        status_key: &str,
+    ) -> AppResult<Option<PluginCatalogStatusRecord>> {
+        plugin_installation::get_plugin_catalog_status_query(&self.pool, status_key).await
     }
 }

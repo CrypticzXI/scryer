@@ -2,18 +2,19 @@ use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
     IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingRelease, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
-    QualityProfileSelection, QualityProfileSettings, RegistryPlugin, RenameApplyItemResult,
-    RenameApplyResult, RenamePlan, RenamePlanItem, ResolvePendingImportResult, RssSyncReport,
-    ScoringEntry, ScoringSource, ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry, WorkflowOperationInfo,
+    LibraryScanSummary, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
+    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
+    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
+    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
+    ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
+    TitleHistoryPage, TitleReleaseBlocklistEntry, WorkflowOperationInfo,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
-    IndexerConfig, MediaFacet, PluginInstallation, PolicyOutput, RuleSet, SubtitleProviderConfig,
-    Title, TitleHistoryRecord, User,
+    IndexerConfig, MediaFacet, PluginInstallation, PluginSupportTier, PolicyOutput, RuleSet,
+    SubtitleProviderConfig, Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -21,6 +22,14 @@ use std::fs;
 use std::path::Path;
 
 use crate::types::*;
+
+fn support_tier_label(value: PluginSupportTier) -> String {
+    match value {
+        PluginSupportTier::Official => "official".to_string(),
+        PluginSupportTier::VerifiedCommunity => "verified_community".to_string(),
+        PluginSupportTier::Unverified => "unverified".to_string(),
+    }
+}
 
 fn import_facet_from_payload(payload: &Value) -> Option<MediaFacetValue> {
     let parameters = payload.get("parameters")?.as_array()?;
@@ -1537,6 +1546,10 @@ pub(crate) fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
         provider_type: p.provider_type,
         author: p.author,
         official: p.official,
+        publisher: p.publisher,
+        support_tier: support_tier_label(p.support_tier),
+        docs_url: p.docs_url,
+        source_repo: p.source_repo,
         builtin: p.builtin,
         source_url: p.source_url,
         source_kind: p.source_kind,
@@ -1627,10 +1640,40 @@ pub(crate) fn from_plugin_installation(inst: PluginInstallation) -> PluginInstal
         source_kind: match inst.source_kind {
             scryer_domain::PluginSourceKind::Bundled => "bundled".to_string(),
             scryer_domain::PluginSourceKind::Downloaded => "downloaded".to_string(),
+            scryer_domain::PluginSourceKind::Manual => "manual".to_string(),
         },
         source_url: inst.source_url,
+        publisher: inst.publisher,
+        support_tier: support_tier_label(inst.support_tier),
+        docs_url: inst.docs_url,
+        source_repo: inst.source_repo,
+        manifest_url: inst.manifest_url,
+        wasm_digest: inst.wasm_digest,
+        artifact_digest: inst.artifact_digest,
         installed_at: inst.installed_at.to_rfc3339(),
         updated_at: inst.updated_at.to_rfc3339(),
+    }
+}
+
+pub(crate) fn from_plugin_catalog_status(
+    status: PluginCatalogStatus,
+) -> PluginCatalogStatusPayload {
+    PluginCatalogStatusPayload {
+        refresh_state: status.refresh_state,
+        github_available: status.github_available,
+        last_checked_at: status.last_checked_at,
+        outage_message: status.outage_message,
+        blocked_actions: status.blocked_actions,
+        last_error: status.last_error,
+    }
+}
+
+pub(crate) fn from_manual_plugin_preview(
+    preview: ManualPluginPreview,
+) -> ManualPluginPreviewPayload {
+    ManualPluginPreviewPayload {
+        github_repo_url: preview.github_repo_url,
+        plugin: from_registry_plugin(preview.plugin),
     }
 }
 

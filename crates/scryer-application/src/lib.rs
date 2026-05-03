@@ -81,6 +81,7 @@ pub use import::upgrade;
 pub use integration::tracked_downloads;
 pub use library::filesystem_walk;
 pub use library::recycle_bin;
+pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
 pub use plugins::managed_rules;
 pub use quality::release_dedup;
 pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -94,9 +95,9 @@ use scryer_domain::{
     DomainEventFilter, DomainEventType, DownloadClientConfig, DownloadQueueItem,
     DownloadQueueState, Entitlement, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
     ImportRecord, ImportResult, ImportStatus, IndexerConfig, MediaFacet, NewDomainEvent,
-    NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginInstallation, PolicyInput,
-    PolicyOutput, RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType,
-    TitleHistoryRecord, User,
+    NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginCatalogSource,
+    PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput, RuleSet,
+    SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord, User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -175,7 +176,10 @@ pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
     normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
 };
-pub use plugins::plugins::{RegistryPlugin, RulePackRegistryEntry, RulePackTemplate};
+pub use plugins::plugins::{
+    ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
+    RulePackTemplate,
+};
 pub use security::backup::BackupService;
 pub use settings::settings::{
     AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,

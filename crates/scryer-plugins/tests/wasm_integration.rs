@@ -224,29 +224,6 @@ fn invalid_bytes_dont_affect_valid() {
 }
 
 #[test]
-fn dognzb_hides_generic_newznab_config_fields() {
-    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::DOGNZB_WASM);
-
-    assert_eq!(
-        provider.default_base_url_for_provider("dognzb").as_deref(),
-        Some("https://api.dognzb.cr")
-    );
-
-    let fields = provider.config_fields_for_provider("dognzb");
-    let field_keys: Vec<&str> = fields.iter().map(|field| field.key.as_str()).collect();
-
-    assert!(
-        !field_keys.contains(&"api_path"),
-        "DogNZB should not expose api_path"
-    );
-    assert!(
-        !field_keys.contains(&"additional_params"),
-        "DogNZB should not expose additional_params"
-    );
-}
-
-#[test]
 fn jimaku_builtin_hides_internal_archive_and_ai_config_fields() {
     let provider = scryer_plugins::WasmSubtitlePluginProvider::empty()
         .with_builtin(scryer_plugins::builtins::JIMAKU_WASM);
@@ -261,7 +238,6 @@ fn jimaku_builtin_hides_internal_archive_and_ai_config_fields() {
 fn newznab_family_builtins_include_rss_search_path() {
     for (name, wasm_bytes) in [
         ("nzbgeek", scryer_plugins::builtins::NZBGEEK_WASM),
-        ("dognzb", scryer_plugins::builtins::DOGNZB_WASM),
         ("newznab", scryer_plugins::builtins::NEWZNAB_WASM),
         ("torznab", scryer_plugins::builtins::TORZNAB_WASM),
     ] {

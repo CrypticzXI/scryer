@@ -1656,6 +1656,19 @@ impl QueryRoot {
             .collect())
     }
 
+    async fn plugin_catalog_status(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<PluginCatalogStatusPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let status = app
+            .plugin_catalog_status(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(crate::mappers::from_plugin_catalog_status(status))
+    }
+
     /// List community rule packs from the plugin registry.
     async fn rule_pack_registry(
         &self,

@@ -120,6 +120,13 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
         source_kind: scryer_domain::PluginSourceKind::Downloaded,
         wasm_sha256: Some("abc123".to_string()),
         source_url: Some("https://example.com/newznab-0.2.2.wasm".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: None,
+        docs_url: None,
+        source_repo: None,
+        manifest_url: None,
+        wasm_digest: None,
+        artifact_digest: None,
         installed_at: now,
         updated_at: now,
     };

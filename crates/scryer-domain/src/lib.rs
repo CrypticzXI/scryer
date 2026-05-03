@@ -2042,6 +2042,16 @@ pub enum PluginSourceKind {
     Bundled,
     #[default]
     Downloaded,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSupportTier {
+    #[default]
+    Official,
+    VerifiedCommunity,
+    Unverified,
 }
 
 /// A plugin installation record.
@@ -2063,8 +2073,35 @@ pub struct PluginInstallation {
     pub is_builtin: bool,
     pub wasm_sha256: Option<String>,
     pub source_url: Option<String>,
+    pub support_tier: PluginSupportTier,
+    pub publisher: Option<String>,
+    pub docs_url: Option<String>,
+    pub source_repo: Option<String>,
+    pub manifest_url: Option<String>,
+    pub wasm_digest: Option<String>,
+    pub artifact_digest: Option<String>,
     pub installed_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginCatalogSource {
+    pub source_key: String,
+    pub source_kind: String,
+    pub source_url: String,
+    pub github_repo: Option<String>,
+    pub support_tier: PluginSupportTier,
+    pub catalog_json: Option<String>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginCatalogStatusRecord {
+    pub status_key: String,
+    pub status_json: String,
+    pub checked_at: DateTime<Utc>,
 }
 
 /// A user-authored rule set definition.

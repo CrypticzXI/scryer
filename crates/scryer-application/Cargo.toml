@@ -40,6 +40,11 @@ symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm"
 unicode-normalization = "0.1"
 whatlang = "0.16"
 regex = "1"
+blake3 = "1"
+sigstore = { version = "0.13", default-features = false, features = ["full", "rustls-tls"] }
+base64 = "0.22"
+x509-cert = "0.2"
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

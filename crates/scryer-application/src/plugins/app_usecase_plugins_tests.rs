@@ -123,6 +123,40 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
     async fn get_registry_cache(&self) -> AppResult<Option<String>> {
         Ok(self.registry_cache.lock().await.clone())
     }
+
+    async fn upsert_plugin_catalog_source(
+        &self,
+        _source: &scryer_domain::PluginCatalogSource,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_plugin_catalog_sources(
+        &self,
+    ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_plugin_catalog_source(
+        &self,
+        _source_key: &str,
+    ) -> AppResult<Option<scryer_domain::PluginCatalogSource>> {
+        Ok(None)
+    }
+
+    async fn upsert_plugin_catalog_status(
+        &self,
+        _status: &scryer_domain::PluginCatalogStatusRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_plugin_catalog_status(
+        &self,
+        _status_key: &str,
+    ) -> AppResult<Option<scryer_domain::PluginCatalogStatusRecord>> {
+        Ok(None)
+    }
 }
 
 // ── Mock: IndexerConfigRepository ────────────────────────────────────────────
@@ -368,6 +402,13 @@ fn make_installation(
         is_builtin: builtin,
         wasm_sha256: None,
         source_url: None,
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: None,
+        docs_url: None,
+        source_repo: None,
+        manifest_url: None,
+        wasm_digest: None,
+        artifact_digest: None,
         installed_at: now,
         updated_at: now,
     }
@@ -1693,4 +1734,40 @@ async fn reconcile_noop_without_plugin_provider() {
 
     let configs = h.indexer_config_repo.store.lock().await;
     assert!(configs.is_empty());
+}
+
+fn child_catalog_for_selection_test(releases: Vec<ChildCatalogRelease>) -> ChildCatalog {
+    ChildCatalog {
+        schema_version: "scryer.plugin.child_catalog.v2".to_string(),
+        id: "email".to_string(),
+        name: "Email".to_string(),
+        description: "Email notifications".to_string(),
+        plugin_type: "notification".to_string(),
+        provider_type: "email".to_string(),
+        publisher: "scryer".to_string(),
+        support_tier: PluginSupportTier::Official,
+        docs_url: "https://github.com/scryer-media/scryer-plugins".to_string(),
+        source_repo: "https://github.com/scryer-media/scryer-plugins".to_string(),
+        releases,
+    }
+}
+
+#[test]
+fn latest_compatible_child_release_keeps_older_sdk_line_visible() {
+    let catalog = child_catalog_for_selection_test(vec![
+        ChildCatalogRelease {
+            version: "0.1.0".to_string(),
+            sdk_constraint: format!("={SDK_VERSION}"),
+            artifact_manifest_url: "https://github.com/scryer-media/scryer-plugins/releases/download/plugins%2Femail%2Fv0.1.0/plugin.manifest.json".to_string(),
+        },
+        ChildCatalogRelease {
+            version: "0.2.0".to_string(),
+            sdk_constraint: ">=999.0.0".to_string(),
+            artifact_manifest_url: "https://github.com/scryer-media/scryer-plugins/releases/download/plugins%2Femail%2Fv0.2.0/plugin.manifest.json".to_string(),
+        },
+    ]);
+
+    let selected = latest_compatible_child_release(&catalog).expect("compatible release");
+
+    assert_eq!(selected.version, "0.1.0");
 }

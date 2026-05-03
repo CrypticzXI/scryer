@@ -1702,6 +1702,10 @@ export const pluginsQuery = `query Plugins {
     providerType
     author
     official
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
     builtin
     sourceUrl
     sourceKind
@@ -1710,6 +1714,15 @@ export const pluginsQuery = `query Plugins {
     isEnabled
     installedVersion
     updateAvailable
+    defaultBaseUrl
+  }
+  pluginCatalogStatus {
+    refreshState
+    githubAvailable
+    lastCheckedAt
+    outageMessage
+    blockedActions
+    lastError
   }
 }`;
 

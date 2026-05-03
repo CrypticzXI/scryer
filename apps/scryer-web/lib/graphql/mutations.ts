@@ -881,6 +881,10 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     providerType
     author
     official
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
     builtin
     sourceUrl
     sourceKind
@@ -889,6 +893,34 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     isEnabled
     installedVersion
     updateAvailable
+    defaultBaseUrl
+  }
+}`;
+
+export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
+  refreshPluginCatalog {
+    id
+    name
+    description
+    version
+    latestVersion
+    pluginType
+    providerType
+    author
+    official
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    builtin
+    sourceUrl
+    sourceKind
+    blockedReason
+    isInstalled
+    isEnabled
+    installedVersion
+    updateAvailable
+    defaultBaseUrl
   }
 }`;
 
@@ -907,6 +939,13 @@ export const installPluginMutation = `mutation InstallPlugin($input: InstallPlug
     isBuiltin
     sourceKind
     sourceUrl
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    manifestUrl
+    wasmDigest
+    artifactDigest
     installedAt
     updatedAt
   }
@@ -931,6 +970,13 @@ export const togglePluginMutation = `mutation TogglePlugin($input: TogglePluginI
     isBuiltin
     sourceKind
     sourceUrl
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    manifestUrl
+    wasmDigest
+    artifactDigest
     installedAt
     updatedAt
   }
@@ -951,6 +997,70 @@ export const upgradePluginMutation = `mutation UpgradePlugin($input: UpgradePlug
     isBuiltin
     sourceKind
     sourceUrl
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    manifestUrl
+    wasmDigest
+    artifactDigest
+    installedAt
+    updatedAt
+  }
+}`;
+
+export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo($input: ManualPluginRepoInput!) {
+  inspectManualPluginRepo(input: $input) {
+    githubRepoUrl
+    plugin {
+      id
+      name
+      description
+      version
+      latestVersion
+      pluginType
+      providerType
+      author
+      official
+      publisher
+      supportTier
+      docsUrl
+      sourceRepo
+      builtin
+      sourceUrl
+      sourceKind
+      blockedReason
+      isInstalled
+      isEnabled
+      installedVersion
+      updateAvailable
+      defaultBaseUrl
+    }
+  }
+}`;
+
+export const installManualPluginMutation = `mutation InstallManualPlugin($input: ManualPluginRepoInput!) {
+  installManualPlugin(input: $input) {
+    id
+    pluginId
+    name
+    description
+    version
+    sdkVersion
+    sdkConstraint
+    pluginType
+    providerType
+    isEnabled
+    isBuiltin
+    sourceKind
+    sourceUrl
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    manifestUrl
+    wasmDigest
+    artifactDigest
     installedAt
     updatedAt
   }

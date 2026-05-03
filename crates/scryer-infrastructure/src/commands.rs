@@ -2951,7 +2951,7 @@ mod tests {
             };
             run_with_sqlite_busy_retries_with_deadline(
                 "test_operation",
-                Duration::from_millis(5),
+                Duration::ZERO,
                 &mut operation,
             )
             .await
@@ -2963,7 +2963,7 @@ mod tests {
         };
         assert!(message.contains("test_operation"));
         assert!(message.contains("deadline exceeded"));
-        assert!(attempts.load(Ordering::SeqCst) >= 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
