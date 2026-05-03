@@ -1142,6 +1142,14 @@ pub trait IndexerPluginProvider: Send + Sync {
         let _ = (external_wasm_bytes, disabled_builtins);
         Err("this provider does not support dynamic reload".to_string())
     }
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (runtime_plugins, disabled_builtins);
+        Err("this provider does not support runtime-load reload".to_string())
+    }
     fn config_fields_for_provider(
         &self,
         _provider_type: &str,
@@ -1149,6 +1157,9 @@ pub trait IndexerPluginProvider: Send + Sync {
         vec![]
     }
     fn plugin_name_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn plugin_description_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
     fn default_base_url_for_provider(&self, _provider_type: &str) -> Option<String> {
@@ -1242,6 +1253,17 @@ pub trait DownloadClientPluginProvider: Send + Sync {
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
         Err("this provider does not support dynamic reload".to_string())
+    }
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (runtime_plugins, disabled_builtins);
+        Err("this provider does not support runtime-load reload".to_string())
+    }
+    fn plugin_description_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
     }
 }
 
@@ -1499,6 +1521,9 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
+    fn plugin_description_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
         let _ = plugin;
         Err("this provider does not support single-plugin runtime mutation".to_string())
@@ -1518,6 +1543,14 @@ pub trait NotificationPluginProvider: Send + Sync {
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
         Err("this provider does not support dynamic reload".to_string())
+    }
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (runtime_plugins, disabled_builtins);
+        Err("this provider does not support runtime-load reload".to_string())
     }
 }
 
@@ -1545,6 +1578,9 @@ pub trait SubtitlePluginProvider: Send + Sync {
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
+    fn plugin_description_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
     fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
         let _ = plugin;
         Err("this provider does not support single-plugin runtime mutation".to_string())
@@ -1564,6 +1600,14 @@ pub trait SubtitlePluginProvider: Send + Sync {
     ) -> Result<(), String> {
         let _ = (external_wasm_bytes, disabled_builtins);
         Err("this provider does not support dynamic reload".to_string())
+    }
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        let _ = (runtime_plugins, disabled_builtins);
+        Err("this provider does not support runtime-load reload".to_string())
     }
 }
 

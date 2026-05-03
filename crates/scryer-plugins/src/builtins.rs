@@ -1,18 +1,54 @@
-/// Built-in NZBGeek indexer WASM plugin. Handles NZBGeek-specific metadata
-/// (thumbs, subtitles, password) and the Newznab protocol.
-pub const NZBGEEK_WASM: &[u8] = include_bytes!("../builtins/nzbgeek_indexer.wasm");
+#[derive(Clone, Copy, Debug)]
+pub struct BuiltinPluginAsset {
+    pub wasm: &'static [u8],
+    pub descriptor_json: &'static str,
+    pub description: &'static str,
+}
 
-/// Built-in generic Newznab indexer WASM plugin. Handles the standard Newznab
-/// protocol for compatible indexers.
-pub const NEWZNAB_WASM: &[u8] = include_bytes!("../builtins/newznab_indexer.wasm");
+/// Built-in NZBGeek indexer plugin asset pair.
+pub const NZBGEEK: BuiltinPluginAsset = BuiltinPluginAsset {
+    wasm: include_bytes!("../builtins/nzbgeek_indexer.wasm"),
+    descriptor_json: include_str!("../builtins/nzbgeek_indexer.descriptor.json"),
+    description: include_str!("../builtins/nzbgeek_indexer.description.txt"),
+};
 
-/// Built-in AnimeTosho indexer WASM plugin. Searches via AniDB ID + freetext
-/// against the AnimeTosho JSON API.
-pub const ANIMETOSHO_WASM: &[u8] = include_bytes!("../builtins/animetosho_indexer.wasm");
+/// Built-in generic Newznab indexer plugin asset pair.
+pub const NEWZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
+    wasm: include_bytes!("../builtins/newznab_indexer.wasm"),
+    descriptor_json: include_str!("../builtins/newznab_indexer.descriptor.json"),
+    description: include_str!("../builtins/newznab_indexer.description.txt"),
+};
 
-/// Built-in Torznab indexer WASM plugin. Handles the Torznab protocol for
-/// Jackett, Prowlarr, and other compatible torrent indexer proxies.
-pub const TORZNAB_WASM: &[u8] = include_bytes!("../builtins/torznab_indexer.wasm");
+/// Built-in AnimeTosho indexer plugin asset pair.
+pub const ANIMETOSHO: BuiltinPluginAsset = BuiltinPluginAsset {
+    wasm: include_bytes!("../builtins/animetosho_indexer.wasm"),
+    descriptor_json: include_str!("../builtins/animetosho_indexer.descriptor.json"),
+    description: include_str!("../builtins/animetosho_indexer.description.txt"),
+};
 
-/// Built-in Jimaku subtitle-provider WASM plugin.
-pub const JIMAKU_WASM: &[u8] = include_bytes!("../builtins/jimaku_subtitle_provider.wasm");
+/// Built-in Torznab indexer plugin asset pair.
+pub const TORZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
+    wasm: include_bytes!("../builtins/torznab_indexer.wasm"),
+    descriptor_json: include_str!("../builtins/torznab_indexer.descriptor.json"),
+    description: include_str!("../builtins/torznab_indexer.description.txt"),
+};
+
+pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NZBGEEK, NEWZNAB, ANIMETOSHO, TORZNAB];
+pub const SUBTITLE_BUILTINS: &[BuiltinPluginAsset] = &[];
+pub const DOWNLOAD_CLIENT_BUILTINS: &[BuiltinPluginAsset] = &[];
+pub const NOTIFICATION_BUILTINS: &[BuiltinPluginAsset] = &[];
+
+pub fn builtin_description_for_provider(provider_type: &str) -> Option<&'static str> {
+    let key = provider_type.trim().to_ascii_lowercase();
+    INDEXER_BUILTINS
+        .iter()
+        .chain(SUBTITLE_BUILTINS.iter())
+        .chain(DOWNLOAD_CLIENT_BUILTINS.iter())
+        .chain(NOTIFICATION_BUILTINS.iter())
+        .find_map(|asset| {
+            let descriptor: serde_json::Value = serde_json::from_str(asset.descriptor_json).ok()?;
+            let provider = descriptor.get("provider")?;
+            let actual = provider.get("provider_type")?.as_str()?;
+            (actual.eq_ignore_ascii_case(&key)).then_some(asset.description.trim())
+        })
+}

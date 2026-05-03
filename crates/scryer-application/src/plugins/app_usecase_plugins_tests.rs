@@ -191,6 +191,7 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
             manifest_url: None,
             wasm_digest: None,
             artifact_digest: None,
+            descriptor_json: None,
             installed_at: now,
             updated_at: now,
         });
@@ -520,6 +521,16 @@ fn make_installation_with_type(
     enabled: bool,
 ) -> PluginInstallation {
     let now = Utc::now();
+    let descriptor_json = if builtin {
+        None
+    } else {
+        let mut runtime_plugin = make_runtime_plugin_load(plugin_id, plugin_type, provider_type);
+        runtime_plugin.descriptor.version = version.to_string();
+        Some(
+            serde_json::to_string(&runtime_plugin.descriptor)
+                .expect("serialize test runtime plugin descriptor"),
+        )
+    };
     PluginInstallation {
         id: scryer_domain::Id::new().0,
         plugin_id: plugin_id.to_string(),
@@ -548,6 +559,7 @@ fn make_installation_with_type(
         manifest_url: None,
         wasm_digest: None,
         artifact_digest: None,
+        descriptor_json,
         installed_at: now,
         updated_at: now,
     }

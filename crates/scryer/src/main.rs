@@ -20,17 +20,17 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppServices, AppUseCase, DownloadClientPluginProvider, ExternalPluginWasm, FacetRegistry,
+    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry,
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    NotificationPluginProvider, PluginInstallationRepository, SeriesFacetHandler,
-    SubtitlePluginProvider, TitleImageKind, TitleImageRepository,
-    decode_persisted_plugin_wasm_payload, start_background_acquisition_poller,
-    start_background_banner_loop, start_background_download_delete_poller,
-    start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_manual_import_poller, start_background_poster_loop,
-    start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_download_queue_poller, start_notification_dispatcher,
-    tracked_downloads::TrackedDownloadHandle,
+    NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
+    TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
+    start_background_acquisition_poller, start_background_banner_loop,
+    start_background_download_delete_poller, start_background_fanart_loop,
+    start_background_library_refresh_loop, start_background_manual_import_poller,
+    start_background_poster_loop, start_background_subtitle_poller,
+    start_background_title_hydration_loop, start_download_queue_poller,
+    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
@@ -69,33 +69,12 @@ use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const STARTUP_PLUGIN_LOAD_CONCURRENCY: usize = 4;
-
-struct RuntimePluginBootstrapEntry {
-    plugin_type: String,
-    bytes: Vec<u8>,
-    first_party: bool,
-}
 
 fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
     matches!(
         plugin_type,
         "indexer" | "usenet_indexer" | "torrent_indexer"
     )
-}
-
-fn runtime_plugin_refs_for_types<'a>(
-    runtime_plugins: &'a [RuntimePluginBootstrapEntry],
-    matches_type: impl Fn(&str) -> bool,
-) -> Vec<ExternalPluginWasm<'a>> {
-    runtime_plugins
-        .iter()
-        .filter(|plugin| matches_type(plugin.plugin_type.as_str()))
-        .map(|plugin| ExternalPluginWasm {
-            bytes: plugin.bytes.as_slice(),
-            first_party: plugin.first_party,
-        })
-        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -538,28 +517,34 @@ async fn bootstrap_application(
     bootstrap_plugin_installations(customization_store.as_ref())
         .await
         .map_err(|e| format!("failed to bootstrap plugin installations: {e}"))?;
-    let (runtime_plugin_bytes, disabled_builtin_plugins) =
+    let (runtime_plugins, disabled_builtin_plugins) =
         load_runtime_plugin_state(customization_store.as_ref())
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
-    let indexer_plugin_refs =
-        runtime_plugin_refs_for_types(&runtime_plugin_bytes, plugin_type_belongs_to_indexer_family);
-    let download_client_plugin_refs =
-        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
-            plugin_type == "download_client"
-        });
-    let subtitle_plugin_refs =
-        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
-            plugin_type == "subtitle_provider"
-        });
-    let notification_plugin_refs =
-        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
-            plugin_type == "notification"
-        });
+    let indexer_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin_type_belongs_to_indexer_family(plugin.descriptor.plugin_type()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let download_client_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin.descriptor.plugin_type() == "download_client")
+        .cloned()
+        .collect::<Vec<_>>();
+    let subtitle_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
+        .cloned()
+        .collect::<Vec<_>>();
+    let notification_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
+        .cloned()
+        .collect::<Vec<_>>();
     let download_client_plugin_provider: Arc<dyn DownloadClientPluginProvider> =
         Arc::new(scryer_plugins::DynamicDownloadClientPluginProvider::new(
-            scryer_plugins::build_download_client_plugin_provider(
-                &download_client_plugin_refs,
+            scryer_plugins::build_download_client_plugin_provider_from_runtime_plugins(
+                &download_client_runtime_plugins,
                 &disabled_builtin_plugins,
             ),
         ));
@@ -583,16 +568,17 @@ async fn bootstrap_application(
         scryer_infrastructure::InMemoryIndexerStatsTracker::new(Some(db.pool().clone())),
     );
 
-    let dynamic_provider =
-        scryer_plugins::DynamicPluginProvider::new(scryer_plugins::build_indexer_plugin_provider(
-            &indexer_plugin_refs,
+    let dynamic_provider = scryer_plugins::DynamicPluginProvider::new(
+        scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
+            &indexer_runtime_plugins,
             &disabled_builtin_plugins,
-        ));
+        ),
+    );
     let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(dynamic_provider);
     let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
-            scryer_plugins::build_subtitle_plugin_provider(
-                &subtitle_plugin_refs,
+            scryer_plugins::build_subtitle_plugin_provider_from_runtime_plugins(
+                &subtitle_runtime_plugins,
                 &disabled_builtin_plugins,
             ),
         ));
@@ -702,8 +688,8 @@ async fn bootstrap_application(
     });
 
     let notif_provider = scryer_plugins::DynamicNotificationPluginProvider::new(
-        scryer_plugins::build_notification_plugin_provider(
-            &notification_plugin_refs,
+        scryer_plugins::build_notification_plugin_provider_from_runtime_plugins(
+            &notification_runtime_plugins,
             &disabled_builtin_plugins,
         ),
     );
@@ -1415,25 +1401,12 @@ fn runtime_installation_sdk_contract_is_host_compatible(
     }
 }
 
-fn runtime_installation_is_catalog_official(
-    installation: &scryer_domain::PluginInstallation,
-) -> bool {
-    installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
-        && installation.support_tier == scryer_domain::PluginSupportTier::Official
-        && installation.wasm_digest_algo.is_some()
-        && installation.wasm_digest.is_some()
-}
-
-fn runtime_installation_is_first_party(installation: &scryer_domain::PluginInstallation) -> bool {
-    runtime_installation_is_catalog_official(installation)
-}
-
 async fn load_runtime_external_plugin_entry(
     installation: &scryer_domain::PluginInstallation,
     payload: scryer_domain::PersistedPluginWasmPayload,
-) -> Option<RuntimePluginBootstrapEntry> {
-    let bytes = match decode_persisted_plugin_wasm_payload(installation, &payload).await {
-        Ok(bytes) => bytes,
+) -> Option<RuntimePluginLoad> {
+    match load_runtime_plugin_from_persisted_installation_payload(installation, &payload).await {
+        Ok(runtime_plugin) => Some(runtime_plugin),
         Err(error) => {
             tracing::warn!(
                 plugin_id = installation.plugin_id.as_str(),
@@ -1441,25 +1414,19 @@ async fn load_runtime_external_plugin_entry(
                 error = %error,
                 "skipping installed plugin after persisted payload validation failed at startup"
             );
-            return None;
+            None
         }
-    };
-
-    Some(RuntimePluginBootstrapEntry {
-        plugin_type: installation.plugin_type.clone(),
-        bytes,
-        first_party: runtime_installation_is_first_party(installation),
-    })
+    }
 }
 
 async fn load_runtime_plugin_state(
     customization_store: &SqliteCustomizationStore,
-) -> Result<(Vec<RuntimePluginBootstrapEntry>, Vec<String>), String> {
+) -> Result<(Vec<RuntimePluginLoad>, Vec<String>), String> {
     let enabled_plugins = customization_store
         .get_enabled_plugin_wasm_bytes()
         .await
         .map_err(|error| error.to_string())?;
-    let mut runtime_plugin_bytes = Vec::new();
+    let mut runtime_plugins = Vec::new();
     let mut pending_plugins = enabled_plugins
         .into_iter()
         .filter_map(|(installation, payload)| {
@@ -1480,7 +1447,7 @@ async fn load_runtime_plugin_state(
             payload.map(|payload| (installation, payload))
         });
     let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..STARTUP_PLUGIN_LOAD_CONCURRENCY {
+    for _ in 0..RUNTIME_PLUGIN_LOAD_CONCURRENCY {
         let Some((installation, payload)) = pending_plugins.next() else {
             break;
         };
@@ -1491,7 +1458,7 @@ async fn load_runtime_plugin_state(
         let loaded =
             result.map_err(|error| format!("startup plugin load task panicked: {error}"))?;
         if let Some(entry) = loaded {
-            runtime_plugin_bytes.push(entry);
+            runtime_plugins.push(entry);
         }
         if let Some((installation, payload)) = pending_plugins.next() {
             tasks.spawn(
@@ -1509,7 +1476,7 @@ async fn load_runtime_plugin_state(
         .map(|installation| installation.provider_type)
         .collect::<Vec<_>>();
 
-    Ok((runtime_plugin_bytes, disabled_builtin_plugins))
+    Ok((runtime_plugins, disabled_builtin_plugins))
 }
 
 async fn bootstrap_plugin_installations(
@@ -1534,6 +1501,7 @@ async fn seed_builtin_plugin_installations(
 ) -> Result<(), String> {
     struct BuiltinPluginSeed {
         name: String,
+        description: String,
         version: String,
         sdk_version: String,
         sdk_constraint: String,
@@ -1549,6 +1517,9 @@ async fn seed_builtin_plugin_installations(
         let Some(name) = indexer_provider.plugin_name_for_provider(&provider_key) else {
             continue;
         };
+        let description = indexer_provider
+            .plugin_description_for_provider(&provider_key)
+            .unwrap_or_default();
         let Some(version) = indexer_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
@@ -1566,6 +1537,7 @@ async fn seed_builtin_plugin_installations(
             .unwrap_or_else(|| "indexer".to_string());
         builtins.push(BuiltinPluginSeed {
             name,
+            description,
             version,
             sdk_version,
             sdk_constraint,
@@ -1580,6 +1552,9 @@ async fn seed_builtin_plugin_installations(
         let Some(name) = subtitle_provider.plugin_name_for_provider(&provider_key) else {
             continue;
         };
+        let description = subtitle_provider
+            .plugin_description_for_provider(&provider_key)
+            .unwrap_or_default();
         let Some(version) = subtitle_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
@@ -1594,6 +1569,7 @@ async fn seed_builtin_plugin_installations(
         };
         builtins.push(BuiltinPluginSeed {
             name,
+            description,
             version,
             sdk_version,
             sdk_constraint,
@@ -1608,6 +1584,9 @@ async fn seed_builtin_plugin_installations(
         let Some(name) = download_client_provider.plugin_name_for_provider(&provider_key) else {
             continue;
         };
+        let description = download_client_provider
+            .plugin_description_for_provider(&provider_key)
+            .unwrap_or_default();
         let Some(version) = download_client_provider.plugin_version_for_provider(&provider_key)
         else {
             continue;
@@ -1624,6 +1603,7 @@ async fn seed_builtin_plugin_installations(
         };
         builtins.push(BuiltinPluginSeed {
             name,
+            description,
             version,
             sdk_version,
             sdk_constraint,
@@ -1638,6 +1618,9 @@ async fn seed_builtin_plugin_installations(
         let Some(name) = notification_provider.plugin_name_for_provider(&provider_key) else {
             continue;
         };
+        let description = notification_provider
+            .plugin_description_for_provider(&provider_key)
+            .unwrap_or_default();
         let Some(version) = notification_provider.plugin_version_for_provider(&provider_key) else {
             continue;
         };
@@ -1653,6 +1636,7 @@ async fn seed_builtin_plugin_installations(
         };
         builtins.push(BuiltinPluginSeed {
             name,
+            description,
             version,
             sdk_version,
             sdk_constraint,
@@ -1679,7 +1663,7 @@ async fn seed_builtin_plugin_installations(
             .seed_builtin(
                 &builtin.provider_type,
                 &builtin.name,
-                "",
+                &builtin.description,
                 &builtin.version,
                 &builtin.sdk_version,
                 &builtin.sdk_constraint,
@@ -1858,6 +1842,7 @@ mod tests {
                     manifest_url: None,
                     wasm_digest: None,
                     artifact_digest: None,
+                    descriptor_json: None,
                     installed_at: now,
                     updated_at: now,
                 },
@@ -1927,6 +1912,9 @@ mod tests {
                     manifest_url: None,
                     wasm_digest: Some("deadbeef".to_string()),
                     artifact_digest: Some("blake3:abcd".to_string()),
+                    descriptor_json: Some(
+                        r#"{"id":"corrupt","name":"Corrupt","version":"0.1.0","sdk_version":"1.5.0","sdk_constraint":">=1.5.0, <2.0.0","socket_permissions":[],"provider":{"kind":"notification","provider_type":"corrupt","provider_aliases":[],"config_fields":[],"allowed_hosts":[],"default_base_url":null,"capabilities":{"supported_events":[]}}}"#.to_string(),
+                    ),
                     installed_at: now,
                     updated_at: now,
                 },

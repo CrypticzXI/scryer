@@ -1,0 +1,94 @@
+{
+  "id": "nzbgeek",
+  "name": "NZBGeek Indexer",
+  "version": "0.2.6",
+  "sdk_version": "1.5.0",
+  "sdk_constraint": ">=1.5.0, <1.6.0",
+  "provider": {
+    "kind": "indexer",
+    "provider_type": "nzbgeek",
+    "source_kind": "usenet",
+    "capabilities": {
+      "rss": true,
+      "supported_ids": {
+        "series": [
+          "tvdb_id"
+        ],
+        "movie": [
+          "imdb_id"
+        ],
+        "anime": [
+          "tvdb_id"
+        ]
+      },
+      "deduplicates_aliases": false,
+      "season_param": "season",
+      "episode_param": "ep",
+      "query_param": "q",
+      "search": true,
+      "imdb_search": true,
+      "tvdb_search": true,
+      "anidb_search": false,
+      "protocols": [
+        "usenet"
+      ],
+      "feed_modes": [
+        "recent",
+        "rss",
+        "automatic_search",
+        "interactive_search"
+      ],
+      "search_inputs": [
+        "title_query",
+        "id_query",
+        "season",
+        "episode",
+        "category",
+        "limit"
+      ],
+      "supported_external_ids": [
+        "imdb_id",
+        "tvdb_id",
+        "tmdb_id",
+        "tvmaze_id",
+        "tvrage_id"
+      ],
+      "category_model": {
+        "value_kinds": [
+          "numeric"
+        ],
+        "separate_anime_categories": true,
+        "provider_category_metadata": true
+      },
+      "limits": {
+        "page_size": 100,
+        "max_page_size": 100,
+        "max_pages": 10,
+        "api_quota_supported": true,
+        "grab_quota_supported": true
+      },
+      "response_features": {
+        "languages": true,
+        "subtitles": true,
+        "grabs": true,
+        "votes": false,
+        "comments": true,
+        "info_url": true,
+        "guid": true,
+        "raw_provider_metadata": true,
+        "password_hint": true,
+        "protection_hint": true
+      }
+    },
+    "scoring_policies": [
+      {
+        "name": "nzbgeek_vote_penalty",
+        "rego_source": "package scryer.rules.user.plugin_nzbgeek_vote_penalty\nimport rego.v1\n\nscore_entry[\"nzbgeek_thumbs_down\"] := penalty if {\n    td := input.release.extra.thumbs_down\n    td > 5\n    extra := min([td - 5, 10])\n    penalty := -2400 - (extra * 300)\n}\n"
+      },
+      {
+        "name": "nzbgeek_language_bonus",
+        "rego_source": "package scryer.rules.user.plugin_nzbgeek_language_bonus\nimport rego.v1\n\nscore_entry[\"nzbgeek_english_confirmed\"] := 200 if {\n    langs := input.release.extra.languages\n    count(langs) > 0\n    some lang in langs\n    lower(lang) == \"english\"\n}\n"
+      }
+    ]
+  }
+}

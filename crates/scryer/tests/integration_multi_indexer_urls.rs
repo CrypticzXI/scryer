@@ -65,9 +65,9 @@ async fn setup() -> (
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
         Arc::new(scryer_plugins::DynamicPluginProvider::new(
             scryer_plugins::WasmIndexerPluginProvider::empty()
-                .with_builtin(scryer_plugins::builtins::ANIMETOSHO_WASM)
-                .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM)
-                .with_builtin(scryer_plugins::builtins::TORZNAB_WASM),
+                .with_builtin_asset(scryer_plugins::builtins::ANIMETOSHO)
+                .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
+                .with_builtin_asset(scryer_plugins::builtins::TORZNAB),
         ));
 
     let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> =

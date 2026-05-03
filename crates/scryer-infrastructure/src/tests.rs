@@ -25,6 +25,99 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+fn test_descriptor_json(
+    plugin_id: &str,
+    version: &str,
+    plugin_type: &str,
+    provider_type: &str,
+) -> String {
+    let provider = match plugin_type {
+        "indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
+                capabilities: Default::default(),
+                scoring_policies: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                rate_limit_seconds: None,
+            })
+        }
+        "usenet_indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Usenet,
+                capabilities: Default::default(),
+                scoring_policies: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                rate_limit_seconds: None,
+            })
+        }
+        "torrent_indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Torrent,
+                capabilities: Default::default(),
+                scoring_policies: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                rate_limit_seconds: None,
+            })
+        }
+        "notification" => scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities: Default::default(),
+            },
+        ),
+        "download_client" => scryer_plugin_sdk::ProviderDescriptor::DownloadClient(
+            scryer_plugin_sdk::DownloadClientDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                accepted_inputs: Vec::new(),
+                isolation_modes: Vec::new(),
+                capabilities: Default::default(),
+            },
+        ),
+        "subtitle_provider" => scryer_plugin_sdk::ProviderDescriptor::Subtitle(
+            scryer_plugin_sdk::SubtitleDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: Vec::new(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities: Default::default(),
+            },
+        ),
+        other => panic!("unsupported test plugin type: {other}"),
+    };
+
+    serde_json::to_string(&scryer_plugin_sdk::PluginDescriptor {
+        id: plugin_id.to_string(),
+        name: format!("{plugin_id} Plugin"),
+        version: version.to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: Vec::new(),
+        provider,
+    })
+    .expect("serialize test descriptor")
+}
+
 #[tokio::test]
 async fn sqlite_can_initialize() {
     let db = std::env::temp_dir().join(format!(
@@ -128,6 +221,12 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
         manifest_url: None,
         wasm_digest: Some("abc123".to_string()),
         artifact_digest: None,
+        descriptor_json: Some(test_descriptor_json(
+            "newznab",
+            "0.2.2",
+            "usenet_indexer",
+            "newznab",
+        )),
         installed_at: now,
         updated_at: now,
     };
@@ -204,6 +303,7 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
         manifest_url: None,
         wasm_digest: None,
         artifact_digest: None,
+        descriptor_json: None,
         installed_at: now,
         updated_at: now,
     };
@@ -332,6 +432,12 @@ async fn enabled_plugin_payloads_preserve_zstd_encoding() {
                 .to_string(),
         ),
         artifact_digest: Some("blake3:abcd".to_string()),
+        descriptor_json: Some(test_descriptor_json(
+            "email",
+            "0.1.2",
+            "notification",
+            "email",
+        )),
         installed_at: now,
         updated_at: now,
     };

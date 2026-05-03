@@ -103,6 +103,7 @@ fn row_to_plugin_installation(row: &sqlx::sqlite::SqliteRow) -> PluginInstallati
         manifest_url: row.get("manifest_url"),
         wasm_digest: row.get("wasm_digest"),
         artifact_digest: row.get("artifact_digest"),
+        descriptor_json: row.get("descriptor_json"),
         installed_at,
         updated_at,
     }
@@ -115,7 +116,7 @@ pub(crate) async fn list_plugin_installations_query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
                 source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
-                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_type != '__cache'
@@ -136,7 +137,7 @@ pub(crate) async fn get_plugin_installation_query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
                 source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
-                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_id = ?",
@@ -157,7 +158,7 @@ async fn get_plugin_installation_tx(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
                 source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
-                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
          WHERE plugin_id = ?",
@@ -184,9 +185,9 @@ pub(crate) async fn create_plugin_installation_query(
             (id, plugin_id, name, description, version, sdk_version, sdk_constraint,
              scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
              source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
-             docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+             docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
              installed_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&installation.id)
     .bind(&installation.plugin_id)
@@ -212,6 +213,7 @@ pub(crate) async fn create_plugin_installation_query(
     .bind(&installation.manifest_url)
     .bind(&installation.wasm_digest)
     .bind(&installation.artifact_digest)
+    .bind(&installation.descriptor_json)
     .bind(installation.installed_at.to_rfc3339())
     .bind(installation.updated_at.to_rfc3339())
     .execute(&mut *tx)
@@ -256,6 +258,7 @@ pub(crate) async fn update_plugin_installation_query(
              manifest_url = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, manifest_url) END,
              wasm_digest = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_digest) END,
              artifact_digest = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, artifact_digest) END,
+             descriptor_json = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, descriptor_json) END,
              updated_at = ?
          WHERE plugin_id = ?",
     )
@@ -291,6 +294,8 @@ pub(crate) async fn update_plugin_installation_query(
     .bind(&installation.wasm_digest)
     .bind(source_kind_label(installation.source_kind))
     .bind(&installation.artifact_digest)
+    .bind(source_kind_label(installation.source_kind))
+    .bind(&installation.descriptor_json)
     .bind(installation.updated_at.to_rfc3339())
     .bind(&installation.plugin_id)
     .execute(&mut *tx)
@@ -328,7 +333,7 @@ pub(crate) async fn delete_incompatible_external_plugin_installations_query(
     use sqlx::Row;
 
     let rows = sqlx::query(
-        "SELECT plugin_id, wasm_bytes, wasm_encoding, wasm_digest_algo, wasm_digest
+        "SELECT plugin_id, wasm_bytes, wasm_encoding, wasm_digest_algo, wasm_digest, descriptor_json
          FROM plugin_installations
          WHERE is_builtin = 0 AND source_kind IN ('downloaded', 'manual')",
     )
@@ -344,11 +349,13 @@ pub(crate) async fn delete_incompatible_external_plugin_installations_query(
             let wasm_encoding: String = row.get("wasm_encoding");
             let wasm_digest_algo: Option<String> = row.get("wasm_digest_algo");
             let wasm_digest: Option<String> = row.get("wasm_digest");
+            let descriptor_json: Option<String> = row.get("descriptor_json");
             if external_installation_is_supported_shape(
                 wasm_bytes.as_deref(),
                 &wasm_encoding,
                 wasm_digest_algo.as_deref(),
                 wasm_digest.as_deref(),
+                descriptor_json.as_deref(),
             ) {
                 None
             } else {
@@ -376,7 +383,7 @@ pub(crate) async fn get_enabled_plugin_wasm_bytes_query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
                 source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
-                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
+                docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
          WHERE is_enabled = 1 AND plugin_type != '__cache'",
@@ -485,6 +492,7 @@ fn external_installation_is_supported_shape(
     wasm_encoding: &str,
     wasm_digest_algo: Option<&str>,
     wasm_digest: Option<&str>,
+    descriptor_json: Option<&str>,
 ) -> bool {
     wasm_bytes.is_some()
         && wasm_encoding == "zstd"
@@ -493,6 +501,7 @@ fn external_installation_is_supported_shape(
             Some(value) if value == "blake3"
         )
         && wasm_digest.is_some_and(is_hex_digest)
+        && descriptor_json.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn is_hex_digest(value: &str) -> bool {

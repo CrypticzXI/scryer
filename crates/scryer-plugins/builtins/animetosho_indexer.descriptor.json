@@ -1,0 +1,78 @@
+{
+  "id": "animetosho",
+  "name": "AnimeTosho Indexer",
+  "version": "0.3.7",
+  "sdk_version": "1.5.0",
+  "sdk_constraint": ">=1.5.0, <1.6.0",
+  "provider": {
+    "kind": "indexer",
+    "provider_type": "animetosho",
+    "source_kind": "generic",
+    "capabilities": {
+      "rss": true,
+      "supported_ids": {
+        "anime": [
+          "anidb_id"
+        ],
+        "movie": [
+          "anidb_id"
+        ]
+      },
+      "deduplicates_aliases": true,
+      "query_param": "q",
+      "search": true,
+      "imdb_search": false,
+      "tvdb_search": false,
+      "anidb_search": true,
+      "protocols": [
+        "mixed"
+      ],
+      "feed_modes": [
+        "recent",
+        "rss",
+        "automatic_search",
+        "interactive_search"
+      ],
+      "search_inputs": [
+        "title_query",
+        "id_query",
+        "absolute_episode",
+        "episode",
+        "limit"
+      ],
+      "supported_external_ids": [
+        "anidb_id"
+      ],
+      "limits": {
+        "page_size": 75,
+        "max_page_size": 75,
+        "max_pages": 14,
+        "api_quota_supported": false,
+        "grab_quota_supported": false
+      },
+      "torrent": {
+        "reports_seeders": true,
+        "reports_peers": false,
+        "reports_leechers": true,
+        "reports_info_hash": true,
+        "reports_magnet_uri": true,
+        "reports_volume_factors": false,
+        "supports_private_tracker_flags": false,
+        "supports_seed_requirements": false
+      },
+      "response_features": {
+        "languages": false,
+        "subtitles": false,
+        "grabs": false,
+        "votes": false,
+        "comments": false,
+        "info_url": true,
+        "guid": false,
+        "raw_provider_metadata": true,
+        "password_hint": false,
+        "protection_hint": false
+      }
+    },
+    "default_base_url": "https://feed.animetosho.org"
+  }
+}

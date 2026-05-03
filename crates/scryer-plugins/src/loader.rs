@@ -173,18 +173,21 @@ fn insert_loaded_plugin(
     affected
 }
 
-fn builtin_provider_types_from_bytes(
-    wasm_bytes: &[&[u8]],
+fn parse_builtin_descriptor(
+    asset: crate::builtins::BuiltinPluginAsset,
+) -> Result<PluginDescriptor, String> {
+    serde_json::from_str(asset.descriptor_json)
+        .map_err(|error| format!("built-in descriptor JSON is invalid: {error}"))
+}
+
+fn builtin_provider_types_from_assets(
+    assets: &[crate::builtins::BuiltinPluginAsset],
     plugin_type_filter: impl Fn(&str) -> bool,
     apply_overrides: impl Fn(PluginDescriptor) -> PluginDescriptor,
 ) -> Vec<String> {
-    wasm_bytes
+    assets
         .iter()
-        .filter_map(|bytes| {
-            load_from_bytes(bytes)
-                .ok()
-                .map(|(descriptor, _)| descriptor)
-        })
+        .filter_map(|asset| parse_builtin_descriptor(*asset).ok())
         .map(apply_overrides)
         .filter(|descriptor| plugin_type_filter(descriptor.plugin_type()))
         .map(|descriptor| descriptor.provider_type().trim().to_ascii_lowercase())
@@ -193,13 +196,8 @@ fn builtin_provider_types_from_bytes(
 
 fn builtin_indexer_provider_types() -> Vec<String> {
     static BUILTIN_INDEXER_PROVIDER_TYPES: LazyLock<Vec<String>> = LazyLock::new(|| {
-        builtin_provider_types_from_bytes(
-            &[
-                crate::builtins::NZBGEEK_WASM,
-                crate::builtins::NEWZNAB_WASM,
-                crate::builtins::ANIMETOSHO_WASM,
-                crate::builtins::TORZNAB_WASM,
-            ],
+        builtin_provider_types_from_assets(
+            crate::builtins::INDEXER_BUILTINS,
             is_indexer_plugin_type,
             apply_builtin_indexer_overrides,
         )
@@ -210,8 +208,8 @@ fn builtin_indexer_provider_types() -> Vec<String> {
 
 fn builtin_subtitle_provider_types() -> Vec<String> {
     static BUILTIN_SUBTITLE_PROVIDER_TYPES: LazyLock<Vec<String>> = LazyLock::new(|| {
-        builtin_provider_types_from_bytes(
-            &[crate::builtins::JIMAKU_WASM],
+        builtin_provider_types_from_assets(
+            crate::builtins::SUBTITLE_BUILTINS,
             |plugin_type| plugin_type == "subtitle_provider",
             |descriptor| descriptor,
         )
@@ -275,13 +273,15 @@ impl WasmIndexerPluginProvider {
         ))
     }
 
-    fn prepare_builtin_plugin_record(wasm_bytes: &[u8]) -> Result<LoadedPluginRecord, String> {
-        let (descriptor, wasm_bytes) = load_from_bytes(wasm_bytes)?;
+    fn prepare_builtin_asset_record(
+        asset: crate::builtins::BuiltinPluginAsset,
+    ) -> Result<LoadedPluginRecord, String> {
+        let descriptor = parse_builtin_descriptor(asset)?;
         let descriptor = apply_builtin_indexer_overrides(descriptor);
         if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
             return Err("built-in indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(descriptor, asset.wasm.to_vec()))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -303,14 +303,27 @@ impl WasmIndexerPluginProvider {
         self
     }
 
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime indexer plugin");
+            }
+        }
+        self
+    }
+
     fn restore_builtin_provider_type(
         &mut self,
         provider_type: &str,
     ) -> Result<Vec<String>, String> {
-        let wasm_bytes = builtin_indexer_wasm_for_provider(provider_type).ok_or_else(|| {
+        let asset = builtin_indexer_asset_for_provider(provider_type).ok_or_else(|| {
             format!("no built-in indexer plugin is available for provider '{provider_type}'")
         })?;
-        let record = Self::prepare_builtin_plugin_record(wasm_bytes)?;
+        let record = Self::prepare_builtin_asset_record(asset)?;
         Ok(insert_loaded_plugin(
             &mut self.plugins,
             &mut self.aliases,
@@ -349,13 +362,8 @@ impl WasmIndexerPluginProvider {
         self
     }
 
-    /// Register a built-in plugin from WASM bytes. The plugin is loaded,
-    /// validated, and registered under its `provider_type` (and any
-    /// `provider_aliases`). If an external plugin already claims the same
-    /// provider_type, the external one wins and the built-in is skipped
-    /// for that key.
-    pub fn with_builtin(mut self, wasm_bytes: &[u8]) -> Self {
-        match Self::prepare_builtin_plugin_record(wasm_bytes) {
+    pub fn with_builtin_asset(mut self, asset: crate::builtins::BuiltinPluginAsset) -> Self {
+        match Self::prepare_builtin_asset_record(asset) {
             Ok(record) => {
                 let _ = insert_loaded_plugin(
                     &mut self.plugins,
@@ -371,6 +379,7 @@ impl WasmIndexerPluginProvider {
         }
         self
     }
+
 }
 
 fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
@@ -387,12 +396,14 @@ fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDe
     descriptor
 }
 
-fn builtin_indexer_wasm_for_provider(provider_type: &str) -> Option<&'static [u8]> {
+fn builtin_indexer_asset_for_provider(
+    provider_type: &str,
+) -> Option<crate::builtins::BuiltinPluginAsset> {
     match provider_type.trim().to_ascii_lowercase().as_str() {
-        "animetosho" => Some(crate::builtins::ANIMETOSHO_WASM),
-        "newznab" => Some(crate::builtins::NEWZNAB_WASM),
-        "nzbgeek" => Some(crate::builtins::NZBGEEK_WASM),
-        "torznab" => Some(crate::builtins::TORZNAB_WASM),
+        "animetosho" => Some(crate::builtins::ANIMETOSHO),
+        "newznab" => Some(crate::builtins::NEWZNAB),
+        "nzbgeek" => Some(crate::builtins::NZBGEEK),
+        "torznab" => Some(crate::builtins::TORZNAB),
         _ => None,
     }
 }
@@ -467,6 +478,10 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
+    }
+
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        crate::builtins::builtin_description_for_provider(provider_type).map(str::to_string)
     }
 
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -682,6 +697,14 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         guard.plugin_name_for_provider(provider_type)
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.plugin_description_for_provider(provider_type)
+    }
+
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
         let guard = self
             .inner
@@ -716,6 +739,18 @@ impl IndexerPluginProvider for DynamicPluginProvider {
     ) -> Result<(), String> {
         self.reload(build_indexer_plugin_provider(
             external_wasm_bytes,
+            disabled_builtins,
+        ));
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(build_indexer_plugin_provider_from_runtime_plugins(
+            runtime_plugins,
             disabled_builtins,
         ));
         Ok(())
@@ -828,6 +863,19 @@ impl WasmDownloadClientPluginProvider {
             }
             Err(error) => {
                 warn!(error = %error, "failed to load external download client plugin");
+            }
+        }
+        self
+    }
+
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime download client plugin");
             }
         }
         self
@@ -958,6 +1006,10 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
+    }
+
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        crate::builtins::builtin_description_for_provider(provider_type).map(str::to_string)
     }
 
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -1106,6 +1158,14 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
         guard.plugin_name_for_provider(provider_type)
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicDownloadClientPluginProvider lock poisoned");
+        guard.plugin_description_for_provider(provider_type)
+    }
+
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
         let guard = self
             .inner
@@ -1129,6 +1189,18 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
     ) -> Result<(), String> {
         self.reload(build_download_client_plugin_provider(
             external_wasm_bytes,
+            disabled_builtins,
+        ));
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(build_download_client_plugin_provider_from_runtime_plugins(
+            runtime_plugins,
             disabled_builtins,
         ));
         Ok(())
@@ -1320,13 +1392,29 @@ pub fn build_indexer_plugin_provider(
         provider = provider.with_external_plugin(*plugin);
     }
 
-    for wasm in [
-        crate::builtins::NZBGEEK_WASM,
-        crate::builtins::NEWZNAB_WASM,
-        crate::builtins::ANIMETOSHO_WASM,
-        crate::builtins::TORZNAB_WASM,
-    ] {
-        provider = provider.with_builtin(wasm);
+    for asset in crate::builtins::INDEXER_BUILTINS {
+        provider = provider.with_builtin_asset(*asset);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_indexer_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmIndexerPluginProvider {
+    let mut provider = WasmIndexerPluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
+    }
+
+    for asset in crate::builtins::INDEXER_BUILTINS {
+        provider = provider.with_builtin_asset(*asset);
     }
 
     for provider_type in disabled_builtins {
@@ -1344,6 +1432,23 @@ pub fn build_download_client_plugin_provider(
 
     for plugin in external_wasm_bytes {
         provider = provider.with_external_plugin(*plugin);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_download_client_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmDownloadClientPluginProvider {
+    let mut provider = WasmDownloadClientPluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
     }
 
     for provider_type in disabled_builtins {
@@ -1409,8 +1514,10 @@ impl WasmSubtitlePluginProvider {
         ))
     }
 
-    fn prepare_builtin_plugin_record(wasm_bytes: &[u8]) -> Result<LoadedPluginRecord, String> {
-        let (descriptor, wasm_bytes) = load_from_bytes(wasm_bytes)?;
+    fn prepare_builtin_asset_record(
+        asset: crate::builtins::BuiltinPluginAsset,
+    ) -> Result<LoadedPluginRecord, String> {
+        let descriptor = parse_builtin_descriptor(asset)?;
         if !validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
@@ -1418,7 +1525,7 @@ impl WasmSubtitlePluginProvider {
         ) {
             return Err("built-in subtitle provider descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(descriptor, asset.wasm.to_vec()))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -1440,8 +1547,21 @@ impl WasmSubtitlePluginProvider {
         self
     }
 
-    pub fn with_builtin(mut self, wasm_bytes: &[u8]) -> Self {
-        match Self::prepare_builtin_plugin_record(wasm_bytes) {
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime subtitle provider plugin");
+            }
+        }
+        self
+    }
+
+    pub fn with_builtin_asset(mut self, asset: crate::builtins::BuiltinPluginAsset) -> Self {
+        match Self::prepare_builtin_asset_record(asset) {
             Ok(record) => {
                 let _ = insert_loaded_plugin(
                     &mut self.plugins,
@@ -1467,10 +1587,10 @@ impl WasmSubtitlePluginProvider {
         &mut self,
         provider_type: &str,
     ) -> Result<Vec<String>, String> {
-        let wasm_bytes = builtin_subtitle_wasm_for_provider(provider_type).ok_or_else(|| {
+        let asset = builtin_subtitle_asset_for_provider(provider_type).ok_or_else(|| {
             format!("no built-in subtitle plugin is available for provider '{provider_type}'")
         })?;
-        let record = Self::prepare_builtin_plugin_record(wasm_bytes)?;
+        let record = Self::prepare_builtin_asset_record(asset)?;
         Ok(insert_loaded_plugin(
             &mut self.plugins,
             &mut self.aliases,
@@ -1578,6 +1698,10 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
+    }
+
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        crate::builtins::builtin_description_for_provider(provider_type).map(str::to_string)
     }
 
     fn reload_plugins(
@@ -1729,6 +1853,14 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         guard.plugin_name_for_provider(provider_type)
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.plugin_description_for_provider(provider_type)
+    }
+
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -1736,6 +1868,18 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
     ) -> Result<(), String> {
         self.reload(build_subtitle_plugin_provider(
             external_wasm_bytes,
+            disabled_builtins,
+        ));
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(build_subtitle_plugin_provider_from_runtime_plugins(
+            runtime_plugins,
             disabled_builtins,
         ));
         Ok(())
@@ -1778,11 +1922,11 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
     }
 }
 
-fn builtin_subtitle_wasm_for_provider(provider_type: &str) -> Option<&'static [u8]> {
-    match provider_type.trim().to_ascii_lowercase().as_str() {
-        "jimaku" => Some(crate::builtins::JIMAKU_WASM),
-        _ => None,
-    }
+fn builtin_subtitle_asset_for_provider(
+    provider_type: &str,
+) -> Option<crate::builtins::BuiltinPluginAsset> {
+    let _ = provider_type;
+    None
 }
 
 fn host_binding_cache_key(host_bindings: &HashMap<PluginHostBindingId, String>) -> String {
@@ -1816,9 +1960,29 @@ pub fn build_subtitle_plugin_provider(
         provider = provider.with_external_plugin(*plugin);
     }
 
-    {
-        let wasm = crate::builtins::JIMAKU_WASM;
-        provider = provider.with_builtin(wasm);
+    for asset in crate::builtins::SUBTITLE_BUILTINS {
+        provider = provider.with_builtin_asset(*asset);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_subtitle_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmSubtitlePluginProvider {
+    let mut provider = WasmSubtitlePluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
+    }
+
+    for asset in crate::builtins::SUBTITLE_BUILTINS {
+        provider = provider.with_builtin_asset(*asset);
     }
 
     for provider_type in disabled_builtins {
@@ -2193,6 +2357,19 @@ impl WasmNotificationPluginProvider {
         self
     }
 
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime notification plugin");
+            }
+        }
+        self
+    }
+
     pub fn without_provider_type(mut self, provider_type: &str) -> Self {
         let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
         self
@@ -2318,6 +2495,10 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
+    }
+
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        crate::builtins::builtin_description_for_provider(provider_type).map(str::to_string)
     }
 
     fn reload_plugins(
@@ -2451,6 +2632,14 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         guard.plugin_name_for_provider(provider_type)
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.plugin_description_for_provider(provider_type)
+    }
+
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -2458,6 +2647,18 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
     ) -> Result<(), String> {
         self.reload(build_notification_plugin_provider(
             external_wasm_bytes,
+            disabled_builtins,
+        ));
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(build_notification_plugin_provider_from_runtime_plugins(
+            runtime_plugins,
             disabled_builtins,
         ));
         Ok(())
@@ -2505,10 +2706,27 @@ pub fn build_notification_plugin_provider(
     provider
 }
 
+pub fn build_notification_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmNotificationPluginProvider {
+    let mut provider = WasmNotificationPluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::{ANIMETOSHO_WASM, JIMAKU_WASM, NEWZNAB_WASM, NZBGEEK_WASM, TORZNAB_WASM};
+    use crate::builtins::{ANIMETOSHO, NEWZNAB, NZBGEEK, TORZNAB};
     use crate::types::{
         ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
         DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
@@ -2696,14 +2914,9 @@ mod tests {
 
     #[test]
     fn embedded_builtin_descriptors_match_current_sdk_line() {
-        for wasm in [
-            ANIMETOSHO_WASM,
-            NEWZNAB_WASM,
-            NZBGEEK_WASM,
-            TORZNAB_WASM,
-            JIMAKU_WASM,
-        ] {
-            let (descriptor, _) = load_from_bytes(wasm).expect("embedded builtin should load");
+        for asset in [ANIMETOSHO, NEWZNAB, NZBGEEK, TORZNAB] {
+            let descriptor: PluginDescriptor = serde_json::from_str(asset.descriptor_json)
+                .expect("embedded builtin descriptor should parse");
             validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
                 .expect("embedded builtin should match current SDK line");
         }
@@ -2718,12 +2931,9 @@ mod tests {
                 "expected builtin indexer provider '{provider_type}' to be available"
             );
         }
-
-        let subtitles = build_subtitle_plugin_provider(&[], &[]);
-        assert!(
-            subtitles.plugin_name_for_provider("jimaku").is_some(),
-            "expected builtin subtitle provider 'jimaku' to be available"
-        );
+        assert!(build_subtitle_plugin_provider(&[], &[])
+            .builtin_provider_types()
+            .is_empty());
     }
 
     #[test]
@@ -3110,7 +3320,7 @@ mod tests {
     }
 
     #[test]
-    fn subtitle_builtin_restore_only_mutates_target_provider() {
+    fn subtitle_builtin_restore_rejects_removed_builtin() {
         let provider = DynamicSubtitlePluginProvider::new(build_subtitle_plugin_provider(&[], &[]));
         provider
             .upsert_runtime_plugin(runtime_plugin_load(
@@ -3120,9 +3330,6 @@ mod tests {
             ))
             .expect("upsert opensubtitles");
 
-        provider
-            .remove_runtime_plugin("jimaku")
-            .expect("remove builtin subtitle");
         let providers = provider.available_provider_types();
         assert!(
             providers
@@ -3135,9 +3342,7 @@ mod tests {
                 .any(|provider_type| provider_type == "jimaku")
         );
 
-        provider
-            .restore_builtin_plugin("jimaku")
-            .expect("restore builtin subtitle");
+        assert!(provider.restore_builtin_plugin("jimaku").is_err());
         let providers = provider.available_provider_types();
         assert!(
             providers
@@ -3147,7 +3352,7 @@ mod tests {
         assert!(
             providers
                 .iter()
-                .any(|provider_type| provider_type == "jimaku")
+                .all(|provider_type| provider_type != "jimaku")
         );
     }
 }

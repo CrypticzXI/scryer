@@ -20,7 +20,7 @@ fn admin() -> User {
 /// configured to talk to the given wiremock URI.
 fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
     let config = scryer_domain::IndexerConfig {
         id: "test-nzbgeek".to_string(),
         name: "Test NZBGeek".to_string(),
@@ -494,7 +494,7 @@ async fn nzbgeek_search_single_item_response() {
 async fn nzbgeek_search_no_api_key_fails() {
     let ctx = TestContext::new().await;
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
     let config = scryer_domain::IndexerConfig {
         id: "test-no-key".to_string(),
         name: "Test No Key".to_string(),

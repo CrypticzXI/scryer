@@ -116,8 +116,8 @@ fn scoring_policies_empty_for_test_plugin() {
 #[test]
 fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM)
-        .with_builtin(scryer_plugins::builtins::NEWZNAB_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
     let mut types = provider.available_provider_types();
     types.sort();
@@ -181,19 +181,14 @@ fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
 
 #[test]
 fn external_overrides_builtin_same_provider() {
-    // Load test fixture (provider_type = "test") as external, then try
-    // loading it again as builtin — builtin should be skipped.
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
-    let wasm_bytes = std::fs::read(fixtures_dir.join("test-indexer/plugin.wasm")).unwrap();
-
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_external_bytes(&wasm_bytes)
-        .with_builtin(&wasm_bytes); // same provider_type — should be skipped
+        .with_external_bytes(scryer_plugins::builtins::NZBGEEK.wasm)
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
 
-    // Only one entry for "test", not duplicated
+    // Only one entry for "nzbgeek", not duplicated.
     let types = provider.available_provider_types();
     assert_eq!(
-        types.iter().filter(|t| *t == "test").count(),
+        types.iter().filter(|t| *t == "nzbgeek").count(),
         1,
         "builtin should not duplicate external"
     );
@@ -213,7 +208,7 @@ fn invalid_wasm_bytes_silently_skipped() {
 #[test]
 fn invalid_bytes_dont_affect_valid() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM)
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
         .with_external_bytes(b"garbage");
 
     let types = provider.available_provider_types();
@@ -224,22 +219,20 @@ fn invalid_bytes_dont_affect_valid() {
 }
 
 #[test]
-fn jimaku_builtin_hides_internal_archive_and_ai_config_fields() {
-    let provider = scryer_plugins::WasmSubtitlePluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::JIMAKU_WASM);
-
-    let fields = provider.config_fields_for_provider("jimaku");
-    let field_keys: Vec<&str> = fields.iter().map(|field| field.key.as_str()).collect();
-
-    assert_eq!(field_keys, vec!["api_key", "enable_name_search_fallback"]);
+fn subtitle_builtins_are_empty() {
+    let provider = scryer_plugins::WasmSubtitlePluginProvider::empty();
+    assert!(
+        provider.builtin_provider_types().is_empty(),
+        "subtitle builtins should now be catalog-only"
+    );
 }
 
 #[test]
 fn newznab_family_builtins_include_rss_search_path() {
     for (name, wasm_bytes) in [
-        ("nzbgeek", scryer_plugins::builtins::NZBGEEK_WASM),
-        ("newznab", scryer_plugins::builtins::NEWZNAB_WASM),
-        ("torznab", scryer_plugins::builtins::TORZNAB_WASM),
+        ("nzbgeek", scryer_plugins::builtins::NZBGEEK.wasm),
+        ("newznab", scryer_plugins::builtins::NEWZNAB.wasm),
+        ("torznab", scryer_plugins::builtins::TORZNAB.wasm),
     ] {
         assert!(
             bytes_contain(wasm_bytes, b"rss_search: fetching recent releases"),
@@ -252,7 +245,7 @@ fn newznab_family_builtins_include_rss_search_path() {
 async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
     let (base_url, request_rx) = spawn_newznab_response_server();
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
 
     let mut config = test_config("nzbgeek");
     config.base_url = base_url;
@@ -348,7 +341,7 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
 #[test]
 fn dynamic_delegates_available_types() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     let types = dynamic.available_provider_types();
@@ -358,8 +351,8 @@ fn dynamic_delegates_available_types() {
 #[test]
 fn dynamic_provider_reload_behaviour() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM)
-        .with_builtin(scryer_plugins::builtins::NEWZNAB_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     assert_eq!(
@@ -393,7 +386,7 @@ fn dynamic_provider_reload_behaviour() {
 #[test]
 fn dynamic_client_cache_hit() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     let config = test_config("nzbgeek");
@@ -408,7 +401,7 @@ fn dynamic_client_cache_hit() {
 #[test]
 fn dynamic_client_cache_miss_on_updated_at() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     let mut config1 = test_config("nzbgeek");
@@ -429,13 +422,13 @@ fn dynamic_client_cache_miss_on_updated_at() {
 #[test]
 fn builtin_with_valid_descriptor_loads() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin(scryer_plugins::builtins::NZBGEEK_WASM);
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
 
     assert!(
         provider
             .available_provider_types()
             .contains(&"nzbgeek".to_string()),
-        "NZBGEEK_WASM should register as 'nzbgeek'"
+        "NZBGEEK builtin should register as 'nzbgeek'"
     );
 }
 

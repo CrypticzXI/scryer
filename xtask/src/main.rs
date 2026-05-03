@@ -41,17 +41,77 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer-release-parser",
     "scryer-rules",
 ];
-const BUILTIN_PLUGIN_ARTIFACTS: &[&str] = &[
-    "crates/scryer-plugins/builtins/animetosho_indexer.wasm",
-    "crates/scryer-plugins/builtins/jimaku_subtitle_provider.wasm",
-    "crates/scryer-plugins/builtins/newznab_indexer.wasm",
-    "crates/scryer-plugins/builtins/nzbgeek_indexer.wasm",
-    "crates/scryer-plugins/builtins/torznab_indexer.wasm",
-];
 const RELEASE_DRY_RUN_CACHE_FILE: &str = "tmp/xtask-release-dry-run.json";
 const RELEASE_DRY_RUN_BUILTINS_DIR: &str = "tmp/xtask-release-dry-run-builtins";
 const OFFICIAL_PLUGIN_CATALOG_URL: &str =
     "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv2/catalog-v2.json";
+const BUILTIN_ASSET_DIR: &str = "crates/scryer-plugins/builtins";
+const OFFICIAL_PLUGIN_REPO: &str = "scryer-media/scryer-plugins";
+
+struct BuiltinPluginSpec {
+    plugin_id: &'static str,
+    artifact_stem: &'static str,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogV2 {
+    plugins: Vec<CatalogV2Entry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogV2Entry {
+    id: String,
+    child_catalog_url: String,
+    required_signer: RequiredSignerV2,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RequiredSignerV2 {
+    github_repository: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ChildCatalogV2 {
+    id: String,
+    description: String,
+    releases: Vec<ChildCatalogReleaseV2>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ChildCatalogReleaseV2 {
+    version: String,
+    artifact_manifest_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PluginManifestV2 {
+    id: String,
+    version: String,
+    artifact: String,
+    compression: String,
+    wasm_digest: String,
+    artifact_digest: String,
+    signature: String,
+}
+
+const BUILTIN_PLUGINS: &[BuiltinPluginSpec] = &[
+    BuiltinPluginSpec {
+        plugin_id: "animetosho",
+        artifact_stem: "animetosho_indexer",
+    },
+    BuiltinPluginSpec {
+        plugin_id: "newznab",
+        artifact_stem: "newznab_indexer",
+    },
+    BuiltinPluginSpec {
+        plugin_id: "nzbgeek",
+        artifact_stem: "nzbgeek_indexer",
+    },
+    BuiltinPluginSpec {
+        plugin_id: "torznab",
+        artifact_stem: "torznab_indexer",
+    },
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -70,6 +130,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Release(ReleaseArgs),
+    Builtins(BuiltinsArgs),
     Sdk(SdkArgs),
     ValidateTrashGuides,
     Ci(CiArgs),
@@ -78,6 +139,17 @@ enum Commands {
     Seed(SeedArgs),
     Profile(ProfileArgs),
     Corpus(CorpusArgs),
+}
+
+#[derive(Args)]
+struct BuiltinsArgs {
+    #[command(subcommand)]
+    command: BuiltinsCommand,
+}
+
+#[derive(Subcommand)]
+enum BuiltinsCommand {
+    Sync,
 }
 
 #[derive(Args)]
@@ -370,6 +442,12 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Release(args) => run_release(&ctx, args),
+        Commands::Builtins(args) => match args.command {
+            BuiltinsCommand::Sync => {
+                refresh_builtin_plugins(&ctx)?;
+                Ok(())
+            }
+        },
         Commands::Sdk(args) => match args.command {
             SdkCommand::Release(args) => run_sdk_release(&ctx, args),
         },
@@ -443,50 +521,6 @@ fn command_available(command: &str) -> Result<bool> {
         .arg(format!("command -v {command} >/dev/null 2>&1"))
         .status()?;
     Ok(status.success())
-}
-
-fn rustup_toolchain_from_file(path: &Path) -> Result<Option<String>> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-
-    let document = toml::from_str::<TomlValue>(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(document
-        .get("toolchain")
-        .and_then(|toolchain| toolchain.get("channel"))
-        .and_then(TomlValue::as_str)
-        .map(ToOwned::to_owned))
-}
-
-fn repo_rustup_toolchain(repo_root: &Path) -> Result<Option<String>> {
-    if !command_available("rustup")? {
-        return Ok(None);
-    }
-
-    if let Some(toolchain) = rustup_toolchain_from_file(&repo_root.join("rust-toolchain.toml"))? {
-        return Ok(Some(toolchain));
-    }
-
-    let mut command = Command::new("rustup");
-    command.current_dir(repo_root);
-    command.args(["show", "active-toolchain"]);
-    Ok(run_capture(&mut command)?
-        .split_whitespace()
-        .next()
-        .map(str::to_string))
-}
-
-fn repo_release_cargo_command_in(ctx: &TaskContext, cwd: &Path) -> Result<Command> {
-    if let Some(toolchain) = repo_rustup_toolchain(cwd)? {
-        let mut command = ctx.release_command_in("rustup", cwd);
-        command.args(["run", toolchain.as_str(), "cargo"]);
-        return Ok(command);
-    }
-
-    Ok(ctx.release_command_in("cargo", cwd))
 }
 
 fn validated_release_rtk_available() -> Result<bool> {
@@ -1138,44 +1172,292 @@ fn add_prod_package_args(command: &mut Command) {
     }
 }
 
+struct BuiltinAssetPaths {
+    wasm: PathBuf,
+    descriptor_json: PathBuf,
+    description: PathBuf,
+}
+
+fn builtin_asset_paths(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> BuiltinAssetPaths {
+    let dir = ctx.path(BUILTIN_ASSET_DIR);
+    BuiltinAssetPaths {
+        wasm: dir.join(format!("{}.wasm", spec.artifact_stem)),
+        descriptor_json: dir.join(format!("{}.descriptor.json", spec.artifact_stem)),
+        description: dir.join(format!("{}.description.txt", spec.artifact_stem)),
+    }
+}
+
 fn builtin_plugin_paths(ctx: &TaskContext) -> Vec<PathBuf> {
-    BUILTIN_PLUGIN_ARTIFACTS
+    BUILTIN_PLUGINS
         .iter()
-        .map(|path| ctx.path(path))
+        .flat_map(|spec| {
+            let paths = builtin_asset_paths(ctx, spec);
+            [
+                paths.wasm,
+                paths.descriptor_json,
+                paths.description,
+            ]
+        })
         .collect()
 }
 
-fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
-    let plugins_dir = ctx
-        .repo_root
-        .parent()
-        .ok_or_else(|| anyhow!("scryer repo has no parent directory"))?
-        .join("scryer-plugins");
-    let plugins_xtask = plugins_dir.join("xtask/Cargo.toml");
-    if !plugins_xtask.is_file() {
+fn bundle_url_for(url: &str) -> String {
+    format!("{url}.bundle")
+}
+
+fn fetch_url_bytes(url: &str) -> Result<Vec<u8>> {
+    let response = reqwest::blocking::get(url)
+        .with_context(|| format!("failed to fetch {url}"))?
+        .error_for_status()
+        .with_context(|| format!("request returned error status for {url}"))?;
+    Ok(response
+        .bytes()
+        .with_context(|| format!("failed to read response body for {url}"))?
+        .to_vec())
+}
+
+fn decode_possibly_zstd_bytes(url: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if url.ends_with(".zst") {
+        return zstd::decode_all(bytes.as_slice())
+            .with_context(|| format!("failed to decompress {url}"));
+    }
+    Ok(bytes)
+}
+
+fn regex_escape_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(
+            ch,
+            '\\' | '.'
+                | '+'
+                | '*'
+                | '?'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '^'
+                | '$'
+                | '|'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+fn cosign_verify_blob(ctx: &TaskContext, repo: &str, blob: &Path, bundle: &Path) -> Result<()> {
+    let identity_pattern = format!(
+        "^https://github\\.com/{}/\\.github/workflows/.*@refs/(tags|heads)/.*$",
+        regex_escape_literal(repo)
+    );
+    run_checked(
+        ctx.command("cosign")
+            .arg("verify-blob")
+            .arg("--bundle")
+            .arg(bundle)
+            .arg("--certificate-identity-regexp")
+            .arg(identity_pattern)
+            .arg("--certificate-oidc-issuer")
+            .arg("https://token.actions.githubusercontent.com")
+            .arg(blob),
+    )
+}
+
+fn fetch_verified_bytes(
+    ctx: &TaskContext,
+    repo: &str,
+    url: &str,
+    bundle_url: &str,
+) -> Result<Vec<u8>> {
+    let blob_bytes = fetch_url_bytes(url)?;
+    let bundle_bytes = fetch_url_bytes(bundle_url)?;
+    let blob = NamedTempFile::new()?;
+    let bundle = NamedTempFile::new()?;
+    fs::write(blob.path(), &blob_bytes)?;
+    fs::write(bundle.path(), &bundle_bytes)?;
+    cosign_verify_blob(ctx, repo, blob.path(), bundle.path())?;
+    Ok(blob_bytes)
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+    format!("blake3:{}", blake3::hash(bytes).to_hex())
+}
+
+fn require_blake3_bytes(label: &str, expected: &str, bytes: &[u8]) -> Result<()> {
+    let actual = blake3_hex(bytes);
+    if !actual.eq_ignore_ascii_case(expected) {
+        bail!("{label} digest mismatch: expected {expected}, got {actual}");
+    }
+    Ok(())
+}
+
+fn latest_catalog_release<'a>(
+    plugin_id: &str,
+    releases: &'a [ChildCatalogReleaseV2],
+) -> Result<&'a ChildCatalogReleaseV2> {
+    releases
+        .iter()
+        .max_by_key(|release| Version::parse(release.version.trim_start_matches('v')).ok())
+        .ok_or_else(|| anyhow!("{plugin_id}: child catalog has no releases"))
+}
+
+fn manifest_asset_url(manifest_url: &str, asset: &str) -> Result<String> {
+    let (base, _) = manifest_url
+        .rsplit_once('/')
+        .ok_or_else(|| anyhow!("invalid manifest url {manifest_url}"))?;
+    Ok(format!("{base}/{asset}"))
+}
+
+fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()> {
+    let catalog_bytes = fetch_verified_bytes(
+        ctx,
+        OFFICIAL_PLUGIN_REPO,
+        OFFICIAL_PLUGIN_CATALOG_URL,
+        &bundle_url_for(OFFICIAL_PLUGIN_CATALOG_URL),
+    )?;
+    let catalog: CatalogV2 = serde_json::from_slice(&catalog_bytes)
+        .context("failed to parse official plugin catalog")?;
+    let entry = catalog
+        .plugins
+        .iter()
+        .find(|entry| entry.id == spec.plugin_id)
+        .ok_or_else(|| anyhow!("builtin plugin '{}' missing from official catalog", spec.plugin_id))?;
+    let child_bytes = fetch_verified_bytes(
+        ctx,
+        &entry.required_signer.github_repository,
+        &entry.child_catalog_url,
+        &bundle_url_for(&entry.child_catalog_url),
+    )?;
+    let child_bytes = decode_possibly_zstd_bytes(&entry.child_catalog_url, child_bytes)?;
+    let child: ChildCatalogV2 = serde_json::from_slice(&child_bytes)
+        .with_context(|| format!("failed to parse child catalog for {}", spec.plugin_id))?;
+    if child.id != spec.plugin_id {
         bail!(
-            "scryer-plugins xtask not found at {}",
-            plugins_xtask.display()
+            "child catalog id mismatch for {}: got {}",
+            spec.plugin_id,
+            child.id
+        );
+    }
+    let release = latest_catalog_release(spec.plugin_id, &child.releases)?;
+    let manifest_bytes = fetch_verified_bytes(
+        ctx,
+        &entry.required_signer.github_repository,
+        &release.artifact_manifest_url,
+        &bundle_url_for(&release.artifact_manifest_url),
+    )?;
+    let manifest: PluginManifestV2 = serde_json::from_slice(&manifest_bytes)
+        .with_context(|| format!("failed to parse manifest for {}", spec.plugin_id))?;
+    if manifest.id != spec.plugin_id {
+        bail!(
+            "manifest id mismatch for {}: got {}",
+            spec.plugin_id,
+            manifest.id
+        );
+    }
+    let artifact_url = manifest_asset_url(&release.artifact_manifest_url, &manifest.artifact)?;
+    let artifact_bundle_url =
+        manifest_asset_url(&release.artifact_manifest_url, &manifest.signature)?;
+    let compressed_wasm = fetch_verified_bytes(
+        ctx,
+        &entry.required_signer.github_repository,
+        &artifact_url,
+        &artifact_bundle_url,
+    )?;
+    require_blake3_bytes(
+        "compressed builtin artifact",
+        &manifest.artifact_digest,
+        &compressed_wasm,
+    )?;
+    if manifest.compression != "zstd" {
+        bail!(
+            "unsupported builtin artifact compression for {}: {}",
+            spec.plugin_id,
+            manifest.compression
+        );
+    }
+    let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice())
+        .with_context(|| format!("failed to decompress builtin artifact for {}", spec.plugin_id))?;
+    require_blake3_bytes("builtin wasm", &manifest.wasm_digest, &wasm_bytes)?;
+    let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+        .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
+    if descriptor.id != spec.plugin_id {
+        bail!(
+            "descriptor id mismatch for {}: got {}",
+            spec.plugin_id,
+            descriptor.id
+        );
+    }
+    if descriptor.version != manifest.version {
+        bail!(
+            "descriptor version mismatch for {}: got {}, expected {}",
+            spec.plugin_id,
+            descriptor.version,
+            manifest.version
         );
     }
 
-    let output_dir = ctx.path("crates/scryer-plugins/builtins");
-    step("Rebuilding embedded plugin builtins");
-    let mut command = repo_release_cargo_command_in(ctx, &plugins_dir)?;
-    // The sibling scryer-plugins repo owns this lockfile independently, so
-    // builtin refresh must not hard-fail on its local lock drift.
-    command.args([
-        "run",
-        "--manifest-path",
-        "xtask/Cargo.toml",
-        "--",
-        "builtins",
-        "--output-dir",
-    ]);
-    command.arg(&output_dir);
-    run_streaming(&mut command, "[plugins] ")?;
-    ok("Embedded plugin builtins refreshed");
+    let paths = builtin_asset_paths(ctx, spec);
+    for path in [&paths.wasm, &paths.descriptor_json, &paths.description] {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    fs::write(&paths.wasm, &wasm_bytes)
+        .with_context(|| format!("failed to write {}", paths.wasm.display()))?;
+    fs::write(
+        &paths.descriptor_json,
+        serde_json::to_string_pretty(&descriptor)? + "\n",
+    )
+    .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
+    fs::write(&paths.description, format!("{}\n", child.description.trim()))
+        .with_context(|| format!("failed to write {}", paths.description.display()))?;
 
+    ok(format!(
+        "synced builtin {} {} from official catalog",
+        spec.plugin_id, manifest.version
+    ));
+    Ok(())
+}
+
+fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
+    let keep = builtin_plugin_paths(ctx)
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let dir = ctx.path(BUILTIN_ASSET_DIR);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let managed = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|ext| matches!(ext, "wasm" | "json" | "txt"));
+        if managed && !keep.contains(&path) {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove stale builtin {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+    step("Syncing embedded plugin builtins from the official catalog");
+    for spec in BUILTIN_PLUGINS {
+        sync_builtin_plugin(ctx, spec)
+            .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
+    }
+    remove_stale_builtin_assets(ctx)?;
+    ok("Embedded plugin builtins refreshed");
     Ok(builtin_plugin_paths(ctx))
 }
 

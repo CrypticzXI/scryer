@@ -528,6 +528,17 @@ fn runtime_plugin_load_from_validated(
     }
 }
 
+pub const RUNTIME_PLUGIN_LOAD_CONCURRENCY: usize = 4;
+
+fn persisted_plugin_descriptor_json(descriptor: &PluginDescriptor) -> AppResult<String> {
+    serde_json::to_string(descriptor).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to serialize plugin descriptor '{}': {error}",
+            descriptor.id
+        ))
+    })
+}
+
 fn installation_runtime_release(installation: &PluginInstallation) -> RegistryRelease {
     RegistryRelease {
         version: installation.version.clone(),
@@ -571,6 +582,49 @@ pub async fn decode_persisted_plugin_wasm_payload(
         &wasm_bytes,
     )?;
     Ok(wasm_bytes)
+}
+
+fn parse_persisted_plugin_descriptor(
+    installation: &PluginInstallation,
+) -> AppResult<PluginDescriptor> {
+    let descriptor_json = installation
+        .descriptor_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "plugin '{}' is missing persisted descriptor_json",
+                installation.plugin_id
+            ))
+        })?;
+    serde_json::from_str(descriptor_json).map_err(|error| {
+        AppError::Validation(format!(
+            "plugin '{}' has invalid persisted descriptor_json: {error}",
+            installation.plugin_id
+        ))
+    })
+}
+
+pub async fn load_runtime_plugin_from_persisted_installation_payload(
+    installation: &PluginInstallation,
+    payload: &PersistedPluginWasmPayload,
+) -> AppResult<RuntimePluginLoad> {
+    let wasm_bytes = decode_persisted_plugin_wasm_payload(installation, payload).await?;
+    let descriptor = parse_persisted_plugin_descriptor(installation)?;
+    let validated = validate_downloaded_plugin_descriptor(
+        &installation.plugin_id,
+        &installation.plugin_type,
+        &installation.provider_type,
+        &installation_runtime_release(installation),
+        &descriptor,
+        false,
+    )?;
+    Ok(runtime_plugin_load_from_validated(
+        validated.descriptor,
+        wasm_bytes,
+        installation_is_first_party(installation),
+    ))
 }
 
 fn installation_is_host_blocked(installation: &PluginInstallation) -> bool {
@@ -814,20 +868,6 @@ fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
         plugin_type,
         "indexer" | "usenet_indexer" | "torrent_indexer"
     )
-}
-
-fn external_plugin_refs_for_types<'a>(
-    external_plugins: &'a [(String, Vec<u8>, bool)],
-    matches_type: impl Fn(&str) -> bool,
-) -> Vec<ExternalPluginWasm<'a>> {
-    external_plugins
-        .iter()
-        .filter(|(plugin_type, _, _)| matches_type(plugin_type))
-        .map(|(_, bytes, first_party)| ExternalPluginWasm {
-            bytes: bytes.as_slice(),
-            first_party: *first_party,
-        })
-        .collect()
 }
 
 fn build_plugin_http_client(timeout: Option<Duration>) -> Result<OutboundHttpClient, String> {
@@ -1109,22 +1149,7 @@ impl AppUseCase {
                     installation.plugin_id
                 ))
             })?;
-        let wasm_bytes = decode_persisted_plugin_wasm_payload(installation, &payload).await?;
-        let descriptor =
-            load_plugin_descriptor_from_wasm_bytes(&wasm_bytes).map_err(AppError::Validation)?;
-        let validated = validate_downloaded_plugin_descriptor(
-            &installation.plugin_id,
-            &installation.plugin_type,
-            &installation.provider_type,
-            &installation_runtime_release(installation),
-            &descriptor,
-            false,
-        )?;
-        Ok(runtime_plugin_load_from_validated(
-            validated.descriptor,
-            wasm_bytes,
-            installation_is_first_party(installation),
-        ))
+        load_runtime_plugin_from_persisted_installation_payload(installation, &payload).await
     }
 
     fn apply_runtime_plugin_upsert(
@@ -1442,58 +1467,87 @@ impl AppUseCase {
             .get_enabled_plugin_wasm_bytes()
             .await?;
 
-        // Downloaded overrides take precedence over bundled builtins.
-        let mut external_plugins: Vec<(String, Vec<u8>, bool)> = Vec::new();
-        for (inst, payload) in enabled {
+        let mut runtime_plugins = Vec::new();
+        let mut pending_plugins = enabled.into_iter().filter_map(|(installation, payload)| {
             if !matches!(
-                inst.source_kind,
+                installation.source_kind,
                 PluginSourceKind::Downloaded | PluginSourceKind::Manual
             ) {
-                continue;
+                return None;
             }
-            if !installation_sdk_contract_is_host_compatible(&inst) {
-                continue;
+            if !installation_sdk_contract_is_host_compatible(&installation) {
+                return None;
             }
-            if installation_is_host_blocked(&inst) {
-                continue;
+            if installation_is_host_blocked(&installation) {
+                return None;
             }
 
-            let Some(payload) = payload else {
-                continue;
+            payload.map(|payload| (installation, payload))
+        });
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..RUNTIME_PLUGIN_LOAD_CONCURRENCY {
+            let Some((installation, payload)) = pending_plugins.next() else {
+                break;
             };
-            let bytes = match decode_persisted_plugin_wasm_payload(&inst, &payload).await {
-                Ok(bytes) => bytes,
+            tasks.spawn(async move {
+                let plugin_id = installation.plugin_id.clone();
+                let version = installation.version.clone();
+                let loaded =
+                    load_runtime_plugin_from_persisted_installation_payload(&installation, &payload)
+                        .await;
+                (plugin_id, version, loaded)
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let (plugin_id, version, loaded) = result
+                .map_err(|error| {
+                    AppError::Repository(format!("runtime plugin load task panicked: {error}"))
+                })?;
+            match loaded {
+                Ok(runtime_plugin) => runtime_plugins.push(runtime_plugin),
                 Err(error) => {
                     warn!(
-                        plugin_id = inst.plugin_id.as_str(),
-                        version = inst.version.as_str(),
+                        plugin_id = plugin_id.as_str(),
+                        version = version.as_str(),
                         error = %error,
                         "skipping installed plugin after persisted payload validation failed"
                     );
-                    continue;
                 }
-            };
+            }
 
-            external_plugins.push((
-                inst.plugin_type.clone(),
-                bytes,
-                installation_is_first_party(&inst),
-            ));
+            if let Some((installation, payload)) = pending_plugins.next() {
+                tasks.spawn(async move {
+                    let plugin_id = installation.plugin_id.clone();
+                    let version = installation.version.clone();
+                    let loaded = load_runtime_plugin_from_persisted_installation_payload(
+                        &installation,
+                        &payload,
+                    )
+                    .await;
+                    (plugin_id, version, loaded)
+                });
+            }
         }
-        let indexer_refs = external_plugin_refs_for_types(
-            &external_plugins,
-            plugin_type_belongs_to_indexer_family,
-        );
-        let download_client_refs =
-            external_plugin_refs_for_types(&external_plugins, |plugin_type| {
-                plugin_type == "download_client"
-            });
-        let subtitle_refs = external_plugin_refs_for_types(&external_plugins, |plugin_type| {
-            plugin_type == "subtitle_provider"
-        });
-        let notification_refs = external_plugin_refs_for_types(&external_plugins, |plugin_type| {
-            plugin_type == "notification"
-        });
+        let indexer_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin_type_belongs_to_indexer_family(plugin.descriptor.plugin_type()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let download_client_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin.descriptor.plugin_type() == "download_client")
+            .cloned()
+            .collect::<Vec<_>>();
+        let subtitle_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
+            .cloned()
+            .collect::<Vec<_>>();
+        let notification_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
+            .cloned()
+            .collect::<Vec<_>>();
 
         // Collect provider_types of builtins the user has disabled
         // (must query all installations, not just enabled ones)
@@ -1511,7 +1565,7 @@ impl AppUseCase {
 
         if let Some(provider) = self.services.integrations.plugin_provider.available() {
             provider
-                .reload_plugins(&indexer_refs, &disabled_builtins)
+                .reload_runtime_plugins(&indexer_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!("failed to reload plugin provider: {e}"))
                 })?;
@@ -1524,7 +1578,7 @@ impl AppUseCase {
             .available()
         {
             provider
-                .reload_plugins(&download_client_refs, &disabled_builtins)
+                .reload_runtime_plugins(&download_client_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!(
                         "failed to reload download client plugin provider: {e}"
@@ -1539,7 +1593,7 @@ impl AppUseCase {
             .available()
         {
             provider
-                .reload_plugins(&subtitle_refs, &disabled_builtins)
+                .reload_runtime_plugins(&subtitle_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!("failed to reload subtitle plugin provider: {e}"))
                 })?;
@@ -1548,7 +1602,7 @@ impl AppUseCase {
         // Also rebuild notification plugin provider
         if let Some(notif_provider) = self.services.notifications.notification_provider() {
             notif_provider
-                .reload_plugins(&notification_refs, &disabled_builtins)
+                .reload_runtime_plugins(&notification_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!(
                         "failed to reload notification plugin provider: {e}"
@@ -2610,6 +2664,7 @@ impl AppUseCase {
             manifest_url: Some(resolved.release.artifact_manifest_url.clone()),
             wasm_digest: Some(wasm_digest),
             artifact_digest: Some(manifest.artifact_digest),
+            descriptor_json: Some(persisted_plugin_descriptor_json(&validated.descriptor)?),
             installed_at: now,
             updated_at: now,
         };
@@ -2706,6 +2761,7 @@ impl AppUseCase {
         updated.manifest_url = Some(resolved.release.artifact_manifest_url.clone());
         updated.wasm_digest = Some(wasm_digest);
         updated.artifact_digest = Some(manifest.artifact_digest);
+        updated.descriptor_json = Some(persisted_plugin_descriptor_json(&validated.descriptor)?);
         updated.updated_at = Utc::now();
 
         reporter.installing().await;

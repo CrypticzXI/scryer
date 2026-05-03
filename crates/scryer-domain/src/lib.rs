@@ -2095,6 +2095,7 @@ pub struct PluginInstallation {
     pub manifest_url: Option<String>,
     pub wasm_digest: Option<String>,
     pub artifact_digest: Option<String>,
+    pub descriptor_json: Option<String>,
     pub installed_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
