@@ -82,8 +82,14 @@ pub use integration::tracked_downloads;
 pub use library::filesystem_walk;
 pub use library::recycle_bin;
 pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
+pub use plugins::catalog::decompress_zstd as plugin_wasm_decompress_zstd;
+pub use plugins::catalog::verify_split_digest as plugin_wasm_verify_split_digest;
 pub use plugins::managed_rules;
 pub use quality::release_dedup;
+pub use services::{
+    PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
+    PluginInstallState,
+};
 pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
     library::discovery::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH;
@@ -178,7 +184,7 @@ pub use media::language::{
 };
 pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
-    RulePackTemplate,
+    RulePackTemplate, decode_persisted_plugin_wasm_payload,
 };
 pub use security::backup::BackupService;
 pub use settings::settings::{
@@ -256,11 +262,11 @@ pub use ports::{
     NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
     NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    ReleaseAttemptRepository, RuleSetRepository, SettingsRepository, ShowRepository,
-    StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserRepository, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
+    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
+    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, UserRepository,
+    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
@@ -349,6 +355,9 @@ pub enum AppError {
 
     #[error("validation: {0}")]
     Validation(String),
+
+    #[error("plugin install already in progress for '{0}'")]
+    PluginInstallInProgress(String),
 
     #[error("not found: {0}")]
     NotFound(String),

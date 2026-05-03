@@ -1,23 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import {
   SettingsPluginsSection,
+  type PluginInstallProgressRecord,
   type RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
-import { pluginsQuery } from "@/lib/graphql/queries";
+import { pluginsQuery, pluginInstallProgressSubscription } from "@/lib/graphql/queries";
 import {
+  beginInstallPluginMutation,
+  beginUpgradePluginMutation,
   refreshPluginCatalogMutation,
   inspectManualPluginRepoMutation,
-  installPluginMutation,
   installManualPluginMutation,
   uninstallPluginMutation,
   togglePluginMutation,
-  upgradePluginMutation,
 } from "@/lib/graphql/mutations";
+import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog-subscription";
+import { wsClient } from "@/lib/graphql/ws-client";
 
 type PluginCatalogStatusRecord = {
   refreshState: string;
@@ -33,6 +36,12 @@ type ManualPluginPreviewRecord = {
   plugin: RegistryPluginRecord;
 };
 
+type PluginInstallProgressSubscriptionResult = {
+  data?: {
+    pluginInstallProgress?: PluginInstallProgressRecord;
+  };
+};
+
 function extractPluginMutationErrorMessage(error: unknown): string | null {
   if (error && typeof error === "object" && "graphQLErrors" in error) {
     const graphQLErrors = (error as { graphQLErrors?: Array<{ message?: string }> }).graphQLErrors;
@@ -44,6 +53,25 @@ function extractPluginMutationErrorMessage(error: unknown): string | null {
 
   if (error instanceof Error && error.message.trim()) {
     return error.message.trim();
+  }
+
+  return null;
+}
+
+function extractPluginMutationErrorCode(error: unknown): string | null {
+  if (
+    error
+    && typeof error === "object"
+    && "graphQLErrors" in error
+    && Array.isArray((error as { graphQLErrors?: unknown[] }).graphQLErrors)
+  ) {
+    const graphQLErrors = (error as {
+      graphQLErrors?: Array<{ extensions?: { code?: unknown } }>;
+    }).graphQLErrors;
+    const code = graphQLErrors?.find(
+      (entry) => typeof entry.extensions?.code === "string",
+    )?.extensions?.code;
+    return typeof code === "string" ? code : null;
   }
 
   return null;
@@ -73,6 +101,9 @@ function formatPluginInstallError(
   }
 
   if (normalized) {
+    if (extractPluginMutationErrorCode(error) === "PLUGIN_INSTALL_IN_PROGRESS") {
+      return t("status.pluginInstallAlreadyInProgress", { name: plugin.name });
+    }
     return t("status.pluginInstallFailedWithReason", {
       name: plugin.name,
       reason: normalized,
@@ -88,6 +119,7 @@ export function SettingsPluginsContainer() {
   const client = useClient();
   const [plugins, _setPlugins] = useState<RegistryPluginRecord[]>([]);
   const [catalogStatus, setCatalogStatus] = useState<PluginCatalogStatusRecord | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
   const [manualRepoUrl, setManualRepoUrl] = useState("");
   const [manualPreview, setManualPreview] = useState<ManualPluginPreviewRecord | null>(null);
@@ -98,9 +130,10 @@ export function SettingsPluginsContainer() {
     _setPlugins(next);
   }, []);
   const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
-  const [upgradingPluginIds, setUpgradingPluginIds] = useState<string[]>([]);
+  const [pluginProgress, setPluginProgress] = useState<Record<string, PluginInstallProgressRecord>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
+  const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
 
   const beginPluginMutation = useCallback((pluginId: string) => {
     setMutatingPluginIds((current) => (
@@ -112,14 +145,33 @@ export function SettingsPluginsContainer() {
     setMutatingPluginIds((current) => current.filter((id) => id !== pluginId));
   }, []);
 
-  const beginPluginUpgrade = useCallback((pluginId: string) => {
-    setUpgradingPluginIds((current) => (
-      current.includes(pluginId) ? current : [...current, pluginId]
-    ));
+  const clearPluginProgress = useCallback((pluginId: string) => {
+    setPluginProgress((current) => {
+      if (!(pluginId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[pluginId];
+      return next;
+    });
   }, []);
 
-  const endPluginUpgrade = useCallback((pluginId: string) => {
-    setUpgradingPluginIds((current) => current.filter((id) => id !== pluginId));
+  const stopPluginInstallProgressSubscription = useCallback((pluginId: string) => {
+    const unsubscribe = installProgressSubscriptionsRef.current.get(pluginId);
+    if (unsubscribe) {
+      unsubscribe();
+      installProgressSubscriptionsRef.current.delete(pluginId);
+    }
+  }, []);
+
+  useEffect(() => {
+    const subscriptions = installProgressSubscriptionsRef.current;
+    return () => {
+      for (const unsubscribe of subscriptions.values()) {
+        unsubscribe();
+      }
+      subscriptions.clear();
+    };
   }, []);
 
   const refreshPlugins = useCallback(async () => {
@@ -130,12 +182,109 @@ export function SettingsPluginsContainer() {
       setCatalogStatus(data.pluginCatalogStatus || null);
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    } finally {
+      setInitialLoading(false);
     }
   }, [client, setGlobalStatus, t, setPlugins]);
 
   useEffect(() => {
     void refreshPlugins();
   }, [refreshPlugins]);
+
+  useProviderCatalogSubscription(() => {
+    void refreshPlugins();
+    dispatchNavigationBadgesRefresh();
+  });
+
+  const beginLivePluginProgress = useCallback(
+    (
+      plugin: RegistryPluginRecord,
+      initialSnapshot: PluginInstallProgressRecord,
+    ) => {
+      stopPluginInstallProgressSubscription(plugin.id);
+      setPluginProgress((current) => ({
+        ...current,
+        [plugin.id]: initialSnapshot,
+      }));
+      const unsubscribe = wsClient.subscribe(
+        {
+          query: pluginInstallProgressSubscription,
+          variables: { pluginId: plugin.id },
+        },
+        {
+          next: (result: PluginInstallProgressSubscriptionResult) => {
+            const snapshot = result.data?.pluginInstallProgress;
+            if (!snapshot) {
+              return;
+            }
+            setPluginProgress((current) => ({
+              ...current,
+              [plugin.id]: snapshot,
+            }));
+
+            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
+              stopPluginInstallProgressSubscription(plugin.id);
+              void (async () => {
+                if (snapshot.state === "succeeded") {
+                  setPluginErrors((current) => {
+                    const next = { ...current };
+                    delete next[plugin.id];
+                    return next;
+                  });
+                  setGlobalStatus(
+                    snapshot.operationKind === "upgrade"
+                      ? t("status.pluginUpgraded", {
+                        name: plugin.name,
+                        version: plugin.version,
+                      })
+                      : t("status.pluginInstalled", { name: plugin.name }),
+                  );
+                  await refreshPlugins();
+                  dispatchNavigationBadgesRefresh();
+                } else {
+                  const message = formatPluginInstallError(
+                    plugin,
+                    new Error(snapshot.error ?? snapshot.label),
+                    t,
+                  );
+                  setPluginErrors((current) => ({
+                    ...current,
+                    [plugin.id]: message,
+                  }));
+                  setGlobalStatus(message);
+                }
+                clearPluginProgress(plugin.id);
+                endPluginMutation(plugin.id);
+              })();
+            }
+          },
+          error: (error) => {
+            stopPluginInstallProgressSubscription(plugin.id);
+            clearPluginProgress(plugin.id);
+            endPluginMutation(plugin.id);
+            const message = formatPluginInstallError(plugin, error, t);
+            setPluginErrors((current) => ({
+              ...current,
+              [plugin.id]: message,
+            }));
+            setGlobalStatus(message);
+          },
+          complete: () => {
+            installProgressSubscriptionsRef.current.delete(plugin.id);
+          },
+        },
+      );
+      installProgressSubscriptionsRef.current.set(plugin.id, unsubscribe);
+    },
+    [
+      clearPluginProgress,
+      endPluginMutation,
+      refreshPlugins,
+      setGlobalStatus,
+      stopPluginInstallProgressSubscription,
+      t,
+    ],
+  );
 
   const refreshRegistry = async () => {
     setRefreshing(true);
@@ -145,7 +294,6 @@ export function SettingsPluginsContainer() {
         .toPromise();
       if (error) throw error;
       setPlugins(data.refreshPluginCatalog || []);
-      await refreshPlugins();
       dispatchNavigationBadgesRefresh();
       setGlobalStatus(t("status.catalogRefreshed"));
     } catch (error) {
@@ -190,15 +338,17 @@ export function SettingsPluginsContainer() {
       return next;
     });
     try {
-      const { error } = await client
-        .mutation(installPluginMutation, {
+      const { data, error } = await client
+        .mutation(beginInstallPluginMutation, {
           input: { pluginId: plugin.id },
         })
         .toPromise();
       if (error) throw error;
-      setGlobalStatus(t("status.pluginInstalled", { name: plugin.name }));
-      await refreshPlugins();
-      dispatchNavigationBadgesRefresh();
+      const snapshot = data?.beginInstallPlugin;
+      if (!snapshot) {
+        throw new Error("plugin install did not return progress");
+      }
+      beginLivePluginProgress(plugin, snapshot);
     } catch (error) {
       const message = formatPluginInstallError(plugin, error, t);
       setPluginErrors((current) => ({
@@ -206,7 +356,6 @@ export function SettingsPluginsContainer() {
         [plugin.id]: message,
       }));
       setGlobalStatus(message);
-    } finally {
       endPluginMutation(plugin.id);
     }
   };
@@ -270,22 +419,33 @@ export function SettingsPluginsContainer() {
 
   const upgradePlugin = async (plugin: RegistryPluginRecord) => {
     beginPluginMutation(plugin.id);
-    beginPluginUpgrade(plugin.id);
+    setPluginErrors((current) => {
+      const next = { ...current };
+      delete next[plugin.id];
+      return next;
+    });
     try {
-      const { error } = await client
-        .mutation(upgradePluginMutation, {
+      const { data, error } = await client
+        .mutation(beginUpgradePluginMutation, {
           input: { pluginId: plugin.id },
         })
         .toPromise();
       if (error) throw error;
-      setGlobalStatus(t("status.pluginUpgraded", { name: plugin.name, version: plugin.version }));
-      await refreshPlugins();
-      dispatchNavigationBadgesRefresh();
+      const snapshot = data?.beginUpgradePlugin;
+      if (!snapshot) {
+        throw new Error("plugin upgrade did not return progress");
+      }
+      beginLivePluginProgress(plugin, snapshot);
     } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
-    } finally {
-      endPluginUpgrade(plugin.id);
+      const message = formatPluginInstallError(plugin, error, t);
+      setPluginErrors((current) => ({
+        ...current,
+        [plugin.id]: message,
+      }));
+      setGlobalStatus(message);
       endPluginMutation(plugin.id);
+    } finally {
+      // Progress lifecycle owns cleanup after a successful begin.
     }
   };
 
@@ -325,8 +485,9 @@ export function SettingsPluginsContainer() {
       <SettingsPluginsSection
         plugins={plugins}
         catalogStatus={catalogStatus}
+        initialLoading={initialLoading}
         mutatingPluginIds={mutatingPluginIds}
-        upgradingPluginIds={upgradingPluginIds}
+        pluginProgress={pluginProgress}
         pluginErrors={pluginErrors}
         refreshing={refreshing}
         manualRepoUrl={manualRepoUrl}

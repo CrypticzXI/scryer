@@ -1297,6 +1297,9 @@ const en: LocaleDictionary = {
   "settings.pluginOfficialOnly": "Official only",
   "settings.pluginInstall": "Install",
   "settings.pluginInstalling": "Installing…",
+  "settings.pluginInstallDownloading": "Downloading",
+  "settings.pluginInstallVerifying": "Verifying",
+  "settings.pluginInstallInstalling": "Installing",
   "settings.pluginUninstall": "Uninstall",
   "settings.pluginRevertToBundled": "Revert to bundled",
   "settings.pluginRevert": "Revert",
@@ -1327,6 +1330,8 @@ const en: LocaleDictionary = {
     "Newer release v{{version}} requires a newer Scryer version",
 
   "status.pluginInstalled": "Plugin '{{name}}' installed.",
+  "status.pluginInstallAlreadyInProgress":
+    "Plugin '{{name}}' is already installing or upgrading.",
   "status.pluginInstallFailedChecksumMismatch":
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":

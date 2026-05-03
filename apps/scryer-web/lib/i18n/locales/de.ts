@@ -1010,6 +1010,9 @@ const de: LocaleDictionary = {
   "settings.pluginOfficialOnly": "Nur offizielle",
   "settings.pluginInstall": "Installieren",
   "settings.pluginInstalling": "Wird installiert…",
+  "settings.pluginInstallDownloading": "Herunterladen",
+  "settings.pluginInstallVerifying": "Verifizieren",
+  "settings.pluginInstallInstalling": "Installieren",
   "settings.pluginUninstall": "Deinstallieren",
   "settings.pluginRevertToBundled": "Auf integriert zurücksetzen",
   "settings.pluginRevert": "Zurücksetzen",
@@ -1032,6 +1035,8 @@ const de: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "Neuere Version v{{version}} erfordert eine neuere Scryer-Version",
   "status.pluginInstalled": "Plugin '{{name}}' installiert.",
+  "status.pluginInstallAlreadyInProgress":
+    "Plugin '{{name}}' wird bereits installiert oder aktualisiert.",
   "status.pluginInstallFailedChecksumMismatch":
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":

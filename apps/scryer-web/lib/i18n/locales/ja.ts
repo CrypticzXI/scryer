@@ -993,6 +993,9 @@ const ja: LocaleDictionary = {
   "settings.pluginOfficialOnly": "公式のみ",
   "settings.pluginInstall": "インストール",
   "settings.pluginInstalling": "インストール中…",
+  "settings.pluginInstallDownloading": "ダウンロード中",
+  "settings.pluginInstallVerifying": "検証中",
+  "settings.pluginInstallInstalling": "インストール中",
   "settings.pluginUninstall": "アンインストール",
   "settings.pluginRevertToBundled": "組み込み版に戻す",
   "settings.pluginRevert": "戻す",
@@ -1015,6 +1018,8 @@ const ja: LocaleDictionary = {
   "settings.pluginNewerReleaseRequiresNewerScryerVersion":
     "より新しいリリース v{{version}} には、より新しいScryerバージョンが必要です",
   "status.pluginInstalled": "プラグイン'{{name}}'がインストールされました。",
+  "status.pluginInstallAlreadyInProgress":
+    "プラグイン'{{name}}'はすでにインストールまたはアップグレード中です。",
   "status.pluginInstallFailedChecksumMismatch":
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":

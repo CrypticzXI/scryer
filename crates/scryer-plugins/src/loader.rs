@@ -7,8 +7,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use extism::Manifest;
 use scryer_application::{
     DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient,
-    IndexerPluginProvider, NotificationClient, NotificationPluginProvider, SubtitlePluginProvider,
-    SubtitleProviderClient,
+    IndexerPluginProvider, NotificationClient, NotificationPluginProvider, RuntimePluginLoad,
+    SubtitlePluginProvider, SubtitleProviderClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
@@ -36,7 +36,15 @@ const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
 const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
 
-type SubtitleClientCacheKey = (String, String, String, String);
+type IndexerClientCacheKey = (String, String, String);
+type IndexerClientCache = std::sync::Mutex<HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>>;
+type DownloadClientCacheKey = (String, String, String);
+type DownloadClientCache =
+    std::sync::Mutex<HashMap<DownloadClientCacheKey, Arc<dyn DownloadClient>>>;
+type NotificationClientCacheKey = (String, String, String);
+type NotificationClientCache =
+    std::sync::Mutex<HashMap<NotificationClientCacheKey, Arc<dyn NotificationClient>>>;
+type SubtitleClientCacheKey = (String, String, String, String, String);
 type SubtitleClientCache =
     std::sync::Mutex<HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>>;
 
@@ -57,6 +65,112 @@ impl PluginLoadSource {
 struct LoadedPlugin {
     wasm_bytes: Vec<u8>,
     descriptor: PluginDescriptor,
+}
+
+struct LoadedPluginRecord {
+    primary_key: String,
+    alias_keys: Vec<String>,
+    loaded: LoadedPlugin,
+}
+
+impl LoadedPluginRecord {
+    fn new(descriptor: PluginDescriptor, wasm_bytes: Vec<u8>) -> Self {
+        let primary_key = descriptor.provider_type().trim().to_ascii_lowercase();
+        let alias_keys = descriptor
+            .provider_aliases()
+            .iter()
+            .map(|alias| alias.trim().to_ascii_lowercase())
+            .filter(|alias| !alias.is_empty() && alias != &primary_key)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Self {
+            primary_key,
+            alias_keys,
+            loaded: LoadedPlugin {
+                wasm_bytes,
+                descriptor,
+            },
+        }
+    }
+}
+
+fn resolve_loaded_plugin<'a>(
+    plugins: &'a HashMap<String, LoadedPlugin>,
+    aliases: &HashMap<String, String>,
+    provider_type: &str,
+) -> Option<&'a LoadedPlugin> {
+    let key = provider_type.trim().to_ascii_lowercase();
+    let primary = aliases
+        .get(&key)
+        .map(String::as_str)
+        .unwrap_or(key.as_str());
+    plugins.get(primary)
+}
+
+fn remove_loaded_plugin(
+    plugins: &mut HashMap<String, LoadedPlugin>,
+    aliases: &mut HashMap<String, String>,
+    provider_type: &str,
+) -> Vec<String> {
+    let key = provider_type.trim().to_ascii_lowercase();
+    let primary = aliases.get(&key).cloned().unwrap_or(key);
+    let Some(_) = plugins.remove(&primary) else {
+        return Vec::new();
+    };
+
+    let removed_aliases = aliases
+        .iter()
+        .filter(|(_, owner)| **owner == primary)
+        .map(|(alias, _)| alias.clone())
+        .collect::<Vec<_>>();
+    for alias in &removed_aliases {
+        aliases.remove(alias);
+    }
+
+    let mut affected = Vec::with_capacity(removed_aliases.len() + 1);
+    affected.push(primary);
+    affected.extend(removed_aliases);
+    affected
+}
+
+fn insert_loaded_plugin(
+    plugins: &mut HashMap<String, LoadedPlugin>,
+    aliases: &mut HashMap<String, String>,
+    record: LoadedPluginRecord,
+    replace_existing_primary: bool,
+    allow_alias_override: bool,
+) -> Vec<String> {
+    let mut affected = Vec::new();
+    if plugins.contains_key(&record.primary_key) {
+        if !replace_existing_primary {
+            return affected;
+        }
+        affected.extend(remove_loaded_plugin(plugins, aliases, &record.primary_key));
+    }
+
+    let primary_key = record.primary_key.clone();
+    let alias_keys = record.alias_keys.clone();
+    plugins.insert(primary_key.clone(), record.loaded);
+    affected.push(primary_key.clone());
+
+    for alias in alias_keys {
+        if plugins.contains_key(&alias) && alias != primary_key {
+            continue;
+        }
+        if let Some(existing) = aliases.get(&alias)
+            && existing != &primary_key
+            && !allow_alias_override
+        {
+            continue;
+        }
+        aliases.insert(alias.clone(), primary_key.clone());
+        affected.push(alias);
+    }
+
+    affected.sort();
+    affected.dedup();
+    affected
 }
 
 fn builtin_provider_types_from_bytes(
@@ -108,6 +222,7 @@ fn builtin_subtitle_provider_types() -> Vec<String> {
 
 pub struct WasmIndexerPluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
 }
 
 impl WasmIndexerPluginProvider {
@@ -115,6 +230,7 @@ impl WasmIndexerPluginProvider {
     pub fn empty() -> Self {
         Self {
             plugins: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -127,77 +243,109 @@ impl WasmIndexerPluginProvider {
         })
     }
 
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("indexer descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
+
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_indexer_descriptor(
+            &plugin.descriptor,
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("indexer descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        ))
+    }
+
+    fn prepare_builtin_plugin_record(wasm_bytes: &[u8]) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(wasm_bytes)?;
+        let descriptor = apply_builtin_indexer_overrides(descriptor);
+        if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
+            return Err("built-in indexer descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
+
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
-        match load_from_bytes(plugin.bytes) {
-            Ok((descriptor, bytes)) => {
-                if !validate_indexer_descriptor(
-                    &descriptor,
-                    PluginLoadSource::External {
-                        first_party: plugin.first_party,
-                    },
-                ) {
-                    return self;
-                }
-
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
-                let aliases: Vec<String> = descriptor
-                    .provider_aliases()
-                    .iter()
-                    .map(|a| a.trim().to_ascii_lowercase())
-                    .collect();
-
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
                 info!(
-                    plugin = descriptor.name.as_str(),
-                    version = descriptor.version.as_str(),
-                    provider_type = provider_type.as_str(),
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
                     "registered external plugin"
                 );
-                self.plugins.insert(
-                    provider_type.clone(),
-                    LoadedPlugin {
-                        wasm_bytes: bytes.clone(),
-                        descriptor: descriptor.clone(),
-                    },
-                );
-
-                for alias in &aliases {
-                    self.plugins.insert(
-                        alias.clone(),
-                        LoadedPlugin {
-                            wasm_bytes: bytes.clone(),
-                            descriptor: descriptor.clone(),
-                        },
-                    );
-                }
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
             }
-            Err(e) => {
-                warn!(error = %e, "failed to load external plugin");
+            Err(error) => {
+                warn!(error = %error, "failed to load external plugin");
             }
         }
         self
     }
 
+    fn restore_builtin_provider_type(
+        &mut self,
+        provider_type: &str,
+    ) -> Result<Vec<String>, String> {
+        let wasm_bytes = builtin_indexer_wasm_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in indexer plugin is available for provider '{provider_type}'")
+        })?;
+        let record = Self::prepare_builtin_plugin_record(wasm_bytes)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            false,
+            false,
+        ))
+    }
+
+    fn upsert_runtime_plugin_record(
+        &mut self,
+        plugin: RuntimePluginLoad,
+    ) -> Result<Vec<String>, String> {
+        let record = Self::prepare_runtime_plugin_record(plugin)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            true,
+            true,
+        ))
+    }
+
+    fn remove_provider_type(&mut self, provider_type: &str) -> Vec<String> {
+        remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type)
+    }
+
+    fn get_loaded(&self, provider_type: &str) -> Option<&LoadedPlugin> {
+        resolve_loaded_plugin(&self.plugins, &self.aliases, provider_type)
+    }
+
     /// Remove a provider_type (and its aliases) from the loaded set.
     /// Used to disable built-in plugins at runtime.
     pub fn without_provider_type(mut self, provider_type: &str) -> Self {
-        let key = provider_type.trim().to_ascii_lowercase();
-        if let Some(loaded) = self.plugins.remove(&key) {
-            info!(
-                plugin = loaded.descriptor.name.as_str(),
-                provider_type = key.as_str(),
-                "removed plugin provider_type"
-            );
-            // Also remove any aliases that point to the same descriptor
-            let aliases: Vec<String> = loaded
-                .descriptor
-                .provider_aliases()
-                .iter()
-                .map(|a| a.trim().to_ascii_lowercase())
-                .collect();
-            for alias in &aliases {
-                self.plugins.remove(alias);
-            }
-        }
+        let _ = self.remove_provider_type(provider_type);
         self
     }
 
@@ -206,68 +354,19 @@ impl WasmIndexerPluginProvider {
     /// `provider_aliases`). If an external plugin already claims the same
     /// provider_type, the external one wins and the built-in is skipped
     /// for that key.
-    pub fn with_builtin(self, wasm_bytes: &[u8]) -> Self {
-        self.with_loaded_builtin(load_from_bytes(wasm_bytes))
-    }
-
-    fn with_loaded_builtin(mut self, loaded: Result<(PluginDescriptor, Vec<u8>), String>) -> Self {
-        match loaded {
-            Ok((descriptor, bytes)) => {
-                let descriptor = apply_builtin_indexer_overrides(descriptor);
-                if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
-                    return self;
-                }
-
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
-                let aliases: Vec<String> = descriptor
-                    .provider_aliases()
-                    .iter()
-                    .map(|a| a.trim().to_ascii_lowercase())
-                    .collect();
-
-                // Register primary provider_type (external overrides built-in)
-                if self.plugins.contains_key(&provider_type) {
-                    info!(
-                        provider_type = provider_type.as_str(),
-                        "external plugin overrides built-in"
-                    );
-                } else {
-                    info!(
-                        plugin = descriptor.name.as_str(),
-                        version = descriptor.version.as_str(),
-                        provider_type = provider_type.as_str(),
-                        "registered built-in plugin"
-                    );
-                    self.plugins.insert(
-                        provider_type.clone(),
-                        LoadedPlugin {
-                            wasm_bytes: bytes.clone(),
-                            descriptor: descriptor.clone(),
-                        },
-                    );
-                }
-
-                // Register aliases (external overrides built-in)
-                for alias in &aliases {
-                    if self.plugins.contains_key(alias) {
-                        info!(
-                            alias = alias.as_str(),
-                            provider_type = provider_type.as_str(),
-                            "external plugin overrides built-in alias"
-                        );
-                    } else {
-                        self.plugins.insert(
-                            alias.clone(),
-                            LoadedPlugin {
-                                wasm_bytes: bytes.clone(),
-                                descriptor: descriptor.clone(),
-                            },
-                        );
-                    }
-                }
+    pub fn with_builtin(mut self, wasm_bytes: &[u8]) -> Self {
+        match Self::prepare_builtin_plugin_record(wasm_bytes) {
+            Ok(record) => {
+                let _ = insert_loaded_plugin(
+                    &mut self.plugins,
+                    &mut self.aliases,
+                    record,
+                    false,
+                    false,
+                );
             }
-            Err(e) => {
-                warn!(error = %e, "failed to load built-in plugin");
+            Err(error) => {
+                warn!(error = %error, "failed to load built-in plugin");
             }
         }
         self
@@ -288,21 +387,19 @@ fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDe
     descriptor
 }
 
+fn builtin_indexer_wasm_for_provider(provider_type: &str) -> Option<&'static [u8]> {
+    match provider_type.trim().to_ascii_lowercase().as_str() {
+        "animetosho" => Some(crate::builtins::ANIMETOSHO_WASM),
+        "newznab" => Some(crate::builtins::NEWZNAB_WASM),
+        "nzbgeek" => Some(crate::builtins::NZBGEEK_WASM),
+        "torznab" => Some(crate::builtins::TORZNAB_WASM),
+        _ => None,
+    }
+}
+
 impl IndexerPluginProvider for WasmIndexerPluginProvider {
     fn available_provider_types(&self) -> Vec<String> {
-        // Only return primary provider_types, not aliases (which map to the same plugin)
-        self.plugins
-            .iter()
-            .filter(|(key, loaded)| {
-                **key
-                    == loaded
-                        .descriptor
-                        .provider_type()
-                        .trim()
-                        .to_ascii_lowercase()
-            })
-            .map(|(key, _)| key.clone())
-            .collect()
+        self.plugins.keys().cloned().collect()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
@@ -310,30 +407,22 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
     }
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.sdk_version.clone())
     }
 
     fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
     }
 
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.plugin_type().to_string())
     }
 
@@ -370,30 +459,23 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
     }
 
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .and_then(|loaded| loaded.descriptor.default_base_url().map(ToOwned::to_owned))
     }
 
     fn rate_limit_seconds_for_provider(&self, provider_type: &str) -> Option<i64> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins.get(&key).and_then(|loaded| {
+        self.get_loaded(provider_type).and_then(|loaded| {
             loaded
                 .descriptor
                 .indexer()
@@ -405,9 +487,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         &self,
         provider_type: &str,
     ) -> scryer_domain::IndexerProviderCapabilities {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| {
                 loaded
                     .descriptor
@@ -435,7 +515,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
 
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
-        let loaded = self.plugins.get(&provider)?;
+        let loaded = self.get_loaded(&provider)?;
 
         match WasmIndexerClient::new(
             loaded.wasm_bytes.clone(),
@@ -466,7 +546,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
 /// on provider reload.
 pub struct DynamicPluginProvider {
     inner: std::sync::RwLock<WasmIndexerPluginProvider>,
-    client_cache: std::sync::Mutex<HashMap<(String, String), Arc<dyn IndexerClient>>>,
+    client_cache: IndexerClientCache,
 }
 
 impl DynamicPluginProvider {
@@ -474,6 +554,15 @@ impl DynamicPluginProvider {
         Self {
             inner: std::sync::RwLock::new(provider),
             client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn invalidate_provider_keys(&self, provider_keys: &[String]) {
+        if provider_keys.is_empty() {
+            return;
+        }
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.retain(|(provider_type, _, _), _| !provider_keys.contains(provider_type));
         }
     }
 
@@ -494,7 +583,12 @@ impl DynamicPluginProvider {
 
 impl IndexerPluginProvider for DynamicPluginProvider {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
-        let cache_key = (config.id.clone(), config.updated_at.to_rfc3339());
+        let provider_key = config.provider_type.trim().to_ascii_lowercase();
+        let cache_key = (
+            provider_key.clone(),
+            config.id.clone(),
+            config.updated_at.to_rfc3339(),
+        );
 
         // Fast path: check cache first
         if let Ok(cache) = self.client_cache.lock()
@@ -626,18 +720,56 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         ));
         Ok(())
     }
+
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicPluginProvider lock poisoned");
+            guard.upsert_runtime_plugin_record(plugin)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicPluginProvider lock poisoned");
+            guard.remove_provider_type(provider_type)
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicPluginProvider lock poisoned");
+            guard.restore_builtin_provider_type(provider_type)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
 }
 
 // ── Download client plugin provider ────────────────────────────────────
 
 pub struct WasmDownloadClientPluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
 }
 
 impl WasmDownloadClientPluginProvider {
     pub fn empty() -> Self {
         Self {
             plugins: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -648,45 +780,84 @@ impl WasmDownloadClientPluginProvider {
         })
     }
 
-    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
-        match load_from_bytes(plugin.bytes) {
-            Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(
-                    &descriptor,
-                    Some("download_client"),
-                    PluginLoadSource::External {
-                        first_party: plugin.first_party,
-                    },
-                ) {
-                    return self;
-                }
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("download_client"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("download client descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
 
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_descriptor_for_type(
+            &plugin.descriptor,
+            Some("download_client"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("download client descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        ))
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
                 info!(
-                    plugin = descriptor.name.as_str(),
-                    version = descriptor.version.as_str(),
-                    provider_type = provider_type.as_str(),
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
                     "registered external download client plugin"
                 );
-                self.plugins.insert(
-                    provider_type,
-                    LoadedPlugin {
-                        wasm_bytes: bytes,
-                        descriptor,
-                    },
-                );
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
             }
-            Err(e) => {
-                warn!(error = %e, "failed to load external download client plugin");
+            Err(error) => {
+                warn!(error = %error, "failed to load external download client plugin");
             }
         }
         self
     }
 
     pub fn without_provider_type(mut self, provider_type: &str) -> Self {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins.remove(&key);
+        let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
         self
+    }
+
+    fn upsert_runtime_plugin_record(
+        &mut self,
+        plugin: RuntimePluginLoad,
+    ) -> Result<Vec<String>, String> {
+        let record = Self::prepare_runtime_plugin_record(plugin)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            true,
+            true,
+        ))
+    }
+
+    fn remove_provider_type(&mut self, provider_type: &str) -> Vec<String> {
+        remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type)
+    }
+
+    fn get_loaded(&self, provider_type: &str) -> Option<&LoadedPlugin> {
+        resolve_loaded_plugin(&self.plugins, &self.aliases, provider_type)
     }
 
     fn create_download_client(
@@ -748,23 +919,12 @@ impl WasmDownloadClientPluginProvider {
 impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
     fn client_for_config(&self, config: &DownloadClientConfig) -> Option<Arc<dyn DownloadClient>> {
         let provider = config.client_type.trim().to_ascii_lowercase();
-        let loaded = self.plugins.get(&provider)?;
+        let loaded = self.get_loaded(&provider)?;
         Self::create_download_client(loaded, config)
     }
 
     fn available_provider_types(&self) -> Vec<String> {
-        self.plugins
-            .iter()
-            .filter(|(key, loaded)| {
-                **key
-                    == loaded
-                        .descriptor
-                        .provider_type()
-                        .trim()
-                        .to_ascii_lowercase()
-            })
-            .map(|(key, _)| key.clone())
-            .collect()
+        self.plugins.keys().cloned().collect()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
@@ -772,23 +932,17 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
     }
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.sdk_version.clone())
     }
 
     fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
     }
 
@@ -796,31 +950,23 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
     }
 
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .and_then(|loaded| loaded.descriptor.default_base_url().map(ToOwned::to_owned))
     }
 
     fn accepted_inputs_for_provider(&self, provider_type: &str) -> Vec<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .and_then(|loaded| loaded.descriptor.download_client())
             .map(|download_client| {
                 download_client
@@ -844,7 +990,7 @@ impl DownloadClientPluginProvider for WasmDownloadClientPluginProvider {
 
 pub struct DynamicDownloadClientPluginProvider {
     inner: std::sync::RwLock<WasmDownloadClientPluginProvider>,
-    client_cache: std::sync::Mutex<HashMap<(String, String), Arc<dyn DownloadClient>>>,
+    client_cache: DownloadClientCache,
 }
 
 impl DynamicDownloadClientPluginProvider {
@@ -852,6 +998,15 @@ impl DynamicDownloadClientPluginProvider {
         Self {
             inner: std::sync::RwLock::new(provider),
             client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn invalidate_provider_keys(&self, provider_keys: &[String]) {
+        if provider_keys.is_empty() {
+            return;
+        }
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.retain(|(provider_type, _, _), _| !provider_keys.contains(provider_type));
         }
     }
 
@@ -870,7 +1025,12 @@ impl DynamicDownloadClientPluginProvider {
 
 impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
     fn client_for_config(&self, config: &DownloadClientConfig) -> Option<Arc<dyn DownloadClient>> {
-        let cache_key = (config.id.clone(), config.updated_at.to_rfc3339());
+        let provider_key = config.client_type.trim().to_ascii_lowercase();
+        let cache_key = (
+            provider_key.clone(),
+            config.id.clone(),
+            config.updated_at.to_rfc3339(),
+        );
 
         if let Ok(cache) = self.client_cache.lock()
             && let Some(client) = cache.get(&cache_key)
@@ -971,6 +1131,30 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
             external_wasm_bytes,
             disabled_builtins,
         ));
+        Ok(())
+    }
+
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicDownloadClientPluginProvider lock poisoned");
+            guard.upsert_runtime_plugin_record(plugin)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicDownloadClientPluginProvider lock poisoned");
+            guard.remove_provider_type(provider_type)
+        };
+        self.invalidate_provider_keys(&affected);
         Ok(())
     }
 }
@@ -1136,13 +1320,13 @@ pub fn build_indexer_plugin_provider(
         provider = provider.with_external_plugin(*plugin);
     }
 
-    for loaded in load_builtin_bytes_parallel(&[
+    for wasm in [
         crate::builtins::NZBGEEK_WASM,
         crate::builtins::NEWZNAB_WASM,
         crate::builtins::ANIMETOSHO_WASM,
         crate::builtins::TORZNAB_WASM,
-    ]) {
-        provider = provider.with_loaded_builtin(loaded);
+    ] {
+        provider = provider.with_builtin(wasm);
     }
 
     for provider_type in disabled_builtins {
@@ -1173,12 +1357,14 @@ pub fn build_download_client_plugin_provider(
 
 pub struct WasmSubtitlePluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
 }
 
 impl WasmSubtitlePluginProvider {
     pub fn empty() -> Self {
         Self {
             plugins: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -1189,33 +1375,63 @@ impl WasmSubtitlePluginProvider {
         })
     }
 
-    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
-        match load_from_bytes(plugin.bytes) {
-            Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(
-                    &descriptor,
-                    Some("subtitle_provider"),
-                    PluginLoadSource::External {
-                        first_party: plugin.first_party,
-                    },
-                ) {
-                    return self;
-                }
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("subtitle provider descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
 
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_descriptor_for_type(
+            &plugin.descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("subtitle provider descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        ))
+    }
+
+    fn prepare_builtin_plugin_record(wasm_bytes: &[u8]) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(wasm_bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::Builtin,
+        ) {
+            return Err("built-in subtitle provider descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
                 info!(
-                    plugin = descriptor.name.as_str(),
-                    version = descriptor.version.as_str(),
-                    provider_type = provider_type.as_str(),
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
                     "registered external subtitle provider plugin"
                 );
-                self.plugins.insert(
-                    provider_type,
-                    LoadedPlugin {
-                        wasm_bytes: bytes,
-                        descriptor,
-                    },
-                );
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
             }
             Err(error) => {
                 warn!(error = %error, "failed to load external subtitle provider plugin");
@@ -1224,38 +1440,15 @@ impl WasmSubtitlePluginProvider {
         self
     }
 
-    pub fn with_builtin(self, wasm_bytes: &[u8]) -> Self {
-        self.with_loaded_builtin(load_from_bytes(wasm_bytes))
-    }
-
-    fn with_loaded_builtin(mut self, loaded: Result<(PluginDescriptor, Vec<u8>), String>) -> Self {
-        match loaded {
-            Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(
-                    &descriptor,
-                    Some("subtitle_provider"),
-                    PluginLoadSource::Builtin,
-                ) {
-                    return self;
-                }
-
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
-                if self.plugins.contains_key(&provider_type) {
-                    return self;
-                }
-
-                info!(
-                    plugin = descriptor.name.as_str(),
-                    version = descriptor.version.as_str(),
-                    provider_type = provider_type.as_str(),
-                    "registered built-in subtitle provider plugin"
-                );
-                self.plugins.insert(
-                    provider_type,
-                    LoadedPlugin {
-                        wasm_bytes: bytes,
-                        descriptor,
-                    },
+    pub fn with_builtin(mut self, wasm_bytes: &[u8]) -> Self {
+        match Self::prepare_builtin_plugin_record(wasm_bytes) {
+            Ok(record) => {
+                let _ = insert_loaded_plugin(
+                    &mut self.plugins,
+                    &mut self.aliases,
+                    record,
+                    false,
+                    false,
                 );
             }
             Err(error) => {
@@ -1266,9 +1459,47 @@ impl WasmSubtitlePluginProvider {
     }
 
     pub fn without_provider_type(mut self, provider_type: &str) -> Self {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins.remove(&key);
+        let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
         self
+    }
+
+    fn restore_builtin_provider_type(
+        &mut self,
+        provider_type: &str,
+    ) -> Result<Vec<String>, String> {
+        let wasm_bytes = builtin_subtitle_wasm_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in subtitle plugin is available for provider '{provider_type}'")
+        })?;
+        let record = Self::prepare_builtin_plugin_record(wasm_bytes)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            false,
+            false,
+        ))
+    }
+
+    fn upsert_runtime_plugin_record(
+        &mut self,
+        plugin: RuntimePluginLoad,
+    ) -> Result<Vec<String>, String> {
+        let record = Self::prepare_runtime_plugin_record(plugin)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            true,
+            true,
+        ))
+    }
+
+    fn remove_provider_type(&mut self, provider_type: &str) -> Vec<String> {
+        remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type)
+    }
+
+    fn get_loaded(&self, provider_type: &str) -> Option<&LoadedPlugin> {
+        resolve_loaded_plugin(&self.plugins, &self.aliases, provider_type)
     }
 }
 
@@ -1279,7 +1510,7 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
         host_bindings: &HashMap<PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
-        let loaded = self.plugins.get(&provider)?;
+        let loaded = self.get_loaded(&provider)?;
         match WasmSubtitleClient::new(
             loaded.wasm_bytes.clone(),
             loaded.descriptor.clone(),
@@ -1300,18 +1531,7 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
     }
 
     fn available_provider_types(&self) -> Vec<String> {
-        self.plugins
-            .iter()
-            .filter(|(key, loaded)| {
-                **key
-                    == loaded
-                        .descriptor
-                        .provider_type()
-                        .trim()
-                        .to_ascii_lowercase()
-            })
-            .map(|(key, _)| key.clone())
-            .collect()
+        self.plugins.keys().cloned().collect()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
@@ -1319,38 +1539,28 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
     }
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.sdk_version.clone())
     }
 
     fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
     }
 
     fn supports_catalog_search_for_provider(&self, provider_type: &str) -> bool {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .and_then(|loaded| loaded.descriptor.subtitle())
             .is_some_and(|subtitle| subtitle.capabilities.mode == SubtitleProviderMode::Catalog)
     }
 
     fn recommended_facets_for_provider(&self, provider_type: &str) -> Vec<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .and_then(|loaded| loaded.descriptor.subtitle())
             .map(|subtitle| subtitle.capabilities.recommended_facets.clone())
             .unwrap_or_default()
@@ -1360,17 +1570,13 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
     }
 
@@ -1396,6 +1602,15 @@ impl DynamicSubtitlePluginProvider {
         }
     }
 
+    fn invalidate_provider_keys(&self, provider_keys: &[String]) {
+        if provider_keys.is_empty() {
+            return;
+        }
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.retain(|(provider_type, _, _, _, _), _| !provider_keys.contains(provider_type));
+        }
+    }
+
     pub fn reload(&self, new_provider: WasmSubtitlePluginProvider) {
         let mut guard = self
             .inner
@@ -1415,7 +1630,9 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         config: &SubtitleProviderConfig,
         host_bindings: &HashMap<PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>> {
+        let provider_key = config.provider_type.trim().to_ascii_lowercase();
         let cache_key = (
+            provider_key.clone(),
             config.id.clone(),
             config.updated_at.to_rfc3339(),
             cache_fingerprint(&config.config_json),
@@ -1523,6 +1740,49 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         ));
         Ok(())
     }
+
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicSubtitlePluginProvider lock poisoned");
+            guard.upsert_runtime_plugin_record(plugin)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicSubtitlePluginProvider lock poisoned");
+            guard.remove_provider_type(provider_type)
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicSubtitlePluginProvider lock poisoned");
+            guard.restore_builtin_provider_type(provider_type)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+}
+
+fn builtin_subtitle_wasm_for_provider(provider_type: &str) -> Option<&'static [u8]> {
+    match provider_type.trim().to_ascii_lowercase().as_str() {
+        "jimaku" => Some(crate::builtins::JIMAKU_WASM),
+        _ => None,
+    }
 }
 
 fn host_binding_cache_key(host_bindings: &HashMap<PluginHostBindingId, String>) -> String {
@@ -1556,8 +1816,9 @@ pub fn build_subtitle_plugin_provider(
         provider = provider.with_external_plugin(*plugin);
     }
 
-    for loaded in load_builtin_bytes_parallel(&[crate::builtins::JIMAKU_WASM]) {
-        provider = provider.with_loaded_builtin(loaded);
+    {
+        let wasm = crate::builtins::JIMAKU_WASM;
+        provider = provider.with_builtin(wasm);
     }
 
     for provider_type in disabled_builtins {
@@ -1571,7 +1832,7 @@ pub fn build_subtitle_plugin_provider(
 /// call `describe()` to get the plugin descriptor, and return a provider that
 /// can create indexer clients for any loaded plugin type.
 pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvider, String> {
-    let mut plugins = HashMap::new();
+    let mut provider = WasmIndexerPluginProvider::empty();
 
     let entries = std::fs::read_dir(plugins_dir).map_err(|e| {
         format!(
@@ -1603,7 +1864,7 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
                 let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
 
                 // Check for duplicates
-                if plugins.contains_key(&provider_type) {
+                if provider.plugins.contains_key(&provider_type) {
                     warn!(
                         plugin = descriptor.name.as_str(),
                         provider_type = provider_type.as_str(),
@@ -1619,30 +1880,13 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
                     "loaded indexer plugin"
                 );
 
-                // Register aliases
-                let aliases: Vec<String> = descriptor
-                    .provider_aliases()
-                    .iter()
-                    .map(|a| a.trim().to_ascii_lowercase())
-                    .collect();
-                for alias in &aliases {
-                    if !plugins.contains_key(alias) {
-                        plugins.insert(
-                            alias.clone(),
-                            LoadedPlugin {
-                                wasm_bytes: wasm_bytes.clone(),
-                                descriptor: descriptor.clone(),
-                            },
-                        );
-                    }
-                }
-
-                plugins.insert(
-                    provider_type,
-                    LoadedPlugin {
-                        wasm_bytes,
-                        descriptor,
-                    },
+                let record = LoadedPluginRecord::new(descriptor, wasm_bytes);
+                let _ = insert_loaded_plugin(
+                    &mut provider.plugins,
+                    &mut provider.aliases,
+                    record,
+                    true,
+                    true,
                 );
             }
             Err(e) => {
@@ -1655,7 +1899,7 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
         }
     }
 
-    Ok(WasmIndexerPluginProvider { plugins })
+    Ok(provider)
 }
 
 fn load_single_plugin(wasm_path: &Path) -> Result<(PluginDescriptor, Vec<u8>), String> {
@@ -1874,35 +2118,18 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     Ok((descriptor, bytes))
 }
 
-fn load_builtin_bytes_parallel(
-    wasm_bytes: &[&'static [u8]],
-) -> Vec<Result<(PluginDescriptor, Vec<u8>), String>> {
-    let handles = wasm_bytes
-        .iter()
-        .copied()
-        .map(|bytes| std::thread::spawn(move || load_from_bytes(bytes)))
-        .collect::<Vec<_>>();
-
-    handles
-        .into_iter()
-        .map(|handle| {
-            handle
-                .join()
-                .unwrap_or_else(|_| Err("built-in plugin loader panicked".to_string()))
-        })
-        .collect()
-}
-
 // ── Notification plugin provider ───────────────────────────────────────
 
 pub struct WasmNotificationPluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
 }
 
 impl WasmNotificationPluginProvider {
     pub fn empty() -> Self {
         Self {
             plugins: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -1913,45 +2140,84 @@ impl WasmNotificationPluginProvider {
         })
     }
 
-    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
-        match load_from_bytes(plugin.bytes) {
-            Ok((descriptor, bytes)) => {
-                if !validate_descriptor_for_type(
-                    &descriptor,
-                    Some("notification"),
-                    PluginLoadSource::External {
-                        first_party: plugin.first_party,
-                    },
-                ) {
-                    return self;
-                }
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("notification"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("notification descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+    }
 
-                let provider_type = descriptor.provider_type().trim().to_ascii_lowercase();
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_descriptor_for_type(
+            &plugin.descriptor,
+            Some("notification"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("notification descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        ))
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
                 info!(
-                    plugin = descriptor.name.as_str(),
-                    version = descriptor.version.as_str(),
-                    provider_type = provider_type.as_str(),
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
                     "registered external notification plugin"
                 );
-                self.plugins.insert(
-                    provider_type,
-                    LoadedPlugin {
-                        wasm_bytes: bytes,
-                        descriptor,
-                    },
-                );
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
             }
-            Err(e) => {
-                warn!(error = %e, "failed to load external notification plugin");
+            Err(error) => {
+                warn!(error = %error, "failed to load external notification plugin");
             }
         }
         self
     }
 
     pub fn without_provider_type(mut self, provider_type: &str) -> Self {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins.remove(&key);
+        let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
         self
+    }
+
+    fn upsert_runtime_plugin_record(
+        &mut self,
+        plugin: RuntimePluginLoad,
+    ) -> Result<Vec<String>, String> {
+        let record = Self::prepare_runtime_plugin_record(plugin)?;
+        Ok(insert_loaded_plugin(
+            &mut self.plugins,
+            &mut self.aliases,
+            record,
+            true,
+            true,
+        ))
+    }
+
+    fn remove_provider_type(&mut self, provider_type: &str) -> Vec<String> {
+        remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type)
+    }
+
+    fn get_loaded(&self, provider_type: &str) -> Option<&LoadedPlugin> {
+        resolve_loaded_plugin(&self.plugins, &self.aliases, provider_type)
     }
 
     fn create_notification_client(
@@ -2013,23 +2279,12 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
         config: &NotificationChannelConfig,
     ) -> Option<Arc<dyn NotificationClient>> {
         let provider = config.channel_type.as_str().to_ascii_lowercase();
-        let loaded = self.plugins.get(&provider)?;
+        let loaded = self.get_loaded(&provider)?;
         Self::create_notification_client(loaded, config)
     }
 
     fn available_provider_types(&self) -> Vec<String> {
-        self.plugins
-            .iter()
-            .filter(|(key, loaded)| {
-                **key
-                    == loaded
-                        .descriptor
-                        .provider_type()
-                        .trim()
-                        .to_ascii_lowercase()
-            })
-            .map(|(key, _)| key.clone())
-            .collect()
+        self.plugins.keys().cloned().collect()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
@@ -2037,23 +2292,17 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
     }
 
     fn plugin_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.sdk_version.clone())
     }
 
     fn plugin_sdk_constraint_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| plugin_descriptor_sdk_constraint(&loaded.descriptor))
     }
 
@@ -2061,17 +2310,13 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| config_fields_to_domain(loaded.descriptor.config_fields()))
             .unwrap_or_default()
     }
 
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
-        let key = provider_type.trim().to_ascii_lowercase();
-        self.plugins
-            .get(&key)
+        self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.name.clone())
     }
 
@@ -2087,7 +2332,7 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
 /// Thread-safe wrapper around `WasmNotificationPluginProvider` that supports runtime reload.
 pub struct DynamicNotificationPluginProvider {
     inner: std::sync::RwLock<WasmNotificationPluginProvider>,
-    client_cache: std::sync::Mutex<HashMap<(String, String), Arc<dyn NotificationClient>>>,
+    client_cache: NotificationClientCache,
 }
 
 impl DynamicNotificationPluginProvider {
@@ -2095,6 +2340,15 @@ impl DynamicNotificationPluginProvider {
         Self {
             inner: std::sync::RwLock::new(provider),
             client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn invalidate_provider_keys(&self, provider_keys: &[String]) {
+        if provider_keys.is_empty() {
+            return;
+        }
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.retain(|(provider_type, _, _), _| !provider_keys.contains(provider_type));
         }
     }
 
@@ -2116,7 +2370,12 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         &self,
         config: &NotificationChannelConfig,
     ) -> Option<Arc<dyn NotificationClient>> {
-        let cache_key = (config.id.clone(), config.updated_at.to_rfc3339());
+        let provider_key = config.channel_type.as_str().to_ascii_lowercase();
+        let cache_key = (
+            provider_key.clone(),
+            config.id.clone(),
+            config.updated_at.to_rfc3339(),
+        );
 
         if let Ok(cache) = self.client_cache.lock()
             && let Some(client) = cache.get(&cache_key)
@@ -2203,6 +2462,30 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         ));
         Ok(())
     }
+
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicNotificationPluginProvider lock poisoned");
+            guard.upsert_runtime_plugin_record(plugin)?
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let affected = {
+            let mut guard = self
+                .inner
+                .write()
+                .expect("DynamicNotificationPluginProvider lock poisoned");
+            guard.remove_provider_type(provider_type)
+        };
+        self.invalidate_provider_keys(&affected);
+        Ok(())
+    }
 }
 
 pub fn build_notification_plugin_provider(
@@ -2225,11 +2508,58 @@ pub fn build_notification_plugin_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::{ANIMETOSHO_WASM, JIMAKU_WASM, NEWZNAB_WASM, NZBGEEK_WASM, TORZNAB_WASM};
     use crate::types::{
         ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
         DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
         NotificationDescriptor, PluginHostBindingId, SubtitleCapabilities, SubtitleDescriptor,
     };
+
+    struct DummyIndexerClient;
+
+    #[async_trait::async_trait]
+    impl IndexerClient for DummyIndexerClient {
+        async fn search(
+            &self,
+            _query: String,
+            _ids: std::collections::HashMap<String, String>,
+            _category: Option<String>,
+            _facet: Option<String>,
+            _newznab_categories: Option<Vec<String>>,
+            _indexer_routing: Option<scryer_application::IndexerRoutingPlan>,
+            _mode: scryer_application::SearchMode,
+            _season: Option<u32>,
+            _episode: Option<u32>,
+            _absolute_episode: Option<u32>,
+            _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        ) -> scryer_application::AppResult<scryer_application::IndexerSearchResponse> {
+            unreachable!("dummy indexer client should not be called")
+        }
+    }
+
+    struct DummyDownloadClient;
+
+    #[async_trait::async_trait]
+    impl DownloadClient for DummyDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &scryer_application::DownloadClientAddRequest,
+        ) -> scryer_application::AppResult<scryer_application::DownloadGrabResult> {
+            unreachable!("dummy download client should not be called")
+        }
+    }
+
+    struct DummyNotificationClient;
+
+    #[async_trait::async_trait]
+    impl NotificationClient for DummyNotificationClient {
+        async fn send_notification(
+            &self,
+            _payload: &scryer_application::NotificationPayload,
+        ) -> scryer_application::AppResult<()> {
+            unreachable!("dummy notification client should not be called")
+        }
+    }
 
     fn descriptor(plugin_type: &str) -> PluginDescriptor {
         let provider = match plugin_type {
@@ -2323,6 +2653,15 @@ mod tests {
         }
     }
 
+    fn set_provider_aliases(descriptor: &mut PluginDescriptor, aliases: Vec<String>) {
+        match &mut descriptor.provider {
+            ProviderDescriptor::Indexer(provider) => provider.provider_aliases = aliases,
+            ProviderDescriptor::Notification(provider) => provider.provider_aliases = aliases,
+            ProviderDescriptor::DownloadClient(provider) => provider.provider_aliases = aliases,
+            ProviderDescriptor::Subtitle(provider) => provider.provider_aliases = aliases,
+        }
+    }
+
     fn set_allowed_hosts(descriptor: &mut PluginDescriptor, allowed_hosts: Vec<String>) {
         match &mut descriptor.provider {
             ProviderDescriptor::Indexer(provider) => provider.allowed_hosts = allowed_hosts,
@@ -2330,6 +2669,61 @@ mod tests {
             ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts = allowed_hosts,
             ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts = allowed_hosts,
         }
+    }
+
+    fn runtime_plugin_load(
+        plugin_type: &str,
+        provider_type: &str,
+        aliases: &[&str],
+    ) -> RuntimePluginLoad {
+        let mut descriptor = descriptor(plugin_type);
+        descriptor.id = provider_type.to_string();
+        descriptor.name = format!("{provider_type} plugin");
+        descriptor.sdk_version = SDK_VERSION.to_string();
+        descriptor.sdk_constraint = scryer_plugin_sdk::current_sdk_constraint();
+        set_provider_type(&mut descriptor, provider_type);
+        set_provider_aliases(
+            &mut descriptor,
+            aliases.iter().map(|alias| (*alias).to_string()).collect(),
+        );
+
+        RuntimePluginLoad {
+            descriptor,
+            wasm_bytes: provider_type.as_bytes().to_vec(),
+            first_party: true,
+        }
+    }
+
+    #[test]
+    fn embedded_builtin_descriptors_match_current_sdk_line() {
+        for wasm in [
+            ANIMETOSHO_WASM,
+            NEWZNAB_WASM,
+            NZBGEEK_WASM,
+            TORZNAB_WASM,
+            JIMAKU_WASM,
+        ] {
+            let (descriptor, _) = load_from_bytes(wasm).expect("embedded builtin should load");
+            validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
+                .expect("embedded builtin should match current SDK line");
+        }
+    }
+
+    #[test]
+    fn builtin_providers_expose_embedded_plugins() {
+        let indexers = build_indexer_plugin_provider(&[], &[]);
+        for provider_type in ["animetosho", "newznab", "nzbgeek", "torznab"] {
+            assert!(
+                indexers.plugin_name_for_provider(provider_type).is_some(),
+                "expected builtin indexer provider '{provider_type}' to be available"
+            );
+        }
+
+        let subtitles = build_subtitle_plugin_provider(&[], &[]);
+        assert!(
+            subtitles.plugin_name_for_provider("jimaku").is_some(),
+            "expected builtin subtitle provider 'jimaku' to be available"
+        );
     }
 
     #[test]
@@ -2531,6 +2925,229 @@ mod tests {
         assert_ne!(
             cache_fingerprint(r#"{"username":"alice"}"#),
             cache_fingerprint(r#"{"username":"bob"}"#)
+        );
+    }
+
+    #[test]
+    fn indexer_runtime_mutation_invalidates_only_changed_provider_cache_entries() {
+        let provider = DynamicPluginProvider::new(build_indexer_plugin_provider(&[], &[]));
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "indexer",
+                "animetosho",
+                &["animetosho-alias"],
+            ))
+            .expect("upsert animetosho");
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load("indexer", "newznab", &[]))
+            .expect("upsert newznab");
+
+        {
+            let mut cache = provider.client_cache.lock().expect("indexer cache lock");
+            cache.insert(
+                (
+                    "animetosho".to_string(),
+                    "cfg-a".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyIndexerClient),
+            );
+            cache.insert(
+                (
+                    "animetosho-alias".to_string(),
+                    "cfg-b".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyIndexerClient),
+            );
+            cache.insert(
+                ("newznab".to_string(), "cfg-c".to_string(), "1".to_string()),
+                Arc::new(DummyIndexerClient),
+            );
+        }
+
+        provider
+            .remove_runtime_plugin("animetosho")
+            .expect("remove target provider");
+
+        let cache = provider.client_cache.lock().expect("indexer cache lock");
+        assert_eq!(cache.len(), 1);
+        assert!(
+            cache
+                .keys()
+                .all(|(provider_type, _, _)| provider_type == "newznab")
+        );
+        let providers = provider.available_provider_types();
+        assert!(
+            providers
+                .iter()
+                .any(|provider_type| provider_type == "newznab")
+        );
+        assert!(
+            !providers
+                .iter()
+                .any(|provider_type| provider_type == "animetosho")
+        );
+    }
+
+    #[test]
+    fn download_runtime_mutation_invalidates_only_changed_provider_cache_entries() {
+        let provider = DynamicDownloadClientPluginProvider::new(
+            build_download_client_plugin_provider(&[], &[]),
+        );
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "download_client",
+                "qbittorrent",
+                &["qbt"],
+            ))
+            .expect("upsert qbittorrent");
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load("download_client", "rtorrent", &[]))
+            .expect("upsert rtorrent");
+
+        {
+            let mut cache = provider.client_cache.lock().expect("download cache lock");
+            cache.insert(
+                (
+                    "qbittorrent".to_string(),
+                    "cfg-a".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyDownloadClient),
+            );
+            cache.insert(
+                ("qbt".to_string(), "cfg-b".to_string(), "1".to_string()),
+                Arc::new(DummyDownloadClient),
+            );
+            cache.insert(
+                ("rtorrent".to_string(), "cfg-c".to_string(), "1".to_string()),
+                Arc::new(DummyDownloadClient),
+            );
+        }
+
+        provider
+            .remove_runtime_plugin("qbittorrent")
+            .expect("remove target provider");
+
+        let cache = provider.client_cache.lock().expect("download cache lock");
+        assert_eq!(cache.len(), 1);
+        assert!(
+            cache
+                .keys()
+                .all(|(provider_type, _, _)| provider_type == "rtorrent")
+        );
+        assert_eq!(
+            provider.available_provider_types(),
+            vec!["rtorrent".to_string()]
+        );
+    }
+
+    #[test]
+    fn notification_runtime_mutation_invalidates_only_changed_provider_cache_entries() {
+        let provider =
+            DynamicNotificationPluginProvider::new(build_notification_plugin_provider(&[], &[]));
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "notification",
+                "email",
+                &["smtp-email"],
+            ))
+            .expect("upsert email");
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load("notification", "webhook", &[]))
+            .expect("upsert webhook");
+
+        {
+            let mut cache = provider
+                .client_cache
+                .lock()
+                .expect("notification cache lock");
+            cache.insert(
+                (
+                    "email".to_string(),
+                    "channel-a".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyNotificationClient),
+            );
+            cache.insert(
+                (
+                    "smtp-email".to_string(),
+                    "channel-b".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyNotificationClient),
+            );
+            cache.insert(
+                (
+                    "webhook".to_string(),
+                    "channel-c".to_string(),
+                    "1".to_string(),
+                ),
+                Arc::new(DummyNotificationClient),
+            );
+        }
+
+        provider
+            .remove_runtime_plugin("email")
+            .expect("remove target provider");
+
+        let cache = provider
+            .client_cache
+            .lock()
+            .expect("notification cache lock");
+        assert_eq!(cache.len(), 1);
+        assert!(
+            cache
+                .keys()
+                .all(|(provider_type, _, _)| provider_type == "webhook")
+        );
+        assert_eq!(
+            provider.available_provider_types(),
+            vec!["webhook".to_string()]
+        );
+    }
+
+    #[test]
+    fn subtitle_builtin_restore_only_mutates_target_provider() {
+        let provider = DynamicSubtitlePluginProvider::new(build_subtitle_plugin_provider(&[], &[]));
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "subtitle_provider",
+                "opensubtitles",
+                &[],
+            ))
+            .expect("upsert opensubtitles");
+
+        provider
+            .remove_runtime_plugin("jimaku")
+            .expect("remove builtin subtitle");
+        let providers = provider.available_provider_types();
+        assert!(
+            providers
+                .iter()
+                .any(|provider_type| provider_type == "opensubtitles")
+        );
+        assert!(
+            !providers
+                .iter()
+                .any(|provider_type| provider_type == "jimaku")
+        );
+
+        provider
+            .restore_builtin_plugin("jimaku")
+            .expect("restore builtin subtitle");
+        let providers = provider.available_provider_types();
+        assert!(
+            providers
+                .iter()
+                .any(|provider_type| provider_type == "opensubtitles")
+        );
+        assert!(
+            providers
+                .iter()
+                .any(|provider_type| provider_type == "jimaku")
         );
     }
 }

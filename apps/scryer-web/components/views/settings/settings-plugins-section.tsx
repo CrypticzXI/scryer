@@ -3,6 +3,7 @@ import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, Refres
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -48,7 +49,19 @@ export type RegistryPluginRecord = {
   isEnabled: boolean;
   installedVersion: string | null;
   updateAvailable: boolean;
+  installInProgress: boolean;
   defaultBaseUrl?: string | null;
+};
+
+export type PluginInstallProgressRecord = {
+  pluginId: string;
+  operationKind: "install" | "upgrade";
+  state: "downloading" | "verifying" | "installing" | "succeeded" | "failed";
+  label: string;
+  stepIndex: number;
+  stepCount: number;
+  message?: string | null;
+  error?: string | null;
 };
 
 export type PluginCatalogStatusRecord = {
@@ -68,8 +81,9 @@ export type ManualPluginPreviewRecord = {
 type SettingsPluginsSectionProps = {
   plugins: RegistryPluginRecord[];
   catalogStatus: PluginCatalogStatusRecord | null;
+  initialLoading: boolean;
   mutatingPluginIds: string[];
-  upgradingPluginIds: string[];
+  pluginProgress: Partial<Record<string, PluginInstallProgressRecord>>;
   pluginErrors: Partial<Record<string, string>>;
   refreshing: boolean;
   manualRepoUrl: string;
@@ -132,6 +146,41 @@ function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string 
     default:
       return null;
   }
+}
+
+function isRunningPluginProgress(
+  progress?: PluginInstallProgressRecord,
+): progress is PluginInstallProgressRecord {
+  return progress !== undefined
+    && progress.state !== "succeeded"
+    && progress.state !== "failed";
+}
+
+function pluginProgressLabel(progress: PluginInstallProgressRecord, t: Translate): string {
+  switch (progress.state) {
+    case "downloading":
+      return t("settings.pluginInstallDownloading");
+    case "verifying":
+      return t("settings.pluginInstallVerifying");
+    case "installing":
+      return t("settings.pluginInstallInstalling");
+    case "succeeded":
+    case "failed":
+      return progress.label;
+    default:
+      return progress.label;
+  }
+}
+
+function normalizePluginLink(url?: string | null): string | null {
+  if (!url) {
+    return null;
+  }
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.replace(/\/+$/, "");
 }
 
 function PluginActionButton({
@@ -227,7 +276,7 @@ function PluginFilters({
 function PluginTable({
   plugins,
   mutatingPluginIds,
-  upgradingPluginIds,
+  pluginProgress,
   pluginErrors,
   showActions,
   onTogglePlugin,
@@ -240,7 +289,7 @@ function PluginTable({
 }: {
   plugins: RegistryPluginRecord[];
   mutatingPluginIds: string[];
-  upgradingPluginIds: string[];
+  pluginProgress: Partial<Record<string, PluginInstallProgressRecord>>;
   pluginErrors: Partial<Record<string, string>>;
   showActions: "installed" | "available";
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
@@ -252,6 +301,7 @@ function PluginTable({
   emptyMessage: string;
 }) {
   const t = useTranslate();
+  const actionsColumnClass = showActions === "installed" ? "w-32 text-right" : "w-24 text-right";
   if (plugins.length === 0) {
     return <p className="py-4 text-sm text-muted-foreground">{emptyMessage}</p>;
   }
@@ -265,13 +315,22 @@ function PluginTable({
           <TableHead>{t("label.version")}</TableHead>
           <TableHead>{t("label.status")}</TableHead>
           {showActions === "installed" && <TableHead>{t("label.enabled")}</TableHead>}
-          <TableHead className="text-right">{t("label.actions")}</TableHead>
+          <TableHead className={actionsColumnClass}>{t("label.actions")}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {plugins.map((plugin) => {
-          const isBusy = mutatingPluginIds.includes(plugin.id);
-          const isUpgrading = upgradingPluginIds.includes(plugin.id);
+          const progress = pluginProgress[plugin.id];
+          const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
+          const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
+          const isUpgrading =
+            (runningProgress?.operationKind === "upgrade")
+            || (plugin.installInProgress && showActions === "installed");
+          const sourceLink = plugin.sourceRepo ?? plugin.sourceUrl;
+          const normalizedSourceLink = normalizePluginLink(sourceLink);
+          const normalizedDocsLink = normalizePluginLink(plugin.docsUrl);
+          const showDocsLink =
+            normalizedDocsLink !== null && normalizedDocsLink !== normalizedSourceLink;
           const actionError = pluginErrors[plugin.id];
           const displayVersion =
             showActions === "installed" && plugin.installedVersion
@@ -283,7 +342,7 @@ function PluginTable({
               <TableCell>
                 <div>
                   <div className="font-medium">{plugin.name}</div>
-                  <div className="max-w-[300px] truncate text-xs text-muted-foreground">
+                  <div className="max-w-[300px] whitespace-normal break-words text-xs text-muted-foreground">
                     {plugin.description}
                   </div>
                 </div>
@@ -335,11 +394,11 @@ function PluginTable({
                     </span>
                   )}
                 </div>
-                {(plugin.sourceRepo || plugin.docsUrl) && (
+                {(sourceLink || showDocsLink) && (
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                    {plugin.sourceRepo && (
+                    {sourceLink && (
                       <a
-                        href={plugin.sourceRepo}
+                        href={sourceLink}
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-primary hover:underline"
@@ -348,7 +407,7 @@ function PluginTable({
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     )}
-                    {plugin.docsUrl && (
+                    {showDocsLink && plugin.docsUrl && (
                       <a
                         href={plugin.docsUrl}
                         target="_blank"
@@ -370,60 +429,78 @@ function PluginTable({
                   />
                 </TableCell>
               )}
-              <TableCell className="text-right">
-                <div className="flex items-center justify-end gap-1">
-                  {showActions === "installed" ? (
-                    <>
-                      <PluginActionButton
-                        tone={plugin.isEnabled ? "disabled" : "enabled"}
-                        disabled={isBusy}
-                        onClick={() => onTogglePlugin(plugin)}
-                        label={plugin.isEnabled ? t("label.disable") : t("label.enable")}
-                      >
-                        {plugin.isEnabled ? (
-                          <PowerOff className="h-4 w-4" />
-                        ) : (
-                          <Power className="h-4 w-4" />
-                        )}
-                      </PluginActionButton>
-                      {plugin.updateAvailable && (
+              <TableCell className={actionsColumnClass}>
+                <div
+                  className={cn(
+                    "ml-auto flex min-w-0 flex-col items-end gap-2",
+                    showActions === "installed" ? "w-28" : "w-20",
+                  )}
+                >
+                  <div className="flex w-full items-center justify-end gap-1">
+                    {showActions === "installed" ? (
+                      <>
                         <PluginActionButton
-                          tone="upgrade"
-                          disabled={isBusy || upgradeBlocked}
-                          onClick={() => onUpgradePlugin(plugin)}
-                          label={t("settings.pluginUpgrade", { version: plugin.version })}
+                          tone={plugin.isEnabled ? "disabled" : "enabled"}
+                          disabled={isBusy}
+                          onClick={() => onTogglePlugin(plugin)}
+                          label={plugin.isEnabled ? t("label.disable") : t("label.enable")}
                         >
-                          {isUpgrading ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
+                          {plugin.isEnabled ? (
+                            <PowerOff className="h-4 w-4" />
                           ) : (
-                            <ArrowUpCircle className="h-4 w-4" />
+                            <Power className="h-4 w-4" />
                           )}
                         </PluginActionButton>
-                      )}
-                      {canUninstallPlugin(plugin) && (
-                        <PluginActionButton
-                          tone="delete"
-                          disabled={isBusy}
-                          onClick={() => onUninstallPlugin(plugin)}
-                          label={uninstallLabel(plugin, t)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </PluginActionButton>
-                      )}
-                    </>
-                  ) : (
-                    <PluginActionButton
-                      tone="install"
-                      disabled={isBusy || installBlocked || installIsBlocked(plugin)}
-                      onClick={() => onInstallPlugin(plugin)}
-                      label={t("settings.pluginInstall")}
-                    >
-                      {isBusy ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4" />
-                      )}
-                    </PluginActionButton>
+                        {plugin.updateAvailable && (
+                          <PluginActionButton
+                            tone="upgrade"
+                            disabled={isBusy || upgradeBlocked}
+                            onClick={() => onUpgradePlugin(plugin)}
+                            label={t("settings.pluginUpgrade", { version: plugin.version })}
+                          >
+                            {isUpgrading ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ArrowUpCircle className="h-4 w-4" />
+                            )}
+                          </PluginActionButton>
+                        )}
+                        {canUninstallPlugin(plugin) && (
+                          <PluginActionButton
+                            tone="delete"
+                            disabled={isBusy}
+                            onClick={() => onUninstallPlugin(plugin)}
+                            label={uninstallLabel(plugin, t)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </PluginActionButton>
+                        )}
+                      </>
+                    ) : (
+                      <PluginActionButton
+                        tone="install"
+                        disabled={isBusy || installBlocked || installIsBlocked(plugin)}
+                        onClick={() => onInstallPlugin(plugin)}
+                        label={t("settings.pluginInstall")}
+                      >
+                        {isBusy ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Download className="h-4 w-4" />
+                        )}
+                      </PluginActionButton>
+                    )}
+                  </div>
+                  {runningProgress && (
+                    <div className="w-full space-y-1 overflow-hidden">
+                      <div className="truncate text-right text-xs leading-tight text-primary">
+                        {pluginProgressLabel(runningProgress, t)}
+                      </div>
+                      <Progress
+                        value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
+                        className="h-1.5"
+                      />
+                    </div>
                   )}
                 </div>
               </TableCell>
@@ -438,8 +515,9 @@ function PluginTable({
 export function SettingsPluginsSection({
   plugins,
   catalogStatus,
+  initialLoading,
   mutatingPluginIds,
-  upgradingPluginIds,
+  pluginProgress,
   pluginErrors,
   refreshing,
   manualRepoUrl,
@@ -523,7 +601,16 @@ export function SettingsPluginsSection({
         </div>
       )}
 
-      {showManualInstall && (
+      {initialLoading ? (
+        <div className="flex min-h-48 items-center justify-center rounded-xl border border-border/70 bg-card/40">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {!initialLoading && showManualInstall && (
         <div className="rounded-xl border border-border bg-card/60 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-end">
             <label className="flex-1 space-y-1 text-sm">
@@ -569,9 +656,9 @@ export function SettingsPluginsSection({
         </div>
       )}
 
-      {plugins.length === 0 ? (
+      {!initialLoading && plugins.length === 0 ? (
         <p className="py-4 text-sm text-muted-foreground">{t("settings.pluginsNoPlugins")}</p>
-      ) : (
+      ) : !initialLoading ? (
         <>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -585,7 +672,7 @@ export function SettingsPluginsSection({
               <PluginTable
                 plugins={filteredInstalled}
                 mutatingPluginIds={mutatingPluginIds}
-                upgradingPluginIds={upgradingPluginIds}
+                pluginProgress={pluginProgress}
                 pluginErrors={pluginErrors}
                 showActions="installed"
                 onTogglePlugin={onTogglePlugin}
@@ -610,7 +697,7 @@ export function SettingsPluginsSection({
               <PluginTable
                 plugins={filteredAvailable}
                 mutatingPluginIds={mutatingPluginIds}
-                upgradingPluginIds={upgradingPluginIds}
+                pluginProgress={pluginProgress}
                 pluginErrors={pluginErrors}
                 showActions="available"
                 onTogglePlugin={onTogglePlugin}
@@ -623,7 +710,7 @@ export function SettingsPluginsSection({
               />
           </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 }

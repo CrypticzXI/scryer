@@ -1,6 +1,6 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::ImportType;
+use scryer_domain::{ImportType, PersistedPluginWasmPayload};
 use std::collections::BTreeMap;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -1051,7 +1051,11 @@ pub trait PluginInstallationRepository: Send + Sync {
     async fn delete_plugin_installation(&self, plugin_id: &str) -> AppResult<()>;
     async fn get_enabled_plugin_wasm_bytes(
         &self,
-    ) -> AppResult<Vec<(PluginInstallation, Option<Vec<u8>>)>>;
+    ) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>>;
+    async fn get_plugin_installation_wasm_payload(
+        &self,
+        plugin_id: &str,
+    ) -> AppResult<Option<PersistedPluginWasmPayload>>;
     async fn seed_builtin(
         &self,
         plugin_id: &str,
@@ -1118,6 +1122,18 @@ pub trait IndexerPluginProvider: Send + Sync {
         None
     }
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy>;
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let _ = plugin;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime restoration".to_string())
+    }
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -1170,6 +1186,13 @@ pub struct ExternalPluginWasm<'a> {
     pub first_party: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct RuntimePluginLoad {
+    pub descriptor: scryer_plugin_sdk::PluginDescriptor,
+    pub wasm_bytes: Vec<u8>,
+    pub first_party: bool,
+}
+
 pub trait DownloadClientPluginProvider: Send + Sync {
     fn client_for_config(&self, config: &DownloadClientConfig) -> Option<Arc<dyn DownloadClient>>;
     fn available_provider_types(&self) -> Vec<String>;
@@ -1199,6 +1222,18 @@ pub trait DownloadClientPluginProvider: Send + Sync {
     }
     fn accepted_inputs_for_provider(&self, _provider_type: &str) -> Vec<String> {
         vec![]
+    }
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let _ = plugin;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime restoration".to_string())
     }
     fn reload_plugins(
         &self,
@@ -1464,6 +1499,18 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let _ = plugin;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime restoration".to_string())
+    }
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -1498,6 +1545,18 @@ pub trait SubtitlePluginProvider: Send + Sync {
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let _ = plugin;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime restoration".to_string())
+    }
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],

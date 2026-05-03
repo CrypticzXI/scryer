@@ -11,6 +11,9 @@ use scryer_application::{
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
 };
 use scryer_domain::{DomainEvent, NewDomainEvent};
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tracing::warn;
 use uuid::Uuid;
@@ -27,6 +30,7 @@ const AVIF_ENCODER_THREADS: usize = 1;
 #[derive(Clone)]
 pub struct SqliteTitleImageProcessor {
     client: reqwest::Client,
+    outbound_http: OutboundHttpClient,
     max_source_bytes: usize,
     avif_enabled: bool,
 }
@@ -44,6 +48,7 @@ impl SqliteTitleImageProcessor {
             .build()
             .expect("title image reqwest client should build");
         Self {
+            outbound_http: OutboundHttpClient::new(client.clone(), RateLimitRegistry::new()),
             client,
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled: true,
@@ -63,6 +68,7 @@ impl SqliteTitleImageProcessor {
             .build()
             .expect("title image test reqwest client should build");
         Self {
+            outbound_http: OutboundHttpClient::new(client.clone(), RateLimitRegistry::new()),
             client,
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled,
@@ -73,9 +79,32 @@ impl SqliteTitleImageProcessor {
         &self,
         source_url: &str,
     ) -> AppResult<(Vec<u8>, Option<String>, Option<String>)> {
-        let response =
-            self.client.get(source_url).send().await.map_err(|err| {
-                AppError::Repository(format!("failed to fetch title image: {err}"))
+        let scope = title_image_scope(source_url);
+        let response = self
+            .outbound_http
+            .send(
+                RequestPolicy::safe_read(scope, "title_image_fetch")
+                    .with_max_retries(2)
+                    .with_backoff(
+                        std::time::Duration::from_millis(500),
+                        std::time::Duration::from_secs(10),
+                    ),
+                || self.client.get(source_url),
+            )
+            .await
+            .map_err(|error| match error {
+                OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+                    match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                        Some(delay) => format!(
+                            "title image fetch was rate limited; retry after {}s",
+                            delay.as_secs()
+                        ),
+                        None => "title image fetch was rate limited".to_string(),
+                    },
+                ),
+                OutboundHttpError::Transport { source, .. } => {
+                    AppError::Repository(format!("failed to fetch title image: {source}"))
+                }
             })?;
 
         if !response.status().is_success() {
@@ -211,6 +240,16 @@ impl SqliteTitleImageProcessor {
         bytes: &[u8],
     ) -> AppResult<TitleImageReplacement> {
         self.process_bytes(kind, source_url, bytes, None, None)
+    }
+}
+
+fn title_image_scope(source_url: &str) -> String {
+    match reqwest::Url::parse(source_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+    {
+        Some(host) => format!("title_image:{host}"),
+        None => "title_image:unknown".to_string(),
     }
 }
 

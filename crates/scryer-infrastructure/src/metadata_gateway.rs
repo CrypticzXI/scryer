@@ -12,6 +12,9 @@ use scryer_application::{
     EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
     MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
 };
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info, warn};
@@ -495,6 +498,7 @@ fn next_version_compatibility_poll_delay_at(
 
 pub struct MetadataGatewayClient {
     http: Client,
+    outbound_http: OutboundHttpClient,
     endpoint: String,
     registration_url: String,
     enrollment_config: SmgEnrollmentConfig,
@@ -502,7 +506,6 @@ pub struct MetadataGatewayClient {
     mtls_state: tokio::sync::RwLock<MtlsState>,
     last_reenrollment: tokio::sync::Mutex<Option<Instant>>,
     pq_rotation: tokio::sync::Mutex<()>,
-    rate_limit_until: tokio::sync::Mutex<Option<Instant>>,
     compatibility_refresh: tokio::sync::Mutex<()>,
     version_incompatible: tokio::sync::Mutex<Option<smg_enrollment::VersionIncompatible>>,
     search_hash: String,
@@ -552,18 +555,20 @@ impl MetadataGatewayClient {
             "metadata gateway client initialized (APQ enabled)"
         );
 
+        let http = Client::builder()
+            .timeout(Duration::from_secs(100))
+            .danger_accept_invalid_certs(accept_invalid_certs)
+            .build()
+            .expect("failed to build HTTP client");
+
         Self {
-            http: Client::builder()
-                .timeout(Duration::from_secs(100))
-                .danger_accept_invalid_certs(accept_invalid_certs)
-                .build()
-                .expect("failed to build HTTP client"),
+            outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
+            http,
             endpoint,
             registration_url,
             enrollment_config,
             last_reenrollment: tokio::sync::Mutex::new(None),
             pq_rotation: tokio::sync::Mutex::new(()),
-            rate_limit_until: tokio::sync::Mutex::new(None),
             compatibility_refresh: tokio::sync::Mutex::new(()),
             version_incompatible: tokio::sync::Mutex::new(None),
             db,
@@ -1195,28 +1200,11 @@ impl MetadataGatewayClient {
         Fut: Future<Output = AppResult<reqwest::RequestBuilder>>,
     {
         for retry_index in 0..=METADATA_GATEWAY_MAX_RETRIES {
-            self.wait_for_rate_limit_window().await;
-            let result = build_req().await?.send().await;
-
-            match result {
-                Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                    if retry_index == METADATA_GATEWAY_MAX_RETRIES {
-                        return Ok(resp);
-                    }
-
-                    let retry_after = metadata_gateway_rate_limit_delay(
-                        resp.headers().get(reqwest::header::RETRY_AFTER),
-                        retry_index,
-                    );
-                    self.extend_rate_limit_window(retry_after).await;
-                    warn!(
-                        request = request_label,
-                        retry_attempt = retry_index + 1,
-                        retry_after_ms = retry_after.as_millis(),
-                        "metadata gateway rate limited (429), backing off"
-                    );
-                    self.wait_for_rate_limit_window().await;
-                }
+            match self
+                .outbound_http
+                .send_async(self.request_policy(request_label), &build_req)
+                .await
+            {
                 Ok(resp) if resp.status().is_server_error() => {
                     if retry_index == METADATA_GATEWAY_MAX_RETRIES {
                         return Ok(resp);
@@ -1232,26 +1220,11 @@ impl MetadataGatewayClient {
                     );
                     tokio::time::sleep(retry_after).await;
                 }
-                Err(err) if err.is_timeout() || err.is_connect() => {
-                    if retry_index == METADATA_GATEWAY_MAX_RETRIES {
-                        return Err(AppError::Repository(format!(
-                            "{request_label} failed after {} attempts: {err}",
-                            METADATA_GATEWAY_MAX_RETRIES + 1
-                        )));
-                    }
-
-                    let retry_after = metadata_gateway_transient_delay(retry_index);
-                    warn!(
-                        request = request_label,
-                        error = %err,
-                        retry_attempt = retry_index + 1,
-                        retry_after_ms = retry_after.as_millis(),
-                        "metadata gateway request failed (transient), retrying"
-                    );
-                    tokio::time::sleep(retry_after).await;
-                }
                 Ok(resp) => return Ok(resp),
-                Err(err) => return Err(AppError::Repository(err.to_string())),
+                Err(OutboundRequestError::Build(error)) => return Err(error),
+                Err(OutboundRequestError::Http(error)) => {
+                    return Err(map_metadata_gateway_outbound_error(request_label, error));
+                }
             }
         }
 
@@ -1260,44 +1233,13 @@ impl MetadataGatewayClient {
         )))
     }
 
-    async fn wait_for_rate_limit_window(&self) {
-        loop {
-            let delay = {
-                let mut guard = self.rate_limit_until.lock().await;
-                match *guard {
-                    Some(deadline) => {
-                        let now = Instant::now();
-                        if deadline <= now {
-                            *guard = None;
-                            None
-                        } else {
-                            Some(deadline.duration_since(now))
-                        }
-                    }
-                    None => None,
-                }
-            };
-
-            match delay {
-                Some(delay) if !delay.is_zero() => tokio::time::sleep(delay).await,
-                _ => return,
-            }
-        }
-    }
-
-    async fn extend_rate_limit_window(&self, delay: Duration) {
-        if delay.is_zero() {
-            return;
-        }
-
-        let deadline = Instant::now() + delay;
-        let mut guard = self.rate_limit_until.lock().await;
-        match *guard {
-            Some(current_deadline) if current_deadline >= deadline => {}
-            _ => {
-                *guard = Some(deadline);
-            }
-        }
+    fn request_policy(&self, request_label: &'static str) -> RequestPolicy {
+        RequestPolicy::safe_read("metadata_gateway", request_label)
+            .with_max_retries(METADATA_GATEWAY_MAX_RETRIES)
+            .with_backoff(
+                METADATA_GATEWAY_RATE_LIMIT_BASE_DELAY,
+                METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY,
+            )
     }
 
     async fn reconcile_pq_enrollment_generation(
@@ -1839,9 +1781,8 @@ mod tests {
     use super::{
         MetadataSearchQuery, SEARCH_TVDB_BATCH_QUERY, build_bulk_mixed_query,
         build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
-        metadata_gateway_rate_limit_delay, next_version_compatibility_poll_delay_at,
-        normalize_artwork_url, normalize_optional_artwork_url, parse_retry_after_header,
-        parse_version_compatibility_success,
+        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_success,
     };
     use std::time::{Duration, SystemTime};
 
@@ -1922,46 +1863,6 @@ mod tests {
                 "https://artworks.thetvdb.com/banners/posters/example.jpg".to_string()
             )),
             Some("https://artworks.thetvdb.com/banners/posters/example.jpg".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_retry_after_header_reads_seconds() {
-        let header = reqwest::header::HeaderValue::from_static("7");
-        assert_eq!(
-            parse_retry_after_header(Some(&header)),
-            Some(Duration::from_secs(7))
-        );
-    }
-
-    #[test]
-    fn parse_retry_after_header_ignores_invalid_values() {
-        let header = reqwest::header::HeaderValue::from_static("nonsense");
-        assert_eq!(parse_retry_after_header(Some(&header)), None);
-    }
-
-    #[test]
-    fn metadata_gateway_rate_limit_delay_prefers_retry_after_header() {
-        let header = reqwest::header::HeaderValue::from_static("9");
-        assert_eq!(
-            metadata_gateway_rate_limit_delay(Some(&header), 2),
-            Duration::from_secs(9)
-        );
-    }
-
-    #[test]
-    fn metadata_gateway_rate_limit_delay_uses_bounded_backoff_without_header() {
-        assert_eq!(
-            metadata_gateway_rate_limit_delay(None, 0),
-            Duration::from_secs(2)
-        );
-        assert_eq!(
-            metadata_gateway_rate_limit_delay(None, 1),
-            Duration::from_secs(4)
-        );
-        assert_eq!(
-            metadata_gateway_rate_limit_delay(None, 4),
-            Duration::from_secs(30)
         );
     }
 
@@ -2218,28 +2119,6 @@ fn bounded_exponential_backoff(attempt: u32, base: Duration, max: Duration) -> D
     if delay > max { max } else { delay }
 }
 
-fn parse_retry_after_header(value: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
-    value
-        .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
-}
-
-fn metadata_gateway_rate_limit_delay(
-    retry_after: Option<&reqwest::header::HeaderValue>,
-    attempt: u32,
-) -> Duration {
-    parse_retry_after_header(retry_after)
-        .filter(|delay| !delay.is_zero())
-        .unwrap_or_else(|| {
-            bounded_exponential_backoff(
-                attempt,
-                METADATA_GATEWAY_RATE_LIMIT_BASE_DELAY,
-                METADATA_GATEWAY_RATE_LIMIT_MAX_DELAY,
-            )
-        })
-}
-
 fn enrollment_retry_delay(error: &smg_enrollment::EnrollmentError, attempt: u32) -> Duration {
     if let smg_enrollment::EnrollmentError::RateLimited(rate_limited) = error
         && let Some(retry_after) = rate_limited.retry_after
@@ -2257,6 +2136,26 @@ fn metadata_gateway_transient_delay(attempt: u32) -> Duration {
         METADATA_GATEWAY_TRANSIENT_BASE_DELAY,
         METADATA_GATEWAY_TRANSIENT_MAX_DELAY,
     )
+}
+
+fn map_metadata_gateway_outbound_error(request_label: &str, error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after_seconds = rate_limited
+                .retry_after
+                .filter(|delay| !delay.is_zero())
+                .map(|delay| delay.as_secs());
+            AppError::Repository(match retry_after_seconds {
+                Some(seconds) if seconds > 0 => format!(
+                    "{request_label} was rate limited by the metadata gateway; retry after {seconds}s"
+                ),
+                _ => format!("{request_label} was rate limited by the metadata gateway"),
+            })
+        }
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("{request_label} failed: {source}"))
+        }
+    }
 }
 
 fn normalize_artwork_url(url: &str) -> String {

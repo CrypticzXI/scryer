@@ -3307,6 +3307,7 @@ pub struct RegistryPluginPayload {
     pub is_enabled: bool,
     pub installed_version: Option<String>,
     pub update_available: bool,
+    pub install_in_progress: bool,
     pub default_base_url: Option<String>,
 }
 
@@ -3365,6 +3366,35 @@ pub struct PluginCatalogStatusPayload {
     pub outage_message: Option<String>,
     pub blocked_actions: Vec<String>,
     pub last_error: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum PluginInstallOperationKindValue {
+    Install,
+    Upgrade,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum PluginInstallStateValue {
+    Downloading,
+    Verifying,
+    Installing,
+    Succeeded,
+    Failed,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PluginInstallProgressPayload {
+    pub plugin_id: String,
+    pub operation_kind: PluginInstallOperationKindValue,
+    pub state: PluginInstallStateValue,
+    pub label: String,
+    pub step_index: i32,
+    pub step_count: i32,
+    pub message: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(SimpleObject)]

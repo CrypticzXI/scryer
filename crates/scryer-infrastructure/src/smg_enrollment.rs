@@ -1,4 +1,4 @@
-use std::sync::{OnceLock, mpsc};
+use std::sync::{LazyLock, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -6,6 +6,9 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ml_dsa::{KeyGen, MlDsa65};
 use ring::{hmac, rand::SecureRandom};
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, parse_retry_after,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -16,6 +19,9 @@ const PQ_CLIENT_FAMILY: &str = "scryer-stable";
 // Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+
+static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
+    LazyLock::new(RateLimitRegistry::new);
 
 /// Returned when SMG reports a version compatibility issue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -268,19 +274,21 @@ async fn enroll_pq_with_smg(
 ) -> Result<EnrollmentState, EnrollmentError> {
     let challenge_url = derive_registration_endpoint(registration_url, "/api/register-challenge")?;
     let register_key_url = derive_registration_endpoint(registration_url, "/api/register-key")?;
-    let http = enrollment_http_client(ca_cert_override)?;
-
+    let http = enrollment_outbound_http_client(ca_cert_override)?;
+    let challenge_payload = serde_json::json!({
+        "client_family": PQ_CLIENT_FAMILY,
+        "instance_id": instance_id,
+        "secret_id": PQ_CLIENT_FAMILY,
+        "version": env!("CARGO_PKG_VERSION"),
+    });
     let challenge_response = http
-        .post(challenge_url)
-        .json(&serde_json::json!({
-            "client_family": PQ_CLIENT_FAMILY,
-            "instance_id": instance_id,
-            "secret_id": PQ_CLIENT_FAMILY,
-            "version": env!("CARGO_PKG_VERSION"),
-        }))
-        .send()
+        .send(enrollment_request_policy("smg_pq_challenge"), || {
+            http.client()
+                .post(challenge_url.clone())
+                .json(&challenge_payload)
+        })
         .await
-        .map_err(|e| EnrollmentError::Other(format!("SMG PQ challenge request failed: {e}")))?;
+        .map_err(|error| map_enrollment_outbound_error("SMG PQ challenge request", error))?;
 
     if !challenge_response.status().is_success() {
         return Err(registration_response_error(challenge_response, "SMG PQ challenge").await);
@@ -307,22 +315,25 @@ async fn enroll_pq_with_smg(
         .map_err(EnrollmentError::Other)?;
     let bootstrap_mac = sign_bootstrap_mac(registration_secret, &proof_message);
 
+    let register_payload = serde_json::json!({
+        "challenge_id": challenge.challenge_id,
+        "client_family": PQ_CLIENT_FAMILY,
+        "instance_id": instance_id,
+        "secret_id": PQ_CLIENT_FAMILY,
+        "version": env!("CARGO_PKG_VERSION"),
+        "public_key": pq_key.public_key_b64,
+        "key_id": pq_key.key_id,
+        "proof_signature": proof_signature,
+        "bootstrap_mac": bootstrap_mac,
+    });
     let response = http
-        .post(register_key_url)
-        .json(&serde_json::json!({
-            "challenge_id": challenge.challenge_id,
-            "client_family": PQ_CLIENT_FAMILY,
-            "instance_id": instance_id,
-            "secret_id": PQ_CLIENT_FAMILY,
-            "version": env!("CARGO_PKG_VERSION"),
-            "public_key": pq_key.public_key_b64,
-            "key_id": pq_key.key_id,
-            "proof_signature": proof_signature,
-            "bootstrap_mac": bootstrap_mac,
-        }))
-        .send()
+        .send(enrollment_request_policy("smg_pq_register"), || {
+            http.client()
+                .post(register_key_url.clone())
+                .json(&register_payload)
+        })
         .await
-        .map_err(|e| EnrollmentError::Other(format!("SMG PQ registration request failed: {e}")))?;
+        .map_err(|error| map_enrollment_outbound_error("SMG PQ registration request", error))?;
 
     if !response.status().is_success() {
         return Err(registration_response_error(response, "SMG PQ registration").await);
@@ -405,32 +416,29 @@ async fn enroll_with_smg(
         .map_err(|e| EnrollmentError::Other(format!("failed to serialize CSR to PEM: {e}")))?;
 
     // POST to SMG registration endpoint
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
-    if let Some(ca_pem) = ca_cert_override {
-        let cert = reqwest::Certificate::from_pem(ca_pem.as_bytes()).map_err(|e| {
-            EnrollmentError::Other(format!("failed to parse SCRYER_SMG_CA_CERT: {e}"))
-        })?;
-        builder = builder.add_root_certificate(cert);
-    }
-    let http = builder.build().map_err(|e| {
-        EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
-    })?;
-
+    let http = enrollment_outbound_http_client(ca_cert_override)?;
+    let registration_payload = serde_json::json!({
+        "csr": csr_pem,
+        "version": env!("CARGO_PKG_VERSION"),
+        "registration_secret": registration_secret,
+    });
     let response = http
-        .post(registration_url)
-        .json(&serde_json::json!({
-            "csr": csr_pem,
-            "version": env!("CARGO_PKG_VERSION"),
-            "registration_secret": registration_secret,
-        }))
-        .send()
+        .send(enrollment_request_policy("smg_register"), || {
+            http.client()
+                .post(registration_url.to_string())
+                .json(&registration_payload)
+        })
         .await
-        .map_err(|e| EnrollmentError::Other(format!("SMG registration request failed: {e}")))?;
+        .map_err(|error| map_enrollment_outbound_error("SMG registration request", error))?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let retry_after =
-            parse_retry_after_header(response.headers().get(reqwest::header::RETRY_AFTER));
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|header| header.to_str().ok())
+            .and_then(parse_retry_after)
+            .map(|(delay, _source)| delay);
         let body = response.text().await.unwrap_or_default();
 
         // Check for structured version incompatibility response (HTTP 422)
@@ -547,7 +555,7 @@ pub async fn rotate_pq_enrollment(
     let challenge_url =
         derive_registration_endpoint(registration_url, "/api/register-rotate-challenge")?;
     let rotate_url = derive_registration_endpoint(registration_url, "/api/register-rotate")?;
-    let http = enrollment_http_client(ca_cert_override)?;
+    let http = enrollment_outbound_http_client(ca_cert_override)?;
 
     let challenge_response = send_authenticated_pq_registration_request(
         &http,
@@ -785,9 +793,9 @@ pub(crate) fn derive_registration_endpoint(
     Ok(format!("{root}{endpoint_path}"))
 }
 
-fn enrollment_http_client(
+fn enrollment_outbound_http_client(
     ca_cert_override: Option<&str>,
-) -> Result<reqwest::Client, EnrollmentError> {
+) -> Result<OutboundHttpClient, EnrollmentError> {
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
     if let Some(ca_pem) = ca_cert_override {
         let cert = reqwest::Certificate::from_pem(ca_pem.as_bytes()).map_err(|e| {
@@ -795,13 +803,40 @@ fn enrollment_http_client(
         })?;
         builder = builder.add_root_certificate(cert);
     }
-    builder.build().map_err(|e| {
+    let client = builder.build().map_err(|e| {
         EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
-    })
+    })?;
+    Ok(OutboundHttpClient::new(
+        client,
+        SMG_ENROLLMENT_RATE_LIMITS.clone(),
+    ))
+}
+
+fn enrollment_request_policy(request_label: &'static str) -> RequestPolicy {
+    RequestPolicy::no_retry("smg_enrollment", request_label)
+        .with_backoff(Duration::from_secs(1), Duration::from_secs(30))
+}
+
+fn map_enrollment_outbound_error(operation: &str, error: OutboundHttpError) -> EnrollmentError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => EnrollmentError::RateLimited(RateLimited {
+            retry_after: rate_limited.retry_after,
+            message: match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                Some(delay) => format!(
+                    "{operation} failed: rate limited, retry after {}s",
+                    delay.as_secs()
+                ),
+                None => format!("{operation} failed: rate limited"),
+            },
+        }),
+        OutboundHttpError::Transport { source, .. } => {
+            EnrollmentError::Other(format!("{operation} failed: {source}"))
+        }
+    }
 }
 
 async fn send_authenticated_pq_registration_request(
-    http: &reqwest::Client,
+    http: &OutboundHttpClient,
     url: &str,
     current_seed_b64: &str,
     current_key_id: &str,
@@ -828,16 +863,22 @@ async fn send_authenticated_pq_registration_request(
     .await
     .map_err(EnrollmentError::Other)?;
 
-    http.post(url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header("X-Scryer-Auth-Version", "pqsig-v1")
-        .header("X-Scryer-Key-Id", current_key_id)
-        .header("X-Scryer-Timestamp", timestamp.to_string())
-        .header("X-Scryer-Signature", signature)
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| EnrollmentError::Other(format!("SMG PQ authenticated request failed: {e}")))
+    let url = url.to_string();
+    http.send(
+        enrollment_request_policy("smg_pq_authenticated_request"),
+        || {
+            http.client()
+                .post(url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header("X-Scryer-Auth-Version", "pqsig-v1")
+                .header("X-Scryer-Key-Id", current_key_id)
+                .header("X-Scryer-Timestamp", timestamp.to_string())
+                .header("X-Scryer-Signature", signature.clone())
+                .body(body_bytes.clone())
+        },
+    )
+    .await
+    .map_err(|error| map_enrollment_outbound_error("SMG PQ authenticated request", error))
 }
 
 pub(crate) async fn registration_response_error(
@@ -845,8 +886,12 @@ pub(crate) async fn registration_response_error(
     operation: &str,
 ) -> EnrollmentError {
     let status = response.status();
-    let retry_after =
-        parse_retry_after_header(response.headers().get(reqwest::header::RETRY_AFTER));
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|header| header.to_str().ok())
+        .and_then(parse_retry_after)
+        .map(|(delay, _source)| delay);
     let body = response.text().await.unwrap_or_default();
 
     if status.as_u16() == 422
@@ -947,30 +992,6 @@ pub fn build_mtls_identity(state: &EnrollmentState) -> Result<reqwest::Identity,
 pub fn build_ca_certificate(state: &EnrollmentState) -> Result<reqwest::Certificate, String> {
     reqwest::Certificate::from_pem(state.ca_cert_pem.as_bytes())
         .map_err(|e| format!("failed to parse CA certificate: {e}"))
-}
-
-fn parse_retry_after_header(value: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
-    value
-        .and_then(|header| header.to_str().ok())
-        .and_then(parse_retry_after_value)
-}
-
-fn parse_retry_after_value(value: &str) -> Option<Duration> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Ok(seconds) = trimmed.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
-    }
-
-    let retry_at = chrono::DateTime::parse_from_rfc2822(trimmed).ok()?;
-    let now = Utc::now();
-    let retry_at_utc = retry_at.with_timezone(&Utc);
-    (retry_at_utc > now)
-        .then(|| (retry_at_utc - now).to_std().ok())
-        .flatten()
 }
 
 /// Sign a request for application-layer instance authentication.
@@ -1222,30 +1243,34 @@ fn extract_pem_issuer_cn(pem_str: &str) -> Option<String> {
 mod tests {
     use super::{
         EnrollmentError, canonical_pq_request_message, generate_pq_keypair,
-        parse_retry_after_value, pq_registration_proof_message, sign_bootstrap_mac,
-        sign_pq_request,
+        pq_registration_proof_message, sign_bootstrap_mac, sign_pq_request,
     };
+    use scryer_outbound_http::parse_retry_after;
     use std::time::Duration;
 
     #[test]
-    fn parse_retry_after_value_reads_seconds() {
-        assert_eq!(parse_retry_after_value("17"), Some(Duration::from_secs(17)));
-    }
-
-    #[test]
-    fn parse_retry_after_value_reads_http_date() {
+    fn canonical_retry_after_parser_reads_http_date_first() {
         let future = (chrono::Utc::now() + chrono::Duration::seconds(12))
             .format("%a, %d %b %Y %H:%M:%S GMT")
             .to_string();
 
-        let delay = parse_retry_after_value(&future).expect("expected parsed retry-after delay");
+        let (delay, source) =
+            parse_retry_after(&future).expect("expected parsed retry-after delay");
+        assert_eq!(source, scryer_outbound_http::RetryAfterSource::HttpDate);
         assert!(delay >= Duration::from_secs(10));
         assert!(delay <= Duration::from_secs(12));
     }
 
     #[test]
-    fn parse_retry_after_value_ignores_invalid_values() {
-        assert_eq!(parse_retry_after_value("nonsense"), None);
+    fn canonical_retry_after_parser_falls_back_to_seconds() {
+        let (delay, source) = parse_retry_after("17").expect("expected parsed retry-after delay");
+        assert_eq!(source, scryer_outbound_http::RetryAfterSource::Seconds);
+        assert_eq!(delay, Duration::from_secs(17));
+    }
+
+    #[test]
+    fn canonical_retry_after_parser_ignores_invalid_values() {
+        assert_eq!(parse_retry_after("nonsense"), None);
     }
 
     #[test]

@@ -723,6 +723,12 @@ export function MediaContentView({
                       onAutoQueue={queueExisting}
                       isDeletingById={isDeletingCatalogTitleById}
                       overviewTargetView={overviewTargetView}
+                      showScanLibraryAction={showInitialScanAction}
+                      showConfigureRootsAction={showConfigureRootFoldersAction}
+                      configureRootsHref={configureRootFoldersHref}
+                      onScanLibrary={scanLibrary}
+                      scanLibraryLoading={libraryScanLoading}
+                      scanLibraryDisabled={libraryScanDisabled}
                     />
                   );
                 }

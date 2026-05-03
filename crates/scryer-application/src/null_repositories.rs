@@ -13,7 +13,7 @@ use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit, WantedItemsQuery,
 };
-use scryer_domain::PluginInstallation;
+use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
 use scryer_domain::BlocklistEntry;
 
@@ -610,8 +610,14 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
     }
     async fn get_enabled_plugin_wasm_bytes(
         &self,
-    ) -> AppResult<Vec<(PluginInstallation, Option<Vec<u8>>)>> {
+    ) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>> {
         Ok(vec![])
+    }
+    async fn get_plugin_installation_wasm_payload(
+        &self,
+        _plugin_id: &str,
+    ) -> AppResult<Option<PersistedPluginWasmPayload>> {
+        Ok(None)
     }
     async fn seed_builtin(
         &self,

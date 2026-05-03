@@ -15,6 +15,7 @@ use quick_xml::events::Event;
 use scryer_application::{
     AppError, AppResult, DownloadClientAddRequest, StagedNzbRef, StagedNzbStore,
 };
+use scryer_outbound_http::{OutboundHttpClient, OutboundHttpError, RequestPolicy};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -450,7 +451,7 @@ pub(crate) fn request_source_hint_for_nzb(request: &DownloadClientAddRequest) ->
 }
 
 pub(crate) async fn stage_nzb_from_url(
-    client: &reqwest::Client,
+    client: &OutboundHttpClient,
     store: &Arc<dyn StagedNzbStore>,
     pipeline_limit: &Arc<Semaphore>,
     url: &str,
@@ -464,12 +465,32 @@ pub(crate) async fn stage_nzb_from_url(
             AppError::Repository(format!("failed to acquire nzb pipeline permit: {error}"))
         })?;
 
+    let scope = nzb_download_scope(url);
     let response = client
-        .get(url)
-        .header("User-Agent", "scryer/0.1")
-        .send()
+        .send(
+            RequestPolicy::safe_read(scope, "nzb_download")
+                .with_max_retries(2)
+                .with_backoff(
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(15),
+                ),
+            || client.client().get(url).header("User-Agent", "scryer/0.1"),
+        )
         .await
-        .map_err(|err| AppError::Repository(format!("nzb download request failed: {err}")))?;
+        .map_err(|error| match error {
+            OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+                match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                    Some(delay) => format!(
+                        "nzb download request was rate limited; retry after {}s",
+                        delay.as_secs()
+                    ),
+                    None => "nzb download request was rate limited".to_string(),
+                },
+            ),
+            OutboundHttpError::Transport { source, .. } => {
+                AppError::Repository(format!("nzb download request failed: {source}"))
+            }
+        })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -579,7 +600,7 @@ pub(crate) async fn stage_nzb_from_url(
 }
 
 pub(crate) async fn resolve_staged_nzb_for_request(
-    client: &reqwest::Client,
+    client: &OutboundHttpClient,
     store: &Arc<dyn StagedNzbStore>,
     pipeline_limit: &Arc<Semaphore>,
     request: &DownloadClientAddRequest,
@@ -605,6 +626,16 @@ pub(crate) async fn resolve_staged_nzb_for_request(
     .await?;
     staged.self_staged = true;
     Ok(staged)
+}
+
+fn nzb_download_scope(url: &str) -> String {
+    match reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+    {
+        Some(host) => format!("nzb_download:{host}"),
+        None => "nzb_download:unknown".to_string(),
+    }
 }
 
 #[cfg(test)]

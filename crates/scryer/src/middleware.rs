@@ -631,6 +631,9 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             Json(ErrorResponse { error: message }),
         )
             .into_response(),
+        AppError::PluginInstallInProgress(message) => {
+            (StatusCode::CONFLICT, Json(ErrorResponse { error: message })).into_response()
+        }
         AppError::NotFound(message) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse { error: message }),

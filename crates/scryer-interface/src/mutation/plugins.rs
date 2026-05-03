@@ -1,7 +1,10 @@
 use async_graphql::{Context, Object, Result as GqlResult};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::{from_manual_plugin_preview, from_plugin_installation, from_registry_plugin};
+use crate::mappers::{
+    from_manual_plugin_preview, from_plugin_install_progress, from_plugin_installation,
+    from_registry_plugin,
+};
 use crate::types::*;
 
 #[derive(Default)]
@@ -49,6 +52,20 @@ impl PluginMutations {
         Ok(from_plugin_installation(installation))
     }
 
+    async fn begin_install_plugin(
+        &self,
+        ctx: &Context<'_>,
+        input: InstallPluginInput,
+    ) -> GqlResult<PluginInstallProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let snapshot = app
+            .begin_install_plugin(&actor, &input.plugin_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_install_progress(snapshot))
+    }
+
     async fn uninstall_plugin(
         &self,
         ctx: &Context<'_>,
@@ -88,6 +105,20 @@ impl PluginMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_plugin_installation(installation))
+    }
+
+    async fn begin_upgrade_plugin(
+        &self,
+        ctx: &Context<'_>,
+        input: UpgradePluginInput,
+    ) -> GqlResult<PluginInstallProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let snapshot = app
+            .begin_upgrade_plugin(&actor, &input.plugin_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_install_progress(snapshot))
     }
 
     async fn inspect_manual_plugin_repo(

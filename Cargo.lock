@@ -1819,9 +1819,9 @@ dependencies = [
 
 [[package]]
 name = "digest"
-version = "0.11.2"
+version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4850db49bf08e663084f7fb5c87d202ef91a3907271aff24a94eb97ff039153c"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.0",
  "const-oid 0.10.2",
@@ -5832,6 +5832,7 @@ dependencies = [
  "ring",
  "scryer-domain",
  "scryer-mediainfo",
+ "scryer-outbound-http",
  "scryer-plugin-sdk",
  "scryer-release-parser",
  "scryer-rules",
@@ -5895,6 +5896,7 @@ dependencies = [
  "ring",
  "scryer-application",
  "scryer-domain",
+ "scryer-outbound-http",
  "scryer-rules",
  "security-framework",
  "security-framework-sys",
@@ -5959,8 +5961,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "scryer-outbound-http"
+version = "0.13.1"
+dependencies = [
+ "chrono",
+ "metrics",
+ "reqwest 0.13.3",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "scryer-plugin-sdk"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "extism",
@@ -6347,7 +6361,7 @@ checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
- "digest 0.11.2",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -6356,7 +6370,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
 dependencies = [
- "digest 0.11.2",
+ "digest 0.11.3",
  "keccak",
 ]
 
@@ -6401,7 +6415,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 dependencies = [
- "digest 0.11.2",
+ "digest 0.11.3",
  "rand_core 0.10.1",
 ]
 

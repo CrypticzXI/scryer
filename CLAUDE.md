@@ -19,7 +19,9 @@ workspace-level `AGENTS.md`, not here.
 - Build and release automation lives in `cargo xtask`
 - For app releases, run `cargo xtask release --dry-run` first, inspect the
   dry-run result, and only then run the real `cargo xtask release` if the dry
-  run succeeded and the release should continue.
+  run succeeded and the release should continue. The dry run is allowed to
+  apply and commit release-prep fixes, but it must still stop before the Cargo
+  version bump, signed tag, and push.
 - If the user explicitly requests a release or tag, treat that as approval to
   commit the in-scope dirty tree for that release with a sensible commit
   message before invoking `cargo xtask release`. Do not include unrelated dirty

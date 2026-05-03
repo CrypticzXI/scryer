@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::{Arc, OnceLock},
+};
 
 use base64::Engine;
 use semver::{Version, VersionReq};
@@ -9,6 +12,7 @@ use sigstore::{
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
 use tokio::sync::Semaphore;
+use tracing::debug;
 use url::Url;
 use x509_cert::{
     Certificate,
@@ -31,6 +35,10 @@ const ZSTD_COMPRESSION_LABEL: &str = "zstd";
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
+type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
+
+static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
+    OnceLock::new();
 
 static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 
@@ -255,18 +263,62 @@ pub async fn decompress_zstd(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
     .map_err(|e| AppError::Repository(format!("zstd decompression panicked: {e}")))?
 }
 
+pub async fn compress_zstd(bytes: Vec<u8>, level: i32) -> AppResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        zstd::encode_all(bytes.as_slice(), level)
+            .map_err(|e| AppError::Repository(format!("failed to compress zstd payload: {e}")))
+    })
+    .await
+    .map_err(|e| AppError::Repository(format!("zstd compression panicked: {e}")))?
+}
+
 pub fn blake3_digest(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
 
-pub fn verify_digest(label: &str, expected: &str, bytes: &[u8]) -> AppResult<()> {
-    let actual = blake3_digest(bytes);
-    if actual != expected {
-        return Err(AppError::Validation(format!(
-            "{label} digest mismatch: expected {expected}, got {actual}"
-        )));
+pub fn parse_digest_string(input: &str) -> AppResult<(String, String)> {
+    let trimmed = input.trim();
+    let (algo, digest) = trimmed
+        .split_once(':')
+        .ok_or_else(|| AppError::Validation(format!("invalid digest string '{trimmed}'")))?;
+    let algo = algo.trim().to_ascii_lowercase();
+    let digest = normalize_hex_digest(digest)?;
+    if algo.is_empty() {
+        return Err(AppError::Validation(
+            "digest algorithm is missing".to_string(),
+        ));
     }
-    Ok(())
+    Ok((algo, digest))
+}
+
+pub fn verify_split_digest(
+    label: &str,
+    algorithm: &str,
+    expected_digest: &str,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let normalized_algorithm = algorithm.trim().to_ascii_lowercase();
+    let expected_digest = normalize_hex_digest(expected_digest)?;
+    match normalized_algorithm.as_str() {
+        "blake3" => {
+            let actual_digest = blake3::hash(bytes).to_hex().to_string();
+            if actual_digest.eq_ignore_ascii_case(&expected_digest) {
+                Ok(())
+            } else {
+                Err(AppError::Validation(format!(
+                    "{label} digest mismatch: expected blake3:{expected_digest}, got blake3:{actual_digest}"
+                )))
+            }
+        }
+        _ => Err(AppError::Validation(format!(
+            "{label} uses unsupported digest algorithm '{normalized_algorithm}'"
+        ))),
+    }
+}
+
+pub fn verify_digest(label: &str, expected: &str, bytes: &[u8]) -> AppResult<()> {
+    let (algorithm, digest) = parse_digest_string(expected)?;
+    verify_split_digest(label, &algorithm, &digest, bytes)
 }
 
 pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStatus> {
@@ -488,23 +540,12 @@ fn verify_signed_blob_blocking(
 ) -> AppResult<()> {
     let bundle_text = std::str::from_utf8(bundle_raw)
         .map_err(|e| AppError::Validation(format!("invalid Sigstore bundle UTF-8: {e}")))?;
-    let trust_root = tokio::runtime::Handle::current()
-        .block_on(SigstoreTrustRoot::new(None))
-        .map_err(|e| AppError::Repository(format!("failed to load Sigstore trust root: {e}")))?;
-    let rekor_keys = trust_root.rekor_keys().map_err(|e| {
-        AppError::Repository(format!("failed to load Sigstore Rekor public keys: {e}"))
-    })?;
-    let rekor_keys = rekor_keys
-        .into_iter()
-        .map(|(key_id, key)| {
-            CosignVerificationKey::from_pem(key, &SigningScheme::default()).map(|key| (key_id, key))
-        })
-        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
-        .map_err(|e| AppError::Repository(format!("failed to parse Rekor public key: {e}")))?;
+    let rekor_keys = cached_rekor_verification_keys()?;
 
-    let bundle = SignedArtifactBundle::new_verified(bundle_text, &rekor_keys).map_err(|e| {
-        AppError::Validation(format!("Sigstore Rekor bundle verification failed: {e}"))
-    })?;
+    let bundle =
+        SignedArtifactBundle::new_verified(bundle_text, rekor_keys.as_ref()).map_err(|e| {
+            AppError::Validation(format!("Sigstore Rekor bundle verification failed: {e}"))
+        })?;
     let cert_pem = normalize_bundle_cert(&bundle.cert)?;
     <sigstore::cosign::Client as CosignCapabilities>::verify_blob(
         &cert_pem,
@@ -516,6 +557,46 @@ fn verify_signed_blob_blocking(
     })?;
     verify_signer_identity(&cert_pem, required_signer)?;
     Ok(())
+}
+
+fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
+    REKOR_VERIFICATION_KEYS
+        .get_or_init(|| {
+            let trust_root = tokio::runtime::Handle::current()
+                .block_on(SigstoreTrustRoot::new(None))
+                .map_err(|e| format!("failed to load Sigstore trust root: {e}"))?;
+            let rekor_keys = trust_root
+                .rekor_keys()
+                .map_err(|e| format!("failed to load Sigstore Rekor public keys: {e}"))?;
+            parse_rekor_verification_keys(rekor_keys)
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(AppError::Repository)
+}
+
+fn parse_rekor_verification_keys(
+    keys: std::collections::BTreeMap<String, &[u8]>,
+) -> AppResult<RekorVerificationKeys> {
+    let parsed = keys
+        .into_iter()
+        .filter_map(|(key_id, key)| {
+            match CosignVerificationKey::from_der(key, &SigningScheme::default()) {
+                Ok(key) => Some((key_id, key)),
+                Err(error) => {
+                    debug!(%key_id, %error, "skipping unsupported Rekor public key");
+                    None
+                }
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+    if parsed.is_empty() {
+        return Err(AppError::Repository(
+            "failed to parse any Rekor public keys from the Sigstore trust root".to_string(),
+        ));
+    }
+    Ok(parsed)
 }
 
 fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSigner) -> AppResult<()> {
@@ -618,17 +699,24 @@ fn parse_version(version: &str) -> AppResult<Version> {
 }
 
 fn require_digest(label: &str, digest: &str) -> AppResult<()> {
-    let Some(hex) = digest.strip_prefix("blake3:") else {
+    parse_digest_string(digest).map(|_| ()).map_err(|_| {
+        AppError::Validation(format!(
+            "{label} must use a supported <algorithm>:<hex> digest"
+        ))
+    })
+}
+
+fn normalize_hex_digest(input: &str) -> AppResult<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation("digest value is missing".to_string()));
+    }
+    if !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(AppError::Validation(format!(
-            "{label} must use blake3:<hex>"
-        )));
-    };
-    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(AppError::Validation(format!(
-            "{label} has invalid BLAKE3 hex"
+            "digest value '{trimmed}' must be hexadecimal"
         )));
     }
-    Ok(())
+    Ok(trimmed.to_ascii_lowercase())
 }
 
 fn require_release_asset_url(label: &str, url: &str, repo: &GitHubRepo) -> AppResult<()> {
@@ -663,6 +751,35 @@ pub fn plugin_manifest_asset_url(manifest_url: &str, asset_name: &str) -> AppRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_digest_string_splits_blake3_digest() {
+        let (algorithm, digest) =
+            parse_digest_string("blake3:0123456789abcdef").expect("digest should parse");
+        assert_eq!(algorithm, "blake3");
+        assert_eq!(digest, "0123456789abcdef");
+    }
+
+    #[test]
+    fn parse_digest_string_rejects_malformed_values() {
+        assert!(parse_digest_string("blake3").is_err());
+        assert!(parse_digest_string("blake3:not-hex").is_err());
+        assert!(parse_digest_string(":abcd").is_err());
+    }
+
+    #[test]
+    fn verify_split_digest_accepts_matching_blake3_hex() {
+        let bytes = b"hello from scryer";
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        verify_split_digest("plugin wasm", "blake3", &digest, bytes)
+            .expect("matching digest should verify");
+    }
+
+    #[test]
+    fn verify_split_digest_rejects_unknown_algorithms() {
+        let err = verify_split_digest("plugin wasm", "sha256", "abcd", b"bytes").unwrap_err();
+        assert!(err.to_string().contains("unsupported digest algorithm"));
+    }
 
     #[test]
     fn github_status_fail_open_for_malformed_response() {
@@ -711,5 +828,19 @@ mod tests {
         }"#;
         let err = parse_and_validate_child_catalog(raw, None, None).unwrap_err();
         assert!(err.to_string().contains("duplicate release version"));
+    }
+
+    #[tokio::test]
+    async fn sigstore_trust_root_rekor_keys_parse_as_der() {
+        let trust_root = SigstoreTrustRoot::new(None)
+            .await
+            .expect("embedded Sigstore trust root should load");
+        let rekor_keys = trust_root
+            .rekor_keys()
+            .expect("Sigstore trust root should provide Rekor keys");
+        assert!(!rekor_keys.is_empty(), "expected at least one Rekor key");
+        let parsed = parse_rekor_verification_keys(rekor_keys)
+            .expect("embedded Rekor keys should parse as DER verification keys");
+        assert!(!parsed.is_empty(), "expected at least one parsed Rekor key");
     }
 }

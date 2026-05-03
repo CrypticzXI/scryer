@@ -544,9 +544,9 @@ impl AppUseCase {
                 ))
             }
             JobKey::PluginRegistryRefresh => {
-                self.refresh_plugin_registry_internal().await?;
+                self.refresh_plugin_catalog_internal().await?;
                 Ok(JobExecutionOutcome::new(
-                    Some("Plugin registry refreshed".to_string()),
+                    Some("Plugin catalog refreshed".to_string()),
                     None,
                 ))
             }

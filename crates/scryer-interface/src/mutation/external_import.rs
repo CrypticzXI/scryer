@@ -309,8 +309,8 @@ impl ExternalImportMutations {
             let install_result = match app.install_plugin(&actor, scryer_type).await {
                 Ok(inst) => Ok(inst),
                 Err(_) => {
-                    // Registry might not be cached yet — refresh and retry
-                    let _ = app.refresh_plugin_registry_internal().await;
+                    // Catalog might not be cached yet — refresh and retry
+                    let _ = app.refresh_plugin_catalog_internal().await;
                     app.install_plugin(&actor, scryer_type).await
                 }
             };

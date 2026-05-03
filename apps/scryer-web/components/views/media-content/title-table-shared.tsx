@@ -553,15 +553,20 @@ export function TitleTableActionButton({
 
 export function TitleTableEmptyState({
   colSpan,
-  t,
-  showScanAction = false,
-  showConfigureRootsAction = false,
-  configureRootsHref,
-  scanLoading = false,
-  scanDisabled = false,
-  onScan,
+  ...emptyStateProps
 }: {
   colSpan: number;
+} & TitleCollectionEmptyStateProps) {
+  return (
+    <TableRow>
+      <TableCell colSpan={colSpan} className="py-8">
+        <TitleCollectionEmptyState {...emptyStateProps} />
+      </TableCell>
+    </TableRow>
+  );
+}
+
+type TitleCollectionEmptyStateProps = {
   t: Translate;
   showScanAction?: boolean;
   showConfigureRootsAction?: boolean;
@@ -569,45 +574,53 @@ export function TitleTableEmptyState({
   scanLoading?: boolean;
   scanDisabled?: boolean;
   onScan?: () => Promise<void> | void;
-}) {
+};
+
+export function TitleCollectionEmptyState({
+  t,
+  showScanAction = false,
+  showConfigureRootsAction = false,
+  configureRootsHref,
+  scanLoading = false,
+  scanDisabled = false,
+  onScan,
+}: TitleCollectionEmptyStateProps) {
   return (
-    <TableRow>
-      <TableCell colSpan={colSpan} className="py-8">
-        {showConfigureRootsAction && configureRootsHref ? (
-          <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
-            <p className="text-sm font-medium text-foreground">
-              {t("settings.rootFoldersEmpty")}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("title.configureRootFoldersHint")}
-            </p>
-            <Button asChild type="button" variant="primary" className="mt-4">
-              <Link to={configureRootsHref}>
-                {t("title.configureRootFoldersButton")}
-              </Link>
-            </Button>
-          </div>
-        ) : showScanAction && onScan ? (
-          <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
-            <p className="text-sm font-medium text-foreground">{t("title.noManaged")}</p>
-            <p className="mt-1 text-sm text-muted-foreground">{t("title.noFilesTrackedHint")}</p>
-            <Button
-              type="button"
-              variant="primary"
-              className="mt-4"
-              onClick={() => {
-                void onScan();
-              }}
-              disabled={scanDisabled || scanLoading}
-            >
-              {scanLoading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-              {t("settings.libraryScanButton")}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-muted-foreground">{t("title.noManaged")}</p>
-        )}
-      </TableCell>
-    </TableRow>
+    <>
+      {showConfigureRootsAction && configureRootsHref ? (
+        <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
+          <p className="text-sm font-medium text-foreground">
+            {t("settings.rootFoldersEmpty")}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("title.configureRootFoldersHint")}
+          </p>
+          <Button asChild type="button" variant="primary" className="mt-4">
+            <Link to={configureRootsHref}>
+              {t("title.configureRootFoldersButton")}
+            </Link>
+          </Button>
+        </div>
+      ) : showScanAction && onScan ? (
+        <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
+          <p className="text-sm font-medium text-foreground">{t("title.noManaged")}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t("title.noFilesTrackedHint")}</p>
+          <Button
+            type="button"
+            variant="primary"
+            className="mt-4"
+            onClick={() => {
+              void onScan();
+            }}
+            disabled={scanDisabled || scanLoading}
+          >
+            {scanLoading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+            {t("settings.libraryScanButton")}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-muted-foreground">{t("title.noManaged")}</p>
+      )}
+    </>
   );
 }

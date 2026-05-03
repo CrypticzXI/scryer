@@ -13,11 +13,12 @@ use crate::context::LogBuffer;
 use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx};
 use crate::mappers::{
     from_activity_event, from_domain_event, from_download_queue_item, from_job_run,
-    from_library_scan_session,
+    from_library_scan_session, from_plugin_install_progress,
 };
 use crate::types::{
     ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
     DownloadQueueItemPayload, JobRunPayload, LibraryScanProgressPayload,
+    PluginInstallProgressPayload,
 };
 
 pub struct SubscriptionRoot;
@@ -748,6 +749,62 @@ impl SubscriptionRoot {
                 }
             }
         });
+
+        guard_subscription_stream(ctx, Box::pin(stream))
+    }
+
+    async fn plugin_install_progress(
+        &self,
+        ctx: &Context<'_>,
+        plugin_id: String,
+    ) -> BoxStream<'static, PluginInstallProgressPayload> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!("plugin_install_progress: app_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(e) => {
+                tracing::warn!("plugin_install_progress: actor_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let receiver = match app
+            .subscribe_plugin_install_progress(&actor, &plugin_id)
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                tracing::warn!(
+                    plugin_id = plugin_id.as_str(),
+                    "plugin_install_progress: subscribe failed: {e}"
+                );
+                return empty_box_stream();
+            }
+        };
+
+        let stream = unfold(
+            (receiver, true),
+            move |(mut receiver, emit_initial)| async move {
+                if emit_initial {
+                    let payload = from_plugin_install_progress(receiver.borrow().clone());
+                    return Some((payload, (receiver, false)));
+                }
+
+                match receiver.changed().await {
+                    Ok(()) => {
+                        let payload = from_plugin_install_progress(receiver.borrow().clone());
+                        Some((payload, (receiver, false)))
+                    }
+                    Err(_) => None,
+                }
+            },
+        );
 
         guard_subscription_stream(ctx, Box::pin(stream))
     }

@@ -9,6 +9,7 @@ scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo" }
+scryer-outbound-http = { path = "../scryer-outbound-http" }
 jsonwebtoken = { workspace = true }
 rand_core = { workspace = true }
 argon2 = { workspace = true }

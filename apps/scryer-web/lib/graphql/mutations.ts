@@ -951,6 +951,19 @@ export const installPluginMutation = `mutation InstallPlugin($input: InstallPlug
   }
 }`;
 
+export const beginInstallPluginMutation = `mutation BeginInstallPlugin($input: InstallPluginInput!) {
+  beginInstallPlugin(input: $input) {
+    pluginId
+    operationKind
+    state
+    label
+    stepIndex
+    stepCount
+    message
+    error
+  }
+}`;
+
 export const uninstallPluginMutation = `mutation UninstallPlugin($input: UninstallPluginInput!) {
   uninstallPlugin(input: $input)
 }`;
@@ -1009,6 +1022,19 @@ export const upgradePluginMutation = `mutation UpgradePlugin($input: UpgradePlug
   }
 }`;
 
+export const beginUpgradePluginMutation = `mutation BeginUpgradePlugin($input: UpgradePluginInput!) {
+  beginUpgradePlugin(input: $input) {
+    pluginId
+    operationKind
+    state
+    label
+    stepIndex
+    stepCount
+    message
+    error
+  }
+}`;
+
 export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo($input: ManualPluginRepoInput!) {
   inspectManualPluginRepo(input: $input) {
     githubRepoUrl
@@ -1034,6 +1060,7 @@ export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo
       isEnabled
       installedVersion
       updateAvailable
+      installInProgress
       defaultBaseUrl
     }
   }

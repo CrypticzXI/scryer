@@ -1558,7 +1558,40 @@ pub(crate) fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
         is_enabled: p.is_enabled,
         installed_version: p.installed_version,
         update_available: p.update_available,
+        install_in_progress: p.install_in_progress,
         default_base_url: p.default_base_url,
+    }
+}
+
+pub(crate) fn from_plugin_install_progress(
+    snapshot: scryer_application::PluginInstallProgressSnapshot,
+) -> PluginInstallProgressPayload {
+    PluginInstallProgressPayload {
+        plugin_id: snapshot.plugin_id,
+        operation_kind: match snapshot.operation_kind {
+            scryer_application::PluginInstallOperationKind::Install => {
+                PluginInstallOperationKindValue::Install
+            }
+            scryer_application::PluginInstallOperationKind::Upgrade => {
+                PluginInstallOperationKindValue::Upgrade
+            }
+        },
+        state: match snapshot.state {
+            scryer_application::PluginInstallState::Downloading => {
+                PluginInstallStateValue::Downloading
+            }
+            scryer_application::PluginInstallState::Verifying => PluginInstallStateValue::Verifying,
+            scryer_application::PluginInstallState::Installing => {
+                PluginInstallStateValue::Installing
+            }
+            scryer_application::PluginInstallState::Succeeded => PluginInstallStateValue::Succeeded,
+            scryer_application::PluginInstallState::Failed => PluginInstallStateValue::Failed,
+        },
+        label: snapshot.label,
+        step_index: snapshot.step_index,
+        step_count: snapshot.step_count,
+        message: snapshot.message,
+        error: snapshot.error,
     }
 }
 

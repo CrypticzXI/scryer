@@ -1,6 +1,8 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::PluginHostBindingId;
+use scryer_domain::{
+    NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginWasmEncoding,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
@@ -10,8 +12,11 @@ use tokio::sync::Mutex;
 
 struct MockPluginInstallationRepo {
     installations: Arc<Mutex<Vec<PluginInstallation>>>,
+    payloads: Arc<Mutex<HashMap<String, PersistedPluginWasmPayload>>>,
     registry_cache: Arc<Mutex<Option<String>>>,
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
+    get_enabled_payload_calls: Arc<AtomicUsize>,
+    get_single_payload_calls: Arc<AtomicUsize>,
 }
 
 type SeededPluginRecord = (
@@ -29,8 +34,11 @@ impl MockPluginInstallationRepo {
     fn new() -> Self {
         Self {
             installations: Arc::new(Mutex::new(vec![])),
+            payloads: Arc::new(Mutex::new(HashMap::new())),
             registry_cache: Arc::new(Mutex::new(None)),
             seeded: Arc::new(Mutex::new(vec![])),
+            get_enabled_payload_calls: Arc::new(AtomicUsize::new(0)),
+            get_single_payload_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -52,17 +60,26 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
     async fn create_plugin_installation(
         &self,
         installation: &PluginInstallation,
-        _wasm_bytes: Option<&[u8]>,
+        wasm_bytes: Option<&[u8]>,
     ) -> AppResult<PluginInstallation> {
         let mut list = self.installations.lock().await;
         list.push(installation.clone());
+        if let Some(wasm_bytes) = wasm_bytes {
+            self.payloads.lock().await.insert(
+                installation.plugin_id.clone(),
+                PersistedPluginWasmPayload {
+                    encoding: installation.wasm_encoding,
+                    bytes: wasm_bytes.to_vec(),
+                },
+            );
+        }
         Ok(installation.clone())
     }
 
     async fn update_plugin_installation(
         &self,
         installation: &PluginInstallation,
-        _wasm_bytes: Option<&[u8]>,
+        wasm_bytes: Option<&[u8]>,
     ) -> AppResult<PluginInstallation> {
         let mut list = self.installations.lock().await;
         if let Some(existing) = list
@@ -71,24 +88,53 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         {
             *existing = installation.clone();
         }
+        let mut payloads = self.payloads.lock().await;
+        match wasm_bytes {
+            Some(wasm_bytes) => {
+                payloads.insert(
+                    installation.plugin_id.clone(),
+                    PersistedPluginWasmPayload {
+                        encoding: installation.wasm_encoding,
+                        bytes: wasm_bytes.to_vec(),
+                    },
+                );
+            }
+            None if installation.source_kind == PluginSourceKind::Bundled => {
+                payloads.remove(&installation.plugin_id);
+            }
+            None => {}
+        }
         Ok(installation.clone())
     }
 
     async fn delete_plugin_installation(&self, plugin_id: &str) -> AppResult<()> {
         let mut list = self.installations.lock().await;
         list.retain(|i| i.plugin_id != plugin_id);
+        self.payloads.lock().await.remove(plugin_id);
         Ok(())
     }
 
     async fn get_enabled_plugin_wasm_bytes(
         &self,
-    ) -> AppResult<Vec<(PluginInstallation, Option<Vec<u8>>)>> {
+    ) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>> {
+        self.get_enabled_payload_calls
+            .fetch_add(1, Ordering::Relaxed);
         let list = self.installations.lock().await;
+        let payloads = self.payloads.lock().await;
         Ok(list
             .iter()
             .filter(|i| i.is_enabled)
-            .map(|i| (i.clone(), None))
+            .map(|i| (i.clone(), payloads.get(&i.plugin_id).cloned()))
             .collect())
+    }
+
+    async fn get_plugin_installation_wasm_payload(
+        &self,
+        plugin_id: &str,
+    ) -> AppResult<Option<PersistedPluginWasmPayload>> {
+        self.get_single_payload_calls
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(self.payloads.lock().await.get(plugin_id).cloned())
     }
 
     async fn seed_builtin(
@@ -112,6 +158,42 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
             plugin_type.to_string(),
             provider_type.to_string(),
         ));
+        let mut installations = self.installations.lock().await;
+        if installations
+            .iter()
+            .any(|existing| existing.plugin_id == plugin_id)
+        {
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        installations.push(PluginInstallation {
+            id: plugin_id.to_string(),
+            plugin_id: plugin_id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            version: version.to_string(),
+            sdk_version: sdk_version.to_string(),
+            sdk_constraint: sdk_constraint.to_string(),
+            scryer_constraint: None,
+            plugin_type: plugin_type.to_string(),
+            provider_type: provider_type.to_string(),
+            source_kind: PluginSourceKind::Bundled,
+            is_enabled: true,
+            is_builtin: true,
+            wasm_encoding: PluginWasmEncoding::Identity,
+            wasm_digest_algo: None,
+            source_url: None,
+            support_tier: PluginSupportTier::Official,
+            publisher: Some("scryer".to_string()),
+            docs_url: None,
+            source_repo: None,
+            manifest_url: None,
+            wasm_digest: None,
+            artifact_digest: None,
+            installed_at: now,
+            updated_at: now,
+        });
         Ok(())
     }
 
@@ -224,7 +306,11 @@ struct MockPluginProvider {
     plugin_sdk_versions: HashMap<String, String>,
     plugin_sdk_constraints: HashMap<String, String>,
     plugin_types: HashMap<String, String>,
+    removed_provider_types: StdArc<StdMutex<Vec<String>>>,
     reload_count: AtomicUsize,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    restore_count: AtomicUsize,
 }
 
 impl MockPluginProvider {
@@ -239,7 +325,11 @@ impl MockPluginProvider {
             plugin_sdk_versions: HashMap::new(),
             plugin_sdk_constraints: HashMap::new(),
             plugin_types: HashMap::new(),
+            removed_provider_types: StdArc::new(StdMutex::new(vec![])),
             reload_count: AtomicUsize::new(0),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            restore_count: AtomicUsize::new(0),
         }
     }
 
@@ -339,6 +429,43 @@ impl IndexerPluginProvider for MockPluginProvider {
         Ok(())
     }
 
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        if self
+            .builtin_types
+            .iter()
+            .any(|builtin| builtin == provider_type)
+        {
+            let mut disabled = self
+                .disabled_builtin_types
+                .lock()
+                .expect("disabled builtin types lock");
+            if !disabled.iter().any(|value| value == provider_type) {
+                disabled.push(provider_type.to_string());
+            }
+        }
+        self.removed_provider_types
+            .lock()
+            .expect("removed provider types lock")
+            .push(provider_type.to_string());
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let mut disabled = self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled builtin types lock");
+        disabled.retain(|value| value != provider_type);
+        self.restore_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         self.plugin_names.get(provider_type).cloned()
     }
@@ -381,6 +508,17 @@ fn make_installation(
     builtin: bool,
     enabled: bool,
 ) -> PluginInstallation {
+    make_installation_with_type(plugin_id, version, "indexer", plugin_id, builtin, enabled)
+}
+
+fn make_installation_with_type(
+    plugin_id: &str,
+    version: &str,
+    plugin_type: &str,
+    provider_type: &str,
+    builtin: bool,
+    enabled: bool,
+) -> PluginInstallation {
     let now = Utc::now();
     PluginInstallation {
         id: scryer_domain::Id::new().0,
@@ -391,8 +529,8 @@ fn make_installation(
         sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
         sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
         scryer_constraint: None,
-        plugin_type: "indexer".to_string(),
-        provider_type: plugin_id.to_string(),
+        plugin_type: plugin_type.to_string(),
+        provider_type: provider_type.to_string(),
         source_kind: if builtin {
             scryer_domain::PluginSourceKind::Bundled
         } else {
@@ -400,7 +538,8 @@ fn make_installation(
         },
         is_enabled: enabled,
         is_builtin: builtin,
-        wasm_sha256: None,
+        wasm_encoding: PluginWasmEncoding::Identity,
+        wasm_digest_algo: None,
         source_url: None,
         support_tier: scryer_domain::PluginSupportTier::Official,
         publisher: None,
@@ -414,12 +553,118 @@ fn make_installation(
     }
 }
 
+fn make_runtime_plugin_load(
+    plugin_id: &str,
+    plugin_type: &str,
+    provider_type: &str,
+) -> RuntimePluginLoad {
+    let provider = match plugin_type {
+        "indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            })
+        }
+        "usenet_indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Usenet,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            })
+        }
+        "torrent_indexer" => {
+            scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                source_kind: scryer_plugin_sdk::IndexerSourceKind::Torrent,
+                capabilities: Default::default(),
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            })
+        }
+        "subtitle_provider" => {
+            scryer_plugin_sdk::ProviderDescriptor::Subtitle(scryer_plugin_sdk::SubtitleDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: scryer_plugin_sdk::SubtitleCapabilities::default(),
+            })
+        }
+        "notification" => scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: scryer_plugin_sdk::NotificationCapabilities::default(),
+            },
+        ),
+        "download_client" => scryer_plugin_sdk::ProviderDescriptor::DownloadClient(
+            scryer_plugin_sdk::DownloadClientDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                accepted_inputs: vec![],
+                isolation_modes: vec![],
+                capabilities: scryer_plugin_sdk::DownloadClientCapabilities::default(),
+            },
+        ),
+        other => panic!("unsupported plugin type for runtime load helper: {other}"),
+    };
+
+    RuntimePluginLoad {
+        descriptor: scryer_plugin_sdk::PluginDescriptor {
+            id: plugin_id.to_string(),
+            name: format!("{plugin_id} Plugin"),
+            version: "0.1.0".to_string(),
+            sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            socket_permissions: vec![],
+            provider,
+        },
+        wasm_bytes: vec![1, 2, 3, 4],
+        first_party: true,
+    }
+}
+
 fn make_registry_json(entries: &[serde_json::Value]) -> String {
     serde_json::json!({
         "schema_version": 1,
         "plugins": entries
     })
     .to_string()
+}
+
+fn assert_not_available_from_catalog(err: AppError, plugin_id: &str) {
+    assert!(matches!(err, AppError::NotFound(_)));
+    match err {
+        AppError::NotFound(msg) => {
+            assert!(msg.contains(plugin_id));
+            assert!(msg.contains("plugin catalog"));
+        }
+        _ => panic!("expected NotFound"),
+    }
 }
 
 fn registry_entry(
@@ -602,8 +847,73 @@ fn bootstrap_plugins_with_subtitles(
     }
 }
 
+fn bootstrap_plugins_with_runtime_providers(
+    provider: Option<MockPluginProvider>,
+    subtitle_provider: Option<Arc<MockSubtitlePluginProvider>>,
+    download_client_plugin_provider: Option<Arc<MockDownloadClientPluginProvider>>,
+    notification_plugin_provider: Option<Arc<MockNotificationPluginProvider>>,
+) -> TestHarness {
+    use crate::null_repositories::NullSettingsRepository;
+    use crate::null_repositories::test_nulls::*;
+    use crate::types::JwtAuthConfig;
+
+    let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
+    let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
+
+    let mut services = AppServices::builder(
+        Arc::new(NullTitleRepository),
+        Arc::new(NullShowRepository),
+        Arc::new(NullUserRepository),
+        indexer_config_repo.clone() as Arc<dyn IndexerConfigRepository>,
+        Arc::new(NullIndexerClient),
+        Arc::new(NullDownloadClient),
+        Arc::new(NullDownloadClientConfigRepository),
+        Arc::new(NullReleaseAttemptRepository),
+        Arc::new(NullSettingsRepository),
+        Arc::new(NullQualityProfileRepository),
+        String::new(),
+    )
+    .with_plugin_installations(plugin_repo.clone());
+    let plugin_provider = provider.map(Arc::new);
+    if let Some(provider) = &plugin_provider {
+        services = services.with_plugin_provider(provider.clone());
+    }
+    if let Some(provider) = &subtitle_provider {
+        services = services.with_subtitle_plugin_provider(provider.clone());
+    }
+    if let Some(provider) = &download_client_plugin_provider {
+        services = services.with_download_client_plugin_provider(provider.clone());
+    }
+    if let Some(provider) = &notification_plugin_provider {
+        services = services.with_notification_provider(provider.clone());
+    }
+
+    let registry = FacetRegistry::new();
+    let app = AppUseCase::new(
+        services.build_partial_for_tests(),
+        JwtAuthConfig {
+            issuer: "test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    TestHarness {
+        app,
+        plugin_repo,
+        indexer_config_repo,
+        plugin_provider,
+    }
+}
+
 struct MockSubtitlePluginProvider {
     builtin_types: Vec<String>,
+    disabled_builtin_types: StdArc<StdMutex<Vec<String>>>,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    restore_count: AtomicUsize,
+    reload_count: AtomicUsize,
 }
 
 impl MockSubtitlePluginProvider {
@@ -613,6 +923,11 @@ impl MockSubtitlePluginProvider {
                 .iter()
                 .map(|value| (*value).to_string())
                 .collect(),
+            disabled_builtin_types: StdArc::new(StdMutex::new(vec![])),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            restore_count: AtomicUsize::new(0),
+            reload_count: AtomicUsize::new(0),
         }
     }
 }
@@ -627,11 +942,19 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
     }
 
     fn available_provider_types(&self) -> Vec<String> {
-        self.builtin_types.clone()
+        let disabled = self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled subtitle builtin types lock");
+        self.builtin_types
+            .iter()
+            .filter(|provider_type| !disabled.iter().any(|value| value == *provider_type))
+            .cloned()
+            .collect()
     }
 
     fn builtin_provider_types(&self) -> Vec<String> {
-        self.builtin_types.clone()
+        self.available_provider_types()
     }
 
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
@@ -664,6 +987,526 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         Some(provider_type.to_string())
     }
+
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        if self
+            .builtin_types
+            .iter()
+            .any(|builtin| builtin == provider_type)
+        {
+            let mut disabled = self
+                .disabled_builtin_types
+                .lock()
+                .expect("disabled subtitle builtin types lock");
+            if !disabled.iter().any(|value| value == provider_type) {
+                disabled.push(provider_type.to_string());
+            }
+        }
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let mut disabled = self
+            .disabled_builtin_types
+            .lock()
+            .expect("disabled subtitle builtin types lock");
+        disabled.retain(|value| value != provider_type);
+        self.restore_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_plugins(
+        &self,
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct MockDownloadClientPluginProvider {
+    available_types: Vec<String>,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    reload_count: AtomicUsize,
+}
+
+impl MockDownloadClientPluginProvider {
+    fn new(provider_types: &[&str]) -> Self {
+        Self {
+            available_types: provider_types
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            reload_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl DownloadClientPluginProvider for MockDownloadClientPluginProvider {
+    fn client_for_config(&self, _config: &DownloadClientConfig) -> Option<Arc<dyn DownloadClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.available_types.clone()
+    }
+
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some("0.1.0".to_string())
+    }
+
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::SDK_VERSION.to_string())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::current_sdk_constraint())
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        vec![]
+    }
+
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(provider_type.to_string())
+    }
+
+    fn default_base_url_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+
+    fn accepted_inputs_for_provider(&self, _provider_type: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, _provider_type: &str) -> Result<(), String> {
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_plugins(
+        &self,
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct MockNotificationPluginProvider {
+    available_types: Vec<String>,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    reload_count: AtomicUsize,
+}
+
+impl MockNotificationPluginProvider {
+    fn new(provider_types: &[&str]) -> Self {
+        Self {
+            available_types: provider_types
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            reload_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl NotificationPluginProvider for MockNotificationPluginProvider {
+    fn client_for_channel(
+        &self,
+        _config: &NotificationChannelConfig,
+    ) -> Option<Arc<dyn NotificationClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.available_types.clone()
+    }
+
+    fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some("0.1.0".to_string())
+    }
+
+    fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::SDK_VERSION.to_string())
+    }
+
+    fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
+        Some(scryer_plugin_sdk::current_sdk_constraint())
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        vec![]
+    }
+
+    fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(provider_type.to_string())
+    }
+
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, _provider_type: &str) -> Result<(), String> {
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_plugins(
+        &self,
+        _external_wasm_bytes: &[ExternalPluginWasm<'_>],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+// ── Runtime mutation routing ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_usenet_indexer_to_indexer_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type(
+                "animetosho",
+                "0.1.0",
+                "usenet_indexer",
+                "animetosho",
+                false,
+                true,
+            ),
+            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho"),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_replace_removes_previous_indexer_provider_when_key_changes() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle),
+        Some(download),
+        Some(notification),
+    );
+
+    let previous = make_installation_with_type(
+        "animetosho",
+        "0.1.0",
+        "usenet_indexer",
+        "animetosho",
+        false,
+        true,
+    );
+    let mut next = previous.clone();
+    next.provider_type = "animetosho_v2".to_string();
+
+    h.app
+        .apply_runtime_plugin_replace(
+            &previous,
+            &next,
+            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho_v2"),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(indexer.remove_count.load(Ordering::Relaxed), 1);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        *indexer
+            .removed_provider_types
+            .lock()
+            .expect("removed provider types lock"),
+        vec!["animetosho".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_subtitle_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type(
+                "jimaku",
+                "0.1.0",
+                "subtitle_provider",
+                "jimaku",
+                false,
+                true,
+            ),
+            make_runtime_plugin_load("jimaku", "subtitle_provider", "jimaku"),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_notification_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type("email", "0.1.0", "notification", "email", false, true),
+            make_runtime_plugin_load("email", "notification", "email"),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_download_client_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type(
+                "qbittorrent",
+                "0.1.0",
+                "download_client",
+                "qbittorrent",
+                false,
+                true,
+            ),
+            make_runtime_plugin_load("qbittorrent", "download_client", "qbittorrent"),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn toggle_builtin_plugin_uses_single_family_runtime_mutation() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_builtin_provider("nzbgeek", "NZBGeek", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("nzbgeek", "0.2.0", true, true));
+
+    h.app
+        .toggle_plugin(&config_admin(), "nzbgeek", false)
+        .await
+        .expect("disable builtin plugin");
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(indexer.remove_count.load(Ordering::Relaxed), 1);
+    assert_eq!(indexer.restore_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert!(
+        !indexer
+            .available_provider_types()
+            .iter()
+            .any(|value| value == "nzbgeek")
+    );
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        h.plugin_repo
+            .get_enabled_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        h.plugin_repo
+            .get_single_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
+
+    h.app
+        .toggle_plugin(&config_admin(), "nzbgeek", true)
+        .await
+        .expect("enable builtin plugin");
+
+    assert_eq!(indexer.restore_count.load(Ordering::Relaxed), 1);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert!(
+        indexer
+            .available_provider_types()
+            .iter()
+            .any(|value| value == "nzbgeek")
+    );
+    assert_eq!(
+        h.plugin_repo
+            .get_enabled_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        h.plugin_repo
+            .get_single_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
+}
+
+#[tokio::test]
+async fn uninstall_notification_plugin_touches_only_notification_family() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&["email"]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+    );
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation_with_type(
+            "email",
+            "0.1.0",
+            "notification",
+            "email",
+            false,
+            true,
+        ));
+
+    h.app
+        .uninstall_plugin(&config_admin(), "email")
+        .await
+        .expect("uninstall notification plugin");
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert!(
+        h.plugin_repo
+            .get_plugin_installation("email")
+            .await
+            .expect("read installation")
+            .is_none()
+    );
+    assert_eq!(notification.remove_count.load(Ordering::Relaxed), 1);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.remove_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.remove_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.remove_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        h.plugin_repo
+            .get_enabled_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        h.plugin_repo
+            .get_single_payload_calls
+            .load(Ordering::Relaxed),
+        0
+    );
 }
 
 // ── RegistryManifest serde ───────────────────────────────────────────────────
@@ -694,6 +1537,34 @@ fn registry_manifest_deserialize_with_defaults() {
     assert!(entry.legacy_min_scryer_version.is_none());
 }
 
+#[tokio::test]
+async fn list_rule_pack_registry_reads_cached_legacy_registry_manifest() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let registry_json = serde_json::json!({
+        "schema_version": 1,
+        "plugins": [],
+        "rule_packs": [{
+            "id": "anime-defaults",
+            "name": "Anime Defaults",
+            "description": "Helpful anime rules",
+            "author": "scryer",
+            "version": "0.1.0",
+            "url": "https://example.com/rule-pack.json"
+        }]
+    })
+    .to_string();
+    let manifest: RegistryManifest = serde_json::from_str(&registry_json).unwrap();
+
+    h.app
+        .apply_plugin_registry_manifest(&manifest, &registry_json)
+        .await
+        .unwrap();
+
+    let packs = h.app.list_rule_pack_registry(&admin()).await.unwrap();
+    assert_eq!(packs.len(), 1);
+    assert_eq!(packs[0].id, "anime-defaults");
+}
+
 // ── list_available_plugins ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -720,6 +1591,42 @@ async fn list_registry_entries_not_installed() {
         assert!(p.installed_version.is_none());
         assert!(!p.update_available);
     }
+}
+
+#[tokio::test]
+async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_only() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let initiator = admin();
+    let other_actor = config_admin();
+    let json = make_registry_json(&[registry_entry(
+        "alpha",
+        "1.0.0",
+        false,
+        Some("https://example.com/a.wasm"),
+    )]);
+    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.app
+        .runtime
+        .plugins
+        .plugin_install_orchestrator
+        .begin(&initiator.id, "alpha", PluginInstallOperationKind::Install)
+        .await
+        .unwrap();
+
+    let admin_result = h.app.list_available_plugins(&initiator).await.unwrap();
+    let other_result = h.app.list_available_plugins(&other_actor).await.unwrap();
+
+    let admin_plugin = admin_result
+        .iter()
+        .find(|plugin| plugin.id == "alpha")
+        .unwrap();
+    assert!(admin_plugin.install_in_progress);
+
+    let other_plugin = other_result
+        .iter()
+        .find(|plugin| plugin.id == "alpha")
+        .unwrap();
+    assert!(!other_plugin.install_in_progress);
 }
 
 #[tokio::test]
@@ -795,17 +1702,57 @@ fn installed_host_block_uses_persisted_scryer_constraint_without_registry() {
     let mut installation = make_installation("alpha", "0.1.0", false, true);
     installation.scryer_constraint = Some(">=99.0.0".to_string());
 
-    assert!(installation_is_host_blocked_by_registry(
+    assert!(installation_is_host_blocked(&installation));
+}
+
+#[tokio::test]
+async fn decode_persisted_plugin_wasm_payload_decompresses_and_validates_blake3() {
+    let wasm_bytes = b"hello plugin payload";
+    let compressed = zstd::encode_all(&wasm_bytes[..], 1).expect("compress wasm bytes");
+    let mut installation = make_installation("alpha", "0.1.0", false, true);
+    installation.wasm_encoding = PluginWasmEncoding::Zstd;
+    installation.wasm_digest_algo = Some("blake3".to_string());
+    installation.wasm_digest = Some(blake3::hash(wasm_bytes).to_hex().to_string());
+
+    let decoded = decode_persisted_plugin_wasm_payload(
         &installation,
-        None
-    ));
+        &PersistedPluginWasmPayload {
+            encoding: PluginWasmEncoding::Zstd,
+            bytes: compressed,
+        },
+    )
+    .await
+    .expect("persisted payload should decode");
+
+    assert_eq!(decoded, wasm_bytes);
+}
+
+#[tokio::test]
+async fn decode_persisted_plugin_wasm_payload_rejects_digest_mismatch() {
+    let wasm_bytes = b"hello plugin payload";
+    let compressed = zstd::encode_all(&wasm_bytes[..], 1).expect("compress wasm bytes");
+    let mut installation = make_installation("alpha", "0.1.0", false, true);
+    installation.wasm_encoding = PluginWasmEncoding::Zstd;
+    installation.wasm_digest_algo = Some("blake3".to_string());
+    installation.wasm_digest = Some("deadbeef".to_string());
+
+    let error = decode_persisted_plugin_wasm_payload(
+        &installation,
+        &PersistedPluginWasmPayload {
+            encoding: PluginWasmEncoding::Zstd,
+            bytes: compressed,
+        },
+    )
+    .await
+    .expect_err("payload digest mismatch should fail");
+
+    assert!(error.to_string().contains("digest mismatch"));
 }
 
 #[tokio::test]
 async fn apply_plugin_registry_manifest_backfills_release_metadata_and_reloads_provider() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let mut installation = make_installation("alpha", "0.2.0", false, true);
-    installation.wasm_sha256 = Some("abc123".to_string());
+    let installation = make_installation("alpha", "0.2.0", false, true);
     h.plugin_repo.installations.lock().await.push(installation);
 
     let mut entry = registry_entry_with_min_scryer_version(
@@ -1093,12 +2040,16 @@ async fn list_auth_rejects_viewer() {
 
 #[tokio::test]
 async fn toggle_enables_disabled_plugin() {
-    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let h = bootstrap_plugins(Some(MockPluginProvider::new().with_builtin_provider(
+        "alpha",
+        "Alpha Plugin",
+        None,
+    )));
     h.plugin_repo
         .installations
         .lock()
         .await
-        .push(make_installation("alpha", "1.0.0", false, false));
+        .push(make_installation("alpha", "1.0.0", true, false));
 
     let result = h.app.toggle_plugin(&admin(), "alpha", true).await.unwrap();
     assert!(result.is_enabled);
@@ -1192,10 +2143,21 @@ fn provider_catalog_families_map_known_plugin_types() {
 
 #[tokio::test]
 async fn toggle_publishes_provider_catalog_change_for_subtitle_plugins() {
-    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let mut installation = make_installation("jimaku", "1.0.0", false, false);
-    installation.plugin_type = "subtitle_provider".to_string();
-    h.plugin_repo.installations.lock().await.push(installation);
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
+    let h =
+        bootstrap_plugins_with_subtitles(Some(MockPluginProvider::new()), Some(subtitle_provider));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation_with_type(
+            "jimaku",
+            "1.0.0",
+            "subtitle_provider",
+            "jimaku",
+            true,
+            false,
+        ));
 
     let mut rx = h
         .app
@@ -1212,10 +2174,25 @@ async fn toggle_publishes_provider_catalog_change_for_subtitle_plugins() {
 
 #[tokio::test]
 async fn uninstall_publishes_provider_catalog_change_for_notification_plugins() {
-    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let mut installation = make_installation("jellyfin", "1.0.0", false, true);
-    installation.plugin_type = "notification".to_string();
-    h.plugin_repo.installations.lock().await.push(installation);
+    let notification_provider = Arc::new(MockNotificationPluginProvider::new(&["jellyfin"]));
+    let h = bootstrap_plugins_with_runtime_providers(
+        Some(MockPluginProvider::new()),
+        None,
+        None,
+        Some(notification_provider),
+    );
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation_with_type(
+            "jellyfin",
+            "1.0.0",
+            "notification",
+            "jellyfin",
+            false,
+            true,
+        ));
 
     let mut rx = h
         .app
@@ -1323,11 +2300,7 @@ async fn uninstall_auth_rejects_viewer() {
 async fn install_registry_not_loaded() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => assert!(msg.contains("registry not loaded")),
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
@@ -1352,7 +2325,7 @@ async fn install_builtin_rejected() {
     h.plugin_repo.store_registry_cache(&json).await.unwrap();
 
     let err = h.app.install_plugin(&admin(), "nzbgeek").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
+    assert_not_available_from_catalog(err, "nzbgeek");
 }
 
 #[tokio::test]
@@ -1362,11 +2335,7 @@ async fn install_no_wasm_url() {
     h.plugin_repo.store_registry_cache(&json).await.unwrap();
 
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => assert!(msg.contains("no wasm_url")),
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
@@ -1386,15 +2355,7 @@ async fn install_rejects_incompatible_host_version() {
         .install_plugin(&admin(), "torrent-rss")
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => {
-            assert!(msg.contains("torrent-rss"));
-            assert!(msg.contains("99.0.0"));
-            assert!(msg.contains(env!("CARGO_PKG_VERSION")));
-        }
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "torrent-rss");
 }
 
 #[tokio::test]
@@ -1427,7 +2388,7 @@ async fn upgrade_builtin_rejected() {
         .push(make_installation("nzbgeek", "0.2.0", true, true));
 
     let err = h.app.upgrade_plugin(&admin(), "nzbgeek").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
+    assert_not_available_from_catalog(err, "nzbgeek");
 }
 
 #[tokio::test]
@@ -1440,11 +2401,7 @@ async fn upgrade_registry_not_loaded() {
         .push(make_installation("alpha", "0.1.0", false, true));
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => assert!(msg.contains("registry not loaded")),
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
@@ -1479,11 +2436,7 @@ async fn upgrade_already_at_latest() {
     h.plugin_repo.store_registry_cache(&json).await.unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => assert!(msg.contains("already at version")),
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
@@ -1498,11 +2451,7 @@ async fn upgrade_no_wasm_url() {
     h.plugin_repo.store_registry_cache(&json).await.unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => assert!(msg.contains("no wasm_url")),
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "alpha");
 }
 
 #[test]
@@ -1538,9 +2487,15 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
         ),
     };
 
-    let err =
-        validate_downloaded_plugin_descriptor("alpha", "indexer", "alpha", &release, &descriptor)
-            .unwrap_err();
+    let err = validate_downloaded_plugin_descriptor(
+        "alpha",
+        "indexer",
+        "alpha",
+        &release,
+        &descriptor,
+        true,
+    )
+    .unwrap_err();
     match err {
         AppError::Validation(msg) => {
             assert!(msg.contains("invalid network permission pattern"))
@@ -1593,10 +2548,54 @@ fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_overrid
         "jellyfin",
         &release,
         &descriptor,
+        true,
     )
     .unwrap();
 
     assert_eq!(validated.sdk_constraint, narrow_sdk_constraint);
+}
+
+#[test]
+fn validate_catalog_downloaded_plugin_descriptor_skips_release_host_compatibility_check() {
+    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
+        "version": "0.2.0",
+        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
+        "sdk_constraint": ">=99.0.0",
+        "builtin": false,
+        "wasm_url": "https://example.com/a.wasm",
+        "wasm_sha256": "abc123"
+    }))
+    .unwrap();
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "email".to_string(),
+        name: "Email".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "email".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: Default::default(),
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    let validated = validate_downloaded_plugin_descriptor(
+        "email",
+        "notification",
+        "email",
+        &release,
+        &descriptor,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(validated.sdk_constraint, ">=99.0.0");
 }
 
 #[test]
@@ -1629,15 +2628,7 @@ async fn upgrade_rejects_incompatible_host_version() {
         .upgrade_plugin(&admin(), "torrent-rss")
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
-    match err {
-        AppError::Validation(msg) => {
-            assert!(msg.contains("torrent-rss"));
-            assert!(msg.contains("99.0.0"));
-            assert!(msg.contains(env!("CARGO_PKG_VERSION")));
-        }
-        _ => panic!("expected Validation"),
-    }
+    assert_not_available_from_catalog(err, "torrent-rss");
 }
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────
@@ -1673,6 +2664,36 @@ async fn seed_uses_provider_builtin_inventory() {
     assert!(ids.contains(&"animetosho"));
     assert!(ids.contains(&"torznab"));
     assert!(ids.contains(&"jimaku"));
+}
+
+#[tokio::test]
+async fn rebuild_plugin_provider_seeds_builtin_installations() {
+    let provider = MockPluginProvider::new()
+        .with_builtin_provider(
+            "nzbgeek",
+            "NZBGeek Indexer",
+            Some("https://api.nzbgeek.info"),
+        )
+        .with_builtin_provider("newznab", "Newznab Indexer", None)
+        .with_builtin_provider(
+            "animetosho",
+            "AnimeTosho",
+            Some("https://feed.animetosho.org"),
+        )
+        .with_builtin_provider("torznab", "Torznab Indexer", None);
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
+    let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
+
+    h.app.rebuild_plugin_provider().await.unwrap();
+
+    let installations = h.plugin_repo.list_plugin_installations().await.unwrap();
+    assert_eq!(installations.len(), 5);
+    assert!(
+        installations
+            .iter()
+            .all(|installation| installation.is_builtin
+                && installation.source_kind == PluginSourceKind::Bundled)
+    );
 }
 
 // ── reconcile_indexer_configs ────────────────────────────────────────────────

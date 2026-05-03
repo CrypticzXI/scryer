@@ -1,7 +1,7 @@
 use scryer_application::AppResult;
 use scryer_domain::{
-    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PluginSourceKind,
-    PluginSupportTier,
+    PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation,
+    PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
 };
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -51,6 +51,20 @@ fn support_tier_label(value: PluginSupportTier) -> &'static str {
     }
 }
 
+fn parse_wasm_encoding(value: &str) -> PluginWasmEncoding {
+    match value {
+        "zstd" => PluginWasmEncoding::Zstd,
+        _ => PluginWasmEncoding::Identity,
+    }
+}
+
+fn wasm_encoding_label(value: PluginWasmEncoding) -> &'static str {
+    match value {
+        PluginWasmEncoding::Identity => "identity",
+        PluginWasmEncoding::Zstd => "zstd",
+    }
+}
+
 fn row_to_plugin_installation(row: &sqlx::sqlite::SqliteRow) -> PluginInstallation {
     use chrono::{DateTime, Utc};
     use sqlx::Row;
@@ -79,7 +93,8 @@ fn row_to_plugin_installation(row: &sqlx::sqlite::SqliteRow) -> PluginInstallati
         is_enabled: row.get::<i32, _>("is_enabled") != 0,
         is_builtin: row.get::<i32, _>("is_builtin") != 0,
         source_kind: parse_source_kind(&row.get::<String, _>("source_kind")),
-        wasm_sha256: row.get("wasm_sha256"),
+        wasm_encoding: parse_wasm_encoding(&row.get::<String, _>("wasm_encoding")),
+        wasm_digest_algo: row.get("wasm_digest_algo"),
         source_url: row.get("source_url"),
         support_tier: parse_support_tier(&row.get::<String, _>("support_tier")),
         publisher: row.get("publisher"),
@@ -99,7 +114,7 @@ pub(crate) async fn list_plugin_installations_query(
     let rows = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
                 installed_at, updated_at
          FROM plugin_installations
@@ -120,7 +135,7 @@ pub(crate) async fn get_plugin_installation_query(
     let row = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
                 installed_at, updated_at
          FROM plugin_installations
@@ -141,7 +156,7 @@ async fn get_plugin_installation_tx(
     let row = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_sha256, source_url, support_tier, publisher,
+                source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
                 installed_at, updated_at
          FROM plugin_installations
@@ -168,10 +183,10 @@ pub(crate) async fn create_plugin_installation_query(
         "INSERT INTO plugin_installations
             (id, plugin_id, name, description, version, sdk_version, sdk_constraint,
              scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-             source_kind, wasm_bytes, wasm_sha256, source_url, support_tier, publisher,
+             source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
              docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
              installed_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&installation.id)
     .bind(&installation.plugin_id)
@@ -187,7 +202,8 @@ pub(crate) async fn create_plugin_installation_query(
     .bind(installation.is_builtin as i32)
     .bind(source_kind_label(installation.source_kind))
     .bind(wasm_bytes)
-    .bind(&installation.wasm_sha256)
+    .bind(wasm_encoding_label(installation.wasm_encoding))
+    .bind(&installation.wasm_digest_algo)
     .bind(&installation.source_url)
     .bind(support_tier_label(installation.support_tier))
     .bind(&installation.publisher)
@@ -230,10 +246,16 @@ pub(crate) async fn update_plugin_installation_query(
              scryer_constraint = ?, plugin_type = ?, provider_type = ?, is_enabled = ?,
              is_builtin = ?, source_kind = ?,
              wasm_bytes = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_bytes) END,
-             wasm_sha256 = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_sha256) END,
+             wasm_encoding = CASE WHEN ? = 'bundled' THEN 'identity' ELSE COALESCE(?, wasm_encoding) END,
+             wasm_digest_algo = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_digest_algo) END,
              source_url = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, source_url) END,
-             support_tier = ?, publisher = ?, docs_url = ?, source_repo = ?,
-             manifest_url = ?, wasm_digest = ?, artifact_digest = ?,
+             support_tier = ?,
+             publisher = CASE WHEN ? = 'bundled' THEN NULL ELSE ? END,
+             docs_url = CASE WHEN ? = 'bundled' THEN NULL ELSE ? END,
+             source_repo = CASE WHEN ? = 'bundled' THEN NULL ELSE ? END,
+             manifest_url = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, manifest_url) END,
+             wasm_digest = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, wasm_digest) END,
+             artifact_digest = CASE WHEN ? = 'bundled' THEN NULL ELSE COALESCE(?, artifact_digest) END,
              updated_at = ?
          WHERE plugin_id = ?",
     )
@@ -251,15 +273,23 @@ pub(crate) async fn update_plugin_installation_query(
     .bind(source_kind_label(installation.source_kind))
     .bind(wasm_bytes)
     .bind(source_kind_label(installation.source_kind))
-    .bind(&installation.wasm_sha256)
+    .bind(Some(wasm_encoding_label(installation.wasm_encoding)))
+    .bind(source_kind_label(installation.source_kind))
+    .bind(&installation.wasm_digest_algo)
     .bind(source_kind_label(installation.source_kind))
     .bind(&installation.source_url)
     .bind(support_tier_label(installation.support_tier))
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.publisher)
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.docs_url)
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.source_repo)
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.manifest_url)
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.wasm_digest)
+    .bind(source_kind_label(installation.source_kind))
     .bind(&installation.artifact_digest)
     .bind(installation.updated_at.to_rfc3339())
     .bind(&installation.plugin_id)
@@ -292,14 +322,60 @@ pub(crate) async fn delete_plugin_installation_query(
     Ok(())
 }
 
+pub(crate) async fn delete_incompatible_external_plugin_installations_query(
+    pool: &SqlitePool,
+) -> AppResult<Vec<String>> {
+    use sqlx::Row;
+
+    let rows = sqlx::query(
+        "SELECT plugin_id, wasm_bytes, wasm_encoding, wasm_digest_algo, wasm_digest
+         FROM plugin_installations
+         WHERE is_builtin = 0 AND source_kind IN ('downloaded', 'manual')",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+
+    let removed_plugin_ids = rows
+        .iter()
+        .filter_map(|row| {
+            let plugin_id: String = row.get("plugin_id");
+            let wasm_bytes: Option<Vec<u8>> = row.get("wasm_bytes");
+            let wasm_encoding: String = row.get("wasm_encoding");
+            let wasm_digest_algo: Option<String> = row.get("wasm_digest_algo");
+            let wasm_digest: Option<String> = row.get("wasm_digest");
+            if external_installation_is_supported_shape(
+                wasm_bytes.as_deref(),
+                &wasm_encoding,
+                wasm_digest_algo.as_deref(),
+                wasm_digest.as_deref(),
+            ) {
+                None
+            } else {
+                Some(plugin_id)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    for plugin_id in &removed_plugin_ids {
+        sqlx::query("DELETE FROM plugin_installations WHERE plugin_id = ?")
+            .bind(plugin_id)
+            .execute(pool)
+            .await
+            .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    }
+
+    Ok(removed_plugin_ids)
+}
+
 pub(crate) async fn get_enabled_plugin_wasm_bytes_query(
     pool: &SqlitePool,
-) -> AppResult<Vec<(PluginInstallation, Option<Vec<u8>>)>> {
+) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>> {
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_bytes, wasm_sha256, source_url, support_tier, publisher,
+                source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest,
                 installed_at, updated_at
          FROM plugin_installations
@@ -314,9 +390,37 @@ pub(crate) async fn get_enabled_plugin_wasm_bytes_query(
         .map(|row| {
             let installation = row_to_plugin_installation(row);
             let wasm_bytes: Option<Vec<u8>> = row.get("wasm_bytes");
-            (installation, wasm_bytes)
+            let payload = wasm_bytes.map(|bytes| PersistedPluginWasmPayload {
+                encoding: installation.wasm_encoding,
+                bytes,
+            });
+            (installation, payload)
         })
         .collect())
+}
+
+pub(crate) async fn get_plugin_installation_wasm_payload_query(
+    pool: &SqlitePool,
+    plugin_id: &str,
+) -> AppResult<Option<PersistedPluginWasmPayload>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT wasm_bytes, wasm_encoding
+         FROM plugin_installations
+         WHERE plugin_id = ? AND plugin_type != '__cache'",
+    )
+    .bind(plugin_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+
+    Ok(row.and_then(|row| {
+        let bytes: Option<Vec<u8>> = row.get("wasm_bytes");
+        bytes.map(|bytes| PersistedPluginWasmPayload {
+            encoding: parse_wasm_encoding(row.get("wasm_encoding")),
+            bytes,
+        })
+    }))
 }
 
 pub(crate) async fn seed_builtin_query(
@@ -374,6 +478,26 @@ pub(crate) async fn seed_builtin_query(
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
     Ok(())
+}
+
+fn external_installation_is_supported_shape(
+    wasm_bytes: Option<&[u8]>,
+    wasm_encoding: &str,
+    wasm_digest_algo: Option<&str>,
+    wasm_digest: Option<&str>,
+) -> bool {
+    wasm_bytes.is_some()
+        && wasm_encoding == "zstd"
+        && matches!(
+            wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
+            Some(value) if value == "blake3"
+        )
+        && wasm_digest.is_some_and(is_hex_digest)
+}
+
+fn is_hex_digest(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn parse_optional_datetime(value: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -529,10 +653,17 @@ pub(crate) async fn store_registry_cache_query(pool: &SqlitePool, json: &str) ->
     let id = scryer_domain::Id::new().0;
     sqlx::query(
         "INSERT INTO plugin_installations
-            (id, plugin_id, name, description, version, plugin_type, provider_type,
-             is_enabled, is_builtin, wasm_sha256, installed_at, updated_at)
-         VALUES (?, '__registry_cache', '__registry_cache', ?, '', '__cache', '__cache', 0, 0, NULL, ?, ?)
-         ON CONFLICT(plugin_id) DO UPDATE SET description = excluded.description, updated_at = excluded.updated_at",
+            (id, plugin_id, name, description, version, sdk_version, sdk_constraint,
+             plugin_type, provider_type, is_enabled, is_builtin, source_kind,
+             wasm_encoding, support_tier, installed_at, updated_at)
+         VALUES (?, '__registry_cache', '__registry_cache', ?, '', '', '',
+                 '__cache', '__cache', 0, 0, 'bundled', 'identity', 'official', ?, ?)
+         ON CONFLICT(plugin_id) DO UPDATE SET
+             description = excluded.description,
+             source_kind = excluded.source_kind,
+             wasm_encoding = excluded.wasm_encoding,
+             support_tier = excluded.support_tier,
+             updated_at = excluded.updated_at",
     )
     .bind(&id)
     .bind(json)

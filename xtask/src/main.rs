@@ -342,6 +342,7 @@ struct ReleaseDryRunCache {
     created_at: String,
     git_commit: String,
     branch: String,
+    worktree_clean_at_start: bool,
     release_args: String,
     latest_tag_seen: Option<String>,
     next_version: String,
@@ -583,6 +584,17 @@ fn git_capture(ctx: &TaskContext, args: &[&str]) -> Result<String> {
 
 fn git_status_porcelain(ctx: &TaskContext) -> Result<String> {
     git_capture(ctx, &["status", "--porcelain"])
+}
+
+fn git_tracked_dirty_paths(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(["diff", "--name-only", "HEAD", "--"]);
+    let output = run_capture(&mut command)?;
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| ctx.path(line))
+        .collect())
 }
 
 fn latest_prefixed_tag(ctx: &TaskContext, prefix: &str) -> Result<Option<String>> {
@@ -1099,6 +1111,27 @@ fn changed_file(ctx: &TaskContext, path: &Path) -> Result<bool> {
     Ok(!output.trim().is_empty())
 }
 
+fn commit_tracked_changes(
+    ctx: &TaskContext,
+    paths: &[PathBuf],
+    message: &str,
+) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let mut add = ctx.release_command_in("git", &ctx.repo_root);
+    add.arg("add");
+    add.args(paths);
+    run_checked(&mut add)?;
+
+    let mut commit = ctx.release_command_in("git", &ctx.repo_root);
+    commit.args(["commit", "-m", message]);
+    run_checked(&mut commit)?;
+
+    Ok(Some(current_head_commit(ctx)?))
+}
+
 fn add_prod_package_args(command: &mut Command) {
     for package in SCRYER_PROD_PACKAGES {
         command.args(["-p", package]);
@@ -1144,16 +1177,6 @@ fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
     ok("Embedded plugin builtins refreshed");
 
     Ok(builtin_plugin_paths(ctx))
-}
-
-fn git_checkout_paths(ctx: &TaskContext, paths: &[PathBuf]) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut command = ctx.release_command_in("git", &ctx.repo_root);
-    command.arg("checkout").arg("--");
-    command.args(paths);
-    run_checked(&mut command)
 }
 
 fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
@@ -1260,15 +1283,15 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     let branch = current_branch(ctx)?;
     let git_commit = current_head_commit(ctx)?;
     println!("   Branch : {branch}");
-    let worktree_clean = git_status_porcelain(ctx)?.trim().is_empty();
-    if !worktree_clean {
+    let worktree_clean_at_start = git_status_porcelain(ctx)?.trim().is_empty();
+    if !worktree_clean_at_start {
         prompt_continue_if_dirty(ctx)?;
     }
     require_command("gh")?;
     ok("Pre-flight OK");
 
     let builtin_plugin_paths = builtin_plugin_paths(ctx);
-    let cache_dir = release_dry_run_cache_dir(
+    let initial_cache_dir = release_dry_run_cache_dir(
         ctx,
         &git_commit,
         &release_args,
@@ -1276,7 +1299,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         &next_version,
         &tag_name,
     );
-    let cache_dir_relative = relative_to_repo_root(ctx, &cache_dir)?;
+    let initial_cache_dir_relative = relative_to_repo_root(ctx, &initial_cache_dir)?;
 
     let mut reused_dry_run_cache = false;
     if args.dry_run {
@@ -1288,6 +1311,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 created_at: Utc::now().to_rfc3339(),
                 git_commit: git_commit.clone(),
                 branch: branch.clone(),
+                worktree_clean_at_start,
                 release_args: release_args.clone(),
                 latest_tag_seen: latest_tag.clone(),
                 next_version: next_version.to_string(),
@@ -1295,11 +1319,11 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 catalog_url: catalog_url.clone(),
                 catalog_checksum_sha256: None,
                 validated_steps: Vec::new(),
-                cached_builtins_dir: Some(cache_dir_relative.clone()),
+                cached_builtins_dir: Some(initial_cache_dir_relative.clone()),
                 failure_message: Some("dry run did not complete".to_string()),
             },
         )?;
-    } else if worktree_clean && release_dry_run_cache_path(ctx).is_file() {
+    } else if worktree_clean_at_start && release_dry_run_cache_path(ctx).is_file() {
         match load_release_dry_run_cache(ctx) {
             Ok(cache) => {
                 let expected_checksum = match fetch_catalog_checksum(&catalog_url) {
@@ -1354,80 +1378,111 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
 
     if !reused_dry_run_cache {
         let refreshed_builtin_paths = refresh_builtin_plugins(ctx)?;
+        let validation_result = {
+            step("Running web and Rust validation in parallel");
+            let (web_tx, web_rx) = mpsc::channel();
+            let (rust_tx, rust_rx) = mpsc::channel();
+            let web_ctx = ctx.clone();
+            let rust_ctx = ctx.clone();
 
-        step("Running web and Rust validation in parallel");
-        let (web_tx, web_rx) = mpsc::channel();
-        let (rust_tx, rust_rx) = mpsc::channel();
-        let web_ctx = ctx.clone();
-        let rust_ctx = ctx.clone();
+            thread::spawn(move || {
+                let _ = web_tx.send(run_scryer_web_validation(&web_ctx, "[web] "));
+            });
+            thread::spawn(move || {
+                let _ = rust_tx.send(run_scryer_rust_validation(&rust_ctx, "[rust] "));
+            });
 
-        thread::spawn(move || {
-            let _ = web_tx.send(run_scryer_web_validation(&web_ctx, "[web] "));
-        });
-        thread::spawn(move || {
-            let _ = rust_tx.send(run_scryer_rust_validation(&rust_ctx, "[rust] "));
-        });
-
-        let web_result = web_rx
-            .recv()
-            .context("web validation thread ended unexpectedly")?;
-        let rust_result = rust_rx
-            .recv()
-            .context("rust validation thread ended unexpectedly")?;
-        if let Err(error) = &web_result {
-            warn(format!("Web validation failed: {error:#}"));
-        }
-        if let Err(error) = &rust_result {
-            warn(format!("Rust validation failed: {error:#}"));
-        }
-        web_result?;
-        rust_result?;
-        ok("Parallel validation passed");
+            let web_result = web_rx
+                .recv()
+                .context("web validation thread ended unexpectedly")?;
+            let rust_result = rust_rx
+                .recv()
+                .context("rust validation thread ended unexpectedly")?;
+            if let Err(error) = &web_result {
+                warn(format!("Web validation failed: {error:#}"));
+            }
+            if let Err(error) = &rust_result {
+                warn(format!("Rust validation failed: {error:#}"));
+            }
+            web_result?;
+            rust_result?;
+            ok("Parallel validation passed");
+            Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
+                refreshed_builtin_paths,
+                vec![
+                    "builtin_refresh".to_string(),
+                    "web_validation".to_string(),
+                    "rust_validation".to_string(),
+                ],
+            ))
+        };
 
         if args.dry_run {
-            let catalog_checksum_sha256 = fetch_catalog_checksum(&catalog_url)?;
-            cache_builtin_artifacts(&cache_dir, &refreshed_builtin_paths)?;
-            write_release_dry_run_cache(
-                ctx,
-                &ReleaseDryRunCache {
-                    success: true,
-                    created_at: Utc::now().to_rfc3339(),
-                    git_commit: git_commit.clone(),
-                    branch: branch.clone(),
-                    release_args: release_args.clone(),
-                    latest_tag_seen: latest_tag.clone(),
-                    next_version: next_version.to_string(),
-                    tag_name: tag_name.clone(),
-                    catalog_url: catalog_url.clone(),
-                    catalog_checksum_sha256: Some(catalog_checksum_sha256),
-                    validated_steps: vec![
-                        "builtin_refresh".to_string(),
-                        "web_validation".to_string(),
-                        "rust_validation".to_string(),
-                    ],
-                    cached_builtins_dir: Some(cache_dir_relative.clone()),
-                    failure_message: None,
-                },
-            )?;
-
-            let cargo_lock = ctx.path("Cargo.lock");
-            let npm_lock = ctx.path("apps/scryer-web/package-lock.json");
-            println!("\n{YELLOW}{BOLD}Dry run complete — stopping before commit/tag/push.{RESET}");
-            println!("  Version {next_version} validated OK.");
-            println!(
-                "  Dry-run cache: {}",
-                release_dry_run_cache_path(ctx).display()
-            );
-            let mut restore = refreshed_builtin_paths;
-            if cargo_lock.exists() {
-                restore.push(cargo_lock);
+            match validation_result {
+                Ok((refreshed_builtin_paths, validated_steps)) => {
+                    let prep_changed_paths = git_tracked_dirty_paths(ctx)?;
+                    let final_git_commit = if !prep_changed_paths.is_empty() {
+                        step("Committing release-prep changes");
+                        let committed = commit_tracked_changes(
+                            ctx,
+                            &prep_changed_paths,
+                            &format!("release: prep scryer {next_version}"),
+                        )?
+                        .expect("non-empty tracked changes should produce a commit");
+                        ok(format!("Committed release-prep changes in {committed}"));
+                        committed
+                    } else {
+                        ok("No release-prep changes to commit");
+                        git_commit.clone()
+                    };
+                    let final_cache_dir = release_dry_run_cache_dir(
+                        ctx,
+                        &final_git_commit,
+                        &release_args,
+                        latest_tag.as_deref(),
+                        &next_version,
+                        &tag_name,
+                    );
+                    let final_cache_dir_relative =
+                        relative_to_repo_root(ctx, &final_cache_dir)?;
+                    let catalog_checksum_sha256 = fetch_catalog_checksum(&catalog_url)?;
+                    cache_builtin_artifacts(&final_cache_dir, &refreshed_builtin_paths)?;
+                    write_release_dry_run_cache(
+                        ctx,
+                        &ReleaseDryRunCache {
+                            success: true,
+                            created_at: Utc::now().to_rfc3339(),
+                            git_commit: final_git_commit,
+                            branch: branch.clone(),
+                            worktree_clean_at_start,
+                            release_args: release_args.clone(),
+                            latest_tag_seen: latest_tag.clone(),
+                            next_version: next_version.to_string(),
+                            tag_name: tag_name.clone(),
+                            catalog_url: catalog_url.clone(),
+                            catalog_checksum_sha256: Some(catalog_checksum_sha256),
+                            validated_steps,
+                            cached_builtins_dir: Some(final_cache_dir_relative),
+                            failure_message: None,
+                        },
+                    )?;
+                    println!(
+                        "\n{YELLOW}{BOLD}Dry run complete — stopping before commit/tag/push.{RESET}"
+                    );
+                    println!("  Version {next_version} validated OK.");
+                    println!(
+                        "  Dry-run cache: {}",
+                        release_dry_run_cache_path(ctx).display()
+                    );
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(error);
+                }
             }
-            if npm_lock.exists() {
-                restore.push(npm_lock);
-            }
-            git_checkout_paths(ctx, &restore)?;
-            return Ok(());
         }
+
+        let _ = validation_result?;
     }
 
     let workspace_tomls = scryer_release_member_tomls(ctx)?;
@@ -1741,11 +1796,25 @@ fn run_scryer_web_validation(ctx: &TaskContext, prefix: &'static str) -> Result<
 }
 
 fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
+    prefixed_step(prefix, "Running cargo fmt --all");
+    let mut fmt_fix = ctx.release_command_in("cargo", &ctx.repo_root);
+    fmt_fix.args(["fmt", "--all"]);
+    run_streaming(&mut fmt_fix, prefix)?;
+    prefixed_ok(prefix, "cargo fmt complete");
+
     prefixed_step(prefix, "Running cargo fmt --all --check");
     let mut fmt = ctx.release_command_in("cargo", &ctx.repo_root);
     fmt.args(["fmt", "--all", "--check"]);
     run_streaming(&mut fmt, prefix)?;
     prefixed_ok(prefix, "cargo fmt passed");
+
+    prefixed_step(prefix, "Running cargo clippy --fix for scryer production binary packages");
+    let mut clippy_fix = ctx.release_command_in("cargo", &ctx.repo_root);
+    clippy_fix.arg("clippy");
+    add_prod_package_args(&mut clippy_fix);
+    clippy_fix.args(["--fix", "--allow-dirty", "--allow-staged", "--", "-D", "warnings"]);
+    run_streaming(&mut clippy_fix, prefix)?;
+    prefixed_ok(prefix, "cargo clippy --fix complete");
 
     prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
     let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
@@ -2437,6 +2506,7 @@ mod tests {
             created_at: "2026-05-02T00:00:00Z".to_string(),
             git_commit: "abc123".to_string(),
             branch: "main".to_string(),
+            worktree_clean_at_start: true,
             release_args: "bump:patch".to_string(),
             latest_tag_seen: Some("scryer-v0.13.1".to_string()),
             next_version: "0.13.2".to_string(),
@@ -2540,6 +2610,18 @@ mod tests {
             reason.as_deref(),
             Some("previous dry run did not complete successfully")
         );
+    }
+
+    #[test]
+    fn release_dry_run_cache_allows_dirty_start_when_other_inputs_match() {
+        let mut cache = sample_release_dry_run_cache();
+        cache.worktree_clean_at_start = false;
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert!(reason.is_none());
     }
 
     #[test]

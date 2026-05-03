@@ -118,14 +118,15 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
         is_enabled: true,
         is_builtin: true,
         source_kind: scryer_domain::PluginSourceKind::Downloaded,
-        wasm_sha256: Some("abc123".to_string()),
+        wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+        wasm_digest_algo: Some("blake3".to_string()),
         source_url: Some("https://example.com/newznab-0.2.2.wasm".to_string()),
         support_tier: scryer_domain::PluginSupportTier::Official,
         publisher: None,
         docs_url: None,
         source_repo: None,
         manifest_url: None,
-        wasm_digest: None,
+        wasm_digest: Some("abc123".to_string()),
         artifact_digest: None,
         installed_at: now,
         updated_at: now,
@@ -138,8 +139,10 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
 
     let mut reverted = installation.clone();
     reverted.source_kind = scryer_domain::PluginSourceKind::Bundled;
-    reverted.wasm_sha256 = None;
+    reverted.wasm_encoding = scryer_domain::PluginWasmEncoding::Identity;
+    reverted.wasm_digest_algo = None;
     reverted.source_url = None;
+    reverted.wasm_digest = None;
 
     let reverted = customization
         .update_plugin_installation(&reverted, None)
@@ -150,7 +153,12 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
         reverted.source_kind,
         scryer_domain::PluginSourceKind::Bundled
     );
-    assert!(reverted.wasm_sha256.is_none());
+    assert_eq!(
+        reverted.wasm_encoding,
+        scryer_domain::PluginWasmEncoding::Identity
+    );
+    assert!(reverted.wasm_digest_algo.is_none());
+    assert!(reverted.wasm_digest.is_none());
     assert!(reverted.source_url.is_none());
 
     let enabled = customization
@@ -162,6 +170,189 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
         .find(|(item, _)| item.plugin_id == "newznab")
         .expect("reverted builtin should remain installed");
     assert!(wasm_bytes.is_none());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
+    let (services, db) = temp_services("scryer_plugin_cleanup_legacy").await;
+    let customization = SqliteCustomizationStore::new(&services);
+    let now = Utc::now();
+
+    let legacy_external = scryer_domain::PluginInstallation {
+        id: scryer_domain::Id::new().0,
+        plugin_id: "legacy-external".to_string(),
+        name: "Legacy External".to_string(),
+        description: "old registry install".to_string(),
+        version: "0.1.0".to_string(),
+        sdk_version: "1.3.0".to_string(),
+        sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+        scryer_constraint: None,
+        plugin_type: "notification".to_string(),
+        provider_type: "legacy_external".to_string(),
+        is_enabled: true,
+        is_builtin: false,
+        source_kind: scryer_domain::PluginSourceKind::Downloaded,
+        wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+        wasm_digest_algo: None,
+        source_url: Some("https://example.com/legacy.wasm".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: None,
+        docs_url: None,
+        source_repo: None,
+        manifest_url: None,
+        wasm_digest: None,
+        artifact_digest: None,
+        installed_at: now,
+        updated_at: now,
+    };
+    customization
+        .create_plugin_installation(&legacy_external, Some(&[1_u8, 2, 3]))
+        .await
+        .expect("seed legacy external install");
+
+    customization
+        .seed_builtin(
+            "newznab",
+            "Newznab",
+            "builtin seed",
+            "0.2.0",
+            "1.3.0",
+            ">=1.3.0, <1.4.0",
+            "usenet_indexer",
+            "newznab",
+        )
+        .await
+        .expect("seed builtin install");
+
+    let removed = customization
+        .delete_incompatible_external_plugin_installations()
+        .await
+        .expect("cleanup incompatible external installs");
+
+    assert_eq!(removed, vec!["legacy-external".to_string()]);
+    assert!(
+        customization
+            .get_plugin_installation("legacy-external")
+            .await
+            .expect("read legacy install")
+            .is_none()
+    );
+    assert!(
+        customization
+            .get_plugin_installation("newznab")
+            .await
+            .expect("read builtin install")
+            .is_some()
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn registry_cache_row_uses_supported_shape_and_survives_cleanup() {
+    let (services, db) = temp_services("scryer_plugin_registry_cache_shape").await;
+    let customization = SqliteCustomizationStore::new(&services);
+    let registry_json = r#"{"schema_version":1,"plugins":[],"rule_packs":[]}"#;
+
+    customization
+        .store_registry_cache(registry_json)
+        .await
+        .expect("store registry cache");
+
+    assert_eq!(
+        customization
+            .get_registry_cache()
+            .await
+            .expect("read registry cache"),
+        Some(registry_json.to_string())
+    );
+
+    let removed = customization
+        .delete_incompatible_external_plugin_installations()
+        .await
+        .expect("cleanup incompatible external installs");
+    assert!(removed.is_empty());
+    assert_eq!(
+        customization
+            .get_registry_cache()
+            .await
+            .expect("read registry cache after cleanup"),
+        Some(registry_json.to_string())
+    );
+
+    let row = sqlx::query(
+        "SELECT source_kind, wasm_encoding FROM plugin_installations WHERE plugin_id = '__registry_cache'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("load registry cache row");
+    assert_eq!(row.get::<String, _>("source_kind"), "bundled");
+    assert_eq!(row.get::<String, _>("wasm_encoding"), "identity");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn enabled_plugin_payloads_preserve_zstd_encoding() {
+    let (services, db) = temp_services("scryer_plugin_payload_encoding").await;
+    let customization = SqliteCustomizationStore::new(&services);
+    let now = Utc::now();
+    let wasm_bytes = b"hello compressed plugin";
+    let compressed = zstd::encode_all(&wasm_bytes[..], 1).expect("compress plugin bytes");
+
+    let installation = scryer_domain::PluginInstallation {
+        id: scryer_domain::Id::new().0,
+        plugin_id: "email".to_string(),
+        name: "Email".to_string(),
+        description: "catalog install".to_string(),
+        version: "0.1.2".to_string(),
+        sdk_version: "1.5.0".to_string(),
+        sdk_constraint: ">=1.5.0, <2.0.0".to_string(),
+        scryer_constraint: None,
+        plugin_type: "notification".to_string(),
+        provider_type: "email".to_string(),
+        is_enabled: true,
+        is_builtin: false,
+        source_kind: scryer_domain::PluginSourceKind::Downloaded,
+        wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+        wasm_digest_algo: Some("blake3".to_string()),
+        source_url: Some("https://example.com/email/plugin.wasm.zst".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: Some("scryer-media".to_string()),
+        docs_url: None,
+        source_repo: Some("https://github.com/scryer-media/scryer-plugins".to_string()),
+        manifest_url: Some("https://example.com/email/plugin.manifest.json".to_string()),
+        wasm_digest: Some(
+            scryer_application::plugin_wasm_blake3_digest(wasm_bytes)
+                .split_once(':')
+                .expect("digest should include an algorithm prefix")
+                .1
+                .to_string(),
+        ),
+        artifact_digest: Some("blake3:abcd".to_string()),
+        installed_at: now,
+        updated_at: now,
+    };
+
+    customization
+        .create_plugin_installation(&installation, Some(compressed.as_slice()))
+        .await
+        .expect("seed encoded plugin install");
+
+    let enabled = customization
+        .get_enabled_plugin_wasm_bytes()
+        .await
+        .expect("list enabled plugin payloads");
+    let (_, payload) = enabled
+        .into_iter()
+        .find(|(item, _)| item.plugin_id == "email")
+        .expect("email installation should be present");
+    let payload = payload.expect("payload should be present");
+
+    assert_eq!(payload.encoding, scryer_domain::PluginWasmEncoding::Zstd);
+    assert_eq!(payload.bytes, compressed);
 
     let _ = std::fs::remove_file(db);
 }

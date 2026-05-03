@@ -11,10 +11,15 @@ use scryer_application::{
 use scryer_domain::{
     CompletedDownload, DownloadClientConfig, DownloadQueueItem, DownloadQueueState,
 };
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::sync::Semaphore;
 use tokio_util::io::ReaderStream;
@@ -30,6 +35,7 @@ pub struct WeaverDownloadClient {
     graphql_url: String,
     api_key: Option<String>,
     http_client: Client,
+    outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
 }
@@ -259,10 +265,12 @@ impl WeaverDownloadClient {
     ) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         let graphql_url = format!("{base}/graphql");
+        let http_client = Client::new();
         Self {
             graphql_url,
             api_key,
-            http_client: Client::new(),
+            outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
+            http_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
@@ -325,18 +333,37 @@ impl WeaverDownloadClient {
     where
         T: DeserializeOwned,
     {
+        self.graphql_request_with_policy(
+            self.read_policy("weaver_graphql_request"),
+            query,
+            variables,
+        )
+        .await
+    }
+
+    async fn graphql_request_with_policy<T>(
+        &self,
+        policy: RequestPolicy,
+        query: &str,
+        variables: Value,
+    ) -> AppResult<T>
+    where
+        T: DeserializeOwned,
+    {
         let payload = json!({ "query": query, "variables": variables });
 
         let response = self
-            .with_auth_headers(
-                self.http_client
-                    .post(&self.graphql_url)
-                    .header("Content-Type", "application/json")
-                    .json(&payload),
-            )
-            .send()
+            .outbound_http
+            .send(policy, || {
+                self.with_auth_headers(
+                    self.http_client
+                        .post(&self.graphql_url)
+                        .header("Content-Type", "application/json")
+                        .json(&payload),
+                )
+            })
             .await
-            .map_err(|err| AppError::Repository(format!("weaver request failed: {err}")))?;
+            .map_err(|error| map_weaver_outbound_error("weaver request", error))?;
 
         let status = response.status();
         let body = response
@@ -350,6 +377,7 @@ impl WeaverDownloadClient {
     #[allow(clippy::too_many_arguments)]
     async fn graphql_multipart_request<T>(
         &self,
+        request_label: &'static str,
         query: &str,
         variables: Value,
         upload_variable_path: &str,
@@ -361,37 +389,50 @@ impl WeaverDownloadClient {
     where
         T: DeserializeOwned,
     {
-        let file = File::open(upload_path).await.map_err(|error| {
-            AppError::Repository(format!(
-                "failed to open weaver upload artifact {}: {error}",
-                upload_path.display()
-            ))
-        })?;
-        let part = multipart::Part::stream_with_length(
-            reqwest::Body::wrap_stream(ReaderStream::new(file)),
-            content_length,
-        )
-        .file_name(filename)
-        .mime_str(content_type)
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to build weaver multipart file part: {error}"
-            ))
-        })?;
-        let form = multipart::Form::new()
-            .text(
-                "operations",
-                json!({ "query": query, "variables": variables }).to_string(),
-            )
-            .text("map", json!({ "0": [upload_variable_path] }).to_string())
-            .part("0", part);
-
         let response = self
-            .with_auth_headers(self.http_client.post(&self.graphql_url).multipart(form))
-            .send()
+            .outbound_http
+            .send_async(self.mutation_policy(request_label), || {
+                let upload_path = upload_path.to_path_buf();
+                let filename = filename.clone();
+                let content_type = content_type.to_string();
+                let variables = variables.clone();
+                async move {
+                    let file = File::open(&upload_path).await.map_err(|error| {
+                        AppError::Repository(format!(
+                            "failed to open weaver upload artifact {}: {error}",
+                            upload_path.display()
+                        ))
+                    })?;
+                    let part = multipart::Part::stream_with_length(
+                        reqwest::Body::wrap_stream(ReaderStream::new(file)),
+                        content_length,
+                    )
+                    .file_name(filename)
+                    .mime_str(&content_type)
+                    .map_err(|error| {
+                        AppError::Repository(format!(
+                            "failed to build weaver multipart file part: {error}"
+                        ))
+                    })?;
+                    let form = multipart::Form::new()
+                        .text(
+                            "operations",
+                            json!({ "query": query, "variables": variables }).to_string(),
+                        )
+                        .text("map", json!({ "0": [upload_variable_path] }).to_string())
+                        .part("0", part);
+
+                    Ok::<reqwest::RequestBuilder, AppError>(self.with_auth_headers(
+                        self.http_client.post(&self.graphql_url).multipart(form),
+                    ))
+                }
+            })
             .await
-            .map_err(|err| {
-                AppError::Repository(format!("weaver multipart request failed: {err}"))
+            .map_err(|error| match error {
+                OutboundRequestError::Build(error) => error,
+                OutboundRequestError::Http(error) => {
+                    map_weaver_outbound_error("weaver multipart request", error)
+                }
             })?;
 
         let status = response.status();
@@ -428,6 +469,21 @@ impl WeaverDownloadClient {
 
         json.data
             .ok_or_else(|| AppError::Repository("weaver response missing data field".into()))
+    }
+
+    fn scope_key(&self) -> String {
+        format!("weaver:{}", self.graphql_url)
+    }
+
+    fn read_policy(&self, request_label: impl Into<Cow<'static, str>>) -> RequestPolicy {
+        RequestPolicy::safe_read(self.scope_key(), request_label)
+            .with_max_retries(2)
+            .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+    }
+
+    fn mutation_policy(&self, request_label: impl Into<Cow<'static, str>>) -> RequestPolicy {
+        RequestPolicy::no_retry(self.scope_key(), request_label)
+            .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
     }
 
     /// Test connectivity by querying metrics.
@@ -863,6 +919,25 @@ fn derive_nzb_filename(source_title: Option<&str>, source_hint: &str, title_name
     format!("{title_name}.nzb")
 }
 
+fn map_weaver_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                Some(delay) => {
+                    format!(
+                        "{operation} was rate limited; retry after {}s",
+                        delay.as_secs()
+                    )
+                }
+                None => format!("{operation} was rate limited"),
+            },
+        ),
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("{operation} failed: {source}"))
+        }
+    }
+}
+
 #[async_trait]
 impl DownloadClient for WeaverDownloadClient {
     async fn submit_download(
@@ -888,7 +963,7 @@ impl DownloadClient for WeaverDownloadClient {
         );
 
         let staged = resolve_staged_nzb_for_request(
-            &self.http_client,
+            &self.outbound_http,
             &self.staged_nzb_store,
             &self.staged_nzb_pipeline_limit,
             request,
@@ -967,6 +1042,7 @@ impl DownloadClient for WeaverDownloadClient {
 
             match self
                 .graphql_multipart_request::<SubmissionPayload>(
+                    "weaver_submit_nzb",
                     query,
                     variables.clone(),
                     "variables.input.nzbUpload",
@@ -1046,7 +1122,8 @@ impl DownloadClient for WeaverDownloadClient {
                         }
                     "#;
                     let compat_data: PublishedSubmissionPayload = self
-                        .graphql_request(
+                        .graphql_request_with_policy(
+                            self.mutation_policy("weaver_submit_nzb_compat"),
                             compat_query,
                             json!({
                                 "source": {
@@ -1225,7 +1302,11 @@ impl DownloadClient for WeaverDownloadClient {
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
         let query = "mutation($id: Int!) { pauseQueueItem(id: $id) { success } }";
         match self
-            .graphql_request::<PauseQueueItemPayload>(query, json!({ "id": job_id }))
+            .graphql_request_with_policy::<PauseQueueItemPayload>(
+                self.mutation_policy("weaver_pause_queue_item"),
+                query,
+                json!({ "id": job_id }),
+            )
             .await
         {
             Ok(data) => {
@@ -1238,7 +1319,11 @@ impl DownloadClient for WeaverDownloadClient {
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"pauseQueueItem\"") => {
                 let compat_query = "mutation($id: Int!) { pauseJob(id: $id) }";
                 let data: PublishedBoolPayload = self
-                    .graphql_request(compat_query, json!({ "id": job_id }))
+                    .graphql_request_with_policy(
+                        self.mutation_policy("weaver_pause_job"),
+                        compat_query,
+                        json!({ "id": job_id }),
+                    )
                     .await?;
                 if data.pause_job != Some(true) {
                     return Err(AppError::Repository(
@@ -1257,7 +1342,11 @@ impl DownloadClient for WeaverDownloadClient {
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
         let query = "mutation($id: Int!) { resumeQueueItem(id: $id) { success } }";
         match self
-            .graphql_request::<ResumeQueueItemPayload>(query, json!({ "id": job_id }))
+            .graphql_request_with_policy::<ResumeQueueItemPayload>(
+                self.mutation_policy("weaver_resume_queue_item"),
+                query,
+                json!({ "id": job_id }),
+            )
             .await
         {
             Ok(data) => {
@@ -1270,7 +1359,11 @@ impl DownloadClient for WeaverDownloadClient {
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"resumeQueueItem\"") => {
                 let compat_query = "mutation($id: Int!) { resumeJob(id: $id) }";
                 let data: PublishedBoolPayload = self
-                    .graphql_request(compat_query, json!({ "id": job_id }))
+                    .graphql_request_with_policy(
+                        self.mutation_policy("weaver_resume_job"),
+                        compat_query,
+                        json!({ "id": job_id }),
+                    )
                     .await?;
                 if data.resume_job != Some(true) {
                     return Err(AppError::Repository(
@@ -1294,7 +1387,11 @@ impl DownloadClient for WeaverDownloadClient {
         };
         if is_history {
             match self
-                .graphql_request::<RemoveHistoryItemsPayload>(query, json!({ "ids": [job_id] }))
+                .graphql_request_with_policy::<RemoveHistoryItemsPayload>(
+                    self.mutation_policy("weaver_remove_history_items"),
+                    query,
+                    json!({ "ids": [job_id] }),
+                )
                 .await
             {
                 Ok(data) => {
@@ -1309,7 +1406,8 @@ impl DownloadClient for WeaverDownloadClient {
                 {
                     let compat_query = "mutation($ids: [Int!]!, $deleteFiles: Boolean!) { deleteHistoryBatch(ids: $ids, deleteFiles: $deleteFiles) }";
                     let data: PublishedDeleteHistoryPayload = self
-                        .graphql_request(
+                        .graphql_request_with_policy(
+                            self.mutation_policy("weaver_delete_history_batch"),
                             compat_query,
                             json!({ "ids": [job_id], "deleteFiles": false }),
                         )
@@ -1324,7 +1422,11 @@ impl DownloadClient for WeaverDownloadClient {
             }
         } else {
             match self
-                .graphql_request::<CancelQueueItemPayload>(query, json!({ "id": job_id }))
+                .graphql_request_with_policy::<CancelQueueItemPayload>(
+                    self.mutation_policy("weaver_cancel_queue_item"),
+                    query,
+                    json!({ "id": job_id }),
+                )
                 .await
             {
                 Ok(data) => {
@@ -1339,7 +1441,11 @@ impl DownloadClient for WeaverDownloadClient {
                 {
                     let compat_query = "mutation($id: Int!) { cancelJob(id: $id) }";
                     let data: PublishedBoolPayload = self
-                        .graphql_request(compat_query, json!({ "id": job_id }))
+                        .graphql_request_with_policy(
+                            self.mutation_policy("weaver_cancel_job"),
+                            compat_query,
+                            json!({ "id": job_id }),
+                        )
                         .await?;
                     if data.cancel_job != Some(true) {
                         return Err(AppError::Repository(

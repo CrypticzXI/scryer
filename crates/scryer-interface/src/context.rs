@@ -149,6 +149,11 @@ pub(crate) fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
             })
         }
+        AppError::PluginInstallInProgress(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
+            })
+        }
         _ => Error::new(err.to_string()),
     }
 }

@@ -913,11 +913,22 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
     let ctx = TestContext::new().await;
     let wasm_bytes = std::fs::read(&wasm_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
-    let provider: Arc<dyn NotificationPluginProvider> =
-        Arc::new(scryer_plugins::DynamicNotificationPluginProvider::new(
-            scryer_plugins::WasmNotificationPluginProvider::empty()
-                .with_external_bytes(&wasm_bytes),
-        ));
+    let wasm_provider =
+        scryer_plugins::WasmNotificationPluginProvider::empty().with_external_bytes(&wasm_bytes);
+    if !wasm_provider
+        .available_provider_types()
+        .iter()
+        .any(|provider_type| provider_type == "jellyfin")
+    {
+        eprintln!(
+            "skipping jellyfin dist test; optional dist artifact is incompatible with SDK {}",
+            scryer_plugins::SDK_VERSION
+        );
+        return;
+    }
+    let provider: Arc<dyn NotificationPluginProvider> = Arc::new(
+        scryer_plugins::DynamicNotificationPluginProvider::new(wasm_provider),
+    );
     let app = app_with_notification_provider(&ctx, provider);
     let user = default_user(&app).await;
 

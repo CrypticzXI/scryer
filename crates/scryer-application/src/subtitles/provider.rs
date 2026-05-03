@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
 use reqwest::{Method, Response, StatusCode};
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -171,8 +173,8 @@ pub struct OpenSubtitlesProvider {
     api_key: String,
     token: tokio::sync::Mutex<Option<TokenState>>,
     credentials: tokio::sync::Mutex<Option<LoginCredentials>>,
-    rate_limited_until: tokio::sync::Mutex<Option<DateTime<Utc>>>,
     api_base: tokio::sync::RwLock<String>,
+    outbound_http: OutboundHttpClient,
     http: reqwest::Client,
 }
 
@@ -283,16 +285,17 @@ impl OpenSubtitlesProvider {
     }
 
     pub(crate) fn with_api_base(api_key: String, api_base: impl Into<String>) -> Self {
+        let http = reqwest::Client::builder()
+            .user_agent("scryer-media/1.0")
+            .build()
+            .expect("http client");
         Self {
             api_key,
             token: tokio::sync::Mutex::new(None),
             credentials: tokio::sync::Mutex::new(None),
-            rate_limited_until: tokio::sync::Mutex::new(None),
             api_base: tokio::sync::RwLock::new(api_base.into()),
-            http: reqwest::Client::builder()
-                .user_agent("scryer-media/1.0")
-                .build()
-                .expect("http client"),
+            outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
+            http,
         }
     }
 
@@ -311,17 +314,24 @@ impl OpenSubtitlesProvider {
 
     async fn perform_login(&self, username: &str, password: &str) -> AppResult<()> {
         let base = self.api_base().await;
+        let api_key = self.api_key.clone();
+        let username = username.to_string();
+        let password = password.to_string();
+        let url = format!("{base}/login");
+        let policy = self.request_policy("opensubtitles_login");
         let resp = self
-            .http
-            .post(format!("{base}/login"))
-            .header("Api-Key", &self.api_key)
-            .json(&serde_json::json!({
-                "username": username,
-                "password": password,
-            }))
-            .send()
+            .outbound_http
+            .send(policy, || {
+                self.http
+                    .post(url.clone())
+                    .header("Api-Key", api_key.clone())
+                    .json(&serde_json::json!({
+                        "username": username,
+                        "password": password,
+                    }))
+            })
             .await
-            .map_err(|e| AppError::Repository(format!("OpenSubtitles login failed: {e}")))?;
+            .map_err(|error| map_opensubtitles_outbound_error("login", error))?;
 
         if !resp.status().is_success() {
             return Err(response_error("login", resp).await);
@@ -382,34 +392,44 @@ impl OpenSubtitlesProvider {
         let mut retried = false;
 
         loop {
-            self.wait_for_rate_limit_window().await;
-
             let base = self.api_base().await;
             let url = format!(
                 "{}/{}",
                 base.trim_end_matches('/'),
                 path.trim_start_matches('/')
             );
+            let api_key = self.api_key.clone();
+            let token = self.get_token().await;
+            let params = params.map(|pairs| {
+                pairs
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), value.clone()))
+                    .collect::<Vec<_>>()
+            });
+            let body = body.clone();
+            let policy = self.request_policy("opensubtitles_request");
+            let resp = self
+                .outbound_http
+                .send(policy, || {
+                    let mut req = self
+                        .http
+                        .request(method.clone(), url.clone())
+                        .header("Api-Key", api_key.clone());
 
-            let mut req = self
-                .http
-                .request(method.clone(), url)
-                .header("Api-Key", &self.api_key);
+                    if let Some(token) = token.as_deref() {
+                        req = req.header("Authorization", format!("Bearer {token}"));
+                    }
+                    if let Some(params) = params.as_ref() {
+                        req = req.query(params);
+                    }
+                    if let Some(body) = body.as_ref() {
+                        req = req.json(body);
+                    }
 
-            if let Some(token) = self.get_token().await {
-                req = req.header("Authorization", format!("Bearer {token}"));
-            }
-            if let Some(params) = params {
-                req = req.query(params);
-            }
-            if let Some(body) = body.clone() {
-                req = req.json(&body);
-            }
-
-            let resp = req
-                .send()
+                    req
+                })
                 .await
-                .map_err(|e| AppError::Repository(format!("OpenSubtitles request failed: {e}")))?;
+                .map_err(|error| map_opensubtitles_outbound_error("request", error))?;
 
             if resp.status() == StatusCode::UNAUTHORIZED && !retried {
                 retried = true;
@@ -418,41 +438,17 @@ impl OpenSubtitlesProvider {
                 }
             }
 
-            if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-                self.record_rate_limit_from_headers(resp.headers()).await;
-            }
-
             return Ok(resp);
         }
     }
 
-    async fn wait_for_rate_limit_window(&self) {
-        let wait_duration = {
-            let guard = self.rate_limited_until.lock().await;
-            guard.and_then(|until| {
-                if until > Utc::now() {
-                    (until - Utc::now()).to_std().ok()
-                } else {
-                    None
-                }
-            })
-        };
-
-        if let Some(duration) = wait_duration {
-            tokio::time::sleep(duration).await;
-        }
-
-        let mut guard = self.rate_limited_until.lock().await;
-        if guard.as_ref().is_some_and(|until| *until <= Utc::now()) {
-            *guard = None;
-        }
-    }
-
-    async fn record_rate_limit_from_headers(&self, headers: &reqwest::header::HeaderMap) {
-        let until = retry_after_deadline_from_headers(headers)
-            .unwrap_or_else(|| Utc::now() + Duration::seconds(10));
-        let mut guard = self.rate_limited_until.lock().await;
-        *guard = Some(until);
+    fn request_policy(&self, request_label: &'static str) -> RequestPolicy {
+        RequestPolicy::safe_read(opensubtitles_scope(&self.api_key), request_label)
+            .with_max_retries(2)
+            .with_backoff(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(30),
+            )
     }
 
     async fn search_feature_id(
@@ -793,12 +789,20 @@ impl SubtitleProvider for OpenSubtitlesProvider {
             AppError::Repository(format!("OpenSubtitles download parse error: {e}"))
         })?;
 
+        let download_scope = subtitle_download_scope(&dl.link);
         let content = self
-            .http
-            .get(&dl.link)
-            .send()
+            .outbound_http
+            .send(
+                RequestPolicy::safe_read(download_scope, "opensubtitles_download_file")
+                    .with_max_retries(2)
+                    .with_backoff(
+                        std::time::Duration::from_secs(1),
+                        std::time::Duration::from_secs(30),
+                    ),
+                || self.http.get(&dl.link),
+            )
             .await
-            .map_err(|e| AppError::Repository(format!("subtitle file fetch failed: {e}")))?;
+            .map_err(|error| map_opensubtitles_outbound_error("subtitle file fetch", error))?;
 
         if !content.status().is_success() {
             return Err(response_error("subtitle fetch", content).await);
@@ -1161,16 +1165,6 @@ fn normalize_subtitle_line_endings(content: Vec<u8>) -> Vec<u8> {
 
 async fn response_error(action: &str, resp: Response) -> AppError {
     let status = resp.status();
-    let retry_after_seconds = retry_after_deadline_from_headers(resp.headers()).and_then(|until| {
-        if until > Utc::now() {
-            (until - Utc::now())
-                .to_std()
-                .ok()
-                .map(|duration| duration.as_secs())
-        } else {
-            None
-        }
-    });
     let body = resp.text().await.unwrap_or_default();
 
     match status {
@@ -1182,12 +1176,9 @@ async fn response_error(action: &str, resp: Response) -> AppError {
             compact_error_body(&body)
         )),
         StatusCode::GONE => AppError::Repository(format!("OpenSubtitles {action} link expired")),
-        StatusCode::TOO_MANY_REQUESTS => AppError::Repository(match retry_after_seconds {
-            Some(seconds) if seconds > 0 => {
-                format!("OpenSubtitles rate limited — retry after {seconds}s")
-            }
-            _ => "OpenSubtitles rate limited — try again later".into(),
-        }),
+        StatusCode::TOO_MANY_REQUESTS => {
+            AppError::Repository("OpenSubtitles rate limited — try again later".into())
+        }
         status if status.is_server_error() => AppError::Repository(format!(
             "OpenSubtitles {action} failed with {status}: {}",
             compact_error_body(&body)
@@ -1199,21 +1190,39 @@ async fn response_error(action: &str, resp: Response) -> AppError {
     }
 }
 
-fn retry_after_deadline_from_headers(
-    headers: &reqwest::header::HeaderMap,
-) -> Option<DateTime<Utc>> {
-    let raw = headers
-        .get(reqwest::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim();
-    if let Ok(seconds) = raw.parse::<i64>() {
-        return Some(Utc::now() + Duration::seconds(seconds.max(0)));
+fn map_opensubtitles_outbound_error(action: &str, error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after_seconds = rate_limited
+                .retry_after
+                .filter(|delay| !delay.is_zero())
+                .map(|delay| delay.as_secs());
+            AppError::Repository(match retry_after_seconds {
+                Some(seconds) if seconds > 0 => {
+                    format!("OpenSubtitles rate limited — retry after {seconds}s")
+                }
+                _ => "OpenSubtitles rate limited — try again later".into(),
+            })
+        }
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("OpenSubtitles {action} failed: {source}"))
+        }
     }
+}
 
-    DateTime::parse_from_rfc2822(raw)
+fn opensubtitles_scope(api_key: &str) -> String {
+    let fingerprint = blake3::hash(api_key.as_bytes()).to_hex().to_string();
+    format!("opensubtitles:{}", &fingerprint[..12])
+}
+
+fn subtitle_download_scope(url: &str) -> String {
+    match reqwest::Url::parse(url)
         .ok()
-        .map(|deadline| deadline.with_timezone(&Utc))
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+    {
+        Some(host) => format!("opensubtitles_download:{host}"),
+        None => "opensubtitles_download:unknown".to_string(),
+    }
 }
 
 fn compact_error_body(body: &str) -> String {

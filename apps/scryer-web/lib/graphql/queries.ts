@@ -1550,6 +1550,19 @@ export const providerCatalogChangedSubscription = `subscription ProviderCatalogC
   providerCatalogChanged
 }`;
 
+export const pluginInstallProgressSubscription = `subscription PluginInstallProgress($pluginId: String!) {
+  pluginInstallProgress(pluginId: $pluginId) {
+    pluginId
+    operationKind
+    state
+    label
+    stepIndex
+    stepCount
+    message
+    error
+  }
+}`;
+
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
@@ -1714,6 +1727,7 @@ export const pluginsQuery = `query Plugins {
     isEnabled
     installedVersion
     updateAvailable
+    installInProgress
     defaultBaseUrl
   }
   pluginCatalogStatus {

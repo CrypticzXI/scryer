@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_compression::tokio::bufread::ZstdDecoder;
 use async_trait::async_trait;
@@ -11,6 +13,9 @@ use scryer_application::{
     NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
 };
 use scryer_domain::{DownloadQueueItem, DownloadQueueState};
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::fs::File;
@@ -30,6 +35,7 @@ pub struct NzbgetDownloadClient {
     password: Option<String>,
     dupe_mode: String,
     http_client: Client,
+    outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
 }
@@ -76,12 +82,14 @@ impl NzbgetDownloadClient {
             "ALL" | "FORCE" => dupe_mode.to_uppercase(),
             _ => "SCORE".to_string(),
         };
+        let http_client = Client::new();
         Self {
             rpc_url: rpc_url.trim_end_matches('/').to_string(),
             username,
             password,
             dupe_mode,
-            http_client: Client::new(),
+            outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
+            http_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
@@ -98,6 +106,20 @@ impl NzbgetDownloadClient {
     }
 
     async fn rpc_call(&self, method: &str, params: Vec<Value>) -> AppResult<Value> {
+        self.rpc_call_with_policy(
+            method,
+            params,
+            self.read_policy(format!("nzbget_rpc_{method}")),
+        )
+        .await
+    }
+
+    async fn rpc_call_with_policy(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+        policy: RequestPolicy,
+    ) -> AppResult<Value> {
         let payload = json!({
             "version": "2.0",
             "method": method,
@@ -106,20 +128,25 @@ impl NzbgetDownloadClient {
         });
 
         let endpoint = self.endpoint();
-        let mut request = self
-            .http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&payload);
+        let response = self
+            .outbound_http
+            .send(policy, || {
+                let mut request = self
+                    .http_client
+                    .post(&endpoint)
+                    .header("Content-Type", "application/json")
+                    .json(&payload);
 
-        if let Some(username) = self.username.clone() {
-            request = request.basic_auth(username, self.password.as_deref());
-        }
+                if let Some(username) = self.username.as_ref() {
+                    request = request.basic_auth(username, self.password.as_deref());
+                }
 
-        let response = request
-            .send()
+                request
+            })
             .await
-            .map_err(|err| AppError::Repository(format!("nzbget rpc call failed: {err}")))?;
+            .map_err(|error| {
+                map_nzbget_outbound_error(&format!("nzbget rpc call {method}"), error)
+            })?;
 
         let status = response.status();
         let response_text = response.text().await.map_err(|err| {
@@ -166,13 +193,22 @@ impl NzbgetDownloadClient {
         });
         let endpoint = self.endpoint();
         let response = self
-            .http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
+            .outbound_http
+            .send(self.read_policy("nzbget_test_connection"), || {
+                let mut request = self
+                    .http_client
+                    .post(&endpoint)
+                    .header("Content-Type", "application/json")
+                    .json(&payload);
+
+                if let Some(username) = self.username.as_ref() {
+                    request = request.basic_auth(username, self.password.as_deref());
+                }
+
+                request
+            })
             .await
-            .map_err(|err| AppError::Repository(format!("nzbget test call failed: {err}")))?;
+            .map_err(|error| map_nzbget_outbound_error("nzbget test call", error))?;
         let status = response.status();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -317,31 +353,44 @@ impl NzbgetDownloadClient {
         let content_length = prefix.len() as u64
             + base64_encoded_len(staged_nzb.raw_size_bytes)
             + suffix.len() as u64;
-        let staged_file = File::open(&staged_nzb.compressed_path)
+        let compressed_path = staged_nzb.compressed_path.clone();
+        let response = self
+            .outbound_http
+            .send_async(self.mutation_policy("nzbget_append"), || {
+                let endpoint = endpoint.clone();
+                let compressed_path = compressed_path.clone();
+                let prefix = prefix.clone();
+                let suffix = suffix.clone();
+                async move {
+                    let staged_file = File::open(&compressed_path).await.map_err(|error| {
+                        AppError::Repository(format!(
+                            "failed to open staged nzb {}: {error}",
+                            compressed_path.display()
+                        ))
+                    })?;
+                    let mut request = self
+                        .http_client
+                        .post(&endpoint)
+                        .header("Content-Type", "application/json")
+                        .header(reqwest::header::CONTENT_LENGTH, content_length.to_string())
+                        .body(reqwest::Body::wrap_stream(
+                            Self::build_streaming_append_body(staged_file, prefix, suffix),
+                        ));
+
+                    if let Some(username) = self.username.as_ref() {
+                        request = request.basic_auth(username, self.password.as_deref());
+                    }
+
+                    Ok::<reqwest::RequestBuilder, AppError>(request)
+                }
+            })
             .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to open staged nzb {}: {error}",
-                    staged_nzb.compressed_path.display()
-                ))
+            .map_err(|error| match error {
+                OutboundRequestError::Build(error) => error,
+                OutboundRequestError::Http(error) => {
+                    map_nzbget_outbound_error("nzbget append request", error)
+                }
             })?;
-        let mut request = self
-            .http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .header(reqwest::header::CONTENT_LENGTH, content_length.to_string())
-            .body(reqwest::Body::wrap_stream(
-                Self::build_streaming_append_body(staged_file, prefix, suffix),
-            ));
-
-        if let Some(username) = self.username.clone() {
-            request = request.basic_auth(username, self.password.as_deref());
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| AppError::Repository(format!("nzbget request failed: {err}")))?;
         let status = response.status();
         let body_text = response
             .text()
@@ -477,7 +526,11 @@ impl NzbgetDownloadClient {
 
     async fn edit_queue(&self, command: &str, ids: Vec<i64>) -> AppResult<()> {
         let result = self
-            .rpc_call("editqueue", vec![json!(command), json!(""), json!(ids)])
+            .rpc_call_with_policy(
+                "editqueue",
+                vec![json!(command), json!(""), json!(ids)],
+                self.mutation_policy(format!("nzbget_editqueue_{command}")),
+            )
             .await?;
         if result.as_bool() == Some(true) {
             Ok(())
@@ -839,6 +892,40 @@ impl NzbgetDownloadClient {
             })
             .collect())
     }
+
+    fn scope_key(&self) -> String {
+        format!("nzbget:{}", self.endpoint())
+    }
+
+    fn read_policy(&self, request_label: impl Into<Cow<'static, str>>) -> RequestPolicy {
+        RequestPolicy::safe_read(self.scope_key(), request_label)
+            .with_max_retries(2)
+            .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+    }
+
+    fn mutation_policy(&self, request_label: impl Into<Cow<'static, str>>) -> RequestPolicy {
+        RequestPolicy::no_retry(self.scope_key(), request_label)
+            .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+    }
+}
+
+fn map_nzbget_outbound_error(operation: &str, error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                Some(delay) => {
+                    format!(
+                        "{operation} was rate limited; retry after {}s",
+                        delay.as_secs()
+                    )
+                }
+                None => format!("{operation} was rate limited"),
+            },
+        ),
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("{operation} failed: {source}"))
+        }
+    }
 }
 
 #[async_trait]
@@ -875,7 +962,7 @@ impl DownloadClient for NzbgetDownloadClient {
             .unwrap_or_default();
 
         let staged = resolve_staged_nzb_for_request(
-            &self.http_client,
+            &self.outbound_http,
             &self.staged_nzb_store,
             &self.staged_nzb_pipeline_limit,
             request,

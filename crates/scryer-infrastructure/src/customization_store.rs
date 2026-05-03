@@ -3,8 +3,8 @@ use scryer_application::{
     AppResult, PluginInstallationRepository, PostProcessingScriptRepository, RuleSetRepository,
 };
 use scryer_domain::{
-    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PostProcessingScript,
-    PostProcessingScriptRun, RuleSet,
+    PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation,
+    PostProcessingScript, PostProcessingScriptRun, RuleSet,
 };
 
 use crate::SqliteServices;
@@ -25,6 +25,13 @@ impl SqliteCustomizationStore {
             db: db.clone(),
             pool: db.pool().clone(),
         }
+    }
+
+    pub async fn delete_incompatible_external_plugin_installations(
+        &self,
+    ) -> AppResult<Vec<String>> {
+        plugin_installation::delete_incompatible_external_plugin_installations_query(&self.pool)
+            .await
     }
 }
 
@@ -166,8 +173,15 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
 
     async fn get_enabled_plugin_wasm_bytes(
         &self,
-    ) -> AppResult<Vec<(PluginInstallation, Option<Vec<u8>>)>> {
+    ) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>> {
         plugin_installation::get_enabled_plugin_wasm_bytes_query(&self.pool).await
+    }
+
+    async fn get_plugin_installation_wasm_payload(
+        &self,
+        plugin_id: &str,
+    ) -> AppResult<Option<PersistedPluginWasmPayload>> {
+        plugin_installation::get_plugin_installation_wasm_payload_query(&self.pool, plugin_id).await
     }
 
     async fn seed_builtin(

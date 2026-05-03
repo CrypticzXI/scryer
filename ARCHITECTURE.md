@@ -402,6 +402,29 @@ When a setting is identified by a string key, that key must be defined exactly o
 
 Never duplicate setting key string literals across bootstrap, application logic, interface, and frontend code.
 
+### 7. Native Outbound HTTP Must Use the Canonical Transport
+
+All host-owned outbound HTTP in Scryer must go through the shared `scryer-outbound-http` transport.
+
+That transport is the mandatory owner of:
+
+- `429 Too Many Requests` handling
+- `Retry-After` parsing
+- per-upstream cooldown tracking
+- bounded retry policy
+- typed rate-limit failures
+- shared outbound HTTP observability
+
+The rules are:
+
+- production code must not hand-roll `429` handling around raw `reqwest` calls
+- production code must not issue direct `reqwest::get(...)` or raw `.send()` calls outside the canonical transport crate
+- callers choose a request policy such as safe-read or no-retry, but they do not reimplement transport behavior
+- provider-specific semantics such as auth refresh, quota messages, or non-429 status handling stay above the shared transport
+- any new native outbound integration is incomplete until it uses this path
+
+This is a mandatory pattern, not a suggestion. If a new outbound caller cannot fit the canonical transport, stop and resolve that design mismatch before shipping.
+
 ## Canonical Feature Flow
 
 New backend features should fit the same general shape:
@@ -444,6 +467,7 @@ Stop and reconsider when a change introduces any of these patterns:
 - acquisition/import/library behavior duplicated in multiple places
 - unbounded channels, queues, or caches
 - notification logic becoming a second event system
+- native outbound HTTP that bypasses the canonical transport or reimplements `429` handling locally
 - new abstractions that exist mostly to feel more "architected"
 
 ## Crate Responsibilities

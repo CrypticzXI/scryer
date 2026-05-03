@@ -931,6 +931,24 @@ impl AppUseCase {
             .subscribe())
     }
 
+    pub async fn subscribe_plugin_install_progress(
+        &self,
+        actor: &User,
+        plugin_id: &str,
+    ) -> AppResult<tokio::sync::watch::Receiver<crate::PluginInstallProgressSnapshot>> {
+        require(actor, &Entitlement::ManageConfig)?;
+        self.runtime
+            .plugins
+            .plugin_install_orchestrator
+            .subscribe(&actor.id, plugin_id)
+            .await
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "no active plugin install progress for '{plugin_id}'"
+                ))
+            })
+    }
+
     pub fn subscribe_download_queue_state(
         &self,
         actor: &User,

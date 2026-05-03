@@ -7,6 +7,7 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { TitleCollectionEmptyState } from "./title-table-shared";
 
 const QP_TAG_PREFIX = "scryer:quality-profile:";
 
@@ -58,6 +59,12 @@ type PosterGridProps = {
   onAutoQueue: (title: TitleRecord) => void;
   isDeletingById: Record<string, boolean>;
   overviewTargetView: ViewId;
+  showScanLibraryAction?: boolean;
+  showConfigureRootsAction?: boolean;
+  configureRootsHref?: string;
+  onScanLibrary?: () => Promise<void> | void;
+  scanLibraryLoading?: boolean;
+  scanLibraryDisabled?: boolean;
 };
 
 export const PosterGrid = React.memo(function PosterGrid({
@@ -68,13 +75,27 @@ export const PosterGrid = React.memo(function PosterGrid({
   qualityProfilesLoading,
   onOpenOverview,
   overviewTargetView,
+  showScanLibraryAction = false,
+  showConfigureRootsAction = false,
+  configureRootsHref,
+  onScanLibrary,
+  scanLibraryLoading = false,
+  scanLibraryDisabled = false,
 }: PosterGridProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
 
   if (titles.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">{t("title.noManaged")}</p>
+      <TitleCollectionEmptyState
+        t={t}
+        showScanAction={showScanLibraryAction}
+        showConfigureRootsAction={showConfigureRootsAction}
+        configureRootsHref={configureRootsHref}
+        scanLoading={scanLibraryLoading}
+        scanDisabled={scanLibraryDisabled}
+        onScan={onScanLibrary}
+      />
     );
   }
 

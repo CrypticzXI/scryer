@@ -24,12 +24,13 @@ use scryer_application::{
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     NotificationPluginProvider, PluginInstallationRepository, SeriesFacetHandler,
     SubtitlePluginProvider, TitleImageKind, TitleImageRepository,
-    start_background_acquisition_poller, start_background_banner_loop,
-    start_background_download_delete_poller, start_background_fanart_loop,
-    start_background_library_refresh_loop, start_background_manual_import_poller,
-    start_background_poster_loop, start_background_subtitle_poller,
-    start_background_title_hydration_loop, start_download_queue_poller,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    decode_persisted_plugin_wasm_payload, start_background_acquisition_poller,
+    start_background_banner_loop, start_background_download_delete_poller,
+    start_background_fanart_loop, start_background_library_refresh_loop,
+    start_background_manual_import_poller, start_background_poster_loop,
+    start_background_subtitle_poller, start_background_title_hydration_loop,
+    start_download_queue_poller, start_notification_dispatcher,
+    tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
@@ -41,7 +42,6 @@ use scryer_infrastructure::{
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
-use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +69,34 @@ use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const STARTUP_PLUGIN_LOAD_CONCURRENCY: usize = 4;
+
+struct RuntimePluginBootstrapEntry {
+    plugin_type: String,
+    bytes: Vec<u8>,
+    first_party: bool,
+}
+
+fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
+    matches!(
+        plugin_type,
+        "indexer" | "usenet_indexer" | "torrent_indexer"
+    )
+}
+
+fn runtime_plugin_refs_for_types<'a>(
+    runtime_plugins: &'a [RuntimePluginBootstrapEntry],
+    matches_type: impl Fn(&str) -> bool,
+) -> Vec<ExternalPluginWasm<'a>> {
+    runtime_plugins
+        .iter()
+        .filter(|plugin| matches_type(plugin.plugin_type.as_str()))
+        .map(|plugin| ExternalPluginWasm {
+            bytes: plugin.bytes.as_slice(),
+            first_party: plugin.first_party,
+        })
+        .collect()
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AuthModeConfig {
@@ -507,21 +535,31 @@ async fn bootstrap_application(
         .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
     );
     let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
+    bootstrap_plugin_installations(customization_store.as_ref())
+        .await
+        .map_err(|e| format!("failed to bootstrap plugin installations: {e}"))?;
     let (runtime_plugin_bytes, disabled_builtin_plugins) =
         load_runtime_plugin_state(customization_store.as_ref())
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
-    let runtime_plugin_refs: Vec<ExternalPluginWasm<'_>> = runtime_plugin_bytes
-        .iter()
-        .map(|(bytes, first_party)| ExternalPluginWasm {
-            bytes: bytes.as_slice(),
-            first_party: *first_party,
-        })
-        .collect();
+    let indexer_plugin_refs =
+        runtime_plugin_refs_for_types(&runtime_plugin_bytes, plugin_type_belongs_to_indexer_family);
+    let download_client_plugin_refs =
+        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
+            plugin_type == "download_client"
+        });
+    let subtitle_plugin_refs =
+        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
+            plugin_type == "subtitle_provider"
+        });
+    let notification_plugin_refs =
+        runtime_plugin_refs_for_types(&runtime_plugin_bytes, |plugin_type| {
+            plugin_type == "notification"
+        });
     let download_client_plugin_provider: Arc<dyn DownloadClientPluginProvider> =
         Arc::new(scryer_plugins::DynamicDownloadClientPluginProvider::new(
             scryer_plugins::build_download_client_plugin_provider(
-                &runtime_plugin_refs,
+                &download_client_plugin_refs,
                 &disabled_builtin_plugins,
             ),
         ));
@@ -547,14 +585,14 @@ async fn bootstrap_application(
 
     let dynamic_provider =
         scryer_plugins::DynamicPluginProvider::new(scryer_plugins::build_indexer_plugin_provider(
-            &runtime_plugin_refs,
+            &indexer_plugin_refs,
             &disabled_builtin_plugins,
         ));
     let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(dynamic_provider);
     let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
             scryer_plugins::build_subtitle_plugin_provider(
-                &runtime_plugin_refs,
+                &subtitle_plugin_refs,
                 &disabled_builtin_plugins,
             ),
         ));
@@ -665,7 +703,7 @@ async fn bootstrap_application(
 
     let notif_provider = scryer_plugins::DynamicNotificationPluginProvider::new(
         scryer_plugins::build_notification_plugin_provider(
-            &runtime_plugin_refs,
+            &notification_plugin_refs,
             &disabled_builtin_plugins,
         ),
     );
@@ -725,8 +763,8 @@ async fn bootstrap_application(
 
     app_use_case.connect_library_scan_tracker().await;
 
-    if let Err(e) = app_use_case.refresh_plugin_registry_internal().await {
-        tracing::warn!(error = %e, "failed to refresh plugin registry on startup");
+    if let Err(e) = app_use_case.refresh_plugin_catalog_internal().await {
+        tracing::warn!(error = %e, "failed to refresh plugin catalog on startup");
     }
 
     if let Err(e) = app_use_case.migrate_user_entitlements().await {
@@ -1337,125 +1375,20 @@ async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<Strin
     Some((client.ws_url(), client.api_key().map(str::to_string)))
 }
 
-#[derive(Deserialize)]
-struct RuntimePluginRegistryManifest {
-    plugins: Vec<RuntimePluginRegistryEntry>,
-}
-
-#[derive(Deserialize)]
-struct RuntimePluginRegistryEntry {
-    id: String,
-    plugin_type: String,
-    provider_type: String,
-    #[serde(default)]
-    official: bool,
-    #[serde(default)]
-    releases: Vec<RuntimePluginRegistryRelease>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    sdk_version: Option<String>,
-    #[serde(default)]
-    sdk_constraint: Option<String>,
-    #[serde(default)]
-    scryer_constraint: Option<String>,
-    #[serde(default, rename = "min_scryer_version")]
-    legacy_min_scryer_version: Option<String>,
-    #[serde(default)]
-    wasm_sha256: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-struct RuntimePluginRegistryRelease {
-    version: String,
-    #[serde(default)]
-    sdk_version: String,
-    #[serde(default)]
-    sdk_constraint: String,
-    #[serde(default)]
-    scryer_constraint: Option<String>,
-    #[serde(default, rename = "min_scryer_version")]
-    legacy_min_scryer_version: Option<String>,
-    #[serde(default)]
-    wasm_sha256: Option<String>,
-}
-
-impl RuntimePluginRegistryEntry {
-    fn normalized_releases(&self) -> Vec<RuntimePluginRegistryRelease> {
-        if !self.releases.is_empty() {
-            return self.releases.clone();
-        }
-
-        self.version
-            .as_ref()
-            .map(|version| {
-                vec![RuntimePluginRegistryRelease {
-                    version: version.clone(),
-                    sdk_version: self.sdk_version.clone().unwrap_or_default(),
-                    sdk_constraint: self.sdk_constraint.clone().unwrap_or_default(),
-                    scryer_constraint: self.scryer_constraint.clone(),
-                    legacy_min_scryer_version: self.legacy_min_scryer_version.clone(),
-                    wasm_sha256: self.wasm_sha256.clone(),
-                }]
-            })
-            .unwrap_or_default()
-    }
-}
-
-fn runtime_registry_release_scryer_constraint(
-    release: &RuntimePluginRegistryRelease,
-) -> Option<&str> {
-    release
-        .scryer_constraint
-        .as_deref()
-        .or(release.legacy_min_scryer_version.as_deref())
-}
-
 fn runtime_normalized_constraint(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|constraint| !constraint.is_empty())
         .map(str::to_string)
 }
 
-fn runtime_installation_matches_official_registry(
-    installation: &scryer_domain::PluginInstallation,
-    registry: Option<&RuntimePluginRegistryManifest>,
-) -> bool {
-    let Some(registry) = registry else {
-        return false;
-    };
-
-    registry.plugins.iter().any(|entry| {
-        entry.official
-            && entry.id == installation.plugin_id
-            && entry.plugin_type == installation.plugin_type
-            && entry.provider_type == installation.provider_type
-            && entry.normalized_releases().into_iter().any(|release| {
-                release.version == installation.version
-                    && release
-                        .wasm_sha256
-                        .as_deref()
-                        .zip(installation.wasm_sha256.as_deref())
-                        .is_some_and(|(expected, installed)| {
-                            expected.eq_ignore_ascii_case(installed)
-                        })
-                    && scryer_plugins::sdk_constraint_or_legacy(
-                        &release.sdk_version,
-                        &release.sdk_constraint,
-                    ) == installation.sdk_constraint
-            })
-    })
-}
-
-fn runtime_installation_is_host_blocked_by_registry(
-    installation: &scryer_domain::PluginInstallation,
-    registry: Option<&RuntimePluginRegistryManifest>,
-) -> bool {
-    runtime_installation_scryer_constraint(installation, registry).is_some_and(|constraint| {
-        scryer_plugins::host_version_matches_constraint(env!("CARGO_PKG_VERSION"), &constraint)
-            .map(|matches| !matches)
-            .unwrap_or(true)
-    })
+fn runtime_installation_is_host_blocked(installation: &scryer_domain::PluginInstallation) -> bool {
+    runtime_normalized_constraint(installation.scryer_constraint.as_deref()).is_some_and(
+        |constraint| {
+            scryer_plugins::host_version_matches_constraint(env!("CARGO_PKG_VERSION"), &constraint)
+                .map(|matches| !matches)
+                .unwrap_or(true)
+        },
+    )
 }
 
 fn runtime_installation_sdk_contract_is_host_compatible(
@@ -1487,130 +1420,84 @@ fn runtime_installation_is_catalog_official(
 ) -> bool {
     installation.source_kind == scryer_domain::PluginSourceKind::Downloaded
         && installation.support_tier == scryer_domain::PluginSupportTier::Official
+        && installation.wasm_digest_algo.is_some()
         && installation.wasm_digest.is_some()
 }
 
-fn runtime_installation_is_first_party(
-    installation: &scryer_domain::PluginInstallation,
-    registry: Option<&RuntimePluginRegistryManifest>,
-) -> bool {
+fn runtime_installation_is_first_party(installation: &scryer_domain::PluginInstallation) -> bool {
     runtime_installation_is_catalog_official(installation)
-        || runtime_installation_matches_official_registry(installation, registry)
 }
 
-async fn runtime_installation_wasm_digest_is_valid(
+async fn load_runtime_external_plugin_entry(
     installation: &scryer_domain::PluginInstallation,
-    wasm_bytes: &[u8],
-) -> bool {
-    let Some(expected_digest) = installation.wasm_digest.clone() else {
-        return true;
-    };
-
-    let plugin_id = installation.plugin_id.clone();
-    let version = installation.version.clone();
-    let bytes = wasm_bytes.to_vec();
-    match tokio::task::spawn_blocking(move || scryer_application::plugin_wasm_blake3_digest(&bytes))
-        .await
-    {
-        Ok(actual_digest) if actual_digest.eq_ignore_ascii_case(&expected_digest) => true,
-        Ok(actual_digest) => {
-            tracing::warn!(
-                plugin_id = plugin_id.as_str(),
-                version = version.as_str(),
-                expected_digest = expected_digest.as_str(),
-                actual_digest = actual_digest.as_str(),
-                "skipping installed plugin with mismatched persisted wasm digest"
-            );
-            false
-        }
+    payload: scryer_domain::PersistedPluginWasmPayload,
+) -> Option<RuntimePluginBootstrapEntry> {
+    let bytes = match decode_persisted_plugin_wasm_payload(installation, &payload).await {
+        Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(
-                plugin_id = plugin_id.as_str(),
-                version = version.as_str(),
+                plugin_id = installation.plugin_id.as_str(),
+                version = installation.version.as_str(),
                 error = %error,
-                "skipping installed plugin after wasm digest verification failed"
+                "skipping installed plugin after persisted payload validation failed at startup"
             );
-            false
+            return None;
         }
-    }
-}
+    };
 
-fn runtime_installation_scryer_constraint(
-    installation: &scryer_domain::PluginInstallation,
-    registry: Option<&RuntimePluginRegistryManifest>,
-) -> Option<String> {
-    runtime_normalized_constraint(installation.scryer_constraint.as_deref()).or_else(|| {
-        registry
-            .and_then(|registry| {
-                registry.plugins.iter().find(|entry| {
-                    entry.official
-                        && entry.id == installation.plugin_id
-                        && entry.plugin_type == installation.plugin_type
-                        && entry.provider_type == installation.provider_type
-                })
-            })
-            .and_then(|entry| {
-                entry.normalized_releases().into_iter().find(|release| {
-                    release.version == installation.version
-                        && release
-                            .wasm_sha256
-                            .as_deref()
-                            .zip(installation.wasm_sha256.as_deref())
-                            .is_some_and(|(expected, installed)| {
-                                expected.eq_ignore_ascii_case(installed)
-                            })
-                        && scryer_plugins::sdk_constraint_or_legacy(
-                            &release.sdk_version,
-                            &release.sdk_constraint,
-                        ) == installation.sdk_constraint
-                })
-            })
-            .and_then(|release| {
-                runtime_normalized_constraint(runtime_registry_release_scryer_constraint(&release))
-            })
+    Some(RuntimePluginBootstrapEntry {
+        plugin_type: installation.plugin_type.clone(),
+        bytes,
+        first_party: runtime_installation_is_first_party(installation),
     })
 }
 
 async fn load_runtime_plugin_state(
     customization_store: &SqliteCustomizationStore,
-) -> Result<(Vec<(Vec<u8>, bool)>, Vec<String>), String> {
-    seed_builtin_plugin_installations(customization_store).await?;
-
+) -> Result<(Vec<RuntimePluginBootstrapEntry>, Vec<String>), String> {
     let enabled_plugins = customization_store
         .get_enabled_plugin_wasm_bytes()
         .await
         .map_err(|error| error.to_string())?;
-    let registry = customization_store
-        .get_registry_cache()
-        .await
-        .map_err(|error| error.to_string())?
-        .and_then(|json| serde_json::from_str::<RuntimePluginRegistryManifest>(&json).ok());
     let mut runtime_plugin_bytes = Vec::new();
-    for (installation, wasm_bytes) in enabled_plugins {
-        if !matches!(
-            installation.source_kind,
-            scryer_domain::PluginSourceKind::Downloaded | scryer_domain::PluginSourceKind::Manual
-        ) {
-            continue;
-        }
-        if !runtime_installation_sdk_contract_is_host_compatible(&installation) {
-            continue;
-        }
-        if runtime_installation_is_host_blocked_by_registry(&installation, registry.as_ref()) {
-            continue;
-        }
+    let mut pending_plugins = enabled_plugins
+        .into_iter()
+        .filter_map(|(installation, payload)| {
+            if !matches!(
+                installation.source_kind,
+                scryer_domain::PluginSourceKind::Downloaded
+                    | scryer_domain::PluginSourceKind::Manual
+            ) {
+                return None;
+            }
+            if !runtime_installation_sdk_contract_is_host_compatible(&installation) {
+                return None;
+            }
+            if runtime_installation_is_host_blocked(&installation) {
+                return None;
+            }
 
-        let Some(bytes) = wasm_bytes else {
-            continue;
+            payload.map(|payload| (installation, payload))
+        });
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..STARTUP_PLUGIN_LOAD_CONCURRENCY {
+        let Some((installation, payload)) = pending_plugins.next() else {
+            break;
         };
-        if !runtime_installation_wasm_digest_is_valid(&installation, &bytes).await {
-            continue;
+        tasks
+            .spawn(async move { load_runtime_external_plugin_entry(&installation, payload).await });
+    }
+    while let Some(result) = tasks.join_next().await {
+        let loaded =
+            result.map_err(|error| format!("startup plugin load task panicked: {error}"))?;
+        if let Some(entry) = loaded {
+            runtime_plugin_bytes.push(entry);
         }
-
-        runtime_plugin_bytes.push((
-            bytes,
-            runtime_installation_is_first_party(&installation, registry.as_ref()),
-        ));
+        if let Some((installation, payload)) = pending_plugins.next() {
+            tasks.spawn(
+                async move { load_runtime_external_plugin_entry(&installation, payload).await },
+            );
+        }
     }
 
     let disabled_builtin_plugins = customization_store
@@ -1623,6 +1510,23 @@ async fn load_runtime_plugin_state(
         .collect::<Vec<_>>();
 
     Ok((runtime_plugin_bytes, disabled_builtin_plugins))
+}
+
+async fn bootstrap_plugin_installations(
+    customization_store: &SqliteCustomizationStore,
+) -> Result<(), String> {
+    let removed = customization_store
+        .delete_incompatible_external_plugin_installations()
+        .await
+        .map_err(|error| error.to_string())?;
+    for plugin_id in removed {
+        tracing::warn!(
+            plugin_id = plugin_id.as_str(),
+            "removed incompatible legacy external plugin installation during startup bootstrap"
+        );
+    }
+
+    seed_builtin_plugin_installations(customization_store).await
 }
 
 async fn seed_builtin_plugin_installations(
@@ -1814,10 +1718,11 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, VersionLifecycle, check_version_upgrade,
-        clear_legacy_history_retention_forever_override, resolve_auth_mode,
-        seed_service_setting_definitions, title_image_handler,
+        AuthModeConfig, VersionLifecycle, bootstrap_plugin_installations, check_version_upgrade,
+        clear_legacy_history_retention_forever_override, load_runtime_plugin_state,
+        resolve_auth_mode, seed_service_setting_definitions, title_image_handler,
     };
+    use chrono::Utc;
     use std::sync::Arc;
 
     use crate::base_path::{BasePath, mount_router};
@@ -1830,10 +1735,12 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use axum::routing::get;
     use scryer_application::{
-        AppResult, TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
-        TitleImageSyncTask,
+        AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
+        TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
     };
-    use scryer_infrastructure::{MigrationMode, SqliteServices, SqliteSettingsStore};
+    use scryer_infrastructure::{
+        MigrationMode, SqliteCustomizationStore, SqliteServices, SqliteSettingsStore,
+    };
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -1912,6 +1819,138 @@ mod tests {
                 env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_plugin_state_succeeds_after_bootstrap_deletes_legacy_external_rows() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = SqliteCustomizationStore::new(&services);
+        let now = Utc::now();
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "legacy".to_string(),
+                    name: "Legacy".to_string(),
+                    description: "legacy plugin".to_string(),
+                    version: "0.1.0".to_string(),
+                    sdk_version: "1.3.0".to_string(),
+                    sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+                    scryer_constraint: None,
+                    plugin_type: "notification".to_string(),
+                    provider_type: "legacy".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                    is_enabled: true,
+                    is_builtin: false,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+                    wasm_digest_algo: None,
+                    source_url: Some("https://example.com/legacy.wasm".to_string()),
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: None,
+                    docs_url: None,
+                    source_repo: None,
+                    manifest_url: None,
+                    wasm_digest: None,
+                    artifact_digest: None,
+                    installed_at: now,
+                    updated_at: now,
+                },
+                Some(&[1_u8, 2, 3]),
+            )
+            .await
+            .expect("seed legacy plugin row");
+
+        bootstrap_plugin_installations(&customization)
+            .await
+            .expect("bootstrap plugin installations");
+
+        let (runtime_plugins, disabled_builtins) = load_runtime_plugin_state(&customization)
+            .await
+            .expect("load runtime plugin state");
+
+        assert!(runtime_plugins.is_empty());
+        assert!(disabled_builtins.is_empty());
+        assert!(
+            customization
+                .get_plugin_installation("legacy")
+                .await
+                .expect("read plugin installation")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_plugin_state_skips_corrupted_external_plugin_rows() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = SqliteCustomizationStore::new(&services);
+        let now = Utc::now();
+        let compressed = vec![
+            0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x00, 0x01, 0x00, 0x00, 0x99, 0xe9, 0xd8, 0x51,
+        ];
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "corrupt".to_string(),
+                    name: "Corrupt".to_string(),
+                    description: "corrupt plugin".to_string(),
+                    version: "0.1.0".to_string(),
+                    sdk_version: scryer_plugins::SDK_VERSION.to_string(),
+                    sdk_constraint: scryer_plugins::sdk_constraint_or_legacy(
+                        scryer_plugins::SDK_VERSION,
+                        "",
+                    ),
+                    scryer_constraint: None,
+                    plugin_type: "notification".to_string(),
+                    provider_type: "corrupt".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                    is_enabled: true,
+                    is_builtin: false,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+                    wasm_digest_algo: Some("blake3".to_string()),
+                    source_url: Some("https://example.com/corrupt.wasm.zst".to_string()),
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: None,
+                    docs_url: None,
+                    source_repo: None,
+                    manifest_url: None,
+                    wasm_digest: Some("deadbeef".to_string()),
+                    artifact_digest: Some("blake3:abcd".to_string()),
+                    installed_at: now,
+                    updated_at: now,
+                },
+                Some(compressed.as_slice()),
+            )
+            .await
+            .expect("seed corrupt plugin row");
+
+        bootstrap_plugin_installations(&customization)
+            .await
+            .expect("bootstrap plugin installations");
+
+        let (runtime_plugins, disabled_builtins) = load_runtime_plugin_state(&customization)
+            .await
+            .expect("load runtime plugin state");
+
+        assert!(runtime_plugins.is_empty());
+        assert!(disabled_builtins.is_empty());
+        assert!(
+            customization
+                .get_plugin_installation("corrupt")
+                .await
+                .expect("read plugin installation")
+                .is_some()
         );
     }
 

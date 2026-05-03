@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use reqwest::Client;
 use scryer_application::{AppError, AppResult};
+use scryer_outbound_http::{
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+};
 use serde_json::Value;
 
 /// Root folder discovered from a Sonarr/Radarr instance.
@@ -70,6 +73,7 @@ pub struct ExternalArrClient {
     base_url: String,
     api_key: String,
     http_client: Client,
+    outbound_http: OutboundHttpClient,
 }
 
 impl ExternalArrClient {
@@ -81,6 +85,7 @@ impl ExternalArrClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
+            outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             http_client,
         }
     }
@@ -355,13 +360,26 @@ impl ExternalArrClient {
     async fn api_get(&self, path: &str) -> AppResult<Value> {
         let url = format!("{}/api/v3/{}", self.base_url, path);
         let response = self
-            .http_client
-            .get(&url)
-            .header("X-Api-Key", &self.api_key)
-            .send()
+            .outbound_http
+            .send(self.request_policy(path), || {
+                self.http_client
+                    .get(&url)
+                    .header("X-Api-Key", &self.api_key)
+            })
             .await
-            .map_err(|err| {
-                AppError::Repository(format!("external api call to {path} failed: {err}"))
+            .map_err(|error| match error {
+                OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+                    match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                        Some(delay) => format!(
+                            "external api call to {path} was rate limited; retry after {}s",
+                            delay.as_secs()
+                        ),
+                        None => format!("external api call to {path} was rate limited"),
+                    },
+                ),
+                OutboundHttpError::Transport { source, .. } => {
+                    AppError::Repository(format!("external api call to {path} failed: {source}"))
+                }
             })?;
 
         let status = response.status();
@@ -381,6 +399,15 @@ impl ExternalArrClient {
 
         serde_json::from_str(&body)
             .map_err(|err| AppError::Repository(format!("external api returned non-json: {err}")))
+    }
+
+    fn request_policy(&self, path: &str) -> RequestPolicy {
+        RequestPolicy::safe_read(
+            format!("external_arr:{}", self.base_url),
+            format!("external_arr:{path}"),
+        )
+        .with_max_retries(2)
+        .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
     }
 }
 

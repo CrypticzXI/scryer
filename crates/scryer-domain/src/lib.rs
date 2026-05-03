@@ -2054,6 +2054,20 @@ pub enum PluginSupportTier {
     Unverified,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginWasmEncoding {
+    #[default]
+    Identity,
+    Zstd,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersistedPluginWasmPayload {
+    pub encoding: PluginWasmEncoding,
+    pub bytes: Vec<u8>,
+}
+
 /// A plugin installation record.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginInstallation {
@@ -2071,7 +2085,8 @@ pub struct PluginInstallation {
     pub source_kind: PluginSourceKind,
     pub is_enabled: bool,
     pub is_builtin: bool,
-    pub wasm_sha256: Option<String>,
+    pub wasm_encoding: PluginWasmEncoding,
+    pub wasm_digest_algo: Option<String>,
     pub source_url: Option<String>,
     pub support_tier: PluginSupportTier,
     pub publisher: Option<String>,

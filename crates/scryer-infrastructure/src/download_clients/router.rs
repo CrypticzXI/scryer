@@ -12,6 +12,7 @@ use scryer_application::{
     accepted_inputs_for_client,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
+use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::warn;
@@ -36,7 +37,7 @@ pub struct PrioritizedDownloadClientRouter {
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
     plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
-    http_client: Client,
+    outbound_http: OutboundHttpClient,
     feedback_read_timeout: Duration,
 }
 
@@ -272,6 +273,7 @@ impl PrioritizedDownloadClientRouter {
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
         feedback_read_timeout: Duration,
     ) -> Self {
+        let http_client = Client::new();
         Self {
             download_client_configs,
             settings,
@@ -279,7 +281,7 @@ impl PrioritizedDownloadClientRouter {
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
-            http_client: Client::new(),
+            outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             feedback_read_timeout,
         }
     }
@@ -892,7 +894,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                             let source_hint = request_source_hint_for_nzb(&effective_request)?;
                             staged_nzb = Some(
                                 stage_nzb_from_url(
-                                    &self.http_client,
+                                    &self.outbound_http,
                                     &self.staged_nzb_store,
                                     &self.staged_nzb_pipeline_limit,
                                     &source_hint,
