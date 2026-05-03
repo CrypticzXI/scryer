@@ -14,10 +14,10 @@
         "movie": [
           "imdb_id"
         ],
-        "series": [
+        "anime": [
           "tvdb_id"
         ],
-        "anime": [
+        "series": [
           "tvdb_id"
         ]
       },
