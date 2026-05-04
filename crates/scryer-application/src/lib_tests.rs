@@ -11956,12 +11956,27 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
     );
 
     assert!(
-        !download_submissions
+        download_submissions
             .store
             .lock()
             .await
             .iter()
-            .any(|submission| submission.download_client_item_id == "shared-failed-season-pack")
+            .any(|submission| {
+                submission.download_client_item_id == "shared-failed-season-pack"
+                    && submission.source_title.as_deref() == Some(pack_title)
+            })
+    );
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "shared-failed-season-pack",
+            ))
+            .await
+            .expect("load tracked state")
+            .as_deref(),
+        Some("failed")
     );
 }
 
