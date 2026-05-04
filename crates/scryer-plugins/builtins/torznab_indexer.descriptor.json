@@ -15,14 +15,14 @@
     "capabilities": {
       "rss": true,
       "supported_ids": {
+        "series": [
+          "tvdb_id"
+        ],
         "anime": [
           "tvdb_id"
         ],
         "movie": [
           "imdb_id"
-        ],
-        "series": [
-          "tvdb_id"
         ]
       },
       "deduplicates_aliases": false,
