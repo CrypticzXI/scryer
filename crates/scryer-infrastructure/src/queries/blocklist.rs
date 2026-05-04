@@ -60,20 +60,7 @@ pub(crate) async fn list_blocklist_for_title_query(
         "SELECT
              b.id,
              b.title_id,
-             COALESCE(
-                 (
-                     SELECT rda.source_title
-                     FROM release_download_attempts rda
-                     WHERE rda.title_id = b.title_id
-                       AND b.source_hint IS NOT NULL
-                       AND rda.source_hint = b.source_hint
-                       AND rda.source_title IS NOT NULL
-                       AND TRIM(rda.source_title) <> ''
-                     ORDER BY LENGTH(rda.source_title) DESC, rda.attempted_at DESC
-                     LIMIT 1
-                 ),
-                 b.source_title
-             ) AS source_title,
+             b.source_title,
              b.source_hint,
              b.quality,
              b.download_id,
@@ -108,20 +95,7 @@ pub(crate) async fn list_blocklist_all_query(
         "SELECT
              b.id,
              b.title_id,
-             COALESCE(
-                 (
-                     SELECT rda.source_title
-                     FROM release_download_attempts rda
-                     WHERE rda.title_id = b.title_id
-                       AND b.source_hint IS NOT NULL
-                       AND rda.source_hint = b.source_hint
-                       AND rda.source_title IS NOT NULL
-                       AND TRIM(rda.source_title) <> ''
-                     ORDER BY LENGTH(rda.source_title) DESC, rda.attempted_at DESC
-                     LIMIT 1
-                 ),
-                 b.source_title
-             ) AS source_title,
+             b.source_title,
              b.source_hint,
              b.quality,
              b.download_id,
@@ -159,7 +133,8 @@ pub(crate) async fn is_blocklisted_query(
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
              SELECT 1 FROM blocklist
-             WHERE title_id = ? AND LOWER(source_title) = LOWER(?)
+             WHERE title_id = ?
+               AND LOWER(TRIM(COALESCE(source_title, ''))) = LOWER(TRIM(?))
          )",
     )
     .bind(title_id)
@@ -174,33 +149,13 @@ pub(crate) async fn is_blocklisted_query(
 pub(crate) async fn has_recorded_download_failure_query(
     pool: &SqlitePool,
     title_id: &str,
-    download_id: Option<&str>,
     source_title: Option<&str>,
-    source_hint: Option<&str>,
 ) -> AppResult<bool> {
-    if let Some(download_id) = download_id.map(str::trim).filter(|value| !value.is_empty()) {
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(
-                 SELECT 1 FROM blocklist
-                 WHERE title_id = ? AND download_id = ?
-             )",
-        )
-        .bind(title_id)
-        .bind(download_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        return Ok(exists);
-    }
-
     let Some(source_title) = source_title
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
     else {
-        return Ok(false);
-    };
-    let Some(source_hint) = source_hint.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(false);
     };
 
@@ -209,12 +164,10 @@ pub(crate) async fn has_recorded_download_failure_query(
              SELECT 1 FROM blocklist
              WHERE title_id = ?
                AND LOWER(TRIM(COALESCE(source_title, ''))) = ?
-               AND TRIM(COALESCE(source_hint, '')) = ?
          )",
     )
     .bind(title_id)
     .bind(source_title)
-    .bind(source_hint)
     .fetch_one(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;

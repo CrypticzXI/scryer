@@ -1361,12 +1361,18 @@ pub(crate) async fn list_failed_release_download_attempts_query(
     let rows = sqlx::query(
         "SELECT source_hint, source_title
          FROM (
-           SELECT source_hint, source_title, MAX(attempted_at) AS last_attempted_at
+                     SELECT source_hint,
+                                    source_title,
+                                    attempted_at AS last_attempted_at,
+                                    ROW_NUMBER() OVER (
+                                        PARTITION BY LOWER(TRIM(source_title))
+                                        ORDER BY attempted_at DESC
+                                    ) AS row_number
            FROM release_download_attempts
            WHERE outcome = 'failed'
-             AND (source_hint IS NOT NULL OR source_title IS NOT NULL)
-           GROUP BY source_hint, source_title
+                         AND COALESCE(TRIM(source_title), '') <> ''
          )
+                 WHERE row_number = 1
          ORDER BY last_attempted_at DESC
          LIMIT ?",
     )
@@ -1406,13 +1412,13 @@ pub(crate) async fn list_failed_release_download_attempts_for_title_query(
                   error_message,
                   attempted_at,
                   ROW_NUMBER() OVER (
-                    PARTITION BY source_hint, source_title
+                                        PARTITION BY LOWER(TRIM(source_title))
                     ORDER BY attempted_at DESC
                   ) AS row_number
            FROM release_download_attempts
            WHERE outcome = 'failed'
              AND title_id = ?
-             AND (source_hint IS NOT NULL OR source_title IS NOT NULL)
+                         AND COALESCE(TRIM(source_title), '') <> ''
          )
          WHERE row_number = 1
          ORDER BY attempted_at DESC

@@ -79,6 +79,7 @@ export default defineConfig(({ command, mode }) => ({
   },
   envPrefix: "SCRYER_",
   build: {
+    target: "es2022",
     outDir: "dist",
     sourcemap: false,
     rolldownOptions: {

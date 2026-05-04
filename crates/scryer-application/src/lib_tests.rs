@@ -2664,15 +2664,26 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
             .cloned()
             .collect();
         attempts.sort_by(|left, right| right.attempted_at.cmp(&left.attempted_at));
-        attempts.truncate(limit);
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+        for attempt in attempts {
+            let Some(normalized_title) =
+                crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+            else {
+                continue;
+            };
+            if seen.insert(normalized_title) {
+                deduped.push(ReleaseDownloadFailureSignature {
+                    source_hint: attempt.source_hint,
+                    source_title: attempt.source_title,
+                });
+            }
+            if deduped.len() >= limit {
+                break;
+            }
+        }
 
-        Ok(attempts
-            .into_iter()
-            .map(|attempt| ReleaseDownloadFailureSignature {
-                source_hint: attempt.source_hint,
-                source_title: attempt.source_title,
-            })
-            .collect())
+        Ok(deduped)
     }
 
     async fn list_failed_release_signatures_for_title(
@@ -2692,24 +2703,35 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
             .cloned()
             .collect();
         attempts.sort_by(|left, right| right.attempted_at.cmp(&left.attempted_at));
-        attempts.truncate(limit);
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+        for attempt in attempts {
+            let Some(normalized_title) =
+                crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+            else {
+                continue;
+            };
+            if seen.insert(normalized_title) {
+                deduped.push(TitleReleaseBlocklistEntry {
+                    id: format!(
+                        "failed-attempt:{}:{}:{}",
+                        attempt.attempted_at,
+                        attempt.source_title.as_deref().unwrap_or_default(),
+                        attempt.source_hint.as_deref().unwrap_or_default(),
+                    ),
+                    source_hint: attempt.source_hint,
+                    source_title: attempt.source_title,
+                    error_message: attempt.error_message,
+                    attempted_at: attempt.attempted_at,
+                    episode_ids: Vec::new(),
+                });
+            }
+            if deduped.len() >= limit {
+                break;
+            }
+        }
 
-        Ok(attempts
-            .into_iter()
-            .map(|attempt| TitleReleaseBlocklistEntry {
-                id: format!(
-                    "failed-attempt:{}:{}:{}",
-                    attempt.attempted_at,
-                    attempt.source_title.as_deref().unwrap_or_default(),
-                    attempt.source_hint.as_deref().unwrap_or_default(),
-                ),
-                source_hint: attempt.source_hint,
-                source_title: attempt.source_title,
-                error_message: attempt.error_message,
-                attempted_at: attempt.attempted_at,
-                episode_ids: Vec::new(),
-            })
-            .collect())
+        Ok(deduped)
     }
 
     async fn get_latest_source_password(
@@ -2788,34 +2810,19 @@ impl BlocklistRepository for MockBlocklistRepo {
     async fn has_recorded_download_failure(
         &self,
         title_id: &str,
-        download_id: Option<&str>,
         source_title: Option<&str>,
-        source_hint: Option<&str>,
     ) -> AppResult<bool> {
         let entries = self.entries.lock().await;
-        let download_id = download_id.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(download_id) = download_id {
-            return Ok(entries.iter().any(|entry| {
-                entry.title_id == title_id && entry.download_id.as_deref() == Some(download_id)
-            }));
-        }
-
         let normalized_source_title = source_title
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase);
-        let normalized_source_hint = source_hint
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        if normalized_source_title.is_none() || normalized_source_hint.is_none() {
+        if normalized_source_title.is_none() {
             return Ok(false);
         }
 
         Ok(entries.iter().any(|entry| {
-            entry.title_id == title_id
-                && entry.source_title == normalized_source_title
-                && entry.source_hint == normalized_source_hint
+            entry.title_id == title_id && entry.source_title == normalized_source_title
         }))
     }
 
@@ -2846,6 +2853,7 @@ impl BlocklistRepository for MockBlocklistRepo {
 #[derive(Default, Clone)]
 struct TrackingDownloadSubmissionRepo {
     store: Arc<Mutex<Vec<DownloadSubmission>>>,
+    tracked_states: Arc<Mutex<HashMap<(String, String, String), String>>>,
     deleted_title_ids: Arc<Mutex<Vec<String>>>,
     list_for_title_calls: Arc<Mutex<Vec<String>>>,
 }
@@ -3292,29 +3300,93 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .lock()
             .await
             .push(title_id.to_string());
-        self.store
+        let removed_keys: Vec<_> = self
+            .store
             .lock()
             .await
-            .retain(|entry| entry.title_id != title_id);
+            .iter()
+            .filter(|entry| entry.title_id == title_id)
+            .map(|entry| {
+                (
+                    entry.download_client_id.clone().unwrap_or_default(),
+                    entry.download_client_type.clone(),
+                    entry.download_client_item_id.clone(),
+                )
+            })
+            .collect();
+        self.store.lock().await.retain(|entry| entry.title_id != title_id);
+        self.tracked_states
+            .lock()
+            .await
+            .retain(|key, _| !removed_keys.iter().any(|removed| removed == key));
         Ok(())
     }
 
     async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+        let key = (
+            identity.client_id.as_deref().unwrap_or("").to_string(),
+            identity.client_type.clone(),
+            identity.item_id.clone(),
+        );
         self.store.lock().await.retain(|entry| {
             entry.download_client_id.as_deref().unwrap_or("").trim()
                 != identity.client_id.as_deref().unwrap_or("")
                 || entry.download_client_type != identity.client_type.as_str()
                 || entry.download_client_item_id != identity.item_id.as_str()
         });
+        self.tracked_states.lock().await.remove(&key);
         Ok(())
     }
 
-    async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+    async fn update_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+        tracked_state: &str,
+    ) -> AppResult<()> {
+        let key = (
+            identity.client_id.as_deref().unwrap_or("").to_string(),
+            identity.client_type.clone(),
+            identity.item_id.clone(),
+        );
+        self.tracked_states
+            .lock()
+            .await
+            .insert(key, tracked_state.to_string());
+
+        let mut entries = self.store.lock().await;
+        if !entries.iter().any(|entry| {
+            entry.download_client_id.as_deref().unwrap_or("").trim()
+                == identity.client_id.as_deref().unwrap_or("")
+                && entry.download_client_type == identity.client_type.as_str()
+                && entry.download_client_item_id == identity.item_id.as_str()
+        }) {
+            entries.push(DownloadSubmission {
+                title_id: String::new(),
+                facet: String::new(),
+                download_client_id: identity.client_id.clone(),
+                download_client_type: identity.client_type.clone(),
+                download_client_item_id: identity.item_id.clone(),
+                source_hint: None,
+                source_kind: None,
+                source_title: None,
+                request_signature: None,
+                scope: SubmissionScope::Orphan,
+            });
+        }
         Ok(())
     }
 
-    async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
-        Ok(None)
+    async fn get_tracked_state(&self, identity: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+        Ok(self
+            .tracked_states
+            .lock()
+            .await
+            .get(&(
+                identity.client_id.as_deref().unwrap_or("").to_string(),
+                identity.client_type.clone(),
+                identity.item_id.clone(),
+            ))
+            .cloned())
     }
 }
 
@@ -10642,9 +10714,24 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
 
     let submissions = download_submissions.store.lock().await.clone();
     assert!(
-        !submissions
+        submissions
             .iter()
-            .any(|submission| submission.download_client_item_id == "failed-job")
+            .any(|submission| {
+                submission.download_client_item_id == "failed-job"
+                    && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
+            })
+    );
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "failed-job",
+            ))
+            .await
+            .expect("load tracked state")
+            .as_deref(),
+        Some("failed")
     );
     assert!(submissions.iter().any(|submission| {
         submission.download_client_item_id == format!("job-for-{}", title.id)
@@ -10827,9 +10914,24 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
 
     let submissions = download_submissions.store.lock().await.clone();
     assert!(
-        !submissions
+        submissions
             .iter()
-            .any(|submission| submission.download_client_item_id == "failed-job")
+            .any(|submission| {
+                submission.download_client_item_id == "failed-job"
+                    && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
+            })
+    );
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "failed-job",
+            ))
+            .await
+            .expect("load tracked state")
+            .as_deref(),
+        Some("failed")
     );
     assert!(submissions.iter().any(|submission| {
         submission.download_client_item_id == format!("job-for-{}", title.id)
@@ -11024,6 +11126,212 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .await
         .expect("list title history");
     assert_eq!(history.total_count, 2);
+}
+
+#[tokio::test]
+async fn process_download_failure_dedupes_same_release_title_across_client_item_ids() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Friends".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    for (item_id, source_hint, source_title) in [
+        (
+            "weaver-1",
+            "weaver://job/weaver-1",
+            "Friends.S05.720p.BluRay.DD5.1.x264-NTb",
+        ),
+        (
+            "weaver-2",
+            "weaver://job/weaver-2",
+            " friends.s05.720p.bluray.dd5.1.x264-ntb ",
+        ),
+    ] {
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: title.id.clone(),
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: Some(source_hint.to_string()),
+                source_kind: None,
+                source_title: Some(source_title.to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Title,
+            })
+            .await
+            .expect("record failed submission");
+    }
+
+    let first = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: None,
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "weaver".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "weaver-1".to_string(),
+            release_title: "Friends".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+    assert_ne!(
+        first,
+        crate::acquisition_workflow::FailureHandlingOutcome::AlreadyHandled
+    );
+
+    let second = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: None,
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "weaver".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "weaver-2".to_string(),
+            release_title: "Friends".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        second,
+        crate::acquisition_workflow::FailureHandlingOutcome::AlreadyHandled
+    );
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+    );
+
+    let failed_attempts = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed release attempts");
+    assert_eq!(failed_attempts.len(), 1);
+}
+
+#[tokio::test]
+async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_identity() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Friends".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        id: "weaver:job-1".to_string(),
+        client_id: "primary".to_string(),
+        client_type: "weaver".to_string(),
+        client_item: failed_history_item("job-1", "Friends"),
+        state: scryer_domain::TrackedDownloadState::FailedPending,
+        status: scryer_domain::TrackedDownloadStatus::Error,
+        status_messages: Vec::new(),
+        title_id: Some(title.id.clone()),
+        facet: Some("series".to_string()),
+        source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+        indexer: None,
+        added_at: None,
+        notified_manual_interaction: false,
+        match_type: scryer_domain::TitleMatchType::Submission,
+        is_trackable: true,
+        import_attempted: false,
+        path_missing_since: None,
+    };
+
+    crate::failed_download_handler::process_failed(&app, &mut tracked_download).await;
+
+    assert_eq!(
+        tracked_download.state,
+        scryer_domain::TrackedDownloadState::Failed
+    );
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+    );
+
+    let failed_attempts = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed release attempts");
+    assert_eq!(failed_attempts.len(), 1);
+    assert_eq!(
+        failed_attempts[0].source_title.as_deref(),
+        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+    );
 }
 
 #[tokio::test]
@@ -11308,13 +11616,22 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
                 .is_some_and(|reason| reason.contains("download client failure"))
     }));
 
-    assert!(
-        !download_submissions
-            .store
-            .lock()
-            .await
-            .iter()
-            .any(|submission| submission.download_client_item_id == "failed-season-pack")
+        assert!(download_submissions.store.lock().await.iter().any(|submission| {
+            submission.download_client_item_id == "failed-season-pack"
+                && submission.source_title.as_deref()
+                    == Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL")
+        }));
+        assert_eq!(
+            download_submissions
+                .get_tracked_state(&DownloadSourceIdentity::new(
+                    Some("primary"),
+                    "nzbget",
+                    "failed-season-pack",
+                ))
+                .await
+                .expect("load tracked state")
+                .as_deref(),
+            Some("failed")
     );
 }
 
@@ -12486,6 +12803,208 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
         !searches
             .iter()
             .any(|search| search.season == Some(7) && search.episode.is_none())
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_release_title() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Friends".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "5".to_string(),
+            label: Some("Season 5".to_string()),
+            ordered_path: None,
+            narrative_order: Some("5".to_string()),
+            first_episode_number: Some("01".to_string()),
+            last_episode_number: Some("02".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    let mut expected_wanted_ids = Vec::new();
+    for (episode_number, label) in [("01", "S05E01"), ("02", "S05E02")] {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("5".to_string()),
+                episode_label: Some(label.to_string()),
+                title: Some(label.to_string()),
+                air_date: Some("1998-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let wanted = WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
+            episode_id: Some(episode.id.clone()),
+            collection_id: None,
+            season_number: Some("5".to_string()),
+            episode_number: None,
+            media_type: "episode".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
+            search_count: 1,
+            baseline_date: Some("1998-01-01".to_string()),
+            status: WantedStatus::Grabbed,
+            grabbed_release: Some(
+                serde_json::json!({
+                    "title": "Friends.S05.720p.BluRay.DD5.1.x264-NTb",
+                    "score": 100,
+                    "grabbed_at": Utc::now().to_rfc3339(),
+                    "season_pack": true,
+                })
+                .to_string(),
+            ),
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        };
+        expected_wanted_ids.push(wanted.id.clone());
+        wanted_items
+            .upsert_wanted_item(&wanted)
+            .await
+            .expect("seed episode wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "weaver-season-pack-1".to_string(),
+            source_hint: Some("weaver://job/weaver-season-pack-1".to_string()),
+            source_kind: None,
+            source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+            request_signature: Some(
+                "nzb_url|https://example.com/friends-s05.nzb|Friends.S05.720p.BluRay.DD5.1.x264-NTb"
+                    .to_string(),
+            ),
+            scope: SubmissionScope::Collection {
+                collection_id: season.id.clone(),
+            },
+        })
+        .await
+        .expect("record failed season pack submission");
+
+    let grabbed_wanted = wanted_items
+        .get_wanted_item_by_id(
+            expected_wanted_ids
+                .first()
+                .expect("expected wanted ids should contain seeded episodes"),
+        )
+        .await
+        .expect("get grabbed wanted")
+        .expect("grabbed wanted should exist");
+
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: Some(grabbed_wanted),
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "weaver".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "weaver-season-pack-1".to_string(),
+            release_title: "Friends".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+        },
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+    );
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+    );
+
+    app.run_acquisition_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(!searches.is_empty());
+    assert!(searches.iter().all(|search| search.season == Some(5)));
+    assert!(searches.iter().all(|search| search.episode.is_some()));
+    assert!(
+        !searches
+            .iter()
+            .any(|search| search.season == Some(5) && search.episode.is_none())
     );
 }
 

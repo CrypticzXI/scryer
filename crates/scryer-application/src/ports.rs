@@ -977,9 +977,7 @@ pub trait BlocklistRepository: Send + Sync {
     async fn has_recorded_download_failure(
         &self,
         title_id: &str,
-        download_id: Option<&str>,
         source_title: Option<&str>,
-        source_hint: Option<&str>,
     ) -> AppResult<bool>;
 
     async fn remove(&self, id: &str) -> AppResult<()>;

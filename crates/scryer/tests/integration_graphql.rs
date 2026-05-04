@@ -9617,6 +9617,61 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
 }
 
 #[tokio::test]
+async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Friends", "series").await;
+
+    ctx.db
+        .insert_blocklist_entry(
+            title_id.clone(),
+            Some("friends.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
+            Some("weaver://job-1".to_string()),
+            None,
+            Some("job-1".to_string()),
+            Some("download client failure: corrupt archive".to_string()),
+            None,
+        )
+        .await
+        .expect("seed blocklist entry");
+
+    let release_store = scryer_infrastructure::SqliteReleaseStore::new(&ctx.db);
+    scryer_application::ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some(title_id.clone()),
+        Some("weaver://job-1".to_string()),
+        Some("friends".to_string()),
+        scryer_application::ReleaseDownloadAttemptOutcome::Failed,
+        Some("legacy weak title".to_string()),
+        None,
+    )
+    .await
+    .expect("seed legacy weak failure attempt");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query($titleId: String!) {
+          titleReleaseBlocklist(titleId: $titleId) {
+            sourceTitle
+            sourceHint
+          }
+        }
+        "#,
+        json!({ "titleId": title_id }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    let entries = body["data"]["titleReleaseBlocklist"]
+        .as_array()
+        .expect("blocklist entries array");
+    assert!(entries.iter().any(|entry| {
+        entry["sourceTitle"].as_str() == Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+            && entry["sourceHint"].as_str() == Some("weaver://job-1")
+    }));
+}
+
+#[tokio::test]
 async fn graphql_download_history_empty() {
     let ctx = TestContext::new().await;
     let body = gql(

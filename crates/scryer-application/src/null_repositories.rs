@@ -1112,8 +1112,6 @@ impl BlocklistRepository for NullBlocklistRepository {
         &self,
         _: &str,
         _: Option<&str>,
-        _: Option<&str>,
-        _: Option<&str>,
     ) -> AppResult<bool> {
         Ok(false)
     }

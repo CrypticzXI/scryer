@@ -651,6 +651,13 @@ export function SettingsDownloadClientsSection({
               </details>
             </div>
             <div className="flex gap-2">
+                <Button type="submit" disabled={mutatingDownloadClientId === "new"}>
+                  {mutatingDownloadClientId === "new"
+                    ? t("label.saving")
+                    : editingDownloadClientId
+                      ? t("settings.downloadClientUpdate")
+                      : t("settings.downloadClientCreate")}
+                </Button>
               <Button
                 type="button"
                 variant="secondary"
@@ -660,13 +667,6 @@ export function SettingsDownloadClientsSection({
                 {isTestingDownloadClientConnection
                   ? t("status.testingDownloadClient", { client: selectedDownloadClientLabel })
                   : t("label.testConnection")}
-              </Button>
-              <Button type="submit" disabled={mutatingDownloadClientId === "new"}>
-                {mutatingDownloadClientId === "new"
-                  ? t("label.saving")
-                  : editingDownloadClientId
-                    ? t("settings.downloadClientUpdate")
-                    : t("settings.downloadClientCreate")}
               </Button>
               <Button type="button" variant="secondary" onClick={resetDownloadClientDraft}>
                 {t("label.cancel")}

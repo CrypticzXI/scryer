@@ -1186,6 +1186,54 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
     let _ = std::fs::remove_file(db);
 }
 
+#[tokio::test]
+async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_title() {
+    let (services, db) = temp_services("scryer_release_dedupe").await;
+    let release_store = SqliteReleaseStore::new(&services);
+    let catalog = catalog_store(&services);
+
+    catalog
+        .create_or_get_existing(make_test_title("title-1", None))
+        .await
+        .expect("title should insert");
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-1".to_string()),
+        Some("weaver-1".to_string()),
+        Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+        ReleaseDownloadAttemptOutcome::Failed,
+        Some("boom-1".to_string()),
+        None,
+    )
+    .await
+    .expect("first release attempt should record");
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-1".to_string()),
+        Some("weaver-2".to_string()),
+        Some(" friends.s05.720p.bluray.dd5.1.x264-ntb ".to_string()),
+        ReleaseDownloadAttemptOutcome::Failed,
+        Some("boom-2".to_string()),
+        None,
+    )
+    .await
+    .expect("second release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert_eq!(failures.len(), 1);
+
+    let title_failures =
+        ReleaseAttemptRepository::list_failed_release_signatures_for_title(&release_store, "title-1", 10)
+            .await
+            .expect("title failed signatures should list");
+    assert_eq!(title_failures.len(), 1);
+
+    let _ = std::fs::remove_file(db);
+}
+
 fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     Title {
         id: id.to_string(),
@@ -1529,6 +1577,142 @@ async fn review_regression_download_client_identity_migration_deduplicates_legac
         .await
         .expect("migrated submission count should load");
     assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn review_regression_release_name_blocklist_watershed_resets_legacy_failed_state() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE blocklist (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            source_title TEXT,
+            source_hint TEXT,
+            quality TEXT,
+            download_id TEXT,
+            reason TEXT,
+            data_json TEXT,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("blocklist table should be created");
+    sqlx::query(
+        "CREATE TABLE release_download_attempts (
+            id TEXT PRIMARY KEY,
+            title_id TEXT,
+            source_hint TEXT,
+            source_title TEXT,
+            outcome TEXT NOT NULL,
+            error_message TEXT,
+            source_password TEXT,
+            attempted_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("release attempts table should be created");
+    sqlx::query(
+        "CREATE TABLE download_submissions (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            facet TEXT NOT NULL,
+            download_client_id TEXT NOT NULL DEFAULT '',
+            download_client_type TEXT NOT NULL,
+            download_client_item_id TEXT NOT NULL,
+            source_title TEXT,
+            submitted_at TEXT NOT NULL,
+            collection_id TEXT,
+            tracked_state TEXT,
+            tracked_state_at TEXT,
+            source_hint TEXT,
+            source_kind TEXT,
+            request_signature TEXT,
+            episode_id TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("download submissions table should be created");
+
+    sqlx::query(
+        "INSERT INTO blocklist
+         (id, title_id, source_title, created_at)
+         VALUES ('block-1', 'title-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', '2025-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("blocklist row should insert");
+    sqlx::query(
+        "INSERT INTO release_download_attempts
+         (id, title_id, source_hint, source_title, outcome, attempted_at)
+         VALUES
+         ('failed-1', 'title-1', 'weaver-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', 'failed', '2025-01-01T00:00:00Z'),
+         ('success-1', 'title-1', 'weaver-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', 'success', '2025-01-01T01:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("release attempts should insert");
+    sqlx::query(
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_title, submitted_at, tracked_state, tracked_state_at, source_hint, request_signature)
+         VALUES
+         ('stub-failed', '', '', 'primary', 'weaver', 'job-1', NULL, '2025-01-01T00:00:00Z', 'failed', '2025-01-01T00:05:00Z', NULL, NULL),
+         ('rich-failed', 'title-1', 'series', 'primary', 'weaver', 'job-2', 'Friends.S05.720p.BluRay.DD5.1.x264-NTb', '2025-01-01T00:00:00Z', 'failed', '2025-01-01T00:05:00Z', 'weaver://job-2', 'sig-2')",
+    )
+    .execute(&pool)
+    .await
+    .expect("download submissions should insert");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../scryer/src/db/migrations/0102_release_name_blocklist_watershed.sql"),
+    )
+    .await;
+
+    let blocklist_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocklist")
+        .fetch_one(&pool)
+        .await
+        .expect("blocklist count should load");
+    assert_eq!(blocklist_count, 0);
+
+    let failed_attempt_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM release_download_attempts WHERE outcome = 'failed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed attempt count should load");
+    assert_eq!(failed_attempt_count, 0);
+
+    let successful_attempt_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM release_download_attempts WHERE outcome = 'success'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("successful attempt count should load");
+    assert_eq!(successful_attempt_count, 1);
+
+    let blank_stub_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_submissions WHERE id = 'stub-failed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("blank stub count should load");
+    assert_eq!(blank_stub_count, 0);
+
+    let rich_failed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_submissions WHERE id = 'rich-failed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("rich failed submission count should load");
+    assert_eq!(rich_failed_count, 1);
 }
 
 #[tokio::test]

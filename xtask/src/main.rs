@@ -161,6 +161,7 @@ enum Commands {
     ValidateTrashGuides,
     Ci(CiArgs),
     Stack(StackArgs),
+    Serve(ServeArgs),
     Nzbget(NzbgetArgs),
     Seed(SeedArgs),
     Profile(ProfileArgs),
@@ -256,6 +257,22 @@ struct StackRestartArgs {
         help = "Also run the one-shot seed container after the stack is back up"
     )]
     seed: bool,
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[arg(
+        long,
+        default_value = "127.0.0.1:18080",
+        help = "Bind address for the locally hosted Scryer debug server"
+    )]
+    bind: String,
+    #[arg(
+        long,
+        default_value_t = 3000,
+        help = "Port for the Vite dev server with hot reload"
+    )]
+    frontend_port: u16,
 }
 
 #[derive(Args)]
@@ -487,6 +504,7 @@ fn main() -> Result<()> {
             StackCommand::Logs(args) => stack_logs(&ctx, args),
             StackCommand::Restart(args) => stack_restart(&ctx, args),
         },
+        Commands::Serve(args) => serve_local_scryer(&ctx, args),
         Commands::Nzbget(args) => match args.command {
             NzbgetCommand::Up => nzbget_up(&ctx),
             NzbgetCommand::Down => nzbget_down(&ctx),
@@ -511,6 +529,192 @@ fn main() -> Result<()> {
 
 fn seed_dev(ctx: &TaskContext, args: SeedDevArgs) -> Result<()> {
     seed::run(ctx, args)
+}
+
+fn tail_file(path: &Path, lines: usize) -> Result<String> {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let collected = content.lines().rev().take(lines).collect::<Vec<_>>();
+    Ok(collected.into_iter().rev().collect::<Vec<_>>().join("\n"))
+}
+
+fn wait_for_local_backend(backend: &mut std::process::Child, port: u16, log_path: &Path) -> Result<()> {
+    let address = format!("127.0.0.1:{port}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = backend.try_wait()? {
+            let tail = tail_file(log_path, 50)?;
+            bail!(
+                "Scryer failed to start on http://{address}/ (status: {status}). Tail of {}:\n{tail}",
+                log_path.display()
+            );
+        }
+
+        if std::net::TcpStream::connect(&address).is_ok() {
+            return Ok(());
+        }
+
+        thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    let tail = tail_file(log_path, 50)?;
+    bail!(
+        "Timed out waiting for Scryer on http://{address}/. Tail of {}:\n{tail}",
+        log_path.display()
+    )
+}
+
+fn backend_port(bind: &str) -> Result<u16> {
+    let (_, port) = bind
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("bind address must include a port: {bind}"))?;
+    port.parse::<u16>()
+        .with_context(|| format!("invalid port in bind address: {bind}"))
+}
+
+fn resolve_frontend_port(preferred: u16) -> Result<u16> {
+    for offset in 0..=20u16 {
+        let Some(candidate) = preferred.checked_add(offset) else {
+            break;
+        };
+        if std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, candidate)).is_ok() {
+            return Ok(candidate);
+        }
+    }
+
+    bail!("could not find an open Vite dev-server port starting at {preferred}")
+}
+
+fn serve_db_path() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Library/Application Support/scryer"))
+        .unwrap_or_else(|| PathBuf::from("./scryer"));
+
+    #[cfg(target_os = "linux")]
+    let base_dir = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(PathBuf::from).map(|home| home.join(".local/share"))
+        })
+        .map(|base| base.join("scryer"))
+        .unwrap_or_else(|| PathBuf::from("./scryer"));
+
+    #[cfg(target_os = "windows")]
+    let base_dir = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|base| base.join("scryer"))
+        .unwrap_or_else(|| PathBuf::from("./scryer"));
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let base_dir = PathBuf::from("./scryer");
+
+    let db_dir = base_dir.join("xtask");
+    fs::create_dir_all(&db_dir)?;
+    Ok(db_dir.join("scryer.db"))
+}
+
+fn serve_encryption_key() -> String {
+    let digest = Sha256::digest(b"scryer-xtask-dev-encryption-key");
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
+fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
+    require_command("npm")?;
+
+    let env_file = ctx.path(".env");
+    let mut dotenv_envs = Vec::new();
+    if env_file.is_file() {
+        let dotenv_iter = dotenvy::from_path_iter(&env_file)
+            .with_context(|| format!("failed to read {}", env_file.display()))?;
+        for entry in dotenv_iter {
+            let (key, value) =
+                entry.with_context(|| format!("failed to parse {}", env_file.display()))?;
+            dotenv_envs.push((key, value));
+        }
+    }
+
+    let web_dir = ctx.path("apps/scryer-web");
+    let backend_port = backend_port(&args.bind)?;
+    let frontend_port = resolve_frontend_port(args.frontend_port)?;
+    let backend_url = format!("http://127.0.0.1:{backend_port}");
+    let frontend_url = format!("http://127.0.0.1:{frontend_port}");
+    let db_path = serve_db_path()?;
+    let db_url = format!("sqlite://{}", db_path.display());
+    let encryption_key = serve_encryption_key();
+    let backend_log = PathBuf::from(
+        std::env::var("SCRYER_DEV_BACKEND_LOG")
+            .unwrap_or_else(|_| "/tmp/scryer-dev-backend.log".to_string()),
+    );
+    if let Some(parent) = backend_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&backend_log, "")?;
+
+    step(format!("Starting Scryer backend with cargo run on {}", args.bind));
+    if env_file.is_file() {
+        ok(format!("Loaded runtime environment from {}", env_file.display()));
+    }
+    if frontend_port != args.frontend_port {
+        warn(format!(
+            "frontend port {} is busy; using {} for the Vite dev server",
+            args.frontend_port, frontend_port
+        ));
+    }
+    println!("   Vite dev server: {frontend_url}");
+    println!("   Keychain: disabled for xtask serve");
+
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&backend_log)?;
+    let log_err = log.try_clone()?;
+    let mut serve = ctx.command_in("cargo", &ctx.repo_root);
+    for (key, value) in &dotenv_envs {
+        serve.env(key, value);
+    }
+    serve
+        .env("SCRYER_DB_PATH", &db_url)
+        .env("SCRYER_DISABLE_PLATFORM_KEYSTORE", "1")
+        .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
+        .env("SCRYER_OPEN_BROWSER", "false")
+        .env("SCRYER_WEB_UI_URL", &frontend_url)
+        .env("SCRYER_BIND", &args.bind)
+        .args(["run", "--locked", "-p", "scryer"])
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
+    let mut backend = serve.spawn()?;
+    if let Err(error) = wait_for_local_backend(&mut backend, backend_port, &backend_log) {
+        let _ = backend.kill();
+        let _ = backend.wait();
+        return Err(error);
+    }
+
+    println!("==> Scryer backend ready");
+    println!("    Backend:  {backend_url}");
+    println!("    Frontend: {frontend_url}");
+    println!("    Database: {}", db_path.display());
+    println!("    Log:      tail -f {}", backend_log.display());
+    println!();
+    println!("==> Starting Vite dev server with live updates...");
+
+    let mut vite = ctx.command_in("npm", &web_dir);
+    vite.env("SCRYER_DEV_PROXY_TARGET", &backend_url).args([
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--strictPort",
+        "--port",
+        &frontend_port.to_string(),
+    ]);
+    let result = run_status(&mut vite);
+
+    let _ = backend.kill();
+    let _ = backend.wait();
+    result?;
+    Ok(())
 }
 
 fn step(message: impl AsRef<str>) {

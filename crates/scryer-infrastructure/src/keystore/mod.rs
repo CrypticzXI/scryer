@@ -13,6 +13,8 @@ mod windows;
 
 use std::path::PathBuf;
 
+const DISABLE_PLATFORM_KEYSTORE_ENV: &str = "SCRYER_DISABLE_PLATFORM_KEYSTORE";
+
 /// A backend that can store and retrieve the encryption master key.
 pub trait KeyStore: Send + Sync {
     /// Retrieve the base64-encoded encryption key, if stored.
@@ -34,6 +36,10 @@ pub trait KeyStore: Send + Sync {
 /// and is used by the Linux `KeyFile` backend.
 #[allow(clippy::vec_init_then_push)] // conditional cfg pushes can't use vec![]
 pub fn platform_keystores(_data_dir: Option<PathBuf>) -> Vec<Box<dyn KeyStore>> {
+    if platform_keystore_disabled() {
+        return Vec::new();
+    }
+
     let mut stores: Vec<Box<dyn KeyStore>> = Vec::new();
 
     #[cfg(target_os = "macos")]
@@ -51,4 +57,55 @@ pub fn platform_keystores(_data_dir: Option<PathBuf>) -> Vec<Box<dyn KeyStore>> 
     }
 
     stores
+}
+
+fn platform_keystore_disabled() -> bool {
+    std::env::var(DISABLE_PLATFORM_KEYSTORE_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn platform_keystore_flag_defaults_to_enabled() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(DISABLE_PLATFORM_KEYSTORE_ENV).ok();
+        unsafe { std::env::remove_var(DISABLE_PLATFORM_KEYSTORE_ENV) };
+
+        assert!(!platform_keystore_disabled());
+
+        match original {
+            Some(value) => unsafe { std::env::set_var(DISABLE_PLATFORM_KEYSTORE_ENV, value) },
+            None => unsafe { std::env::remove_var(DISABLE_PLATFORM_KEYSTORE_ENV) },
+        }
+    }
+
+    #[test]
+    fn platform_keystore_flag_disables_all_stores() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(DISABLE_PLATFORM_KEYSTORE_ENV).ok();
+        unsafe { std::env::set_var(DISABLE_PLATFORM_KEYSTORE_ENV, "1") };
+
+        assert!(platform_keystore_disabled());
+        assert!(platform_keystores(None).is_empty());
+
+        match original {
+            Some(value) => unsafe { std::env::set_var(DISABLE_PLATFORM_KEYSTORE_ENV, value) },
+            None => unsafe { std::env::remove_var(DISABLE_PLATFORM_KEYSTORE_ENV) },
+        }
+    }
 }

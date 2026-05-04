@@ -1318,6 +1318,20 @@ async fn find_failed_submission(
         .flatten()
 }
 
+fn preferred_failed_release_title(
+    context: &DownloadFailureContext,
+    failed_submission: Option<&DownloadSubmission>,
+) -> Option<String> {
+    failed_submission
+        .and_then(|submission| normalized_non_empty_owned(submission.source_title.clone()))
+        .or_else(|| normalized_non_empty_owned(Some(context.release_title.clone())))
+}
+
+fn resolved_failed_release_hint(failed_submission: Option<&DownloadSubmission>) -> Option<String> {
+    failed_submission
+        .and_then(|submission| normalize_release_attempt_hint(submission.source_hint.as_deref()))
+}
+
 async fn resolve_failed_collection_episode_wanted_items(
     app: &AppUseCase,
     submission: &DownloadSubmission,
@@ -1416,16 +1430,17 @@ pub(crate) async fn process_download_failure(
                 .map(|submission| submission.title_id.clone())
         });
     let download_id = normalized_non_empty_owned(Some(context.client_item_id.clone()));
-    let normalized_source_title =
-        normalize_release_attempt_title(Some(context.release_title.as_str()));
-    let normalized_source_hint = failed_submission
-        .as_ref()
-        .and_then(|submission| normalize_release_attempt_hint(submission.source_hint.as_deref()))
-        .or_else(|| normalize_release_attempt_hint(Some(context.client_item_id.as_str())));
+    let preferred_source_title =
+        preferred_failed_release_title(&context, failed_submission.as_ref());
+    let normalized_source_title = normalize_release_attempt_title(preferred_source_title.as_deref());
+    let normalized_source_hint = resolved_failed_release_hint(failed_submission.as_ref());
     let quality = failed_submission
         .as_ref()
         .and_then(|submission| release_quality_hint(submission.source_title.as_deref()))
         .or_else(|| release_quality_hint(Some(context.release_title.as_str())));
+    let release_title_for_matching = preferred_source_title
+        .as_deref()
+        .unwrap_or(context.release_title.as_str());
     let _failure_guard = app
         .runtime
         .acquisition
@@ -1445,9 +1460,7 @@ pub(crate) async fn process_download_failure(
             .blocklist_repo
             .has_recorded_download_failure(
                 title_id,
-                download_id.as_deref(),
                 normalized_source_title.as_deref(),
-                normalized_source_hint.as_deref(),
             )
             .await
         {
@@ -1457,7 +1470,7 @@ pub(crate) async fn process_download_failure(
                     client_id = context.client_id.as_str(),
                     client_type = context.client_type.as_str(),
                     download_client_item_id = context.client_item_id.as_str(),
-                    release_title = context.release_title.as_str(),
+                    release_title = release_title_for_matching,
                     "skipping duplicate failed download handling; failure already recorded"
                 );
                 return FailureHandlingOutcome::AlreadyHandled;
@@ -1497,7 +1510,7 @@ pub(crate) async fn process_download_failure(
     let wanted_item = match context.wanted_item.clone() {
         Some(item) => Some(item),
         None if failed_collection_items.is_none() => {
-            resolve_failure_wanted_item(app, resolved_title_id.as_deref(), &context.release_title)
+            resolve_failure_wanted_item(app, resolved_title_id.as_deref(), release_title_for_matching)
                 .await
         }
         None => None,
@@ -1533,13 +1546,13 @@ pub(crate) async fn process_download_failure(
 
         let message = format!(
             "season pack download failed for '{}': {}; re-queuing season episodes for individual search",
-            context.release_title, context.reason
+            release_title_for_matching, context.reason
         );
 
         info!(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
             affected_wanted_items = items.len(),
-            release_title = context.release_title.as_str(),
+            release_title = release_title_for_matching,
             "re-queued season episodes after failed season-pack download"
         );
 
@@ -1557,7 +1570,7 @@ pub(crate) async fn process_download_failure(
             if recover_from_standby_candidates(
                 app,
                 item,
-                &context.release_title,
+                release_title_for_matching,
                 active_snapshot,
                 &now,
             )
@@ -1567,7 +1580,7 @@ pub(crate) async fn process_download_failure(
                     FailureHandlingOutcome::RecoveredFromStandby,
                     format!(
                         "download failed for '{}': {}; recovered from standby candidate",
-                        context.release_title, context.reason
+                        release_title_for_matching, context.reason
                     ),
                 )
             } else {
@@ -1595,12 +1608,12 @@ pub(crate) async fn process_download_failure(
                 let message = if immediate_research {
                     format!(
                         "download failed for '{}': {}; standby exhausted, re-queuing for fresh search",
-                        context.release_title, context.reason
+                        release_title_for_matching, context.reason
                     )
                 } else {
                     format!(
                         "download failed for '{}': {}; standby exhausted, deferring reacquisition",
-                        context.release_title, context.reason
+                        release_title_for_matching, context.reason
                     )
                 };
 
@@ -1624,7 +1637,7 @@ pub(crate) async fn process_download_failure(
             FailureHandlingOutcome::RecordedOnly,
             format!(
                 "download failed: {} — {}",
-                context.release_title, context.reason
+                release_title_for_matching, context.reason
             ),
         )
     };
@@ -1673,11 +1686,11 @@ pub(crate) async fn process_download_failure(
         .services
         .workflow
         .download_submissions
-        .delete_by_client_item_id(&DownloadSourceIdentity::new(
+        .update_tracked_state(&DownloadSourceIdentity::new(
             Some(context.client_id.as_str()),
             &context.client_type,
             &context.client_item_id,
-        ))
+        ), scryer_domain::TrackedDownloadState::Failed.as_str())
         .await;
 
     outcome

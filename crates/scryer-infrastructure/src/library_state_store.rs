@@ -543,12 +543,10 @@ impl BlocklistRepository for SqliteLibraryStateStore {
     async fn has_recorded_download_failure(
         &self,
         title_id: &str,
-        download_id: Option<&str>,
         source_title: Option<&str>,
-        source_hint: Option<&str>,
     ) -> AppResult<bool> {
         self.db
-            .has_recorded_download_failure(title_id, download_id, source_title, source_hint)
+            .has_recorded_download_failure(title_id, source_title)
             .await
     }
 

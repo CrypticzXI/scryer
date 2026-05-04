@@ -72,7 +72,10 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
             client_type: td.client_type.clone(),
             client_name: Some(td.client_item.client_name.clone()),
             client_item_id: td.client_item.download_client_item_id.clone(),
-            release_title: td.client_item.title_name.clone(),
+            release_title: td
+                .source_title
+                .clone()
+                .unwrap_or_else(|| td.client_item.title_name.clone()),
             reason: failure_reason.to_string(),
             remove_from_client_if_configured: false,
         },
