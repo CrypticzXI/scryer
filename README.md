@@ -1,72 +1,35 @@
-<p align="center">
-  <img src="docs/img/scryer-hero.png" alt="scryer" width="200"/>
-</p>
+# scryer
 
-<h1 align="center">scryer</h1>
+The product website is the source for installation and end-user setup:
 
-<p align="center">
-  <strong>One app for movies, TV series, and anime.</strong>
-</p>
+- [Scryer website](https://www.scryer.media/scryer/)
+- [Scryer getting started](https://www.scryer.media/scryer/docs/)
 
-<p align="center">
-  <a href="docs/getting-started.md">Getting Started</a> &middot;
-  <a href="https://github.com/scryer-media/scryer/issues">Issues</a> &middot;
-  <a href="CONTRIBUTORS.md">Contributing</a>
-</p>
+## What Scryer Is
 
----
+Scryer is a self-hosted media management application for movies, TV series, and anime.
 
-<p align="center">
-  <img src="docs/img/scryer-overview.webp" alt="scryer overview" width="800"/>
-</p>
+At a high level, it:
 
-Scryer monitors your media library, tracks wanted movies and TV shows, manages quality upgrades, renames and organizes files, and fetches subtitles — all from a single lightweight application.
+- monitors a library and tracked titles
+- searches for releases through pluggable providers
+- evaluates releases against quality and rules policies
+- coordinates downloads and imports
+- organizes files for downstream media servers
+- manages subtitles
 
-## Features
+## Technical Overview
 
-- **Movies, TV, and anime in one place** — no need to run separate apps for each media type
-- **Automated media management** — searches your indexers, evaluates available releases against your quality preferences, and organizes them into your library
-- **Quality upgrades** — configurable quality profiles with scoring rules; automatically replaces files when a better version appears
-- **Subtitles** — finds and downloads matching subtitles from OpenSubtitles, with automatic timing correction
-- **Anime franchise movies** — tracks interstitial movies that belong between anime seasons and organizes them alongside the parent series in your library
-- **Metadata** — artwork, episode data, and cross-referenced anime IDs (TVDB, TMDB, MAL, AniList, AniDB) fetched automatically
-- **File organization** — renames and sorts files into clean folder structures that work with Plex, Jellyfin, and Emby
-- **Post-processing** — run custom scripts after imports, with full release metadata available
-- **Rules engine** — flexible policy rules for filtering releases, adjusting scores, and automating decisions
-- **GraphQL API** — fully queryable API for building integrations or custom workflows
-- **Plugin system** — extend scryer with plugins for additional indexers, download clients, and notification services
-- **Single binary** — ~30 MB, ~60 MB RAM, runs on anything from a Raspberry Pi to a NAS
-- **PWA** — installable progressive web app with a mobile-friendly interface
+Scryer ships as a single Rust application with:
 
-## Getting Started
-
-See the **[Getting Started guide](docs/getting-started.md)** for setup instructions covering:
-
-- One-command setup with `scryer init`
-- Docker deployment
-- Credentials and encryption key management
-- Upgrading and backup/restore
-
-## How It Compares
-
-If you've used Sonarr, Radarr, or Bazarr, scryer does what all three do — in a single app that uses a fraction of the resources.
-
-| | Scryer | Sonarr + Radarr + Bazarr | SickChill |
-|---|---|---|---|
-| **Media types** | Movies, series, and anime together | One app per media type, plus Bazarr for subtitles | Series and anime only |
-| **Subtitles** | Built in | Separate service | Not included |
-| **Memory** | ~60 MB | ~500+ MB combined | ~150-200 MB |
-| **Anime** | First-class support with franchise movie tracking | Community-supported via Sonarr | Built-in |
-| **Indexers** | Plugin-based, Newznab-compatible | Broad Newznab/Torznab support, Prowlarr integration | Built-in |
-| **Maturity** | Active development | Mature, large ecosystem | Mature, smaller community |
-
-**When Scryer fits:** You want one lightweight process for all media types including subtitles, you run on constrained hardware, or you want unified anime management without coordinating multiple services.
-
-**When Sonarr/Radarr fits better:** You need broad torrent client support, you rely on the Prowlarr/Lidarr ecosystem, or you prefer the stability and community of a mature project.
+- an embedded web UI
+- a GraphQL API
+- SQLite-backed application state
+- a plugin runtime for indexers, download clients, subtitle providers, and notifications
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │  scryer binary                          │
 │  ┌───────────┐  ┌────────────────────┐  │
@@ -88,23 +51,10 @@ If you've used Sonarr, Radarr, or Bazarr, scryer does what all three do — in a
     └─────────┘        └────────────┘
 ```
 
-## Roadmap
+## Development
 
-- Additional subtitle providers (Podnapisi, Addic7ed)
-- Torrent client support
-- Calendar view for upcoming releases
-- Import history and audit log improvements
-- Mobile app refinements
+- [Contributors guide](CONTRIBUTORS.md)
+- [Architecture notes](ARCHITECTURE.md)
+- [Issues](https://github.com/scryer-media/scryer/issues)
 
----
-
-### Reporting Issues
-
-File bug reports and feature requests in the [GitHub Issues](https://github.com/scryer-media/scryer/issues) tab. Please include:
-- Your platform (OS / architecture)
-- The release version (`docker run --rm ghcr.io/scryer-media/scryer --version`)
-- Relevant log output (`docker compose logs scryer`)
-
----
-
-For development setup and contributing, see [CONTRIBUTORS.md](CONTRIBUTORS.md).
+For installation, upgrade guidance, and end-user documentation, use the website links at the top of this file.
