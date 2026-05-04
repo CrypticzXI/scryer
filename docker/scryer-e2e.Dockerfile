@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=22
-ARG RUST_VERSION=1.94.1
+ARG RUST_VERSION=1.95.0
 
 FROM node:${NODE_VERSION}-bookworm-slim AS web
 

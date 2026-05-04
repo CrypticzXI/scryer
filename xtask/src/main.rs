@@ -1591,7 +1591,7 @@ fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
         .trim()
         .to_string();
     let linux_image = std::env::var("SCRYER_LINUX_CLIPPY_IMAGE")
-        .unwrap_or_else(|_| "rust:1.94-bookworm".to_string());
+        .unwrap_or_else(|_| "rust:1.95.0-bookworm".to_string());
     let linux_platform =
         std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").unwrap_or_else(|_| "linux/arm64".to_string());
 
