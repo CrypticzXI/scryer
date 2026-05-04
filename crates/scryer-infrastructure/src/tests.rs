@@ -351,6 +351,118 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
 }
 
 #[tokio::test]
+async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
+    let (services, db) = temp_services("scryer_plugin_reinstall_legacy").await;
+    let customization = SqliteCustomizationStore::new(&services);
+    let now = Utc::now();
+
+    let legacy_external = scryer_domain::PluginInstallation {
+        id: scryer_domain::Id::new().0,
+        plugin_id: "email".to_string(),
+        name: "Legacy Email".to_string(),
+        description: "old registry install".to_string(),
+        version: "0.1.0".to_string(),
+        sdk_version: "1.3.0".to_string(),
+        sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+        scryer_constraint: None,
+        plugin_type: "notification".to_string(),
+        provider_type: "email".to_string(),
+        is_enabled: true,
+        is_builtin: false,
+        source_kind: scryer_domain::PluginSourceKind::Downloaded,
+        wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+        wasm_digest_algo: None,
+        source_url: Some("https://example.com/legacy-email.wasm".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: None,
+        docs_url: None,
+        source_repo: None,
+        manifest_url: None,
+        wasm_digest: None,
+        artifact_digest: None,
+        descriptor_json: None,
+        installed_at: now,
+        updated_at: now,
+    };
+    customization
+        .create_plugin_installation(&legacy_external, Some(&[1_u8, 2, 3]))
+        .await
+        .expect("seed legacy external install");
+
+    assert!(
+        customization
+            .get_plugin_installation("email")
+            .await
+            .expect("read hidden legacy install")
+            .is_none()
+    );
+    assert!(
+        customization
+            .list_plugin_installations()
+            .await
+            .expect("list plugin installations")
+            .into_iter()
+            .all(|installation| installation.plugin_id != "email")
+    );
+
+    let compressed = zstd::encode_all(&b"catalog plugin bytes"[..], 1).expect("compress plugin");
+    let replacement = scryer_domain::PluginInstallation {
+        id: scryer_domain::Id::new().0,
+        plugin_id: "email".to_string(),
+        name: "Email".to_string(),
+        description: "catalog install".to_string(),
+        version: "1.0.0".to_string(),
+        sdk_version: "1.3.0".to_string(),
+        sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+        scryer_constraint: None,
+        plugin_type: "notification".to_string(),
+        provider_type: "email".to_string(),
+        is_enabled: true,
+        is_builtin: false,
+        source_kind: scryer_domain::PluginSourceKind::Downloaded,
+        wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+        wasm_digest_algo: Some("blake3".to_string()),
+        source_url: Some("https://example.com/catalog-email.wasm.zst".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        publisher: Some("Scryer".to_string()),
+        docs_url: Some("https://example.com/docs".to_string()),
+        source_repo: Some("https://github.com/example/email".to_string()),
+        manifest_url: Some("https://example.com/email.manifest.json".to_string()),
+        wasm_digest: Some("abcdef0123456789".to_string()),
+        artifact_digest: Some("sha256:artifact".to_string()),
+        descriptor_json: Some(test_descriptor_json(
+            "email",
+            "1.0.0",
+            "notification",
+            "email",
+        )),
+        installed_at: now,
+        updated_at: now,
+    };
+
+    let created = customization
+        .create_plugin_installation(&replacement, Some(&compressed))
+        .await
+        .expect("create replacement install");
+    assert_eq!(created.version, "1.0.0");
+    assert_eq!(
+        created.wasm_encoding,
+        scryer_domain::PluginWasmEncoding::Zstd
+    );
+    assert_eq!(created.wasm_digest_algo.as_deref(), Some("blake3"));
+
+    let row_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM plugin_installations WHERE plugin_id = 'email'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("count email rows");
+    assert_eq!(row_count, 1);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn registry_cache_row_uses_supported_shape_and_survives_cleanup() {
     let (services, db) = temp_services("scryer_plugin_registry_cache_shape").await;
     let customization = SqliteCustomizationStore::new(&services);

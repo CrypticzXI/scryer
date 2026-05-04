@@ -920,6 +920,7 @@ export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
     isEnabled
     installedVersion
     updateAvailable
+    installInProgress
     defaultBaseUrl
   }
 }`;

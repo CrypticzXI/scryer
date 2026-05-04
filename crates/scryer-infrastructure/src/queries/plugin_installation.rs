@@ -115,7 +115,7 @@ pub(crate) async fn list_plugin_installations_query(
     let rows = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
+                source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
@@ -126,7 +126,11 @@ pub(crate) async fn list_plugin_installations_query(
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
 
-    Ok(rows.iter().map(row_to_plugin_installation).collect())
+    Ok(rows
+        .iter()
+        .filter(|row| !row_is_incompatible_external_installation(row))
+        .map(row_to_plugin_installation)
+        .collect())
 }
 
 pub(crate) async fn get_plugin_installation_query(
@@ -136,7 +140,7 @@ pub(crate) async fn get_plugin_installation_query(
     let row = sqlx::query(
         "SELECT id, plugin_id, name, description, version, sdk_version, sdk_constraint,
                 scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
-                source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
+                source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
@@ -147,7 +151,10 @@ pub(crate) async fn get_plugin_installation_query(
     .await
     .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
 
-    Ok(row.as_ref().map(row_to_plugin_installation))
+    Ok(row
+        .as_ref()
+        .filter(|row| !row_is_incompatible_external_installation(row))
+        .map(row_to_plugin_installation))
 }
 
 async fn get_plugin_installation_tx(
@@ -180,6 +187,15 @@ pub(crate) async fn create_plugin_installation_query(
         .begin()
         .await
         .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    if existing_installation_is_incompatible_external_shape(&mut tx, &installation.plugin_id)
+        .await?
+    {
+        sqlx::query("DELETE FROM plugin_installations WHERE plugin_id = ?")
+            .bind(&installation.plugin_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+    }
     sqlx::query(
         "INSERT INTO plugin_installations
             (id, plugin_id, name, description, version, sdk_version, sdk_constraint,
@@ -231,6 +247,25 @@ pub(crate) async fn create_plugin_installation_query(
         .await
         .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
     Ok(installation)
+}
+
+async fn existing_installation_is_incompatible_external_shape(
+    tx: &mut Transaction<'_, Sqlite>,
+    plugin_id: &str,
+) -> AppResult<bool> {
+    let row = sqlx::query(
+        "SELECT is_builtin, source_kind, wasm_bytes, wasm_encoding, wasm_digest_algo, wasm_digest, descriptor_json
+         FROM plugin_installations
+         WHERE plugin_id = ?",
+    )
+    .bind(plugin_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| scryer_application::AppError::Repository(e.to_string()))?;
+
+    Ok(row
+        .as_ref()
+        .is_some_and(row_is_incompatible_external_installation))
 }
 
 pub(crate) async fn update_plugin_installation_query(
@@ -502,6 +537,34 @@ fn external_installation_is_supported_shape(
         )
         && wasm_digest.is_some_and(is_hex_digest)
         && descriptor_json.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn row_is_incompatible_external_installation(row: &sqlx::sqlite::SqliteRow) -> bool {
+    use sqlx::Row;
+
+    let is_builtin: bool = row.get("is_builtin");
+    if is_builtin {
+        return false;
+    }
+
+    let source_kind: String = row.get("source_kind");
+    if !matches!(source_kind.as_str(), "downloaded" | "manual") {
+        return false;
+    }
+
+    let wasm_bytes: Option<Vec<u8>> = row.get("wasm_bytes");
+    let wasm_encoding: String = row.get("wasm_encoding");
+    let wasm_digest_algo: Option<String> = row.get("wasm_digest_algo");
+    let wasm_digest: Option<String> = row.get("wasm_digest");
+    let descriptor_json: Option<String> = row.get("descriptor_json");
+
+    !external_installation_is_supported_shape(
+        wasm_bytes.as_deref(),
+        &wasm_encoding,
+        wasm_digest_algo.as_deref(),
+        wasm_digest.as_deref(),
+        descriptor_json.as_deref(),
+    )
 }
 
 fn is_hex_digest(value: &str) -> bool {

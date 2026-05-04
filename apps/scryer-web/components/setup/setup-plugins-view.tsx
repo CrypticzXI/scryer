@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { Download, Loader2, PlugZap, RefreshCw, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -10,7 +11,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { RegistryPluginRecord } from "@/components/views/settings/settings-plugins-section";
+import type {
+  PluginInstallProgressRecord,
+  RegistryPluginRecord,
+} from "@/components/views/settings/settings-plugins-section";
 
 interface SetupPluginsViewProps {
   t: (
@@ -20,7 +24,9 @@ interface SetupPluginsViewProps {
   plugins: RegistryPluginRecord[];
   loading: boolean;
   refreshing: boolean;
-  mutatingPluginId: string | null;
+  mutatingPluginIds: string[];
+  pluginProgress: Partial<Record<string, PluginInstallProgressRecord>>;
+  pluginErrors: Partial<Record<string, string>>;
   error: string | null;
   onRefreshRegistry: () => void;
   onInstallPlugin: (plugin: RegistryPluginRecord) => void;
@@ -107,12 +113,63 @@ function uninstallLabel(plugin: RegistryPluginRecord, t: SetupPluginsViewProps["
     : t("settings.pluginUninstall");
 }
 
+function installIsBlocked(plugin: RegistryPluginRecord): boolean {
+  return plugin.blockedReason === "no_compatible_release";
+}
+
+function blockedReasonLabel(
+  plugin: RegistryPluginRecord,
+  t: SetupPluginsViewProps["t"],
+): string | null {
+  switch (plugin.blockedReason) {
+    case "no_compatible_release":
+      return t("settings.pluginNoCompatibleRelease");
+    case "newer_release_requires_newer_scryer":
+      return plugin.latestVersion
+        ? t("settings.pluginNewerReleaseRequiresNewerScryerVersion", {
+          version: plugin.latestVersion,
+        })
+        : t("settings.pluginNewerReleaseRequiresNewerScryer");
+    default:
+      return null;
+  }
+}
+
+function isRunningPluginProgress(
+  progress?: PluginInstallProgressRecord,
+): progress is PluginInstallProgressRecord {
+  return progress !== undefined
+    && progress.state !== "succeeded"
+    && progress.state !== "failed";
+}
+
+function pluginProgressLabel(
+  progress: PluginInstallProgressRecord,
+  t: SetupPluginsViewProps["t"],
+): string {
+  switch (progress.state) {
+    case "downloading":
+      return t("settings.pluginInstallDownloading");
+    case "verifying":
+      return t("settings.pluginInstallVerifying");
+    case "installing":
+      return t("settings.pluginInstallInstalling");
+    case "succeeded":
+    case "failed":
+      return progress.label;
+    default:
+      return progress.label;
+  }
+}
+
 export function SetupPluginsView({
   t,
   plugins,
   loading,
   refreshing,
-  mutatingPluginId,
+  mutatingPluginIds,
+  pluginProgress,
+  pluginErrors,
   error,
   onRefreshRegistry,
   onInstallPlugin,
@@ -203,55 +260,99 @@ export function SetupPluginsView({
                       </TableCell>
                     </TableRow>
                     {group.plugins.map((plugin) => {
-                      const isBusy = mutatingPluginId === plugin.id;
+                      const progress = pluginProgress[plugin.id];
+                      const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
+                      const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
+                      const actionError = pluginErrors[plugin.id];
+                      const blockedLabel = blockedReasonLabel(plugin, t);
                       return (
                         <TableRow key={plugin.id}>
                           <TableCell className="min-w-[260px]">
                             <div className="space-y-1">
                               <span className="font-medium">{plugin.name}</span>
-                              <p className="text-xs text-muted-foreground">
+                              <p className="whitespace-normal break-words text-xs text-muted-foreground">
                                 {plugin.description}
                               </p>
+                              {(blockedLabel || actionError) && (
+                                <div className="space-y-1">
+                                  {blockedLabel && (
+                                    <p className="text-xs text-destructive">
+                                      {blockedLabel}
+                                    </p>
+                                  )}
+                                  {actionError && (
+                                    <p className="text-xs text-destructive">
+                                      {actionError}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="w-[124px] text-right">
                             {plugin.isInstalled ? (
-                              <div className="flex items-center justify-end gap-2">
-                                <span className="text-sm text-muted-foreground">
-                                  {t("settings.pluginInstalled")}
-                                </span>
-                                {canUninstallPlugin(plugin) && (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    disabled={isBusy}
-                                    onClick={() => onUninstallPlugin(plugin)}
-                                    title={uninstallLabel(plugin, t)}
-                                  >
-                                    {isBusy ? (
-                                      <Loader2 className="h-4 w-4 animate-spin text-destructive" />
-                                    ) : (
-                                      <Trash2 className="h-4 w-4 text-destructive" />
-                                    )}
-                                  </Button>
+                              <div className="ml-auto flex w-28 min-w-0 flex-col items-end gap-2">
+                                <div className="flex w-full items-center justify-end gap-2">
+                                  <span className="text-sm text-muted-foreground">
+                                    {t("settings.pluginInstalled")}
+                                  </span>
+                                  {canUninstallPlugin(plugin) && (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      disabled={isBusy}
+                                      onClick={() => onUninstallPlugin(plugin)}
+                                      title={uninstallLabel(plugin, t)}
+                                    >
+                                      {isBusy ? (
+                                        <Loader2 className="h-4 w-4 animate-spin text-destructive" />
+                                      ) : (
+                                        <Trash2 className="h-4 w-4 text-destructive" />
+                                      )}
+                                    </Button>
+                                  )}
+                                </div>
+                                {runningProgress && (
+                                  <div className="w-full space-y-1 overflow-hidden">
+                                    <div className="truncate text-right text-xs leading-tight text-primary">
+                                      {pluginProgressLabel(runningProgress, t)}
+                                    </div>
+                                    <Progress
+                                      value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
+                                      className="h-1.5"
+                                    />
+                                  </div>
                                 )}
                               </div>
                             ) : (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={isBusy || plugin.blockedReason === "no_compatible_release"}
-                                onClick={() => onInstallPlugin(plugin)}
-                              >
-                                {isBusy ? (
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Download className="mr-2 h-4 w-4" />
+                              <div className="ml-auto flex w-24 min-w-0 flex-col items-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={isBusy || installIsBlocked(plugin)}
+                                  onClick={() => onInstallPlugin(plugin)}
+                                >
+                                  {isBusy ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Download className="mr-2 h-4 w-4" />
+                                  )}
+                                  {isBusy
+                                    ? t("settings.pluginInstalling")
+                                    : t("settings.pluginInstall")}
+                                </Button>
+                                {runningProgress && (
+                                  <div className="w-full space-y-1 overflow-hidden">
+                                    <div className="truncate text-right text-xs leading-tight text-primary">
+                                      {pluginProgressLabel(runningProgress, t)}
+                                    </div>
+                                    <Progress
+                                      value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
+                                      className="h-1.5"
+                                    />
+                                  </div>
                                 )}
-                                {isBusy
-                                  ? t("settings.pluginInstalling")
-                                  : t("settings.pluginInstall")}
-                              </Button>
+                              </div>
                             )}
                           </TableCell>
                         </TableRow>
