@@ -10,12 +10,18 @@ use sigstore::{
     crypto::{CosignVerificationKey, SigningScheme},
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
+#[cfg(unix)]
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+#[cfg(unix)]
+use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use tempfile::NamedTempFile;
@@ -66,6 +72,7 @@ const OFFICIAL_RELEASE_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
+const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 
@@ -76,6 +83,25 @@ struct BuiltinPluginSpec {
     plugin_id: &'static str,
     artifact_stem: &'static str,
 }
+
+#[cfg(unix)]
+struct SignalForwarder {
+    handle: SignalHandle,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl Drop for SignalForwarder {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct SignalForwarder;
 
 #[derive(Clone, Debug, Deserialize)]
 struct CatalogV2 {
@@ -670,6 +696,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
         .open(&backend_log)?;
     let log_err = log.try_clone()?;
     let mut serve = ctx.command_in("cargo", &ctx.repo_root);
+    configure_backend_process_group(&mut serve);
     for (key, value) in &dotenv_envs {
         serve.env(key, value);
     }
@@ -684,9 +711,9 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     let mut backend = serve.spawn()?;
+    let backend_signal_forwarder = install_backend_signal_forwarder(backend.id())?;
     if let Err(error) = wait_for_local_backend(&mut backend, backend_port, &backend_log) {
-        let _ = backend.kill();
-        let _ = backend.wait();
+        terminate_backend(&mut backend);
         return Err(error);
     }
 
@@ -711,8 +738,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     ]);
     let result = run_status(&mut vite);
 
-    let _ = backend.kill();
-    let _ = backend.wait();
+    drop(backend_signal_forwarder);
+    terminate_backend(&mut backend);
     result?;
     Ok(())
 }
@@ -773,6 +800,93 @@ fn validated_release_rtk_available() -> Result<bool> {
             "`rtk` was found on PATH, but it does not appear to be Rust Token Killer"
         ))
     }
+}
+
+#[cfg(unix)]
+fn configure_backend_process_group(command: &mut Command) {
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_backend_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn install_backend_signal_forwarder(process_id: u32) -> Result<SignalForwarder> {
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    let handle = signals.handle();
+    let thread = thread::spawn(move || {
+        for signal in signals.forever() {
+            let _ = signal_process_group(process_id, signal);
+        }
+    });
+    Ok(SignalForwarder {
+        handle,
+        thread: Some(thread),
+    })
+}
+
+#[cfg(not(unix))]
+fn install_backend_signal_forwarder(_process_id: u32) -> Result<SignalForwarder> {
+    Ok(SignalForwarder)
+}
+
+fn terminate_backend(backend: &mut Child) {
+    #[cfg(unix)]
+    {
+        let process_id = backend.id();
+        let _ = signal_process_group(process_id, SIGINT);
+        if wait_for_child_exit(backend, BACKEND_SHUTDOWN_GRACE_PERIOD) {
+            return;
+        }
+        let _ = signal_process_group(process_id, libc::SIGKILL);
+        let _ = backend.wait();
+        return;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = backend.kill();
+        let _ = backend.wait();
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_child_exit(backend: &mut Child, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match backend.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(None) => return false,
+            Err(_) => return false,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_id: u32, signal: i32) -> io::Result<()> {
+    let process_group = i32::try_from(process_id)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "process id overflow"))?;
+    let result = unsafe { libc::kill(-process_group, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(libc::ESRCH)) {
+        return Ok(());
+    }
+    Err(error)
 }
 
 fn run_status(command: &mut Command) -> Result<ExitStatus> {
