@@ -1432,7 +1432,8 @@ pub(crate) async fn process_download_failure(
     let download_id = normalized_non_empty_owned(Some(context.client_item_id.clone()));
     let preferred_source_title =
         preferred_failed_release_title(&context, failed_submission.as_ref());
-    let normalized_source_title = normalize_release_attempt_title(preferred_source_title.as_deref());
+    let normalized_source_title =
+        normalize_release_attempt_title(preferred_source_title.as_deref());
     let normalized_source_hint = resolved_failed_release_hint(failed_submission.as_ref());
     let quality = failed_submission
         .as_ref()
@@ -1458,10 +1459,7 @@ pub(crate) async fn process_download_failure(
             .services
             .workflow
             .blocklist_repo
-            .has_recorded_download_failure(
-                title_id,
-                normalized_source_title.as_deref(),
-            )
+            .has_recorded_download_failure(title_id, normalized_source_title.as_deref())
             .await
         {
             Ok(true) => {
@@ -1510,8 +1508,12 @@ pub(crate) async fn process_download_failure(
     let wanted_item = match context.wanted_item.clone() {
         Some(item) => Some(item),
         None if failed_collection_items.is_none() => {
-            resolve_failure_wanted_item(app, resolved_title_id.as_deref(), release_title_for_matching)
-                .await
+            resolve_failure_wanted_item(
+                app,
+                resolved_title_id.as_deref(),
+                release_title_for_matching,
+            )
+            .await
         }
         None => None,
     };
@@ -1686,11 +1688,14 @@ pub(crate) async fn process_download_failure(
         .services
         .workflow
         .download_submissions
-        .update_tracked_state(&DownloadSourceIdentity::new(
-            Some(context.client_id.as_str()),
-            &context.client_type,
-            &context.client_item_id,
-        ), scryer_domain::TrackedDownloadState::Failed.as_str())
+        .update_tracked_state(
+            &DownloadSourceIdentity::new(
+                Some(context.client_id.as_str()),
+                &context.client_type,
+                &context.client_item_id,
+            ),
+            scryer_domain::TrackedDownloadState::Failed.as_str(),
+        )
         .await;
 
     outcome

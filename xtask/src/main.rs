@@ -5,15 +5,15 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+#[cfg(unix)]
+use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use sigstore::{
     cosign::{CosignCapabilities, bundle::SignedArtifactBundle},
     crypto::{CosignVerificationKey, SigningScheme},
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
-#[cfg(unix)]
-use signal_hook::consts::signal::{SIGINT, SIGTERM};
-#[cfg(unix)]
-use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -563,7 +563,11 @@ fn tail_file(path: &Path, lines: usize) -> Result<String> {
     Ok(collected.into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
-fn wait_for_local_backend(backend: &mut std::process::Child, port: u16, log_path: &Path) -> Result<()> {
+fn wait_for_local_backend(
+    backend: &mut std::process::Child,
+    port: u16,
+    log_path: &Path,
+) -> Result<()> {
     let address = format!("127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
@@ -621,7 +625,9 @@ fn serve_db_path() -> Result<PathBuf> {
     let base_dir = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME").map(PathBuf::from).map(|home| home.join(".local/share"))
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local/share"))
         })
         .map(|base| base.join("scryer"))
         .unwrap_or_else(|| PathBuf::from("./scryer"));
@@ -677,9 +683,15 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     }
     fs::write(&backend_log, "")?;
 
-    step(format!("Starting Scryer backend with cargo run on {}", args.bind));
+    step(format!(
+        "Starting Scryer backend with cargo run on {}",
+        args.bind
+    ));
     if env_file.is_file() {
-        ok(format!("Loaded runtime environment from {}", env_file.display()));
+        ok(format!(
+            "Loaded runtime environment from {}",
+            env_file.display()
+        ));
     }
     if frontend_port != args.frontend_port {
         warn(format!(

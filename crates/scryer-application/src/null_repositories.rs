@@ -1108,11 +1108,7 @@ impl BlocklistRepository for NullBlocklistRepository {
     async fn list_all(&self, _: usize, _: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
         Ok((vec![], 0))
     }
-    async fn has_recorded_download_failure(
-        &self,
-        _: &str,
-        _: Option<&str>,
-    ) -> AppResult<bool> {
+    async fn has_recorded_download_failure(&self, _: &str, _: Option<&str>) -> AppResult<bool> {
         Ok(false)
     }
     async fn remove(&self, _: &str) -> AppResult<()> {

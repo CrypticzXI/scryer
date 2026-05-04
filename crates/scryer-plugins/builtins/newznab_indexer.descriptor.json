@@ -11,13 +11,13 @@
     "capabilities": {
       "rss": true,
       "supported_ids": {
-        "series": [
+        "anime": [
           "tvdb_id"
         ],
         "movie": [
           "imdb_id"
         ],
-        "anime": [
+        "series": [
           "tvdb_id"
         ]
       },

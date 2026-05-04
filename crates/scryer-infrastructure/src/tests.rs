@@ -1225,10 +1225,13 @@ async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_t
         .expect("failed signatures should list");
     assert_eq!(failures.len(), 1);
 
-    let title_failures =
-        ReleaseAttemptRepository::list_failed_release_signatures_for_title(&release_store, "title-1", 10)
-            .await
-            .expect("title failed signatures should list");
+    let title_failures = ReleaseAttemptRepository::list_failed_release_signatures_for_title(
+        &release_store,
+        "title-1",
+        10,
+    )
+    .await
+    .expect("title failed signatures should list");
     assert_eq!(title_failures.len(), 1);
 
     let _ = std::fs::remove_file(db);
@@ -1698,20 +1701,18 @@ async fn review_regression_release_name_blocklist_watershed_resets_legacy_failed
     .expect("successful attempt count should load");
     assert_eq!(successful_attempt_count, 1);
 
-    let blank_stub_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM download_submissions WHERE id = 'stub-failed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("blank stub count should load");
+    let blank_stub_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_submissions WHERE id = 'stub-failed'")
+            .fetch_one(&pool)
+            .await
+            .expect("blank stub count should load");
     assert_eq!(blank_stub_count, 0);
 
-    let rich_failed_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM download_submissions WHERE id = 'rich-failed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("rich failed submission count should load");
+    let rich_failed_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_submissions WHERE id = 'rich-failed'")
+            .fetch_one(&pool)
+            .await
+            .expect("rich failed submission count should load");
     assert_eq!(rich_failed_count, 1);
 }
 

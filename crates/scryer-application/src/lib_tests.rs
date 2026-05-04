@@ -3314,7 +3314,10 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 )
             })
             .collect();
-        self.store.lock().await.retain(|entry| entry.title_id != title_id);
+        self.store
+            .lock()
+            .await
+            .retain(|entry| entry.title_id != title_id);
         self.tracked_states
             .lock()
             .await
@@ -3376,7 +3379,10 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn get_tracked_state(&self, identity: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+    async fn get_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<String>> {
         Ok(self
             .tracked_states
             .lock()
@@ -10713,14 +10719,10 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     }));
 
     let submissions = download_submissions.store.lock().await.clone();
-    assert!(
-        submissions
-            .iter()
-            .any(|submission| {
-                submission.download_client_item_id == "failed-job"
-                    && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
-            })
-    );
+    assert!(submissions.iter().any(|submission| {
+        submission.download_client_item_id == "failed-job"
+            && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
+    }));
     assert_eq!(
         download_submissions
             .get_tracked_state(&DownloadSourceIdentity::new(
@@ -10913,14 +10915,10 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     }));
 
     let submissions = download_submissions.store.lock().await.clone();
-    assert!(
-        submissions
-            .iter()
-            .any(|submission| {
-                submission.download_client_item_id == "failed-job"
-                    && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
-            })
-    );
+    assert!(submissions.iter().any(|submission| {
+        submission.download_client_item_id == "failed-job"
+            && submission.source_title.as_deref() == Some("Failed.Release.1080p.WEB-DL")
+    }));
     assert_eq!(
         download_submissions
             .get_tracked_state(&DownloadSourceIdentity::new(
@@ -11616,22 +11614,29 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
                 .is_some_and(|reason| reason.contains("download client failure"))
     }));
 
-        assert!(download_submissions.store.lock().await.iter().any(|submission| {
-            submission.download_client_item_id == "failed-season-pack"
-                && submission.source_title.as_deref()
-                    == Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL")
-        }));
-        assert_eq!(
-            download_submissions
-                .get_tracked_state(&DownloadSourceIdentity::new(
-                    Some("primary"),
-                    "nzbget",
-                    "failed-season-pack",
-                ))
-                .await
-                .expect("load tracked state")
-                .as_deref(),
-            Some("failed")
+    assert!(
+        download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| {
+                submission.download_client_item_id == "failed-season-pack"
+                    && submission.source_title.as_deref()
+                        == Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL")
+            })
+    );
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "failed-season-pack",
+            ))
+            .await
+            .expect("load tracked state")
+            .as_deref(),
+        Some("failed")
     );
 }
 
