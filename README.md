@@ -35,20 +35,20 @@ Scryer ships as a single Rust application with:
 │  ┌───────────┐  ┌────────────────────┐  │
 │  │ Web UI    │  │ GraphQL API        │  │
 │  └───────────┘  └────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │ Application layer                  │  │
-│  │ acquisition · import · subtitles   │  │
-│  │ rename · post-processing · rules   │  │
-│  └────────────────────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │ Storage (SQLite) + Plugins         │  │
-│  └────────────────────────────────────┘  │
+│  ┌────────────────────────────────────┐ │
+│  │ Application layer                  │ │
+│  │ acquisition · import · subtitles   │ │
+│  │ rename · post-processing · rules   │ │
+│  └────────────────────────────────────┘ │
+│  ┌────────────────────────────────────┐ │
+│  │ Storage (SQLite) + Plugins         │ │
+│  └────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
          │                    │
-    ┌────┴────┐        ┌─────┴──────┐
-    │ Metadata│        │ Indexers & │
-    │  API    │        │ Clients    │
-    └─────────┘        └────────────┘
+    ┌────┴────┐         ┌─────┴──────┐
+    │ Metadata│         │ Indexers & │
+    │  API    │         │ Clients    │
+    └─────────┘         └────────────┘
 ```
 
 ## Development
