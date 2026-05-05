@@ -39,6 +39,21 @@ pub struct RecycleEntry {
     pub media_root: String,
 }
 
+pub fn validate_recycle_entry_id(entry_id: &str) -> AppResult<()> {
+    if entry_id.is_empty()
+        || entry_id == "."
+        || entry_id == ".."
+        || !entry_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(AppError::Validation(
+            "recycle entry id is not a valid opaque id".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Move a file to the recycle bin instead of deleting it.
 ///
 /// If the recycle bin is disabled, deletes the file directly (preserving current behaviour)
@@ -414,6 +429,7 @@ pub async fn find_entry(
     config: &RecycleBinConfig,
     entry_id: &str,
 ) -> AppResult<Option<(PathBuf, RecycleManifest)>> {
+    validate_recycle_entry_id(entry_id)?;
     if !config.enabled || !config.base_path.exists() {
         return Ok(None);
     }

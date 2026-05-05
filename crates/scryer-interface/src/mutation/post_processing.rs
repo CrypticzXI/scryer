@@ -1,8 +1,8 @@
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
-use scryer_domain::{Id, PostProcessingScript};
+use scryer_domain::{Entitlement, Id, PostProcessingScript};
 
-use crate::context::{app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::types::*;
 
 #[derive(Default)]
@@ -16,6 +16,7 @@ impl PostProcessingMutations {
         input: CreatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
+        require_manage_config(ctx)?;
 
         let now = Utc::now();
         let script = PostProcessingScript {
@@ -54,6 +55,7 @@ impl PostProcessingMutations {
         input: UpdatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
+        require_manage_config(ctx)?;
 
         let mut script = app
             .get_post_processing_script(&input.id)
@@ -113,6 +115,7 @@ impl PostProcessingMutations {
         id: String,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
+        require_manage_config(ctx)?;
 
         app.delete_post_processing_script(&id)
             .await
@@ -127,6 +130,7 @@ impl PostProcessingMutations {
         id: String,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
+        require_manage_config(ctx)?;
 
         let updated = app
             .toggle_post_processing_script(&id)
@@ -135,4 +139,12 @@ impl PostProcessingMutations {
 
         Ok(crate::mappers::from_pp_script(updated))
     }
+}
+
+fn require_manage_config(ctx: &Context<'_>) -> GqlResult<()> {
+    let actor = actor_from_ctx(ctx)?;
+    if !actor.has_entitlement(&Entitlement::ManageConfig) {
+        return Err(async_graphql::Error::new("insufficient entitlements"));
+    }
+    Ok(())
 }

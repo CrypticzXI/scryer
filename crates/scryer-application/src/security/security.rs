@@ -82,16 +82,6 @@ impl AppUseCase {
         }
     }
 
-    fn parse_entitlement_claim(raw: &str) -> Option<Entitlement> {
-        match raw.trim().to_lowercase().replace('-', "_").as_str() {
-            "viewcatalog" | "view_catalog" => Some(Entitlement::ViewCatalog),
-            "managetitle" | "manage_title" => Some(Entitlement::ManageTitle),
-            "manageusers" | "manage_users" => Some(Entitlement::ManageUsers),
-            "manageconfig" | "manage_config" => Some(Entitlement::ManageConfig),
-            _ => None,
-        }
-    }
-
     fn canonical_entitlement_claims(entitlements: &[Entitlement]) -> Vec<String> {
         let mut claims = entitlements
             .iter()
@@ -100,22 +90,6 @@ impl AppUseCase {
         claims.sort();
         claims.dedup();
         claims
-    }
-
-    fn parse_entitlement_claims(&self, raw_claims: &[String]) -> AppResult<Vec<Entitlement>> {
-        let mut entitlements = Vec::with_capacity(raw_claims.len());
-        let mut seen = std::collections::HashSet::new();
-
-        for raw in raw_claims {
-            let entitlement = Self::parse_entitlement_claim(raw)
-                .ok_or_else(|| AppError::Validation(format!("unknown entitlement: {raw}")))?;
-            if seen.insert(entitlement.clone()) {
-                entitlements.push(entitlement);
-            }
-        }
-
-        entitlements.sort_by_key(Self::entitlement_claim_string);
-        Ok(entitlements)
     }
 
     /// Derive a per-user JWT signing key:
@@ -478,16 +452,16 @@ impl AppUseCase {
         let verified = jsonwebtoken::decode::<JwtClaims>(token, &key, &validation)
             .map_err(|err| AppError::Unauthorized(format!("invalid token: {err}")))?;
         let claims = verified.claims;
-        let entitlements = self
-            .parse_entitlement_claims(&claims.entitlements)
-            .map_err(|err| AppError::Unauthorized(format!("invalid token claims: {err}")))?;
-
-        Ok(User {
-            id: claims.sub,
-            username: claims.username,
-            password_hash: None,
-            entitlements,
-        })
+        self.services
+            .identity
+            .users
+            .get_by_id(&claims.sub)
+            .await?
+            .map(|mut user| {
+                user.password_hash = None;
+                user
+            })
+            .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
     }
 
     pub async fn authenticate_credentials(

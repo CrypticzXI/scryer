@@ -13,6 +13,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, SubmissionScope};
 
+const DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS: i64 = 24;
+const DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES: usize = 5_000;
+
 // ── TrackedDownload ──────────────────────────────────────────────────────────
 
 /// A download being tracked through scryer's import workflow.
@@ -98,6 +101,7 @@ impl TrackedDownload {
 #[derive(Default)]
 pub struct TrackedDownloadService {
     cache: HashMap<String, TrackedDownload>,
+    last_seen_at: HashMap<String, DateTime<Utc>>,
 }
 
 impl TrackedDownloadService {
@@ -115,6 +119,7 @@ impl TrackedDownloadService {
             &client_item.client_type,
             &client_item.download_client_item_id,
         );
+        self.last_seen_at.insert(id.clone(), Utc::now());
 
         if self.cache.contains_key(&id) {
             let existing = self.cache.get_mut(&id).unwrap();
@@ -142,6 +147,7 @@ impl TrackedDownloadService {
         // First time seeing this download — build, resolve, and insert.
         let td = Self::build_new_tracked_download(app, id.clone(), client_item).await;
         self.cache.insert(id, td);
+        self.prune_cache();
     }
 
     /// Build a new TrackedDownload, resolving title and reconstructing state.
@@ -215,11 +221,48 @@ impl TrackedDownloadService {
                 td.is_trackable = false;
             }
         }
+        self.prune_cache();
     }
 
     /// Remove a download from the cache (after terminal state).
     pub fn stop_tracking(&mut self, id: &str) {
         self.cache.remove(id);
+        self.last_seen_at.remove(id);
+    }
+
+    fn prune_cache(&mut self) {
+        let ttl = tracked_download_cache_ttl();
+        let stale_cutoff = Utc::now() - ttl;
+        let last_seen_at = &self.last_seen_at;
+        self.cache.retain(|id, tracked| {
+            tracked.is_trackable
+                || last_seen_at
+                    .get(id)
+                    .is_none_or(|last_seen| *last_seen >= stale_cutoff)
+        });
+
+        let max_entries = tracked_download_cache_max_entries();
+        if self.cache.len() > max_entries {
+            let mut eviction_candidates = self
+                .cache
+                .iter()
+                .filter(|(_, tracked)| !tracked.is_trackable)
+                .map(|(id, _)| {
+                    (
+                        self.last_seen_at.get(id).copied().unwrap_or(stale_cutoff),
+                        id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            eviction_candidates.sort_by_key(|(last_seen, _)| *last_seen);
+            let overage = self.cache.len().saturating_sub(max_entries);
+            for (_, id) in eviction_candidates.into_iter().take(overage) {
+                self.cache.remove(&id);
+            }
+        }
+
+        self.last_seen_at
+            .retain(|id, _| self.cache.contains_key(id));
     }
 
     /// Persist a terminal state to download_submissions.
@@ -686,6 +729,23 @@ impl TrackedDownloadHandle {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn tracked_download_cache_ttl() -> chrono::Duration {
+    std::env::var("SCRYER_TRACKED_DOWNLOAD_CACHE_TTL_HOURS")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|hours| *hours > 0)
+        .map(chrono::Duration::hours)
+        .unwrap_or_else(|| chrono::Duration::hours(DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS))
+}
+
+fn tracked_download_cache_max_entries() -> usize {
+    std::env::var("SCRYER_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|entries| *entries > 0)
+        .unwrap_or(DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES)
+}
 
 pub fn tracked_download_id(client_id: Option<&str>, client_type: &str, item_id: &str) -> String {
     let normalized_client_id = client_id

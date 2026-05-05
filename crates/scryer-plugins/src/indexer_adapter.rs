@@ -4,7 +4,7 @@ use scryer_application::{
     IndexerSearchResponse, IndexerSearchResult, SearchMode,
 };
 use scryer_domain::{IndexerConfig, TaggedAlias};
-use std::sync::Arc;
+use std::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
@@ -15,20 +15,90 @@ use crate::types::{
     normalize_external_ids, normalize_indexer_info_hash, tagged_alias_to_sdk,
 };
 
-/// Wrapper to allow `extism::Plugin` inside `Send + Sync` structs.
-///
-/// `extism::Plugin` is `!Send` because wasmtime internals use `!Send` types.
-/// This is safe because we only access the plugin through a `Mutex` inside
-/// `spawn_blocking`, ensuring single-threaded exclusive access.
-struct SendPlugin(extism::Plugin);
-
-// SAFETY: Access is serialized via Mutex and confined to spawn_blocking tasks.
-unsafe impl Send for SendPlugin {}
-
 pub struct WasmIndexerClient {
     descriptor: PluginDescriptor,
     indexer_name: String,
-    plugin: Arc<std::sync::Mutex<SendPlugin>>,
+    worker: IndexerPluginWorker,
+}
+
+struct IndexerPluginWorker {
+    tx: mpsc::Sender<IndexerPluginCommand>,
+}
+
+struct IndexerPluginCommand {
+    input: String,
+    response: tokio::sync::oneshot::Sender<AppResult<String>>,
+}
+
+impl IndexerPluginWorker {
+    fn start(
+        manifest: extism::Manifest,
+        descriptor: &PluginDescriptor,
+        indexer_name: &str,
+    ) -> AppResult<Self> {
+        let (tx, rx) = mpsc::channel::<IndexerPluginCommand>();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let plugin_name = descriptor.name.clone();
+        let indexer_label = indexer_name.to_string();
+        let thread_name = format!("scryer-wasm-indexer-{indexer_name}");
+
+        std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let mut plugin = match build_plugin(manifest) {
+                    Ok(plugin) => {
+                        let _ = ready_tx.send(Ok(()));
+                        plugin
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+
+                while let Ok(command) = rx.recv() {
+                    let start = std::time::Instant::now();
+                    let result = plugin
+                        .call::<&str, String>(EXPORT_INDEXER_SEARCH, &command.input)
+                        .map_err(|e| {
+                            AppError::Repository(format!(
+                                "plugin {EXPORT_INDEXER_SEARCH}() failed: {e}"
+                            ))
+                        });
+                    let elapsed = start.elapsed();
+
+                    tracing::debug!(
+                        plugin = plugin_name.as_str(),
+                        indexer = indexer_label.as_str(),
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "WASM plugin search call completed"
+                    );
+
+                    let _ = command.response.send(result);
+                }
+            })
+            .map_err(|e| AppError::Repository(format!("failed to start plugin worker: {e}")))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self { tx }),
+            Ok(Err(error)) => Err(AppError::Repository(format!(
+                "failed to compile WASM plugin for {indexer_name}: {error}"
+            ))),
+            Err(error) => Err(AppError::Repository(format!(
+                "plugin worker stopped during startup: {error}"
+            ))),
+        }
+    }
+
+    async fn call_search(&self, input: String) -> AppResult<String> {
+        let (response, result) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(IndexerPluginCommand { input, response })
+            .map_err(|_| AppError::Repository("plugin worker stopped".into()))?;
+        result
+            .await
+            .map_err(|_| AppError::Repository("plugin worker stopped".into()))?
+    }
 }
 
 impl WasmIndexerClient {
@@ -39,12 +109,7 @@ impl WasmIndexerClient {
         config: IndexerConfig,
     ) -> Result<Self, AppError> {
         let manifest = build_manifest(&wasm_bytes, &descriptor, &indexer_name, &config);
-        let plugin = build_plugin(manifest).map_err(|e| {
-            AppError::Repository(format!(
-                "failed to compile WASM plugin for {}: {e}",
-                indexer_name
-            ))
-        })?;
+        let worker = IndexerPluginWorker::start(manifest, &descriptor, &indexer_name)?;
 
         info!(
             indexer = indexer_name.as_str(),
@@ -55,7 +120,7 @@ impl WasmIndexerClient {
         Ok(Self {
             descriptor,
             indexer_name,
-            plugin: Arc::new(std::sync::Mutex::new(SendPlugin(plugin))),
+            worker,
         })
     }
 }
@@ -379,35 +444,7 @@ impl IndexerClient for WasmIndexerClient {
 
         tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
 
-        let plugin_name = self.descriptor.name.clone();
-        let indexer_name = self.indexer_name.clone();
-        let plugin = Arc::clone(&self.plugin);
-
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-
-            let start = std::time::Instant::now();
-            let result = guard
-                .0
-                .call::<&str, String>(EXPORT_INDEXER_SEARCH, &input)
-                .map_err(|e| {
-                    AppError::Repository(format!("plugin {EXPORT_INDEXER_SEARCH}() failed: {e}"))
-                });
-            let elapsed = start.elapsed();
-
-            tracing::debug!(
-                plugin = plugin_name.as_str(),
-                indexer = indexer_name.as_str(),
-                elapsed_ms = elapsed.as_millis() as u64,
-                "WASM plugin search call completed"
-            );
-
-            result
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = self.worker.call_search(input).await?;
 
         let response: PluginSearchResponse = decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)?;
 

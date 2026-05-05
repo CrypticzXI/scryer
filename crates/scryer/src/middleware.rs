@@ -14,6 +14,9 @@ use std::net::{IpAddr, SocketAddr};
 
 use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
+use crate::rate_limit::{
+    RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct CorsConfig {
@@ -337,6 +340,7 @@ pub(crate) struct AuthState {
     pub(crate) app: AppUseCase,
     pub(crate) schema: scryer_interface::ApiSchema,
     pub(crate) auth_runtime: AuthRuntimeStateHandle,
+    pub(crate) rate_limiter: ScryerRateLimiter,
 }
 
 /// GraphQL handler that returns a streaming response body.
@@ -354,6 +358,21 @@ pub(crate) async fn graphql_handler(
     let actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
     let mut batch = body.into_inner();
     let response_status = graphql_response_status(&mut batch);
+    let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
+    let rate_limit_key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    let rate_limit_class = classify_graphql(&batch);
+    if let Err(decision) = state
+        .rate_limiter
+        .check_graphql(rate_limit_class, &rate_limit_key)
+    {
+        let batch_response = rate_limited_graphql_response(&decision);
+        let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
+        return Response::builder()
+            .status(response_status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+    }
     let batch = if let Some(user) = actor {
         match batch {
             async_graphql::BatchRequest::Single(req) => {
@@ -611,6 +630,77 @@ fn is_local_network_ip(ip: IpAddr) -> bool {
 
 pub(crate) async fn health_handler() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+pub(crate) async fn rate_limit_http_api(
+    State(rate_limiter): State<ScryerRateLimiter>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if skip_http_rate_limit(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
+
+    let client_ip =
+        request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
+    let key = RateLimitKey::new(client_ip, None);
+    match rate_limiter.check_http_api(&key) {
+        Ok(()) => next.run(request).await,
+        Err(decision) => {
+            let mut response = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: decision.message,
+                }),
+            )
+                .into_response();
+            if let Some(retry_after) = decision.retry_after
+                && let Ok(value) = http::HeaderValue::from_str(&retry_after.as_secs().to_string())
+            {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            response
+        }
+    }
+}
+
+fn skip_http_rate_limit(method: &Method, path: &str) -> bool {
+    matches!(
+        path,
+        "/graphql" | "/graphql/ws" | "/health" | "/metrics" | "/favicon.ico"
+    ) || matches!(method, &Method::GET | &Method::HEAD) && is_static_asset_path(path)
+}
+
+fn is_static_asset_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    let Some((_, extension)) = path.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "avif"
+            | "br"
+            | "css"
+            | "gif"
+            | "gz"
+            | "html"
+            | "ico"
+            | "jpeg"
+            | "jpg"
+            | "js"
+            | "json"
+            | "map"
+            | "png"
+            | "svg"
+            | "txt"
+            | "webmanifest"
+            | "webp"
+            | "woff"
+            | "woff2"
+    )
 }
 
 pub(crate) fn map_app_error(error: AppError) -> Response {

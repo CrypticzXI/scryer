@@ -384,7 +384,7 @@ impl AppUseCase {
         media_file_id: &str,
         language: &str,
     ) -> AppResult<Vec<crate::subtitles::SubtitleMatch>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ViewCatalog)?;
 
         let media_file = self
             .services
@@ -457,7 +457,7 @@ impl AppUseCase {
         ai_translated: bool,
         machine_translated: bool,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require(actor, &Entitlement::ManageConfig)?;
 
         let media_file = self
             .services

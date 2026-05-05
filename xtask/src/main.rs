@@ -2,6 +2,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
+use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,9 +29,10 @@ use std::thread;
 use tempfile::NamedTempFile;
 use toml::Value as TomlValue;
 use toml_edit::{DocumentMut, value};
+use webpki::{EndEntityCert, KeyUsage};
 use x509_cert::{
     Certificate,
-    der::DecodePem,
+    der::{DecodePem, Encode},
     ext::{
         Extension,
         pkix::{SubjectAltName, name::GeneralName},
@@ -75,9 +78,11 @@ const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
+type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
 
 static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
     OnceLock::new();
+static FULCIO_TRUST_ANCHORS: OnceLock<Result<Arc<FulcioTrustAnchors>, String>> = OnceLock::new();
 
 struct BuiltinPluginSpec {
     plugin_id: &'static str,
@@ -492,6 +497,8 @@ struct ReleaseDryRunCache {
     catalog_checksum_sha256: Option<String>,
     validated_steps: Vec<String>,
     cached_builtins_dir: Option<String>,
+    #[serde(default)]
+    cached_builtins_sha256: BTreeMap<String, String>,
     failure_message: Option<String>,
 }
 
@@ -1183,7 +1190,10 @@ fn fetch_catalog_checksum(url: &str) -> Result<String> {
     Ok(sha256_hex(&body))
 }
 
-fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()> {
+fn cache_builtin_artifacts(
+    cache_dir: &Path,
+    builtins: &[PathBuf],
+) -> Result<BTreeMap<String, String>> {
     if cache_dir.exists() {
         fs::remove_dir_all(cache_dir)
             .with_context(|| format!("failed to clear {}", cache_dir.display()))?;
@@ -1191,12 +1201,17 @@ fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()>
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("failed to create {}", cache_dir.display()))?;
 
+    let mut digests = BTreeMap::new();
     for built_wasm in builtins {
         let file_name = built_wasm
             .file_name()
             .ok_or_else(|| anyhow!("missing builtin file name for {}", built_wasm.display()))?;
+        let file_name = file_name.to_string_lossy().into_owned();
+        let bytes = fs::read(built_wasm)
+            .with_context(|| format!("failed to read builtin {}", built_wasm.display()))?;
+        digests.insert(file_name.clone(), sha256_hex(&bytes));
         let cached = cache_dir.join(file_name);
-        fs::copy(built_wasm, &cached).with_context(|| {
+        fs::write(&cached, bytes).with_context(|| {
             format!(
                 "failed to cache builtin {} to {}",
                 built_wasm.display(),
@@ -1205,7 +1220,7 @@ fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()>
         })?;
     }
 
-    Ok(())
+    Ok(digests)
 }
 
 fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
@@ -1218,10 +1233,43 @@ fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
         })
 }
 
-fn restore_builtin_artifacts_from_cache(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()> {
+fn builtin_cache_matches_digests(
+    cache_dir: &Path,
+    builtins: &[PathBuf],
+    expected_digests: &BTreeMap<String, String>,
+) -> bool {
+    !expected_digests.is_empty()
+        && builtin_cache_complete(cache_dir, builtins)
+        && builtins.iter().all(|built_wasm| {
+            let Some(file_name) = built_wasm
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+            else {
+                return false;
+            };
+            let Some(expected) = expected_digests.get(&file_name) else {
+                return false;
+            };
+            fs::read(cache_dir.join(&file_name))
+                .map(|bytes| sha256_hex(&bytes) == *expected)
+                .unwrap_or(false)
+        })
+}
+
+fn restore_builtin_artifacts_from_cache(
+    cache_dir: &Path,
+    builtins: &[PathBuf],
+    expected_digests: &BTreeMap<String, String>,
+) -> Result<()> {
     if !builtin_cache_complete(cache_dir, builtins) {
         bail!(
             "cached builtin artifacts are missing or incomplete under {}",
+            cache_dir.display()
+        );
+    }
+    if !builtin_cache_matches_digests(cache_dir, builtins, expected_digests) {
+        bail!(
+            "cached builtin artifacts under {} differ from dry-run metadata",
             cache_dir.display()
         );
     }
@@ -1270,7 +1318,7 @@ fn release_dry_run_cache_rejection_reason(
         return Some("published plugin catalog checksum changed since dry run".to_string());
     }
     if !builtins_present {
-        return Some("cached builtin artifacts are missing".to_string());
+        return Some("cached builtin artifacts are missing or digest-mismatched".to_string());
     }
     None
 }
@@ -1616,8 +1664,46 @@ fn verify_signed_blob(
         raw,
     )
     .map_err(|error| anyhow!("Sigstore blob signature verification failed: {error}"))?;
+    verify_fulcio_certificate_chain(&cert_pem, &bundle)?;
     verify_signer_identity(&cert_pem, required_signer)?;
     Ok(())
+}
+
+fn verify_fulcio_certificate_chain(cert_pem: &str, bundle: &SignedArtifactBundle) -> Result<()> {
+    let cert = Certificate::from_pem(cert_pem.as_bytes())
+        .map_err(|error| anyhow!("failed to parse Sigstore certificate: {error}"))?;
+    let cert_der = cert
+        .to_der()
+        .map_err(|error| anyhow!("failed to encode Sigstore certificate: {error}"))?;
+    let cert_der = CertificateDer::from(cert_der.as_slice());
+    let end_entity = EndEntityCert::try_from(&cert_der)
+        .map_err(|error| anyhow!("invalid Sigstore certificate: {error}"))?;
+    let verification_time = rekor_integrated_time(bundle.rekor_bundle.payload.integrated_time)?;
+    let trust_anchors = cached_fulcio_trust_anchors()?;
+
+    end_entity
+        .verify_for_usage(
+            webpki::ALL_VERIFICATION_ALGS,
+            trust_anchors.as_slice(),
+            &[],
+            verification_time,
+            KeyUsage::required(ID_KP_CODE_SIGNING.as_bytes()),
+            None,
+            None,
+        )
+        .map_err(|error| {
+            anyhow!("Sigstore Fulcio certificate chain verification failed: {error}")
+        })?;
+
+    Ok(())
+}
+
+fn rekor_integrated_time(integrated_time: i64) -> Result<UnixTime> {
+    let integrated_time =
+        u64::try_from(integrated_time).context("Sigstore Rekor integrated time is negative")?;
+    Ok(UnixTime::since_unix_epoch(std::time::Duration::from_secs(
+        integrated_time,
+    )))
 }
 
 fn cached_rekor_verification_keys() -> Result<Arc<RekorVerificationKeys>> {
@@ -1636,6 +1722,36 @@ fn cached_rekor_verification_keys() -> Result<Arc<RekorVerificationKeys>> {
             parse_rekor_verification_keys(rekor_keys)
                 .map(Arc::new)
                 .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+fn cached_fulcio_trust_anchors() -> Result<Arc<FulcioTrustAnchors>> {
+    FULCIO_TRUST_ANCHORS
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("failed to build Tokio runtime: {error}"))?;
+            let trust_root = runtime
+                .block_on(SigstoreTrustRoot::new(None))
+                .map_err(|error| format!("failed to load Sigstore trust root: {error}"))?;
+            let fulcio_certs = trust_root
+                .fulcio_certs()
+                .map_err(|error| format!("failed to load Sigstore Fulcio certificates: {error}"))?;
+            let anchors = fulcio_certs
+                .iter()
+                .map(|cert| {
+                    webpki::anchor_from_trusted_cert(cert)
+                        .map(|anchor| anchor.to_owned())
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if anchors.is_empty() {
+                return Err("Sigstore Fulcio trust root is empty".to_string());
+            }
+            Ok(Arc::new(anchors))
         })
         .clone()
         .map_err(anyhow::Error::msg)
@@ -2075,6 +2191,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 catalog_checksum_sha256: None,
                 validated_steps: Vec::new(),
                 cached_builtins_dir: Some(initial_cache_dir_relative.clone()),
+                cached_builtins_sha256: BTreeMap::new(),
                 failure_message: Some("dry run did not complete".to_string()),
             },
         )?;
@@ -2096,9 +2213,13 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                         .cached_builtins_dir
                         .as_deref()
                         .map(|dir| ctx.path(dir));
-                    let builtins_present = cached_builtins_dir
-                        .as_ref()
-                        .is_some_and(|dir| builtin_cache_complete(dir, &builtin_plugin_paths));
+                    let builtins_present = cached_builtins_dir.as_ref().is_some_and(|dir| {
+                        builtin_cache_matches_digests(
+                            dir,
+                            &builtin_plugin_paths,
+                            &cache.cached_builtins_sha256,
+                        )
+                    });
                     let expected = ReleaseDryRunExpectations {
                         git_commit: &git_commit,
                         release_args: &release_args,
@@ -2119,6 +2240,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                         restore_builtin_artifacts_from_cache(
                             &cached_builtins_dir,
                             &builtin_plugin_paths,
+                            &cache.cached_builtins_sha256,
                         )?;
                         ok("Reused dry-run cache; skipping builtin rebuild and validations");
                         reused_dry_run_cache = true;
@@ -2200,7 +2322,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                     );
                     let final_cache_dir_relative = relative_to_repo_root(ctx, &final_cache_dir)?;
                     let catalog_checksum_sha256 = fetch_catalog_checksum(&catalog_url)?;
-                    cache_builtin_artifacts(&final_cache_dir, &refreshed_builtin_paths)?;
+                    let cached_builtins_sha256 =
+                        cache_builtin_artifacts(&final_cache_dir, &refreshed_builtin_paths)?;
                     write_release_dry_run_cache(
                         ctx,
                         &ReleaseDryRunCache {
@@ -2217,6 +2340,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                             catalog_checksum_sha256: Some(catalog_checksum_sha256),
                             validated_steps,
                             cached_builtins_dir: Some(final_cache_dir_relative),
+                            cached_builtins_sha256,
                             failure_message: None,
                         },
                     )?;
@@ -3324,6 +3448,10 @@ mod tests {
             catalog_checksum_sha256: Some("deadbeef".to_string()),
             validated_steps: vec!["builtin_refresh".to_string()],
             cached_builtins_dir: Some("tmp/cache".to_string()),
+            cached_builtins_sha256: BTreeMap::from([(
+                "nzbgeek.wasm".to_string(),
+                "abc123".to_string(),
+            )]),
             failure_message: None,
         }
     }
@@ -3515,7 +3643,7 @@ mod tests {
         );
         assert_eq!(
             reason.as_deref(),
-            Some("cached builtin artifacts are missing")
+            Some("cached builtin artifacts are missing or digest-mismatched")
         );
     }
 

@@ -2,7 +2,7 @@ use std::{path::Path, sync::LazyLock};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use tokio::fs;
+use tokio::{fs, io::AsyncReadExt};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 use whatlang::{Lang, detect};
 
@@ -326,9 +326,10 @@ fn text_probe_capable_extension(extension: &str) -> bool {
 }
 
 async fn collect_fingerprint(path: &Path) -> AppResult<ExternalSubtitleFingerprint> {
-    let metadata = fs::metadata(path)
+    let metadata = fs::symlink_metadata(path)
         .await
         .map_err(|error| AppError::Repository(format!("cannot stat subtitle file: {error}")))?;
+    validate_regular_subtitle_sidecar(&metadata)?;
     let size_bytes = i64::try_from(metadata.len())
         .map_err(|_| AppError::Repository("subtitle file is too large to fingerprint".into()))?;
     let modified_at = metadata
@@ -343,6 +344,21 @@ async fn collect_fingerprint(path: &Path) -> AppResult<ExternalSubtitleFingerpri
     })
 }
 
+fn validate_regular_subtitle_sidecar(metadata: &std::fs::Metadata) -> AppResult<()> {
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(AppError::Validation(
+            "subtitle sidecar must not be a symlink".into(),
+        ));
+    }
+    if !file_type.is_file() {
+        return Err(AppError::Validation(
+            "subtitle sidecar must be a regular file".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn cache_matches_fingerprint(
     cache_entry: &ExternalSubtitleProbeCacheEntry,
     fingerprint: &ExternalSubtitleFingerprint,
@@ -353,9 +369,41 @@ fn cache_matches_fingerprint(
 }
 
 async fn read_subtitle_to_string(path: &Path) -> AppResult<DecodedSubtitleText> {
-    let bytes = fs::read(path)
+    let metadata = fs::symlink_metadata(path)
+        .await
+        .map_err(|error| AppError::Repository(format!("cannot stat subtitle file: {error}")))?;
+    validate_regular_subtitle_sidecar(&metadata)?;
+    if metadata.len() > MAX_TEXT_PROBE_SIZE_BYTES as u64 {
+        return Err(AppError::Validation(
+            "subtitle sidecar exceeds content probe size limit".into(),
+        ));
+    }
+
+    let file = fs::File::open(path)
+        .await
+        .map_err(|error| AppError::Repository(format!("cannot open subtitle file: {error}")))?;
+    let opened_metadata = file
+        .metadata()
+        .await
+        .map_err(|error| AppError::Repository(format!("cannot stat subtitle file: {error}")))?;
+    validate_regular_subtitle_sidecar(&opened_metadata)?;
+    if opened_metadata.len() > MAX_TEXT_PROBE_SIZE_BYTES as u64 {
+        return Err(AppError::Validation(
+            "subtitle sidecar exceeds content probe size limit".into(),
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
+    let mut reader = file.take(MAX_TEXT_PROBE_SIZE_BYTES as u64 + 1);
+    reader
+        .read_to_end(&mut bytes)
         .await
         .map_err(|error| AppError::Repository(format!("cannot read subtitle file: {error}")))?;
+    if bytes.len() > MAX_TEXT_PROBE_SIZE_BYTES as usize {
+        return Err(AppError::Validation(
+            "subtitle sidecar exceeds content probe size limit".into(),
+        ));
+    }
 
     if let Ok(text) = std::str::from_utf8(&bytes) {
         return Ok(DecodedSubtitleText {

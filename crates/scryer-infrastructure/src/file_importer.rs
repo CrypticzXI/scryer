@@ -1,7 +1,12 @@
 use async_trait::async_trait;
 use scryer_application::{AppError, AppResult, FileImporter};
 use scryer_domain::{ImportFileResult, ImportStrategy};
+use std::io::{self, Write};
 use std::path::Path;
+use std::time::SystemTime;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 pub struct FsFileImporter;
 
@@ -23,6 +28,82 @@ fn is_cross_device_error(err: &std::io::Error) -> bool {
     matches!(err.raw_os_error(), Some(18) | Some(17))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+fn fingerprint_regular_file(path: &Path) -> AppResult<FileFingerprint> {
+    let link_meta = std::fs::symlink_metadata(path).map_err(|e| {
+        AppError::Repository(format!(
+            "import path not found or inaccessible: {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let file_type = link_meta.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(AppError::Repository(format!(
+            "import path is not a regular file: {}",
+            path.display()
+        )));
+    }
+    fingerprint_from_metadata(&link_meta)
+}
+
+fn fingerprint_from_metadata(metadata: &std::fs::Metadata) -> AppResult<FileFingerprint> {
+    if !metadata.is_file() {
+        return Err(AppError::Repository(
+            "import path is not a regular file".into(),
+        ));
+    }
+    Ok(FileFingerprint {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(unix)]
+        ino: metadata.ino(),
+    })
+}
+
+fn ensure_same_file(path: &Path, expected: &FileFingerprint) -> AppResult<()> {
+    let actual = fingerprint_regular_file(path)?;
+    if &actual != expected {
+        return Err(AppError::Repository(format!(
+            "import source changed during import: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_same_file_identity(path: &Path, expected: &FileFingerprint) -> AppResult<()> {
+    let actual = fingerprint_regular_file(path)?;
+    if actual.dev != expected.dev || actual.ino != expected.ino {
+        return Err(AppError::Repository(format!(
+            "import destination is not linked to the expected source: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_same_file_identity(path: &Path, expected: &FileFingerprint) -> AppResult<()> {
+    ensure_same_file(path, expected)
+}
+
+fn io_other(error: impl ToString) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, error.to_string())
+}
+
 #[async_trait]
 impl FileImporter for FsFileImporter {
     async fn import_file(&self, source: &Path, dest: &Path) -> AppResult<ImportFileResult> {
@@ -31,22 +112,8 @@ impl FileImporter for FsFileImporter {
 
         tokio::task::spawn_blocking(move || {
             // Validate source exists and is a regular file
-            let source_meta = std::fs::metadata(&source).map_err(|e| {
-                AppError::Repository(format!(
-                    "import source not found or inaccessible: {}: {}",
-                    source.display(),
-                    e
-                ))
-            })?;
-
-            if !source_meta.is_file() {
-                return Err(AppError::Repository(format!(
-                    "import source is not a regular file: {}",
-                    source.display()
-                )));
-            }
-
-            let size = source_meta.len();
+            let source_fingerprint = fingerprint_regular_file(&source)?;
+            let size = source_fingerprint.len;
             if size == 0 {
                 return Err(AppError::Repository(format!(
                     "import source is zero bytes: {}",
@@ -68,6 +135,12 @@ impl FileImporter for FsFileImporter {
             // Attempt hard link first
             match std::fs::hard_link(&source, &dest) {
                 Ok(()) => {
+                    if let Err(error) = ensure_same_file(&source, &source_fingerprint)
+                        .and_then(|_| ensure_same_file_identity(&dest, &source_fingerprint))
+                    {
+                        let _ = std::fs::remove_file(&dest);
+                        return Err(error);
+                    }
                     // Verify destination exists and size matches
                     match std::fs::metadata(&dest) {
                         Ok(dest_meta) if dest_meta.len() == size => {
@@ -115,13 +188,21 @@ impl FileImporter for FsFileImporter {
             let temp_dest = dest.with_extension("tmp_import");
 
             let copy_result = (|| -> Result<(), std::io::Error> {
-                // Copy to temp file
-                std::fs::copy(&source, &temp_dest)?;
+                ensure_same_file(&source, &source_fingerprint).map_err(io_other)?;
+                let mut source_file = std::fs::File::open(&source)?;
+                let source_open_fingerprint =
+                    fingerprint_from_metadata(&source_file.metadata()?).map_err(io_other)?;
+                if source_open_fingerprint != source_fingerprint {
+                    return Err(io_other("import source changed before copy"));
+                }
 
-                // Fsync the temp file
-                let file = std::fs::File::open(&temp_dest)?;
-                file.sync_all()?;
-                drop(file);
+                let mut temp_file = std::fs::File::create(&temp_dest)?;
+                std::io::copy(&mut source_file, &mut temp_file)?;
+                temp_file.flush()?;
+                temp_file.sync_all()?;
+                drop(temp_file);
+
+                ensure_same_file(&source, &source_fingerprint).map_err(io_other)?;
 
                 // Atomic rename (same filesystem)
                 std::fs::rename(&temp_dest, &dest)?;
@@ -131,17 +212,15 @@ impl FileImporter for FsFileImporter {
 
             match copy_result {
                 Ok(()) => {
+                    ensure_same_file(&source, &source_fingerprint)?;
                     // Verify destination size matches
-                    let dest_meta = std::fs::metadata(&dest).map_err(|e| {
-                        AppError::Repository(format!("copy succeeded but dest stat failed: {}", e))
-                    })?;
+                    let dest_fingerprint = fingerprint_regular_file(&dest)?;
 
-                    if dest_meta.len() != size {
+                    if dest_fingerprint.len != size {
                         let _ = std::fs::remove_file(&dest);
                         return Err(AppError::Repository(format!(
                             "copy size mismatch: source={} dest={}",
-                            size,
-                            dest_meta.len()
+                            size, dest_fingerprint.len
                         )));
                     }
 

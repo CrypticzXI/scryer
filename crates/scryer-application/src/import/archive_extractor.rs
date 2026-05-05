@@ -5,7 +5,8 @@
 //! archives and `sevenz-rust2` for 7z/zip.
 
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::io::BufWriter;
+use std::path::{Component, Path, PathBuf};
 
 use crate::{AppError, AppResult};
 use tracing::info;
@@ -205,16 +206,16 @@ fn extract_rar(
         if member.is_directory {
             continue;
         }
-        let safe_name = weaver_rar::sanitize_path(&member.name);
-        let dest = output_dir.join(&safe_name);
+        let dest = safe_archive_output_path(output_dir, &member.name)?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 AppError::Repository(format!("failed to create directory for extraction: {e}"))
             })?;
+            ensure_path_under_output(parent, output_dir)?;
         }
 
         info!(
-            member = safe_name.as_str(),
+            member = member.name.as_str(),
             size = member.unpacked_size,
             "extracting RAR member"
         );
@@ -222,7 +223,10 @@ fn extract_rar(
         archive
             .extract_member_to_file(idx, &options, None, &dest)
             .map_err(|e| {
-                AppError::Repository(format!("failed to extract RAR member '{}': {e}", safe_name))
+                AppError::Repository(format!(
+                    "failed to extract RAR member '{}': {e}",
+                    member.name
+                ))
             })?;
     }
 
@@ -237,10 +241,89 @@ fn extract_sevenz(archive_path: &Path, output_dir: &Path, password: Option<&str>
         Some(s) => sevenz_rust2::Password::from(s),
         None => sevenz_rust2::Password::empty(),
     };
-    sevenz_rust2::decompress_with_password(file, output_dir, pw)
-        .map_err(|e| AppError::Repository(format!("archive extraction failed: {e}")))?;
+    sevenz_rust2::decompress_with_extract_fn_and_password(
+        file,
+        output_dir,
+        pw,
+        |entry, reader, _dest| {
+            let dest = safe_archive_output_path(output_dir, entry.name())
+                .map_err(sevenz_extraction_error)?;
+            if entry.is_directory() {
+                std::fs::create_dir_all(&dest)?;
+                ensure_path_under_output(&dest, output_dir).map_err(sevenz_extraction_error)?;
+                return Ok(true);
+            }
+
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+                ensure_path_under_output(parent, output_dir).map_err(sevenz_extraction_error)?;
+            }
+            let file = File::create(&dest)?;
+            if entry.size() > 0 {
+                let mut writer = BufWriter::new(file);
+                std::io::copy(reader, &mut writer)?;
+            }
+            Ok(true)
+        },
+    )
+    .map_err(|e| AppError::Repository(format!("archive extraction failed: {e}")))?;
 
     Ok(())
+}
+
+fn safe_archive_output_path(output_dir: &Path, entry_name: &str) -> AppResult<PathBuf> {
+    if entry_name.trim().is_empty() || entry_name.contains('\\') {
+        return Err(AppError::Validation(format!(
+            "unsafe archive entry path: {entry_name}"
+        )));
+    }
+
+    let mut relative = PathBuf::new();
+    for component in Path::new(entry_name).components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(AppError::Validation(format!(
+                    "unsafe archive entry path: {entry_name}"
+                )));
+            }
+        }
+    }
+
+    if relative.as_os_str().is_empty() {
+        return Err(AppError::Validation(format!(
+            "unsafe archive entry path: {entry_name}"
+        )));
+    }
+
+    Ok(output_dir.join(relative))
+}
+
+fn ensure_path_under_output(path: &Path, output_dir: &Path) -> AppResult<()> {
+    let output_root = output_dir.canonicalize().map_err(|e| {
+        AppError::Repository(format!(
+            "failed to canonicalize extraction directory {}: {e}",
+            output_dir.display()
+        ))
+    })?;
+    let canonical = path.canonicalize().map_err(|e| {
+        AppError::Repository(format!(
+            "failed to canonicalize extraction path {}: {e}",
+            path.display()
+        ))
+    })?;
+    if !canonical.starts_with(&output_root) {
+        return Err(AppError::Validation(format!(
+            "archive entry escapes extraction directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn sevenz_extraction_error(error: AppError) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::Other(std::borrow::Cow::Owned(error.to_string()))
 }
 
 /// Clean up the extraction directory after import completes.
@@ -310,6 +393,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("movie.mkv"), b"video").unwrap();
         assert!(find_primary_archive(dir.path()).is_none());
+    }
+
+    #[test]
+    fn archive_output_path_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_archive_output_path(dir.path(), "../movie.mkv").is_err());
+        assert!(safe_archive_output_path(dir.path(), "/tmp/movie.mkv").is_err());
+        assert!(safe_archive_output_path(dir.path(), r"nested\movie.mkv").is_err());
+    }
+
+    #[test]
+    fn archive_output_path_allows_nested_relative_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = safe_archive_output_path(dir.path(), "Season 1/movie.mkv").unwrap();
+        assert_eq!(path, dir.path().join("Season 1").join("movie.mkv"));
     }
 
     #[test]

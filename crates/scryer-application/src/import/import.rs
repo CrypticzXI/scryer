@@ -11,7 +11,7 @@ use crate::{
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
     parse_release_metadata,
     polling_worker::PollingWorker,
-    render_rename_template, require,
+    render_rename_template, require, sanitize_filesystem_component,
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
@@ -1023,7 +1023,7 @@ async fn import_movie_download(
         .or(title.year)
         .map(|y| format!(" ({})", y))
         .unwrap_or_default();
-    let title_folder = format!("{}{}", title.name, year_str);
+    let title_folder = sanitize_filesystem_component(&format!("{}{}", title.name, year_str));
     let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
 
     if title.folder_path.is_none() {
@@ -1519,14 +1519,14 @@ async fn import_interstitial_movie_download(
         .interstitial_season_episode
         .as_deref()
         .unwrap_or("S00E01");
-    let rendered_filename = format!(
+    let rendered_filename = sanitize_filesystem_component(&format!(
         "{} - {} - {}.{}",
         title.name, season_episode, movie.name, ext
-    );
+    ));
 
     // Build destination: <media_root>/<title folder>/Season 00/<filename>
     let year_str = title.year.map(|y| format!(" ({})", y)).unwrap_or_default();
-    let title_folder = format!("{}{}", title.name, year_str);
+    let title_folder = sanitize_filesystem_component(&format!("{}{}", title.name, year_str));
     let dest_path = PathBuf::from(&media_root)
         .join(&title_folder)
         .join("Season 00")
@@ -2071,7 +2071,7 @@ async fn import_series_download(
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
     let (media_root, rename_template) = resolve_import_paths(app, title).await?;
-    let title_folder = title.name.clone();
+    let title_folder = sanitize_filesystem_component(&title.name);
     let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
 
     if title.folder_path.is_none() {
@@ -4258,7 +4258,7 @@ pub async fn execute_manual_import(
         .ok_or_else(|| AppError::NotFound(format!("title not found: {}", title_id)))?;
 
     let (media_root, rename_template) = resolve_import_paths(app, &title).await?;
-    let title_folder = title.name.clone();
+    let title_folder = sanitize_filesystem_component(&title.name);
     let quality_profile = resolve_import_quality_profile(app, &title).await;
 
     let mut results = Vec::new();

@@ -65,6 +65,7 @@ pub struct RequestPolicy {
     pub max_retries: u32,
     pub base_backoff: Duration,
     pub max_backoff: Duration,
+    pub max_retry_after: Duration,
 }
 
 impl RequestPolicy {
@@ -86,6 +87,7 @@ impl RequestPolicy {
             max_retries,
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
+            max_retry_after: default_max_retry_after(),
         }
     }
 
@@ -118,6 +120,11 @@ impl RequestPolicy {
     pub fn with_backoff(mut self, base_backoff: Duration, max_backoff: Duration) -> Self {
         self.base_backoff = base_backoff;
         self.max_backoff = max_backoff;
+        self
+    }
+
+    pub fn with_max_retry_after(mut self, max_retry_after: Duration) -> Self {
+        self.max_retry_after = max_retry_after;
         self
     }
 
@@ -355,6 +362,7 @@ impl OutboundHttpClient {
                     let fallback_backoff = policy.backoff_for_retry(retry_index);
                     let (candidate_delay, candidate_source) =
                         retry_after_delay(response.headers(), fallback_backoff);
+                    let candidate_delay = candidate_delay.min(policy.max_retry_after);
                     let (effective_delay, effective_source) = self
                         .registry
                         .record_cooldown(&policy.scope, candidate_delay, candidate_source)
@@ -481,6 +489,16 @@ fn retry_after_delay(
         return (fallback_delay, RetryAfterSource::FallbackBackoff);
     };
     parse_retry_after(raw_value).unwrap_or((fallback_delay, RetryAfterSource::FallbackBackoff))
+}
+
+fn default_max_retry_after() -> Duration {
+    const DEFAULT_MAX_RETRY_AFTER_SECS: u64 = 5 * 60;
+    std::env::var("SCRYER_OUTBOUND_RETRY_AFTER_MAX_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_MAX_RETRY_AFTER_SECS))
 }
 
 pub fn parse_retry_after(raw_value: &str) -> Option<(Duration, RetryAfterSource)> {

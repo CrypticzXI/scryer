@@ -16,6 +16,7 @@ impl AppUseCase {
 
         let base_url =
             crate::app_usecase_integration::resolve_indexer_base_url(base_url, config_json)?;
+        validate_test_flight_url(&base_url)?;
 
         let provider = self
             .services
@@ -83,6 +84,25 @@ impl AppUseCase {
 
         Ok(())
     }
+}
+
+fn validate_test_flight_url(raw: &str) -> AppResult<()> {
+    let url = url::Url::parse(raw)
+        .map_err(|error| AppError::Validation(format!("invalid base URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::Validation(
+            "base URL must use http or https".into(),
+        ));
+    }
+    if url.host_str().is_none() {
+        return Err(AppError::Validation("base URL must include a host".into()));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Validation(
+            "base URL must not include embedded credentials".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

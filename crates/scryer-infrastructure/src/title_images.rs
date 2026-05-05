@@ -69,6 +69,7 @@ impl SqliteTitleImageProcessor {
         &self,
         source_url: &str,
     ) -> AppResult<(Vec<u8>, Option<String>, Option<String>)> {
+        let source_url = validate_title_image_source_url(source_url)?;
         let scope = title_image_scope(source_url);
         let response = self
             .outbound_http
@@ -231,6 +232,27 @@ impl SqliteTitleImageProcessor {
     ) -> AppResult<TitleImageReplacement> {
         self.process_bytes(kind, source_url, bytes, None, None)
     }
+}
+
+fn validate_title_image_source_url(source_url: &str) -> AppResult<&str> {
+    let parsed = url::Url::parse(source_url)
+        .map_err(|error| AppError::Validation(format!("invalid title image URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(AppError::Validation(
+            "title image URL must use http or https".into(),
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(AppError::Validation(
+            "title image URL must include a host".into(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::Validation(
+            "title image URL must not include credentials".into(),
+        ));
+    }
+    Ok(source_url)
 }
 
 fn title_image_scope(source_url: &str) -> String {

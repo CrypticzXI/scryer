@@ -310,10 +310,6 @@ function deriveQueueRowPresentation(
     queueItem.attentionRequired ||
     queueStateAttention[stateKey] ||
     queueStateAttention[displayStateKey];
-  const stageLabel =
-    queueItem.attentionReason?.trim() ??
-    queueItem.trackedStatusMessages[0]?.trim() ??
-    "";
   const postProcessingStatusKey =
     stateKey === "verifying"
       ? "queue.state.verifying"

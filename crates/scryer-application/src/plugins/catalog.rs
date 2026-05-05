@@ -1,9 +1,12 @@
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use base64::Engine;
+use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
+use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sigstore::{
@@ -14,9 +17,10 @@ use sigstore::{
 use tokio::sync::Semaphore;
 use tracing::debug;
 use url::Url;
+use webpki::{EndEntityCert, KeyUsage};
 use x509_cert::{
     Certificate,
-    der::DecodePem,
+    der::{DecodePem, Encode},
     ext::{
         Extension,
         pkix::{SubjectAltName, name::GeneralName},
@@ -36,9 +40,11 @@ const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
+type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
 
 static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
     OnceLock::new();
+static FULCIO_TRUST_ANCHORS: OnceLock<Result<Arc<FulcioTrustAnchors>, String>> = OnceLock::new();
 
 static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 
@@ -555,8 +561,48 @@ fn verify_signed_blob_blocking(
     .map_err(|e| {
         AppError::Validation(format!("Sigstore blob signature verification failed: {e}"))
     })?;
+    verify_fulcio_certificate_chain(&cert_pem, &bundle)?;
     verify_signer_identity(&cert_pem, required_signer)?;
     Ok(())
+}
+
+fn verify_fulcio_certificate_chain(cert_pem: &str, bundle: &SignedArtifactBundle) -> AppResult<()> {
+    let cert = Certificate::from_pem(cert_pem.as_bytes())
+        .map_err(|e| AppError::Validation(format!("failed to parse Sigstore certificate: {e}")))?;
+    let cert_der = cert
+        .to_der()
+        .map_err(|e| AppError::Validation(format!("failed to encode Sigstore certificate: {e}")))?;
+    let cert_der = CertificateDer::from(cert_der.as_slice());
+    let end_entity = EndEntityCert::try_from(&cert_der)
+        .map_err(|e| AppError::Validation(format!("invalid Sigstore certificate: {e}")))?;
+    let verification_time = rekor_integrated_time(bundle.rekor_bundle.payload.integrated_time)?;
+    let trust_anchors = cached_fulcio_trust_anchors()?;
+
+    end_entity
+        .verify_for_usage(
+            webpki::ALL_VERIFICATION_ALGS,
+            trust_anchors.as_slice(),
+            &[],
+            verification_time,
+            KeyUsage::required(ID_KP_CODE_SIGNING.as_bytes()),
+            None,
+            None,
+        )
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "Sigstore Fulcio certificate chain verification failed: {e}"
+            ))
+        })?;
+
+    Ok(())
+}
+
+fn rekor_integrated_time(integrated_time: i64) -> AppResult<UnixTime> {
+    let integrated_time = u64::try_from(integrated_time)
+        .map_err(|_| AppError::Validation("Sigstore Rekor integrated time is negative".into()))?;
+    Ok(UnixTime::since_unix_epoch(Duration::from_secs(
+        integrated_time,
+    )))
 }
 
 fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
@@ -571,6 +617,32 @@ fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
             parse_rekor_verification_keys(rekor_keys)
                 .map(Arc::new)
                 .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(AppError::Repository)
+}
+
+fn cached_fulcio_trust_anchors() -> AppResult<Arc<FulcioTrustAnchors>> {
+    FULCIO_TRUST_ANCHORS
+        .get_or_init(|| {
+            let trust_root = tokio::runtime::Handle::current()
+                .block_on(SigstoreTrustRoot::new(None))
+                .map_err(|e| format!("failed to load Sigstore trust root: {e}"))?;
+            let fulcio_certs = trust_root
+                .fulcio_certs()
+                .map_err(|e| format!("failed to load Sigstore Fulcio certificates: {e}"))?;
+            let anchors = fulcio_certs
+                .iter()
+                .map(|cert| {
+                    webpki::anchor_from_trusted_cert(cert)
+                        .map(|anchor| anchor.to_owned())
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if anchors.is_empty() {
+                return Err("Sigstore Fulcio trust root is empty".to_string());
+            }
+            Ok(Arc::new(anchors))
         })
         .clone()
         .map_err(AppError::Repository)

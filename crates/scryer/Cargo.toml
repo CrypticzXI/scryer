@@ -32,6 +32,8 @@ toml = { workspace = true }
 metrics-exporter-prometheus = "0.18"
 directories = "6"
 open = "5"
+governor = { workspace = true }
+ring = { workspace = true }
 
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }

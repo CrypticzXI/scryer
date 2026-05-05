@@ -1974,7 +1974,7 @@ fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -
     }
 }
 
-fn sanitize_filesystem_component(raw: &str) -> String {
+pub fn sanitize_filesystem_component(raw: &str) -> String {
     let mut sanitized = String::with_capacity(raw.len());
     for ch in raw.chars() {
         if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {

@@ -180,6 +180,7 @@ pub use library::rename::{
     LibraryRenamer, NullLibraryRenamer, RenameApplyItemResult, RenameApplyResult,
     RenameApplyStatus, RenameCollisionPolicy, RenameMissingMetadataPolicy, RenamePlan,
     RenamePlanItem, RenameWriteAction, build_rename_plan_fingerprint, render_rename_template,
+    sanitize_filesystem_component,
 };
 pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,

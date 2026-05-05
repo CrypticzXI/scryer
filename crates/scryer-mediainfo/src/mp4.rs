@@ -20,6 +20,8 @@ const HDR10PLUS_SAMPLE_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 const MP4_DOVI_TYPES: [&str; 2] = ["dvcC", "dvvC"];
 const MOV_TKHD_FLAG_ENABLED: u32 = 0x000001;
 const MP4_BOX_MAX_DEPTH: usize = 10;
+const MP4_KEEP_BOX_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const MP4_METADATA_OUTPUT_MAX_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug)]
 struct PreparedMp4 {
@@ -153,10 +155,27 @@ fn prepare_mp4_metadata_from_reader<R: Read + Seek>(
         let keep = should_copy_top_level_box(&header.name);
 
         if keep {
+            if header.size > MP4_KEEP_BOX_MAX_BYTES {
+                return Err(MediaInfoError::Parse(format!(
+                    "MP4 metadata box {} exceeds parser budget",
+                    fourcc_to_string(header.name)
+                )));
+            }
+            let box_size = usize::try_from(header.size).map_err(|_| {
+                MediaInfoError::Parse(format!(
+                    "MP4 metadata box {} is too large for this platform",
+                    fourcc_to_string(header.name)
+                ))
+            })?;
+            if output.len().saturating_add(box_size) > MP4_METADATA_OUTPUT_MAX_BYTES {
+                return Err(MediaInfoError::Parse(
+                    "MP4 metadata output exceeds parser budget".into(),
+                ));
+            }
             reader
                 .seek(SeekFrom::Start(start))
                 .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-            let mut buf = vec![0_u8; header.size as usize];
+            let mut buf = vec![0_u8; box_size];
             reader
                 .read_exact(&mut buf)
                 .map_err(|e| MediaInfoError::Io(e.to_string()))?;
@@ -1093,6 +1112,14 @@ fn read_box_header<R: Read>(
             "invalid MP4 box size {} for {}",
             size,
             fourcc_to_string(name)
+        )));
+    }
+    if size > available {
+        return Err(MediaInfoError::Parse(format!(
+            "MP4 box {} declares {} bytes with only {} bytes remaining",
+            fourcc_to_string(name),
+            size,
+            available
         )));
     }
 

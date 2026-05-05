@@ -394,7 +394,18 @@ fn anibridge_scoped_external_ids_from_mappings(
 
         let mut covered_by_season = HashMap::<i32, std::collections::BTreeSet<i32>>::new();
         for episode_mapping in &mapping.episode_mappings {
-            for episode_number in episode_mapping.episode_start..=episode_mapping.episode_end {
+            if episode_mapping.episode_start > episode_mapping.episode_end {
+                continue;
+            }
+            let Some(known_episode_numbers) =
+                known_episodes_by_season.get(&episode_mapping.tvdb_season)
+            else {
+                continue;
+            };
+            for episode_number in known_episode_numbers
+                .range(episode_mapping.episode_start..=episode_mapping.episode_end)
+                .copied()
+            {
                 let Some(episode) =
                     episodes_by_number.get(&(episode_mapping.tvdb_season, episode_number))
                 else {

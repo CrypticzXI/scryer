@@ -1611,6 +1611,10 @@ impl QueryRoot {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<PostProcessingScriptPayload>> {
         let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&Entitlement::ManageConfig) {
+            return Err(Error::new("insufficient entitlements"));
+        }
 
         let scripts = app
             .list_post_processing_scripts()
@@ -1629,6 +1633,10 @@ impl QueryRoot {
         limit: Option<i32>,
     ) -> GqlResult<Vec<PostProcessingScriptRunPayload>> {
         let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&Entitlement::ManageConfig) {
+            return Err(Error::new("insufficient entitlements"));
+        }
 
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let runs = app
@@ -2125,7 +2133,10 @@ impl QueryRoot {
         ctx: &Context<'_>,
         title_id: String,
     ) -> GqlResult<Vec<ExternalSubtitlePayload>> {
-        let _actor = actor_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
+            return Err(Error::new("insufficient entitlements"));
+        }
         let app = app_from_ctx(ctx)?;
         let downloads = app
             .list_external_subtitles_for_title(&title_id)
@@ -2162,7 +2173,10 @@ impl QueryRoot {
         ctx: &Context<'_>,
         media_file_id: String,
     ) -> GqlResult<Vec<ExternalSubtitleBlocklistEntryPayload>> {
-        let _actor = actor_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
+            return Err(Error::new("insufficient entitlements"));
+        }
         let app = app_from_ctx(ctx)?;
         let entries = app
             .list_external_subtitle_blocklist_for_media_file(&media_file_id)

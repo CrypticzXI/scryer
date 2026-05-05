@@ -6,6 +6,7 @@ mod base_path;
 mod init;
 mod log_buffer;
 mod middleware;
+mod rate_limit;
 mod settings_bootstrap;
 mod splash;
 mod ui_assets;
@@ -54,7 +55,9 @@ use admin_routes::{
 use base_path::BasePath;
 use middleware::{
     AuthState, CorsConfig, cors_handler, graphql_handler, graphql_ws_handler, health_handler,
+    rate_limit_http_api,
 };
+use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
     migrate_legacy_download_client_default_category_settings,
@@ -396,7 +399,7 @@ async fn bootstrap_application(
     // Bootstrap encryption master key (env > keystore > legacy DB migration > auto-generate).
     let t = std::time::Instant::now();
     let encryption_key =
-        scryer_infrastructure::encryption::ensure_encryption_key(&db, Some(data_dir))
+        scryer_infrastructure::encryption::ensure_encryption_key(&db, Some(data_dir.clone()))
             .await
             .map_err(|e| format!("failed to ensure encryption master key: {e}"))?;
 
@@ -606,17 +609,14 @@ async fn bootstrap_application(
         .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
         .filter(|s| !s.is_empty());
 
-    // JWT signing salt: use the registration secret (baked into the binary) so an
-    // offline DB dump alone cannot forge tokens.  Fall back to a static dev salt
-    // when no registration secret is configured.
+    // JWT signing salt: use the registration secret (baked into the binary) when
+    // available. Otherwise create a persistent per-install secret beside app data
+    // so tokens cannot be forged from a hardcoded fallback.
     let jwt_signing_salt = match &smg_registration_secret {
         Some(secret) => secret.clone(),
         None => {
-            tracing::warn!(
-                "no registration secret available — using static dev salt for JWT signing. \
-                 Set SCRYER_SMG_REGISTRATION_SECRET for production use."
-            );
-            "scryer-jwt-dev".to_string()
+            tracing::warn!("no SMG registration secret available; using persistent local JWT salt");
+            load_or_create_persistent_jwt_signing_salt(&data_dir)?
         }
     };
 
@@ -901,10 +901,12 @@ async fn bootstrap_application(
         tracing::warn!("running with authentication disabled; all requests act as admin");
     }
 
+    let rate_limiter = ScryerRateLimiter::from_env();
     let auth_state = AuthState {
         app: app_use_case.clone(),
         schema: schema.clone(),
         auth_runtime: auth_runtime.clone(),
+        rate_limiter: rate_limiter.clone(),
     };
 
     let cors_for_layer = cors.clone();
@@ -951,6 +953,10 @@ async fn bootstrap_application(
             ),
         )
         .fallback(get(ui_fallback))
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_http_api,
+        ))
         .layer(CompressionLayer::new().zstd(true).br(true).gzip(true));
 
     if let Some(ref handle) = metrics_handle {
@@ -1206,6 +1212,61 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn load_or_create_persistent_jwt_signing_salt(data_dir: &Path) -> std::io::Result<String> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    use std::io::Write;
+
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("jwt-signing-secret");
+    match std::fs::read_to_string(&path) {
+        Ok(existing) => {
+            let existing = existing.trim();
+            if !existing.is_empty() {
+                return Ok(existing.to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let rng = SystemRandom::new();
+    let mut bytes = [0_u8; 32];
+    rng.fill(&mut bytes)
+        .map_err(|_| std::io::Error::other("failed to generate JWT signing secret"))?;
+    let secret = format!("scryer-jwt-v1-{}", hex_bytes(&bytes));
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(secret.as_bytes())?;
+            file.write_all(b"\n")?;
+            Ok(secret)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read_to_string(&path)?;
+            let existing = existing.trim();
+            if existing.is_empty() {
+                Err(std::io::Error::other("JWT signing secret file is empty"))
+            } else {
+                Ok(existing.to_string())
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn parse_env_bool_value(raw: &str) -> Option<bool> {

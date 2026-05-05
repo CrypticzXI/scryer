@@ -27,6 +27,8 @@ const DIRECT_PREFIX_BASE_RANK: i64 = 1_000;
 const DIRECT_CONTAINS_BASE_RANK: i64 = 2_000;
 const TYPO_BASE_RANK: i64 = 3_000;
 const TYPO_TOP_LIMIT: i64 = 50;
+const MAX_NORMALIZED_QUERY_CHARS: usize = 512;
+const MAX_TYPO_QUERY_TOKENS: usize = 16;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TitleSearchPlan {
@@ -159,6 +161,13 @@ fn facet_langid(facet: &MediaFacet) -> i64 {
     }
 }
 
+fn truncate_chars(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    value.chars().take(max_chars).collect()
+}
+
 fn max_typo_distance(query_char_count: usize) -> i64 {
     match query_char_count {
         0..=5 => 100,
@@ -204,7 +213,10 @@ pub(crate) fn build_title_search_plan(
     facet: Option<MediaFacet>,
     query: &str,
 ) -> Option<TitleSearchPlan> {
-    let normalized_query = normalize_title_search_text(query);
+    let normalized_query = truncate_chars(
+        normalize_title_search_text(query),
+        MAX_NORMALIZED_QUERY_CHARS,
+    );
     if normalized_query.is_empty() {
         return None;
     }
@@ -212,6 +224,7 @@ pub(crate) fn build_title_search_plan(
     let query_tokens = normalized_query
         .split_whitespace()
         .filter(|token| token.chars().count() >= 4)
+        .take(MAX_TYPO_QUERY_TOKENS)
         .map(str::to_string)
         .collect::<Vec<_>>();
     let facets = facet

@@ -215,6 +215,7 @@ impl ConfigMutations {
 
         let base_url = scryer_infrastructure::resolve_base_url_from_config_json(&config_json)
             .ok_or_else(|| Error::new("cannot compute base URL from config — host is required"))?;
+        validate_test_flight_url(&base_url)?;
 
         match client_type.as_str() {
             "nzbget" => {
@@ -427,4 +428,18 @@ impl ConfigMutations {
         let report = app.run_rss_sync().await.map_err(to_gql_error)?;
         Ok(from_rss_sync_report(report))
     }
+}
+
+fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
+    let url = url::Url::parse(raw).map_err(|error| Error::new(format!("invalid URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(Error::new("URL must use http or https"));
+    }
+    if url.host_str().is_none() {
+        return Err(Error::new("URL must include a host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::new("URL must not include embedded credentials"));
+    }
+    Ok(())
 }

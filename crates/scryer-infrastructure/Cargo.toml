@@ -29,6 +29,7 @@ metrics = { workspace = true }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
+url = "2"
 image = { version = "0.25", default-features = false, features = ["avif", "jpeg", "png", "webp"] }
 ravif = { version = "0.13", features = ["threading"] }
 fast_image_resize = "6"

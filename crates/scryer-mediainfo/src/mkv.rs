@@ -84,6 +84,8 @@ const DOVI_BLOCK_ADD_ID_TYPE: u64 = 0x6476;
 const MATROSKA_TRACK_ENCODING_SCOPE_FRAME_CONTENTS: u64 = 1;
 const MATROSKA_TRACK_ENCODING_TYPE_COMPRESSION: u64 = 0;
 const MATROSKA_TRACK_ENCODING_COMP_HEADERSTRIP: u64 = 3;
+const MKV_KEEP_ELEMENT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const MKV_METADATA_AGGREGATE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 fn normalize_mkv_track_language(
     kind: TrackKind,
@@ -1067,6 +1069,7 @@ struct ScannedAudioMetadata {
 struct MkvRawScanner<R> {
     reader: R,
     file_len: u64,
+    metadata_payload_bytes: u64,
 }
 
 impl<R: Read + Seek> MkvRawScanner<R> {
@@ -1077,7 +1080,11 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         reader
             .seek(SeekFrom::Start(0))
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-        Ok(Self { reader, file_len })
+        Ok(Self {
+            reader,
+            file_len,
+            metadata_payload_bytes: 0,
+        })
     }
 
     fn read_next_segment_header(&mut self) -> Result<EbmlElementHeader, MediaInfoError> {
@@ -1661,6 +1668,31 @@ impl<R: Read + Seek> MkvRawScanner<R> {
             self.seek_to(child_end)?;
             return Ok(None);
         };
+        let declared_end = header
+            .data_offset
+            .checked_add(size)
+            .ok_or_else(|| MediaInfoError::Parse("MKV element size overflow".into()))?;
+        if declared_end > parent_end || declared_end > self.file_len {
+            return Err(MediaInfoError::Parse(format!(
+                "MKV element 0x{:X} declares {} bytes beyond remaining input",
+                header.id, size
+            )));
+        }
+        if size > MKV_KEEP_ELEMENT_MAX_BYTES {
+            return Err(MediaInfoError::Parse(format!(
+                "MKV element 0x{:X} exceeds parser budget",
+                header.id
+            )));
+        }
+        self.metadata_payload_bytes = self
+            .metadata_payload_bytes
+            .checked_add(size)
+            .ok_or_else(|| MediaInfoError::Parse("MKV metadata budget overflow".into()))?;
+        if self.metadata_payload_bytes > MKV_METADATA_AGGREGATE_MAX_BYTES {
+            return Err(MediaInfoError::Parse(
+                "MKV metadata output exceeds parser budget".into(),
+            ));
+        }
         self.seek_to(header.data_offset)?;
         let payload = self.read_bytes(size)?;
         self.seek_to(child_end)?;
