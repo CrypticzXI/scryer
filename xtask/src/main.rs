@@ -651,6 +651,20 @@ fn serve_encryption_key() -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
+fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()> {
+    step("Syncing frontend dependencies for Vite dev server");
+    let mut install = ctx.command_in("npm", web_dir);
+    install.args(["install", "--no-fund", "--no-audit"]);
+    run_status(&mut install).with_context(|| {
+        format!(
+            "failed to install frontend dependencies in {}",
+            web_dir.display()
+        )
+    })?;
+    ok("Frontend dependencies are up to date");
+    Ok(())
+}
+
 fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     require_command("npm")?;
 
@@ -667,10 +681,16 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     }
 
     let web_dir = ctx.path("apps/scryer-web");
+    ensure_frontend_dependencies(ctx, &web_dir)?;
+
     let backend_port = backend_port(&args.bind)?;
     let frontend_port = resolve_frontend_port(args.frontend_port)?;
     let backend_url = format!("http://127.0.0.1:{backend_port}");
     let frontend_url = format!("http://127.0.0.1:{frontend_port}");
+    let vite_use_polling =
+        std::env::var("SCRYER_VITE_USE_POLLING").unwrap_or_else(|_| "true".to_string());
+    let vite_poll_interval =
+        std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let db_path = serve_db_path()?;
     let db_url = format!("sqlite://{}", db_path.display());
     let encryption_key = serve_encryption_key();
@@ -700,6 +720,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
         ));
     }
     println!("   Vite dev server: {frontend_url}");
+    println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
 
     let log = std::fs::OpenOptions::new()
@@ -738,16 +759,19 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     println!("==> Starting Vite dev server with live updates...");
 
     let mut vite = ctx.command_in("npm", &web_dir);
-    vite.env("SCRYER_DEV_PROXY_TARGET", &backend_url).args([
-        "run",
-        "dev",
-        "--",
-        "--host",
-        "0.0.0.0",
-        "--strictPort",
-        "--port",
-        &frontend_port.to_string(),
-    ]);
+    vite.env("SCRYER_DEV_PROXY_TARGET", &backend_url)
+        .env("SCRYER_VITE_USE_POLLING", &vite_use_polling)
+        .env("SCRYER_VITE_POLL_INTERVAL_MS", &vite_poll_interval)
+        .args([
+            "run",
+            "dev",
+            "--",
+            "--host",
+            "0.0.0.0",
+            "--strictPort",
+            "--port",
+            &frontend_port.to_string(),
+        ]);
     let result = run_status(&mut vite);
 
     drop(backend_signal_forwarder);
@@ -2601,27 +2625,72 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     run_streaming(&mut audit, prefix)?;
     prefixed_ok(prefix, "cargo audit passed");
 
-    prefixed_step(
-        prefix,
-        "Running cargo clippy for scryer production binary packages",
-    );
-    let mut clippy = ctx.release_command_in("cargo", &ctx.repo_root);
-    clippy.arg("clippy");
-    add_prod_package_args(&mut clippy);
-    clippy.args(["--", "-D", "warnings"]);
-    run_streaming(&mut clippy, prefix)?;
-    prefixed_ok(prefix, "Clippy passed");
-
-    prefixed_step(
-        prefix,
-        "Running Rust tests for scryer production binary packages",
-    );
     if !command_available("cargo-nextest")? {
         warn("cargo-nextest not installed — installing");
         let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
         install.args(["install", "--locked", "cargo-nextest"]);
         run_streaming(&mut install, prefix)?;
     }
+
+    prefixed_step(
+        prefix,
+        "Running CI clippy and Rust tests for scryer production binary packages in parallel",
+    );
+    let (clippy_tx, clippy_rx) = mpsc::channel();
+    let (nextest_tx, nextest_rx) = mpsc::channel();
+    let clippy_ctx = ctx.clone();
+    let nextest_ctx = ctx.clone();
+
+    thread::spawn(move || {
+        let _ = clippy_tx.send(run_scryer_ci_clippy_validation(
+            &clippy_ctx,
+            "[rust-clippy] ",
+        ));
+    });
+    thread::spawn(move || {
+        let _ = nextest_tx.send(run_scryer_nextest_validation(&nextest_ctx, "[rust-test] "));
+    });
+
+    let clippy_result = clippy_rx
+        .recv()
+        .context("CI clippy validation thread ended unexpectedly")?;
+    let nextest_result = nextest_rx
+        .recv()
+        .context("Rust test validation thread ended unexpectedly")?;
+
+    let mut failures = Vec::new();
+    if let Err(error) = clippy_result {
+        failures.push(format!("CI clippy validation failed: {error:#}"));
+    }
+    if let Err(error) = nextest_result {
+        failures.push(format!("Rust test validation failed: {error:#}"));
+    }
+    if !failures.is_empty() {
+        for failure in &failures {
+            warn(failure);
+        }
+        bail!(failures.join("\n\n"));
+    }
+
+    prefixed_ok(prefix, "CI clippy and Rust tests passed");
+    Ok(())
+}
+
+fn run_scryer_ci_clippy_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
+    prefixed_step(
+        prefix,
+        "Running CI-equivalent clippy for scryer production binary packages",
+    );
+    run_clippy_ci(ctx, ClippyArgs { linux_only: true })?;
+    prefixed_ok(prefix, "CI clippy passed");
+    Ok(())
+}
+
+fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
+    prefixed_step(
+        prefix,
+        "Running Rust tests for scryer production binary packages",
+    );
     let mut nextest = ctx.release_command_in("cargo", &ctx.repo_root);
     nextest.args(["nextest", "run"]);
     add_prod_package_args(&mut nextest);

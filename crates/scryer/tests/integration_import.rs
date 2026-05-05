@@ -8,8 +8,8 @@ use std::sync::Arc;
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    ImportRepository, MediaFileRepository, ReleaseAttemptRepository, ShowRepository,
-    TitleRepository, WantedItemRepository, import_completed_download,
+    BlocklistRepository, ImportRepository, MediaFileRepository, ReleaseAttemptRepository,
+    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
@@ -688,6 +688,19 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
                 .as_deref()
                 .is_some_and(|message| message.contains("too_few_chapters"))
     }));
+
+    let blocklist = ctx
+        .library_state
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert!(blocklist.iter().any(|entry| {
+        entry.source_title.as_deref() == Some("test.download.dl-rule-blocked")
+            && entry
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("too_few_chapters"))
+    }));
 }
 
 #[tokio::test]
@@ -1078,4 +1091,17 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         media_files[0].file_path,
         old_path.to_string_lossy().to_string()
     );
+
+    let blocklist = ctx
+        .library_state
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert!(blocklist.iter().any(|entry| {
+        entry.source_title.as_deref() == Some("test.download.dl-upgrade-rule-blocked")
+            && entry
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("too_few_chapters"))
+    }));
 }

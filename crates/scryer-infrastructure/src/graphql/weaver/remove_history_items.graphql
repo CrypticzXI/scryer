@@ -1,0 +1,5 @@
+mutation RemoveHistoryItems($ids: [Int!]!) {
+  removeHistoryItems(ids: $ids) {
+    success
+  }
+}

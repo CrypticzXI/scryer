@@ -1,0 +1,3 @@
+mutation PauseJob($id: Int!) {
+  pauseJob(id: $id)
+}

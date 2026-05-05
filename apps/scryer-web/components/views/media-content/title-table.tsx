@@ -1,6 +1,12 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  persistOverviewScrollValue,
+  readOverviewSavedScroll,
+  useOverviewElementScrollRestoration,
+} from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { Button } from "@/components/ui/button";
 import { ArrowDown, ArrowUp, Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
 import {
@@ -81,6 +87,7 @@ export function TitleTable({
   scanLibraryDisabled = false,
 }: TitleTableProps) {
   "use no memo";
+  const location = useLocation();
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
@@ -109,6 +116,12 @@ export function TitleTable({
     React.useState<TitleTableSortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
+  useOverviewElementScrollRestoration({
+    enabled: true,
+    ready: !titleLoading && titles.length > 0,
+    storageKeySuffix: "poster-table",
+    scrollRef: titleTableScrollRef,
+  });
   const sortedTitles = React.useMemo(
     () =>
       sortTitlesForTable({
@@ -137,6 +150,52 @@ export function TitleTable({
     estimateSize: () => 112,
     overscan: 5,
   });
+
+  const handleOpenOverview = React.useCallback(
+    (item: OverviewTitleTarget) => {
+      persistOverviewScrollValue(
+        location.pathname,
+        "poster-table",
+        titleVirtualizer.scrollOffset ?? titleTableScrollRef.current?.scrollTop,
+      );
+      onOpenOverview(overviewTargetView, item);
+    },
+    [location.pathname, onOpenOverview, overviewTargetView, titleVirtualizer.scrollOffset],
+  );
+
+  React.useLayoutEffect(() => {
+    if (titleLoading || titles.length === 0) {
+      return;
+    }
+
+    const savedScrollTop = readOverviewSavedScroll(
+      location.pathname,
+      "poster-table",
+    );
+    if (savedScrollTop == null) {
+      return;
+    }
+
+    let frameId = 0;
+    let attempts = 0;
+    const restore = () => {
+      titleVirtualizer.scrollToOffset(savedScrollTop);
+      const currentScrollTop = titleTableScrollRef.current?.scrollTop ?? 0;
+      if (Math.abs(currentScrollTop - savedScrollTop) <= 2 || attempts >= 12) {
+        return;
+      }
+
+      attempts += 1;
+      frameId = window.requestAnimationFrame(restore);
+    };
+
+    frameId = window.requestAnimationFrame(restore);
+    return () => {
+      if (frameId !== 0) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [location.pathname, titleLoading, titleVirtualizer, titles.length]);
 
   const handleSort = React.useCallback((nextKey: TitleTableSortKey) => {
     if (sortKey === nextKey) {
@@ -263,7 +322,7 @@ export function TitleTable({
           <TableCell className="align-middle">
             <button
               type="button"
-              onClick={() => onOpenOverview(overviewTargetView, item)}
+              onClick={() => handleOpenOverview(item)}
               data-ui="poster-link"
               className="inline-block text-left"
               aria-label={t("media.posterAlt", { name: item.name })}
@@ -286,7 +345,7 @@ export function TitleTable({
           <TableCell className="align-middle overflow-hidden">
             <button
               type="button"
-              onClick={() => onOpenOverview(overviewTargetView, item)}
+              onClick={() => handleOpenOverview(item)}
               data-ui="title-name"
               className="block w-full overflow-hidden text-left text-2xl font-bold hover:text-foreground hover:underline"
             >

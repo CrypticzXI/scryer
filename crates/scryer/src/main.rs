@@ -53,8 +53,7 @@ use admin_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, CorsConfig, cors_handler, graphiql_handler, graphql_handler, graphql_ws_handler,
-    health_handler,
+    AuthState, CorsConfig, cors_handler, graphql_handler, graphql_ws_handler, health_handler,
 };
 use settings_bootstrap::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
@@ -925,7 +924,6 @@ async fn bootstrap_application(
 
     let mut compressed_router = Router::new()
         .route("/health", get(health_handler))
-        .route("/graphiql", get(graphiql_handler))
         .route("/graphql", post(graphql_handler).with_state(auth_state))
         .route(
             "/images/titles/{title_id}/{kind}/{variant}",

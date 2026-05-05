@@ -9,7 +9,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use metrics::{counter, histogram};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
-use reqwest::{Client, RequestBuilder, Response, StatusCode};
+use reqwest::{Certificate, Client, Identity, RequestBuilder, Response, StatusCode};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
@@ -200,6 +200,75 @@ impl RateLimitRegistry {
 
         (effective_delay, effective_source)
     }
+}
+
+fn reqwest_client_builder() -> reqwest::ClientBuilder {
+    Client::builder()
+}
+
+pub fn default_reqwest_client() -> Client {
+    Client::new()
+}
+
+pub fn timeout_reqwest_client(timeout: Option<Duration>) -> Result<Client, reqwest::Error> {
+    let mut builder = reqwest_client_builder();
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    builder.build()
+}
+
+pub fn user_agent_reqwest_client(user_agent: &str) -> Result<Client, reqwest::Error> {
+    reqwest_client_builder().user_agent(user_agent).build()
+}
+
+pub fn title_image_reqwest_client(
+    user_agent: &str,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<Client, reqwest::Error> {
+    reqwest_client_builder()
+        .user_agent(user_agent)
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()
+}
+
+pub fn external_arr_reqwest_client() -> Client {
+    reqwest_client_builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
+pub fn metadata_gateway_reqwest_client(
+    accept_invalid_certs: bool,
+) -> Result<Client, reqwest::Error> {
+    reqwest_client_builder()
+        .timeout(Duration::from_secs(100))
+        .danger_accept_invalid_certs(accept_invalid_certs)
+        .build()
+}
+
+pub fn metadata_gateway_mtls_reqwest_client(
+    identity: Identity,
+    ca_cert: Certificate,
+) -> Result<Client, reqwest::Error> {
+    reqwest_client_builder()
+        .timeout(Duration::from_secs(100))
+        .identity(identity)
+        .add_root_certificate(ca_cert)
+        .build()
+}
+
+pub fn enrollment_reqwest_client(
+    ca_cert_override: Option<Certificate>,
+) -> Result<Client, reqwest::Error> {
+    let mut builder = reqwest_client_builder().timeout(Duration::from_secs(30));
+    if let Some(ca_cert_override) = ca_cert_override {
+        builder = builder.add_root_certificate(ca_cert_override);
+    }
+    builder.build()
 }
 
 #[derive(Clone)]

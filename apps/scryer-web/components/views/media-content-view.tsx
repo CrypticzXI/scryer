@@ -27,6 +27,11 @@ import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
+import {
+  hasActiveTitleQuickFilters,
+  TitleQuickFilterBar,
+  type TitleQuickFilters,
+} from "./media-content/title-quick-filters";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { RuleSetRecord } from "@/lib/types/rule-sets";
 import type {
@@ -187,6 +192,12 @@ export function MediaContentView({
     titleLoading: boolean;
     titleStatus: string;
     monitoredTitles: TitleRecord[];
+    titleQuickFilters: TitleQuickFilters;
+    toggleTitleQuickMonitoringFilter: (
+      filter: "monitored" | "unmonitored",
+    ) => void;
+    toggleTitleQuickStatusFilter: (filter: "continuing" | "ended") => void;
+    clearTitleQuickFilters: () => void;
     queueExisting: (title: TitleRecord) => Promise<void> | void;
     toggleTitleMonitored: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
     runInteractiveSearchForTitle: (title: TitleRecord) => Promise<Release[]> | Release[];
@@ -303,6 +314,10 @@ export function MediaContentView({
     titleLoading,
     titleStatus,
     monitoredTitles,
+    titleQuickFilters,
+    toggleTitleQuickMonitoringFilter,
+    toggleTitleQuickStatusFilter,
+    clearTitleQuickFilters,
     queueExisting,
     toggleTitleMonitored,
     runInteractiveSearchForTitle,
@@ -532,6 +547,12 @@ export function MediaContentView({
     void scanLibrary();
   }, [scanLibrary]);
 
+  const quickFilterView = view === "movies" ? "movies" : view === "series" ? "series" : "anime";
+  const hasActiveTitleDisplayFilters =
+    titleFilter.trim().length > 0
+    || hasActiveTitleQuickFilters(titleQuickFilters, quickFilterView);
+  const showEmptyStateActions = !hasActiveTitleDisplayFilters;
+
   const handleDeleteCatalogTitle = React.useCallback(
     (title: TitleRecord) => {
       deleteCatalogTitle(title);
@@ -695,6 +716,15 @@ export function MediaContentView({
                   {t("label.refresh")}
                 </Button>
               </div>
+              <div className="mb-3">
+                <TitleQuickFilterBar
+                  view={view}
+                  filters={titleQuickFilters}
+                  onToggleMonitoring={toggleTitleQuickMonitoringFilter}
+                  onToggleStatus={toggleTitleQuickStatusFilter}
+                  onClear={clearTitleQuickFilters}
+                />
+              </div>
               <p className="mb-2 text-sm text-muted-foreground">{titleStatus}</p>
               {(() => {
                 const isMovieView = view === "movies";
@@ -723,8 +753,10 @@ export function MediaContentView({
                       onAutoQueue={queueExisting}
                       isDeletingById={isDeletingCatalogTitleById}
                       overviewTargetView={overviewTargetView}
-                      showScanLibraryAction={showInitialScanAction}
-                      showConfigureRootsAction={showConfigureRootFoldersAction}
+                      showScanLibraryAction={showEmptyStateActions && showInitialScanAction}
+                      showConfigureRootsAction={
+                        showEmptyStateActions && showConfigureRootFoldersAction
+                      }
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -758,8 +790,10 @@ export function MediaContentView({
                       onBulkEdit={openBulkTitleEdit}
                       onBulkDelete={openBulkTitleDelete}
                       bulkActionBusy={bulkActionBusy}
-                      showScanLibraryAction={showInitialScanAction}
-                      showConfigureRootsAction={showConfigureRootFoldersAction}
+                      showScanLibraryAction={showEmptyStateActions && showInitialScanAction}
+                      showConfigureRootsAction={
+                        showEmptyStateActions && showConfigureRootFoldersAction
+                      }
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -784,8 +818,10 @@ export function MediaContentView({
                     onQueueFromInteractive={queueExistingFromRelease}
                     isDeletingById={isDeletingCatalogTitleById}
                     isTogglingMonitoredById={isTogglingTitleMonitoredById}
-                    showScanLibraryAction={showInitialScanAction}
-                    showConfigureRootsAction={showConfigureRootFoldersAction}
+                    showScanLibraryAction={showEmptyStateActions && showInitialScanAction}
+                    showConfigureRootsAction={
+                      showEmptyStateActions && showConfigureRootFoldersAction
+                    }
                     configureRootsHref={configureRootFoldersHref}
                     onScanLibrary={scanLibrary}
                     scanLibraryLoading={libraryScanLoading}

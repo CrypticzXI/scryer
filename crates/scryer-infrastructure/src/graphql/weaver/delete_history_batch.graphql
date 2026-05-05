@@ -1,0 +1,3 @@
+mutation DeleteHistoryBatch($ids: [Int!]!, $deleteFiles: Boolean!) {
+  deleteHistoryBatch(ids: $ids, deleteFiles: $deleteFiles)
+}

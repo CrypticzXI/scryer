@@ -680,9 +680,6 @@ impl SystemInfoProvider for NullSystemInfoProvider {
     async fn pending_migration_count(&self) -> AppResult<usize> {
         Ok(0)
     }
-    async fn smg_cert_expires_at(&self) -> AppResult<Option<String>> {
-        Ok(None)
-    }
     async fn vacuum_into(&self, _dest_path: &str) -> AppResult<()> {
         Ok(())
     }

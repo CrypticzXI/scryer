@@ -290,7 +290,6 @@ pub trait SettingsRepository: Send + Sync {
 pub trait SystemInfoProvider: Send + Sync {
     async fn current_migration_version(&self) -> AppResult<Option<String>>;
     async fn pending_migration_count(&self) -> AppResult<usize>;
-    async fn smg_cert_expires_at(&self) -> AppResult<Option<String>>;
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()>;
 }
 

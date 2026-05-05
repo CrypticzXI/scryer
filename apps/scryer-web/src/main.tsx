@@ -6,9 +6,8 @@ import { ThemeProvider } from "next-themes";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { SELECTABLE_THEMES } from "@/lib/theme";
 
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/600.css";
-import "@fontsource/space-grotesk/600.css";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/space-grotesk";
 
 import "@/app/globals.css";
 
@@ -26,6 +25,3 @@ createRoot(document.getElementById("root")!).render(
 );
 
 registerServiceWorker();
-
-// Defer non-critical font weights
-import("@/lib/fonts/deferred-fonts").then((m) => m.loadDeferredFonts());

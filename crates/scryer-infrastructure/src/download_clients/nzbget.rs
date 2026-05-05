@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use futures_util::stream;
-use reqwest::Client;
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
     NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
@@ -15,6 +14,7 @@ use scryer_application::{
 use scryer_domain::{DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+    default_reqwest_client,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -34,7 +34,6 @@ pub struct NzbgetDownloadClient {
     username: Option<String>,
     password: Option<String>,
     dupe_mode: String,
-    http_client: Client,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
@@ -82,14 +81,13 @@ impl NzbgetDownloadClient {
             "ALL" | "FORCE" => dupe_mode.to_uppercase(),
             _ => "SCORE".to_string(),
         };
-        let http_client = Client::new();
+        let http_client = default_reqwest_client();
         Self {
             rpc_url: rpc_url.trim_end_matches('/').to_string(),
             username,
             password,
             dupe_mode,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
-            http_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
@@ -132,7 +130,8 @@ impl NzbgetDownloadClient {
             .outbound_http
             .send(policy, || {
                 let mut request = self
-                    .http_client
+                    .outbound_http
+                    .client()
                     .post(&endpoint)
                     .header("Content-Type", "application/json")
                     .json(&payload);
@@ -196,7 +195,8 @@ impl NzbgetDownloadClient {
             .outbound_http
             .send(self.read_policy("nzbget_test_connection"), || {
                 let mut request = self
-                    .http_client
+                    .outbound_http
+                    .client()
                     .post(&endpoint)
                     .header("Content-Type", "application/json")
                     .json(&payload);
@@ -369,7 +369,8 @@ impl NzbgetDownloadClient {
                         ))
                     })?;
                     let mut request = self
-                        .http_client
+                        .outbound_http
+                        .client()
                         .post(&endpoint)
                         .header("Content-Type", "application/json")
                         .header(reqwest::header::CONTENT_LENGTH, content_length.to_string())

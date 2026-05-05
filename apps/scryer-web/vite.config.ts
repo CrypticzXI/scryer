@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { compression } from "vite-plugin-compression2";
+import { constants as zlibConstants } from "node:zlib";
+import { compression, defineAlgorithm } from "vite-plugin-compression2";
 import path from "path";
 
 const DEV_PROXY_TARGET =
@@ -69,7 +70,14 @@ export default defineConfig(({ command, mode }) => ({
     compression({
       include: /\.(js|css|svg|webmanifest|json)$/i,
       exclude: /service-worker\.js$/,
-      algorithms: ["gzip"],
+      algorithms: [
+        defineAlgorithm("brotliCompress", {
+          params: {
+            [zlibConstants.BROTLI_PARAM_QUALITY]: 11,
+          },
+        }),
+      ],
+      skipIfLargerOrEqual: false,
     }),
   ],
   resolve: {

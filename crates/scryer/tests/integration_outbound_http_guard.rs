@@ -3,19 +3,7 @@ use std::path::{Path, PathBuf};
 
 const ALLOWED_DIRECT_SEND_FILES: &[&str] = &["crates/scryer-outbound-http/src/lib.rs"];
 
-const ALLOWED_CLIENT_CONSTRUCTION_FILES: &[&str] = &[
-    "crates/scryer-outbound-http/src/lib.rs",
-    "crates/scryer-application/src/plugins/plugins.rs",
-    "crates/scryer-application/src/subtitles/provider.rs",
-    "crates/scryer-infrastructure/src/download_clients/nzbget.rs",
-    "crates/scryer-infrastructure/src/download_clients/router.rs",
-    "crates/scryer-infrastructure/src/download_clients/sabnzbd.rs",
-    "crates/scryer-infrastructure/src/download_clients/weaver.rs",
-    "crates/scryer-infrastructure/src/external_import.rs",
-    "crates/scryer-infrastructure/src/metadata_gateway.rs",
-    "crates/scryer-infrastructure/src/smg_enrollment.rs",
-    "crates/scryer-infrastructure/src/title_images.rs",
-];
+const ALLOWED_CLIENT_CONSTRUCTION_FILES: &[&str] = &["crates/scryer-outbound-http/src/lib.rs"];
 
 #[test]
 fn native_outbound_http_uses_canonical_transport() {

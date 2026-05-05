@@ -13,6 +13,7 @@ use scryer_application::{
 use scryer_domain::{DomainEvent, NewDomainEvent};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    title_image_reqwest_client,
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tracing::warn;
@@ -29,7 +30,6 @@ const AVIF_ENCODER_THREADS: usize = 1;
 
 #[derive(Clone)]
 pub struct SqliteTitleImageProcessor {
-    client: reqwest::Client,
     outbound_http: OutboundHttpClient,
     max_source_bytes: usize,
     avif_enabled: bool,
@@ -37,19 +37,14 @@ pub struct SqliteTitleImageProcessor {
 
 impl SqliteTitleImageProcessor {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(format!("scryer/{}", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(std::time::Duration::from_secs(
-                TITLE_IMAGE_CONNECT_TIMEOUT_SECS,
-            ))
-            .timeout(std::time::Duration::from_secs(
-                TITLE_IMAGE_REQUEST_TIMEOUT_SECS,
-            ))
-            .build()
-            .expect("title image reqwest client should build");
+        let client = title_image_reqwest_client(
+            &format!("scryer/{}", env!("CARGO_PKG_VERSION")),
+            std::time::Duration::from_secs(TITLE_IMAGE_CONNECT_TIMEOUT_SECS),
+            std::time::Duration::from_secs(TITLE_IMAGE_REQUEST_TIMEOUT_SECS),
+        )
+        .expect("title image reqwest client should build");
         Self {
-            outbound_http: OutboundHttpClient::new(client.clone(), RateLimitRegistry::new()),
-            client,
+            outbound_http: OutboundHttpClient::new(client, RateLimitRegistry::new()),
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled: true,
         }
@@ -57,19 +52,14 @@ impl SqliteTitleImageProcessor {
 
     #[cfg(test)]
     pub(crate) fn new_for_tests(avif_enabled: bool) -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("scryer-tests")
-            .connect_timeout(std::time::Duration::from_secs(
-                TITLE_IMAGE_CONNECT_TIMEOUT_SECS,
-            ))
-            .timeout(std::time::Duration::from_secs(
-                TITLE_IMAGE_REQUEST_TIMEOUT_SECS,
-            ))
-            .build()
-            .expect("title image test reqwest client should build");
+        let client = title_image_reqwest_client(
+            "scryer-tests",
+            std::time::Duration::from_secs(TITLE_IMAGE_CONNECT_TIMEOUT_SECS),
+            std::time::Duration::from_secs(TITLE_IMAGE_REQUEST_TIMEOUT_SECS),
+        )
+        .expect("title image test reqwest client should build");
         Self {
-            outbound_http: OutboundHttpClient::new(client.clone(), RateLimitRegistry::new()),
-            client,
+            outbound_http: OutboundHttpClient::new(client, RateLimitRegistry::new()),
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled,
         }
@@ -89,7 +79,7 @@ impl SqliteTitleImageProcessor {
                         std::time::Duration::from_millis(500),
                         std::time::Duration::from_secs(10),
                     ),
-                || self.client.get(source_url),
+                || self.outbound_http.client().get(source_url),
             )
             .await
             .map_err(|error| match error {

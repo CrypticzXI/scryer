@@ -1102,8 +1102,6 @@ pub struct SystemHealth {
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
     pub db_pending_migrations: usize,
-    pub smg_cert_expires_at: Option<String>,
-    pub smg_cert_days_remaining: Option<i64>,
     pub indexer_stats: Vec<IndexerQueryStats>,
 }
 

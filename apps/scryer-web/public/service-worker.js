@@ -3,7 +3,6 @@ const SHELL_CACHE = `scryer-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `scryer-assets-${CACHE_VERSION}`;
 const RESERVED_PREFIXES = [
   "/graphql",
-  "/graphiql",
   "/health",
   "/metrics",
   "/admin",

@@ -1202,8 +1202,6 @@ pub struct SystemHealthPayload {
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
     pub db_pending_migrations: i32,
-    pub smg_cert_expires_at: Option<String>,
-    pub smg_cert_days_remaining: Option<i32>,
     pub indexer_stats: Vec<IndexerQueryStatsPayload>,
 }
 

@@ -1482,8 +1482,6 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
         recent_event_preview: health.recent_event_preview,
         db_migration_version: health.db_migration_version,
         db_pending_migrations: health.db_pending_migrations as i32,
-        smg_cert_expires_at: health.smg_cert_expires_at,
-        smg_cert_days_remaining: health.smg_cert_days_remaining.map(|d| d as i32),
         indexer_stats: health
             .indexer_stats
             .into_iter()

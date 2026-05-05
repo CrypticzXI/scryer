@@ -1,0 +1,9 @@
+query SearchTvdb($query: String!, $type: String, $limit: Int, $year: Int) {
+  searchTvdb(query: $query, type: $type, limit: $limit, year: $year) {
+    results {
+      tvdb_id
+      name
+      year
+    }
+  }
+}

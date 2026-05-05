@@ -1,7 +1,9 @@
 import * as React from "react";
+import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Eye, EyeOff } from "lucide-react";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
+import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -139,6 +141,7 @@ const PosterCard = React.memo(function PosterCard({
   overviewTargetView,
   isMobile,
 }: PosterCardProps) {
+  const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
   const qualityLabel = qualityProfilesLoading
@@ -154,7 +157,10 @@ const PosterCard = React.memo(function PosterCard({
         <div className="relative">
           <button
             type="button"
-            onClick={() => onOpenOverview(overviewTargetView, title)}
+            onClick={() => {
+              persistOverviewWindowScroll(location.pathname);
+              onOpenOverview(overviewTargetView, title);
+            }}
             className="block w-full overflow-hidden rounded-[calc(var(--radius)-1px)] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >

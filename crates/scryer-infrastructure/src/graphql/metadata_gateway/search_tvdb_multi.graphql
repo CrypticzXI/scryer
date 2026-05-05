@@ -1,0 +1,49 @@
+query SearchTvdbMulti($query: String!, $limit: Int, $language: String) {
+  searchTvdbMulti(query: $query, limit: $limit, language: $language) {
+    movies {
+      tvdb_id
+      name
+      imdb_id
+      slug
+      type
+      year
+      status
+      overview
+      popularity
+      poster_url
+      language
+      runtime_minutes
+      sort_title
+    }
+    series {
+      tvdb_id
+      name
+      imdb_id
+      slug
+      type
+      year
+      status
+      overview
+      popularity
+      poster_url
+      language
+      runtime_minutes
+      sort_title
+    }
+    anime {
+      tvdb_id
+      name
+      imdb_id
+      slug
+      type
+      year
+      status
+      overview
+      popularity
+      poster_url
+      language
+      runtime_minutes
+      sort_title
+    }
+  }
+}

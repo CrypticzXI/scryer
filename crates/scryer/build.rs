@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -39,17 +40,33 @@ fn main() {
             )
         });
 
-        // Skip uncompressed files when a .gz pre-compressed variant exists.
-        // The .gz version is smaller in the binary; the server decompresses
-        // on the fly for the rare client that doesn't accept gzip.
-        let gz_paths: std::collections::HashSet<String> = entries
-            .iter()
-            .map(|(p, _)| p.clone())
-            .filter(|p| p.ends_with(".gz"))
-            .collect();
+        let entries_by_path: HashMap<String, PathBuf> = entries.iter().cloned().collect();
+        for (path, _) in &entries {
+            if !requires_brotli_sidecar(path) {
+                continue;
+            }
+
+            let brotli_variant = format!("{path}.br");
+            if !entries_by_path.contains_key(&brotli_variant) {
+                panic!(
+                    "SCRYER_EMBED_UI_DIR is missing required Brotli sidecar '{}' for '{}'",
+                    brotli_variant, path
+                );
+            }
+        }
+
+        // Embed only the Brotli sidecar for compressible assets. Raw copies are
+        // omitted from the binary and the server derives gzip/raw variants on demand.
         entries.retain(|(path, _)| {
-            let gz_variant = format!("{path}.gz");
-            !gz_paths.contains(&gz_variant)
+            if path.ends_with(".gz") {
+                return false;
+            }
+
+            if path.ends_with(".br") {
+                return true;
+            }
+
+            !requires_brotli_sidecar(path)
         });
 
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -151,4 +168,19 @@ fn collect_files_recursive(
         output.push((rel_path, entry_path));
     }
     Ok(())
+}
+
+fn requires_brotli_sidecar(path: &str) -> bool {
+    if path.ends_with(".br") || path.ends_with(".gz") {
+        return false;
+    }
+
+    if Path::new(path).file_name().and_then(|name| name.to_str()) == Some("service-worker.js") {
+        return false;
+    }
+
+    matches!(
+        Path::new(path).extension().and_then(|ext| ext.to_str()),
+        Some("js" | "css" | "svg" | "webmanifest" | "json")
+    )
 }

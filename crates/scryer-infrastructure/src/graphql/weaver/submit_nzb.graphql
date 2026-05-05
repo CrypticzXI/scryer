@@ -1,0 +1,8 @@
+mutation SubmitNzb($input: SubmitNzbInput!) {
+  submitNzb(input: $input) {
+    accepted
+    item {
+      id
+    }
+  }
+}

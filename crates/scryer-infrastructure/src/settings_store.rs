@@ -233,29 +233,6 @@ impl SystemInfoProvider for SqliteSettingsStore {
             .count())
     }
 
-    async fn smg_cert_expires_at(&self) -> AppResult<Option<String>> {
-        let encryption_key = self.encryption_key();
-        match crate::queries::settings::get_setting_with_defaults_query(
-            &self.pool,
-            "system",
-            "smg.cert_expires_at",
-            None,
-            encryption_key.as_ref(),
-        )
-        .await?
-        {
-            Some(record) => {
-                let value = record.effective_value_json.trim_matches('"').to_string();
-                if value.is_empty() || value == "null" {
-                    Ok(None)
-                } else {
-                    Ok(Some(value))
-                }
-            }
-            None => Ok(None),
-        }
-    }
-
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
         self.db.vacuum_into(dest_path).await
     }

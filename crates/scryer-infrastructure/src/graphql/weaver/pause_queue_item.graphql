@@ -1,0 +1,5 @@
+mutation PauseQueueItem($id: Int!) {
+  pauseQueueItem(id: $id) {
+    success
+  }
+}

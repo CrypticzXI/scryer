@@ -1,0 +1,17 @@
+mutation SubmitNzbCompat(
+  $source: NzbSourceInput!
+  $filename: String
+  $password: String
+  $category: String
+  $metadata: [MetadataInput!]
+) {
+  submitNzb(
+    source: $source
+    filename: $filename
+    password: $password
+    category: $category
+    metadata: $metadata
+  ) {
+    id
+  }
+}

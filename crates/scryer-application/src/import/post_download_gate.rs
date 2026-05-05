@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
-    AppUseCase, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
     normalize_release_attempt_hint, normalize_release_attempt_title,
 };
 use scryer_domain::{
@@ -558,6 +558,8 @@ async fn finalize_import_rejection(
     episode_ids: &[String],
     rejection: &ImportedFileRejection,
 ) {
+    let normalized_source_title = normalize_release_attempt_title(Some(completed_name));
+    let failure_reason = Some(rejection.message.clone());
     let _ = app
         .services
         .workflow
@@ -565,9 +567,9 @@ async fn finalize_import_rejection(
         .record_release_attempt(
             Some(title.id.clone()),
             normalize_release_attempt_hint(None),
-            normalize_release_attempt_title(Some(completed_name)),
+            normalized_source_title.clone(),
             ReleaseDownloadAttemptOutcome::Failed,
-            Some(rejection.message.clone()),
+            failure_reason,
             None,
         )
         .await;
@@ -583,6 +585,32 @@ async fn finalize_import_rejection(
             format!(" [{}]", rejection.blocking_rule_codes.join(", "))
         }
     ));
+    let mut blocklist_data = std::collections::HashMap::new();
+    if !episode_ids.is_empty() {
+        blocklist_data.insert("episode_ids".to_string(), serde_json::json!(episode_ids));
+    }
+    if let Err(error) = app
+        .services
+        .workflow
+        .blocklist_repo
+        .add(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            source_title: normalized_source_title.clone(),
+            source_hint: None,
+            quality: crate::parse_release_metadata(completed_name).quality,
+            download_id: None,
+            reason: reason.clone(),
+            data: blocklist_data,
+        })
+        .await
+    {
+        warn!(
+            error = %error,
+            title_id = %title.id,
+            source_title = normalized_source_title.as_deref().unwrap_or(""),
+            "failed to persist blocklist entry for rejected import"
+        );
+    }
     let _ = app
         .append_domain_event(new_title_domain_event(
             actor_user_id.map(str::to_owned),

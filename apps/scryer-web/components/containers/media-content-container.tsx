@@ -50,6 +50,7 @@ import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-cont
 import { useSearchContext } from "@/lib/context/search-context";
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { toast } from "sonner";
@@ -59,6 +60,10 @@ import {
   writeStoredContentViewMode,
   type ContentViewMode,
 } from "@/components/views/media-content/content-view-mode";
+import {
+  filterTitlesByQuickFilters,
+  type TitleQuickFilters,
+} from "@/components/views/media-content/title-quick-filters";
 import {
   assertNoReplaceConflict,
   retryWithReplaceOnConflict,
@@ -377,6 +382,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [selectedTitleIds, setSelectedTitleIds] = React.useState<Set<string>>(
     () => new Set(),
   );
+  const [titleQuickFilters, setTitleQuickFilters] =
+    React.useState<TitleQuickFilters>({
+      monitored: false,
+      unmonitored: false,
+      continuing: false,
+      ended: false,
+    });
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = React.useState(false);
@@ -447,11 +459,28 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     titleDeletePreviewVariables,
     titleToDelete !== null && deleteFilesOnDisk,
   );
-  const visibleTitles = monitoredTitles;
+  const effectiveTitleQuickFilters = React.useMemo<TitleQuickFilters>(
+    () => ({
+      ...titleQuickFilters,
+      continuing: activeFacet === "movie" ? false : titleQuickFilters.continuing,
+      ended: activeFacet === "movie" ? false : titleQuickFilters.ended,
+    }),
+    [activeFacet, titleQuickFilters],
+  );
+  const visibleTitles = React.useMemo(
+    () => filterTitlesByQuickFilters(monitoredTitles, effectiveTitleQuickFilters),
+    [effectiveTitleQuickFilters, monitoredTitles],
+  );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
+
+  useOverviewWindowScrollRestoration({
+    enabled: shouldLoadCatalogTitles,
+    ready: !titleLoading && visibleTitles.length > 0,
+    storageKeySuffix: "window",
+  });
 
   React.useEffect(() => {
     if (!shouldLoadCatalogTitles) {
@@ -467,6 +496,32 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       window.clearTimeout(timer);
     };
   }, [shouldLoadCatalogTitles, titleFilter]);
+
+  React.useEffect(() => {
+    setTitleQuickFilters({
+      monitored: false,
+      unmonitored: false,
+      continuing: false,
+      ended: false,
+    });
+    setSelectedTitleIds(new Set());
+  }, [activeFacet]);
+
+  React.useEffect(() => {
+    const visibleTitleIds = new Set(visibleTitles.map((title) => title.id));
+    setSelectedTitleIds((current) => {
+      let changed = false;
+      const next = new Set<string>();
+      current.forEach((id) => {
+        if (visibleTitleIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [visibleTitles]);
 
   React.useEffect(() => {
     activeCatalogQueryRef.current = debouncedTitleFilter;
@@ -1073,6 +1128,41 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         next.add(titleId);
       }
       return next;
+    });
+  }, []);
+
+  const toggleTitleQuickMonitoringFilter = React.useCallback(
+    (nextFilter: "monitored" | "unmonitored") => {
+      React.startTransition(() => {
+        setTitleQuickFilters((current) => ({
+          ...current,
+          [nextFilter]: !current[nextFilter],
+        }));
+      });
+    },
+    [],
+  );
+
+  const toggleTitleQuickStatusFilter = React.useCallback(
+    (nextFilter: "continuing" | "ended") => {
+      React.startTransition(() => {
+        setTitleQuickFilters((current) => ({
+          ...current,
+          [nextFilter]: !current[nextFilter],
+        }));
+      });
+    },
+    [],
+  );
+
+  const clearTitleQuickFilters = React.useCallback(() => {
+    React.startTransition(() => {
+      setTitleQuickFilters({
+        monitored: false,
+        unmonitored: false,
+        continuing: false,
+        ended: false,
+      });
     });
   }, []);
 
@@ -1878,6 +1968,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           titleLoading,
           titleStatus,
           monitoredTitles: visibleTitles,
+          titleQuickFilters,
+          toggleTitleQuickMonitoringFilter,
+          toggleTitleQuickStatusFilter,
+          clearTitleQuickFilters,
           queueExisting,
           toggleTitleMonitored,
           runInteractiveSearchForTitle,

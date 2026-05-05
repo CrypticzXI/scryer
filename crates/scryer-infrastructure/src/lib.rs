@@ -6,6 +6,7 @@ mod download_clients;
 pub mod encryption;
 pub mod external_import;
 mod file_importer;
+mod graphql;
 mod indexer_stats;
 pub mod keystore;
 mod library_renamer;

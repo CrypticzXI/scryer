@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use extism::{Function, Manifest, PluginBuilder, UserData, ValType, Wasm, host_fn};
 use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 pub mod indexer;
 pub mod net;
@@ -642,11 +642,23 @@ fn default_true() -> bool {
     true
 }
 
+fn serialize_ordered_string_map<S, T>(
+    map: &HashMap<String, T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: Serialize,
+{
+    let ordered = map.iter().collect::<BTreeMap<_, _>>();
+    ordered.serialize(serializer)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct IndexerCapabilities {
     #[serde(default = "default_true")]
     pub rss: bool,
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_ordered_string_map")]
     pub supported_ids: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub deduplicates_aliases: bool,
@@ -2207,6 +2219,44 @@ mod tests {
         assert!(provider.capabilities.limits.is_none());
         assert!(provider.capabilities.torrent.is_none());
         assert!(provider.capabilities.response_features.is_none());
+    }
+
+    #[test]
+    fn indexer_supported_ids_serialize_in_stable_key_order() {
+        let descriptor = PluginDescriptor {
+            id: "newznab".into(),
+            name: "Newznab".into(),
+            version: "1.0.0".into(),
+            sdk_version: SDK_VERSION.into(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
+            provider: ProviderDescriptor::Indexer(IndexerDescriptor {
+                provider_type: "newznab".into(),
+                provider_aliases: vec![],
+                source_kind: IndexerSourceKind::Usenet,
+                capabilities: IndexerCapabilities {
+                    supported_ids: HashMap::from([
+                        ("series".into(), vec!["tvdb_id".into()]),
+                        ("anime".into(), vec!["anidb_id".into()]),
+                        ("movie".into(), vec!["imdb_id".into()]),
+                    ]),
+                    ..IndexerCapabilities::default()
+                },
+                scoring_policies: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            }),
+        };
+
+        let json = serde_json::to_string(&descriptor).unwrap();
+        let anime = json.find("\"anime\"").unwrap();
+        let movie = json.find("\"movie\"").unwrap();
+        let series = json.find("\"series\"").unwrap();
+
+        assert!(anime < movie);
+        assert!(movie < series);
     }
 
     #[test]

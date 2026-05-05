@@ -1582,8 +1582,6 @@ export const systemHealthQuery = `query SystemHealth {
     recentEventPreview
     dbMigrationVersion
     dbPendingMigrations
-    smgCertExpiresAt
-    smgCertDaysRemaining
     indexerStats {
       indexerId
       indexerName

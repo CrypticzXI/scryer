@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use reqwest::Client;
 use scryer_application::{AppError, AppResult};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    external_arr_reqwest_client,
 };
 use serde_json::Value;
 
@@ -72,21 +72,16 @@ pub struct ArrEpisode {
 pub struct ExternalArrClient {
     base_url: String,
     api_key: String,
-    http_client: Client,
     outbound_http: OutboundHttpClient,
 }
 
 impl ExternalArrClient {
     pub fn new(base_url: String, api_key: String) -> Self {
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let http_client = external_arr_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
-            http_client,
         }
     }
 
@@ -362,7 +357,8 @@ impl ExternalArrClient {
         let response = self
             .outbound_http
             .send(self.request_policy(path), || {
-                self.http_client
+                self.outbound_http
+                    .client()
                     .get(&url)
                     .header("X-Api-Key", &self.api_key)
             })

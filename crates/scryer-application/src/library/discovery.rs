@@ -509,14 +509,17 @@ pub(crate) fn derive_movie_probe_path(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.starts_with(root))
     {
-        return Some(PathBuf::from(folder_path));
+        return Some(folder_path);
     }
 
     let mut ordered_paths = collections
         .iter()
         .filter_map(|collection| collection.ordered_path.as_deref())
         .map(PathBuf::from)
+        .filter(|path| path.starts_with(root))
         .collect::<Vec<_>>();
     ordered_paths.sort();
     ordered_paths.dedup();
@@ -798,5 +801,69 @@ mod tests {
         let path = Path::new("/library/Show Name/Show.Name.S01E01.trickplay");
 
         assert!(should_skip_library_subpath(root, path, true));
+    }
+
+    #[test]
+    fn derive_movie_probe_path_ignores_stale_folder_path_from_other_root() {
+        let root = Path::new("/Volumes/Media/Movies");
+        let title = Title {
+            id: "title-1".into(),
+            name: "Existing Movie".into(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: Utc::now(),
+            year: Some(2024),
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: Some("/Volumes/Archive/Movies/Existing Movie".into()),
+        };
+        let collections = vec![Collection {
+            id: "collection-1".into(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Movie,
+            collection_index: "1".into(),
+            label: None,
+            ordered_path: Some(
+                "/Volumes/Media/Movies/Existing Movie/Existing.Movie.2024.2160p.WEB-DL.mkv".into(),
+            ),
+            narrative_order: None,
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        }];
+
+        assert_eq!(
+            derive_movie_probe_path(root, &title, &collections),
+            Some(PathBuf::from("/Volumes/Media/Movies/Existing Movie"))
+        );
     }
 }

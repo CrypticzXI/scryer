@@ -33,6 +33,91 @@ async fn ensure_title_folder_path_if_missing(
     }
 }
 
+fn normalize_title_folder_path(path: Option<String>) -> Option<String> {
+    path.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) -> Option<String> {
+    let representative_path = representative_path.trim();
+    if representative_path.is_empty() {
+        return None;
+    }
+
+    let item_path = PathBuf::from(representative_path);
+    if let Ok(relative) = item_path.strip_prefix(scan_root)
+        && let Some(first_component) = relative.components().next()
+    {
+        let entry_path = scan_root.join(first_component.as_os_str());
+        let entry_path = entry_path.to_string_lossy().trim().to_string();
+        if entry_path.is_empty() || entry_path == representative_path {
+            return None;
+        }
+        return Some(entry_path);
+    }
+
+    let parent = item_path.parent()?.to_string_lossy().trim().to_string();
+    if parent.is_empty() || parent == scan_root.to_string_lossy() {
+        None
+    } else {
+        Some(parent)
+    }
+}
+
+async fn sync_movie_title_folder_path_for_scan(
+    app: &AppUseCase,
+    title: &mut Title,
+    scan_root: &Path,
+    representative_path: &str,
+) {
+    let desired_folder_path = scanned_movie_entry_folder_path(scan_root, representative_path);
+    let current_folder_path = normalize_title_folder_path(title.folder_path.clone());
+
+    if current_folder_path == desired_folder_path {
+        return;
+    }
+
+    let update_result = match desired_folder_path.as_deref() {
+        Some(folder_path) => {
+            app.services
+                .catalog
+                .titles
+                .set_folder_path(&title.id, folder_path)
+                .await
+        }
+        None => {
+            app.services
+                .catalog
+                .titles
+                .clear_folder_path(&title.id)
+                .await
+        }
+    };
+
+    match update_result {
+        Ok(()) => {
+            title.folder_path = desired_folder_path;
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                representative_path = %representative_path,
+                "failed to synchronize movie title folder path during library scan"
+            );
+        }
+    }
+}
+
+fn sync_existing_title_folder_path_in_memory(existing_titles: &mut [Title], title: &Title) {
+    if let Some(existing) = existing_titles
+        .iter_mut()
+        .find(|existing| existing.id == title.id)
+    {
+        existing.folder_path = title.folder_path.clone();
+    }
+}
+
 fn external_ids_from_nfo(nfo_meta: &crate::nfo::NfoMetadata) -> Vec<ExternalId> {
     let mut external_ids = Vec::new();
     if let Some(tvdb_id) = nfo_meta.tvdb_id.as_deref() {
@@ -531,6 +616,8 @@ pub(super) async fn process_movie_full_scan_candidate(
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
     let discovered_files = candidate.discovered_files.clone();
     let item_path = normalize_library_scan_item_path(&candidate.file.path);
+    let representative_path = candidate.file.path.clone();
+    let scan_root = Path::new(library_path);
 
     match resolve_movie_scan_candidate(
         app,
@@ -545,7 +632,10 @@ pub(super) async fn process_movie_full_scan_candidate(
     )
     .await?
     {
-        MovieCandidateResolution::Ready(title) => {
+        MovieCandidateResolution::Ready(mut title) => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             summary.matched += 1;
             merge_default_movie_title_work(
                 workset,
@@ -558,7 +648,10 @@ pub(super) async fn process_movie_full_scan_candidate(
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
-        MovieCandidateResolution::ReadyCreated { title, .. } => {
+        MovieCandidateResolution::ReadyCreated { mut title, .. } => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             summary.imported += 1;
             summary.matched += 1;
             merge_default_movie_title_work(
@@ -750,6 +843,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<()> {
     let discovered_files = candidate.discovered_files.clone();
+    let scan_root = Path::new(library_path);
     match resolve_movie_metadata_match(
         app,
         actor,
@@ -764,7 +858,10 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     )
     .await?
     {
-        MovieMetadataResolution::Ready(title) => {
+        MovieMetadataResolution::Ready(mut title) => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &candidate.file.path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             summary.matched += 1;
             merge_default_movie_title_work(
                 workset,
@@ -777,7 +874,10 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             coordinator.mark_title_match_completed(1).await;
             Ok(())
         }
-        MovieMetadataResolution::ReadyCreated { title, .. } => {
+        MovieMetadataResolution::ReadyCreated { mut title, .. } => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &candidate.file.path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             summary.imported += 1;
             summary.matched += 1;
             merge_default_movie_title_work(
@@ -1208,7 +1308,21 @@ pub(super) async fn process_movie_refresh_candidate(
     )
     .await?
     {
-        MovieCandidateResolution::Ready(title) => {
+        MovieCandidateResolution::Ready(mut title) => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if let Some(index) = existing_titles
+                .iter()
+                .position(|existing| existing.id == title.id)
+            {
+                update_movie_probe_path_index(
+                    existing_titles_by_probe_path,
+                    root,
+                    &representative_path,
+                    index,
+                );
+            }
             merge_default_movie_title_work(
                 workset,
                 title,
@@ -1219,7 +1333,10 @@ pub(super) async fn process_movie_refresh_candidate(
             summary.matched += 1;
             Ok(None)
         }
-        MovieCandidateResolution::ReadyCreated { index, title } => {
+        MovieCandidateResolution::ReadyCreated { index, mut title } => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             update_movie_probe_path_index(
                 existing_titles_by_probe_path,
                 root,
@@ -1285,7 +1402,21 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     )
     .await?
     {
-        MovieMetadataResolution::Ready(title) => {
+        MovieMetadataResolution::Ready(mut title) => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if let Some(index) = existing_titles
+                .iter()
+                .position(|existing| existing.id == title.id)
+            {
+                update_movie_probe_path_index(
+                    existing_titles_by_probe_path,
+                    root,
+                    &representative_path,
+                    index,
+                );
+            }
             merge_default_movie_title_work(
                 workset,
                 title,
@@ -1296,7 +1427,10 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             summary.matched += 1;
             Ok(())
         }
-        MovieMetadataResolution::ReadyCreated { index, title } => {
+        MovieMetadataResolution::ReadyCreated { index, mut title } => {
+            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                .await;
+            sync_existing_title_folder_path_in_memory(existing_titles, &title);
             update_movie_probe_path_index(
                 existing_titles_by_probe_path,
                 root,

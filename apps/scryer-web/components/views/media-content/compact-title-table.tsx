@@ -1,6 +1,12 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  persistOverviewScrollValue,
+  readOverviewSavedScroll,
+  useOverviewElementScrollRestoration,
+} from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { Button } from "@/components/ui/button";
 import {
   ArrowDown,
@@ -37,7 +43,6 @@ import {
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   sortTitlesForTable,
-  StatusBadge,
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
@@ -107,6 +112,7 @@ export function CompactTitleTable({
   scanLibraryDisabled = false,
 }: CompactTitleTableProps) {
   "use no memo";
+  const location = useLocation();
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
@@ -125,12 +131,11 @@ export function CompactTitleTable({
 
   const titleTableColGroup = (
     <colgroup>
-      <col style={{ width: "2.5rem" }} />
+      <col style={{ width: "3rem" }} />
       <col />
       <col style={{ width: "5.5rem" }} />
       <col style={{ width: "9rem" }} />
       {!isMovieView ? <col style={{ width: "8.5rem" }} /> : null}
-      {!isMovieView ? <col style={{ width: "8rem" }} /> : null}
       <col style={{ width: "7.5rem" }} />
       <col style={{ width: "10rem" }} />
     </colgroup>
@@ -151,6 +156,12 @@ export function CompactTitleTable({
     React.useState<TitleTableSortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
+  useOverviewElementScrollRestoration({
+    enabled: true,
+    ready: !titleLoading && titles.length > 0,
+    storageKeySuffix: "compact",
+    scrollRef: titleTableScrollRef,
+  });
   const sortedTitles = React.useMemo(
     () =>
       sortTitlesForTable({
@@ -179,6 +190,52 @@ export function CompactTitleTable({
     estimateSize: () => 48,
     overscan: 8,
   });
+
+  const handleOpenOverview = React.useCallback(
+    (item: OverviewTitleTarget) => {
+      persistOverviewScrollValue(
+        location.pathname,
+        "compact",
+        titleVirtualizer.scrollOffset ?? titleTableScrollRef.current?.scrollTop,
+      );
+      onOpenOverview(overviewTargetView, item);
+    },
+    [location.pathname, onOpenOverview, overviewTargetView, titleVirtualizer.scrollOffset],
+  );
+
+  React.useLayoutEffect(() => {
+    if (titleLoading || titles.length === 0) {
+      return;
+    }
+
+    const savedScrollTop = readOverviewSavedScroll(
+      location.pathname,
+      "compact",
+    );
+    if (savedScrollTop == null) {
+      return;
+    }
+
+    let frameId = 0;
+    let attempts = 0;
+    const restore = () => {
+      titleVirtualizer.scrollToOffset(savedScrollTop);
+      const currentScrollTop = titleTableScrollRef.current?.scrollTop ?? 0;
+      if (Math.abs(currentScrollTop - savedScrollTop) <= 2 || attempts >= 12) {
+        return;
+      }
+
+      attempts += 1;
+      frameId = window.requestAnimationFrame(restore);
+    };
+
+    frameId = window.requestAnimationFrame(restore);
+    return () => {
+      if (frameId !== 0) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [location.pathname, titleLoading, titleVirtualizer, titles.length]);
 
   const handleSort = React.useCallback(
     (nextKey: TitleTableSortKey) => {
@@ -339,12 +396,13 @@ export function CompactTitleTable({
               onCheckedChange={() => onToggleSelected(item.id)}
               aria-label={t("title.selectTitle", { name: item.name })}
               disabled={bulkActionBusy}
+              className="mx-auto size-5 rounded-md [&_svg]:size-4"
             />
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5">
             <button
               type="button"
-              onClick={() => onOpenOverview(overviewTargetView, item)}
+              onClick={() => handleOpenOverview(item)}
               data-ui="title-name"
               className="block w-full overflow-hidden text-left text-[13px] font-medium hover:text-foreground hover:underline"
             >
@@ -377,11 +435,6 @@ export function CompactTitleTable({
           {!isMovieView ? (
             <TableCell className="align-middle whitespace-nowrap py-1.5">
               <TitleEpisodeProgressBar item={item} t={t} compact />
-            </TableCell>
-          ) : null}
-          {!isMovieView ? (
-            <TableCell className="align-middle whitespace-nowrap py-1.5">
-              <StatusBadge status={item.contentStatus} t={t} />
             </TableCell>
           ) : null}
           <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
@@ -534,12 +587,13 @@ export function CompactTitleTable({
   const titleTableHeader = (
     <TableHeader>
       <TableRow className="sticky top-0 z-10 bg-background">
-        <TableHead className="w-10 text-center">
+        <TableHead className="w-12 text-center">
           <Checkbox
             checked={selectAllState}
             onCheckedChange={(checked) => onToggleSelectAll(checked === true)}
             aria-label={t("title.selectAllTitles")}
             disabled={bulkActionBusy}
+            className="mx-auto size-5 rounded-md [&_svg]:size-4"
           />
         </TableHead>
         {renderSortableHeader("name", t("label.name"))}
@@ -558,13 +612,6 @@ export function CompactTitleTable({
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
-              "whitespace-nowrap",
-            )
-          : null}
-        {!isMovieView
-          ? renderSortableHeader(
-              "status",
-              t("title.table.status"),
               "whitespace-nowrap",
             )
           : null}

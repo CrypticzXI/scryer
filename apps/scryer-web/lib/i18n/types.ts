@@ -9,7 +9,7 @@ export function interpolate(
   }
 
   return Object.entries(values).reduce((result, [key, value]) => {
-    return result.replace(new RegExp(`\\{\\{${key}\\}}`, "g"), String(value ?? ""));
+    return result.replaceAll(`{{${key}}}`, String(value ?? ""));
   }, template);
 }
 

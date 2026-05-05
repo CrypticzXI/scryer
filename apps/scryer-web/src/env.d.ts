@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare module "@fontsource-variable/*";
+
 interface ImportMetaEnv {
   readonly SCRYER_BASE_PATH: string;
   readonly SCRYER_GRAPHQL_URL: string;

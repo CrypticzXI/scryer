@@ -1,5 +1,5 @@
 use async_graphql::Data;
-use async_graphql::http::{ALL_WEBSOCKET_PROTOCOLS, GraphiQLSource};
+use async_graphql::http::ALL_WEBSOCKET_PROTOCOLS;
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
@@ -261,12 +261,6 @@ pub(crate) async fn index_page() -> impl IntoResponse {
 </html>
     "#,
     ))
-}
-
-pub(crate) async fn graphiql_handler() -> impl IntoResponse {
-    let base_path = BasePath::from_env();
-    let endpoint = base_path.join("/graphql");
-    axum::response::Html(GraphiQLSource::build().endpoint(&endpoint).finish())
 }
 
 pub(crate) async fn graphql_ws_handler(

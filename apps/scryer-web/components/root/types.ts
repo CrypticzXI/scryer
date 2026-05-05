@@ -76,8 +76,6 @@ export type SystemHealth = {
   recentEventPreview: string[];
   dbMigrationVersion: string | null;
   dbPendingMigrations: number;
-  smgCertExpiresAt: string | null;
-  smgCertDaysRemaining: number | null;
   indexerStats: IndexerQueryStats[];
 };
 

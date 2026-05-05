@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AVAILABLE_LANGUAGES,
   DEFAULT_LANGUAGE,
-  LocaleCode,
   getLanguageLabel,
   normalizeLocale,
   t as translate,
 } from "@/lib/i18n";
+import type { LocaleCode } from "@/lib/i18n";
 import { URL_PARAM_LANGUAGE } from "@/lib/constants/settings";
 import { parseLanguageFromParam } from "@/lib/utils/routing";
 

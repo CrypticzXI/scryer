@@ -1757,7 +1757,9 @@ impl AppUseCase {
             false
         };
 
-        // Seasons that have no episodes should not be auto-monitored.
+        // Regular seasons should auto-monitor on creation even before SMG has
+        // episode rows. Specials still require episode data so empty season-0
+        // shells do not become monitored unless they are backed by episodes.
         let seasons_with_episodes: std::collections::HashSet<i32> =
             episodes.iter().map(|ep| ep.season_number).collect();
 
@@ -1789,8 +1791,13 @@ impl AppUseCase {
             std::collections::HashMap::new();
 
         for season in best_season_by_number.values() {
-            let season_monitored = seasons_with_episodes.contains(&season.number)
-                && should_monitor_season(&monitor_type, season.number, monitor_specials);
+            let season_should_monitor =
+                should_monitor_season(&monitor_type, season.number, monitor_specials);
+            let season_monitored = if season.number == 0 {
+                seasons_with_episodes.contains(&season.number) && season_should_monitor
+            } else {
+                season_should_monitor
+            };
             let collection_type = if season.number == 0 {
                 CollectionType::Specials
             } else {

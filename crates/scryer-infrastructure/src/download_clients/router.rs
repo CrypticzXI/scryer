@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use reqwest::Client;
 use scryer_application::{
     AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
     DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
@@ -12,7 +11,7 @@ use scryer_application::{
     accepted_inputs_for_client,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
-use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry};
+use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, default_reqwest_client};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::warn;
@@ -273,7 +272,7 @@ impl PrioritizedDownloadClientRouter {
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
         feedback_read_timeout: Duration,
     ) -> Self {
-        let http_client = Client::new();
+        let http_client = default_reqwest_client();
         Self {
             download_client_configs,
             settings,

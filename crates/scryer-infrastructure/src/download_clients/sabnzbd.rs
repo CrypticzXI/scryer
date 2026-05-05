@@ -4,7 +4,6 @@ use async_compression::Level;
 use async_compression::tokio::{bufread::ZstdDecoder, write::GzipEncoder};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reqwest::Client;
 use reqwest::multipart;
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
@@ -12,7 +11,7 @@ use scryer_application::{
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, default_reqwest_client,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -30,7 +29,6 @@ use super::{
 pub struct SabnzbdDownloadClient {
     base_url: String,
     api_key: String,
-    http_client: Client,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
@@ -52,12 +50,11 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
-        let http_client = Client::new();
+        let http_client = default_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
-            http_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
@@ -155,7 +152,9 @@ impl SabnzbdDownloadClient {
 
         let response = self
             .outbound_http
-            .send(policy, || self.http_client.get(&url).query(&query))
+            .send(policy, || {
+                self.outbound_http.client().get(&url).query(&query)
+            })
             .await
             .map_err(|error| map_sabnzbd_outbound_error("sabnzbd api call", error))?;
 
@@ -213,7 +212,8 @@ impl SabnzbdDownloadClient {
         let response = self
             .outbound_http
             .send(self.read_policy("sabnzbd_test_connection"), || {
-                self.http_client
+                self.outbound_http
+                    .client()
                     .get(&url)
                     .query(&[("mode", "version"), ("output", "json")])
             })
@@ -364,7 +364,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                             form = form.text("password", password);
                         }
 
-                        Ok::<_, AppError>(self.http_client.post(&url).multipart(form))
+                        Ok::<_, AppError>(self.outbound_http.client().post(&url).multipart(form))
                     }
                 })
                 .await

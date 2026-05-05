@@ -13,7 +13,7 @@ use scryer_domain::{
     PersistedPluginWasmPayload, PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, timeout_reqwest_client,
 };
 use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, host_version_matches_constraint,
@@ -871,13 +871,7 @@ fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
 }
 
 fn build_plugin_http_client(timeout: Option<Duration>) -> Result<OutboundHttpClient, String> {
-    let mut builder = reqwest::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-
-    let client = builder
-        .build()
+    let client = timeout_reqwest_client(timeout)
         .map_err(|error| format!("failed to build plugin HTTP client: {error}"))?;
 
     Ok(OutboundHttpClient::new(

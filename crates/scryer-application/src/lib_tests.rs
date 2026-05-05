@@ -15030,6 +15030,171 @@ async fn series_season_zero_creates_canonical_specials_collection() {
 }
 
 #[tokio::test]
+async fn new_regular_season_without_episodes_is_monitored_when_title_is_monitored() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Future Season Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let seasons = vec![SeasonMetadata {
+        tvdb_id: 92,
+        number: 2,
+        label: "Season 2".into(),
+        episode_type: "official".into(),
+    }];
+
+    app.create_series_seasons_and_episodes(&title, &seasons, &[], &[], &[])
+        .await;
+
+    let collections = app
+        .list_collections(&user, &title.id)
+        .await
+        .expect("list collections");
+    let season = collections
+        .iter()
+        .find(|collection| {
+            collection.collection_type == CollectionType::Season
+                && collection.collection_index == "2"
+        })
+        .expect("season two collection should exist");
+
+    assert!(
+        season.monitored,
+        "new regular seasons should auto-monitor for monitored titles even before episodes exist"
+    );
+}
+
+#[tokio::test]
+async fn new_regular_season_without_episodes_is_not_monitored_when_monitor_type_is_none() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Season Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec!["scryer:monitor-type:none".into()],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let seasons = vec![SeasonMetadata {
+        tvdb_id: 93,
+        number: 2,
+        label: "Season 2".into(),
+        episode_type: "official".into(),
+    }];
+
+    app.create_series_seasons_and_episodes(&title, &seasons, &[], &[], &[])
+        .await;
+
+    let collections = app
+        .list_collections(&user, &title.id)
+        .await
+        .expect("list collections");
+    let season = collections
+        .iter()
+        .find(|collection| {
+            collection.collection_type == CollectionType::Season
+                && collection.collection_index == "2"
+        })
+        .expect("season two collection should exist");
+
+    assert!(
+        !season.monitored,
+        "monitor-type:none should keep new empty regular seasons unmonitored"
+    );
+}
+
+#[tokio::test]
+async fn rehydrating_existing_regular_season_preserves_manual_unmonitored_state() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Existing Season Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let existing_collection = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: false,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("seed existing season collection");
+
+    let seasons = vec![SeasonMetadata {
+        tvdb_id: 94,
+        number: 2,
+        label: "Season 2".into(),
+        episode_type: "official".into(),
+    }];
+
+    app.create_series_seasons_and_episodes(&title, &seasons, &[], &[], &[])
+        .await;
+
+    let collections = app
+        .list_collections(&user, &title.id)
+        .await
+        .expect("list collections");
+    let season = collections
+        .iter()
+        .find(|collection| {
+            collection.collection_type == CollectionType::Season
+                && collection.collection_index == "2"
+        })
+        .expect("season two collection should exist");
+
+    assert_eq!(season.id, existing_collection.id);
+    assert!(
+        !season.monitored,
+        "rehydration should not retroactively flip existing manually unmonitored seasons"
+    );
+}
+
+#[tokio::test]
 async fn series_rollout_reuses_legacy_season_zero_specials_collection() {
     let (app, user) = bootstrap();
     let title = app

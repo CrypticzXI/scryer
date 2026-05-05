@@ -1,0 +1,25 @@
+query GetMovie($tvdbId: Int!, $language: String!) {
+  movie(tvdbId: $tvdbId, language: $language) {
+    movie {
+      tvdb_id
+      name
+      slug
+      year
+      status
+      overview
+      poster_url
+      language
+      runtime_minutes
+      sort_title
+      imdb_id
+      anidb_id
+      genres
+      studio
+      tmdb_release_date
+      artworks {
+        kind
+        url
+      }
+    }
+  }
+}

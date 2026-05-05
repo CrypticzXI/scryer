@@ -15,7 +15,6 @@ impl AppUseCase {
         results.extend(self.check_indexers().await);
         results.extend(self.check_root_folders().await);
         results.extend(self.check_disk_space_health().await);
-        results.extend(self.check_smg_certificate().await);
         results
     }
 
@@ -210,44 +209,5 @@ impl AppUseCase {
         }
 
         results
-    }
-
-    async fn check_smg_certificate(&self) -> Vec<HealthCheckResult> {
-        let expires_at = match self.services.config.system_info.smg_cert_expires_at().await {
-            Ok(Some(v)) => v,
-            _ => return vec![],
-        };
-
-        let Ok(expires) = chrono::DateTime::parse_from_rfc3339(&expires_at) else {
-            return vec![];
-        };
-
-        let days_remaining = (expires.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_days();
-
-        if days_remaining < 0 {
-            return vec![HealthCheckResult {
-                source: "SmgCertificate".into(),
-                status: HealthCheckStatus::Error,
-                message: "SMG certificate has expired".into(),
-            }];
-        }
-
-        if days_remaining < 7 {
-            return vec![HealthCheckResult {
-                source: "SmgCertificate".into(),
-                status: HealthCheckStatus::Error,
-                message: format!("SMG certificate expires in {days_remaining} days"),
-            }];
-        }
-
-        if days_remaining < 30 {
-            return vec![HealthCheckResult {
-                source: "SmgCertificate".into(),
-                status: HealthCheckStatus::Warning,
-                message: format!("SMG certificate expires in {days_remaining} days"),
-            }];
-        }
-
-        vec![]
     }
 }

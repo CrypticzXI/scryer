@@ -15,7 +15,7 @@ export function SetupWelcomeView({ t, onFreshSetup, onImportSetup, onSkip, skipp
       <div className="text-center">
         <h1
           className="mb-3 text-3xl font-bold tracking-tight"
-          style={{ fontFamily: "'Space Grotesk', Inter, ui-sans-serif, system-ui, sans-serif" }}
+          style={{ fontFamily: "'Space Grotesk Variable', 'Inter Variable', ui-sans-serif, system-ui, sans-serif" }}
         >
           {t("setup.welcomeTitle")}
         </h1>

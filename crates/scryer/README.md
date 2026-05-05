@@ -4,7 +4,6 @@ This crate provides a first-version executable that exposes:
 
 - `GET /` backend notice page (points to Next.js app)
 - `POST /graphql` GraphQL endpoint
-- `GET /graphiql` GraphQL playground
 
 ## Run
 
@@ -94,7 +93,7 @@ Legacy bootstrap settings (still supported as fallback):
 - `SCRYER_NZBGEEK_MIN_REQUEST_INTERVAL_MS` (optional, default `1100`)
 - `SCRYER_NZBGEEK_BASE_BACKOFF_SECONDS` (optional, default `10`)
 - `SCRYER_NZBGEEK_MAX_BACKOFF_SECONDS` (optional, default `900`)
-- `SCRYER_BASE_PATH` (optional; serves the UI, GraphQL, GraphiQL, health, and WebSocket endpoints under that prefix)
+- `SCRYER_BASE_PATH` (optional; serves the UI, GraphQL, health, and WebSocket endpoints under that prefix)
 - `SCRYER_WEB_UI_URL` (optional, default `http://127.0.0.1:3000`)
 - `SCRYER_WEB_DIST_DIR` (optional, default `./crates/scryer/ui`)
 

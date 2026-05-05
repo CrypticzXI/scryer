@@ -1,0 +1,31 @@
+query SearchTvdbRich(
+  $query: String!
+  $type: String
+  $limit: Int
+  $language: String
+  $year: Int
+) {
+  searchTvdb(
+    query: $query
+    type: $type
+    limit: $limit
+    language: $language
+    year: $year
+  ) {
+    results {
+      tvdb_id
+      name
+      imdb_id
+      slug
+      type
+      year
+      status
+      overview
+      popularity
+      poster_url
+      language
+      runtime_minutes
+      sort_title
+    }
+  }
+}

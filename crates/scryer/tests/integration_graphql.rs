@@ -8834,6 +8834,14 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     )
     .await;
 
+    let stale_root = tempfile::tempdir().expect("stale root tempdir");
+    let stale_folder = stale_root.path().join("Existing Movie");
+    std::fs::create_dir_all(&stale_folder).expect("create stale folder");
+    ctx.catalog
+        .set_folder_path(&title.id, stale_folder.to_string_lossy().as_ref())
+        .await
+        .expect("set stale folder path");
+
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let movie_dir = media_root.path().join("Existing Movie [2160p]");
     std::fs::create_dir_all(&movie_dir).expect("create movie dir");
@@ -8890,6 +8898,10 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
         .expect("load title")
         .expect("title exists");
     assert_eq!(refreshed_title.name, "Existing Movie");
+    assert_eq!(
+        refreshed_title.folder_path.as_deref(),
+        Some(movie_dir.to_string_lossy().as_ref())
+    );
 
     let collections = ctx
         .catalog

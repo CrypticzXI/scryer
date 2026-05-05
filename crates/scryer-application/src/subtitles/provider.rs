@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use reqwest::{Method, Response, StatusCode};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    user_agent_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -175,7 +176,6 @@ pub struct OpenSubtitlesProvider {
     credentials: tokio::sync::Mutex<Option<LoginCredentials>>,
     api_base: tokio::sync::RwLock<String>,
     outbound_http: OutboundHttpClient,
-    http: reqwest::Client,
 }
 
 #[derive(Clone)]
@@ -285,17 +285,13 @@ impl OpenSubtitlesProvider {
     }
 
     pub(crate) fn with_api_base(api_key: String, api_base: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent("scryer-media/1.0")
-            .build()
-            .expect("http client");
+        let http = user_agent_reqwest_client("scryer-media/1.0").expect("http client");
         Self {
             api_key,
             token: tokio::sync::Mutex::new(None),
             credentials: tokio::sync::Mutex::new(None),
             api_base: tokio::sync::RwLock::new(api_base.into()),
-            outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
-            http,
+            outbound_http: OutboundHttpClient::new(http, RateLimitRegistry::new()),
         }
     }
 
@@ -322,7 +318,8 @@ impl OpenSubtitlesProvider {
         let resp = self
             .outbound_http
             .send(policy, || {
-                self.http
+                self.outbound_http
+                    .client()
                     .post(url.clone())
                     .header("Api-Key", api_key.clone())
                     .json(&serde_json::json!({
@@ -412,7 +409,8 @@ impl OpenSubtitlesProvider {
                 .outbound_http
                 .send(policy, || {
                     let mut req = self
-                        .http
+                        .outbound_http
+                        .client()
                         .request(method.clone(), url.clone())
                         .header("Api-Key", api_key.clone());
 
@@ -799,7 +797,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                         std::time::Duration::from_secs(1),
                         std::time::Duration::from_secs(30),
                     ),
-                || self.http.get(&dl.link),
+                || self.outbound_http.client().get(&dl.link),
             )
             .await
             .map_err(|error| map_opensubtitles_outbound_error("subtitle file fetch", error))?;

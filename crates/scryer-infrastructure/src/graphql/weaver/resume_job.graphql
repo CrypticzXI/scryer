@@ -1,0 +1,3 @@
+mutation ResumeJob($id: Int!) {
+  resumeJob(id: $id)
+}

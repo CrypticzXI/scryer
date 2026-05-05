@@ -1172,8 +1172,24 @@ function AuthenticatedHomePage({
   ]);
 
   const handleBackToList = useCallback(
-    () => navigateTo(view, undefined, "overview", undefined, undefined),
-    [navigateTo, view],
+    () => {
+      const targetPath = buildViewPath(view, undefined, "overview");
+      const nextParams = new URLSearchParams(searchParams.toString());
+      nextParams.delete(URL_PARAM_VIEW_DEPRECATED);
+      nextParams.delete(URL_PARAM_SETTINGS_SECTION_DEPRECATED);
+      nextParams.delete(URL_PARAM_CONTENT_SECTION_DEPRECATED);
+      nextParams.delete(URL_PARAM_LANGUAGE);
+      nextParams.delete("tab");
+      nextParams.delete("id");
+      nextParams.delete("episodeId");
+
+      const nextQuery = nextParams.toString();
+      const nextPathWithQuery = `${targetPath}${nextQuery ? `?${nextQuery}` : ""}`;
+      navigate(nextPathWithQuery, {
+        state: { restoreOverviewScroll: true },
+      });
+    },
+    [navigate, searchParams, view],
   );
 
   const handleTitleNotFound = useCallback(

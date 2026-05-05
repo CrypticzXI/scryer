@@ -314,9 +314,17 @@ function deriveQueueRowPresentation(
     queueItem.attentionReason?.trim() ??
     queueItem.trackedStatusMessages[0]?.trim() ??
     "";
+  const postProcessingStatusKey =
+    stateKey === "verifying"
+      ? "queue.state.verifying"
+      : stateKey === "repairing"
+        ? "queue.state.repairing"
+        : stateKey === "extracting"
+          ? "queue.state.extracting"
+          : "queue.state.postProcessing";
   const statusLabel =
-    displayStateKey === "post_processing" && stageLabel.length > 0
-      ? stageLabel
+    displayStateKey === "post_processing"
+      ? t(postProcessingStatusKey)
       : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||

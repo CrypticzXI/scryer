@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
+use brotli::Decompressor;
 use tokio::fs;
 
 use crate::base_path::BasePath;
@@ -17,12 +19,22 @@ mod embedded_ui_assets {
 pub(crate) static UI_ASSET_MODE: OnceLock<UiAssetMode> = OnceLock::new();
 const BASE_PATH_PLACEHOLDER: &str = "__SCRYER_BASE_PATH__";
 const GRAPHQL_URL_PLACEHOLDER: &str = "__SCRYER_GRAPHQL_URL__";
+static GZIP_UI_ASSET_CACHE: LazyLock<RwLock<HashMap<String, Vec<u8>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+const BROTLI_BUFFER_SIZE: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub(crate) enum UiAssetMode {
     Filesystem(PathBuf),
     Embedded,
     Fallback,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum UiContentEncoding {
+    Brotli,
+    Gzip,
+    Identity,
 }
 
 pub(crate) async fn ui_fallback(method: Method, uri: Uri, headers: HeaderMap) -> Response {
@@ -32,21 +44,71 @@ pub(crate) async fn ui_fallback(method: Method, uri: Uri, headers: HeaderMap) ->
 
     let request_path = uri.path();
     let head_only = method == Method::HEAD;
-    let accept_gzip = accepts_gzip(&headers);
+    let preferred_encoding = preferred_content_encoding(&headers);
     match ui_asset_mode() {
         UiAssetMode::Filesystem(dist_dir) => {
-            serve_ui_path(dist_dir, request_path, head_only, accept_gzip).await
+            serve_ui_path(dist_dir, request_path, head_only, preferred_encoding).await
         }
-        UiAssetMode::Embedded => serve_embedded_ui(request_path, head_only, accept_gzip).await,
+        UiAssetMode::Embedded => {
+            serve_embedded_ui(request_path, head_only, preferred_encoding).await
+        }
         UiAssetMode::Fallback => serve_fallback_ui(request_path).await,
     }
 }
 
-fn accepts_gzip(headers: &HeaderMap) -> bool {
-    headers
+fn preferred_content_encoding(headers: &HeaderMap) -> UiContentEncoding {
+    let Some(value) = headers
         .get(header::ACCEPT_ENCODING)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("gzip"))
+    else {
+        return UiContentEncoding::Identity;
+    };
+
+    let brotli_quality = negotiated_quality(value, "br");
+    let gzip_quality = negotiated_quality(value, "gzip");
+
+    if brotli_quality <= 0.0 && gzip_quality <= 0.0 {
+        return UiContentEncoding::Identity;
+    }
+
+    if brotli_quality >= gzip_quality {
+        UiContentEncoding::Brotli
+    } else {
+        UiContentEncoding::Gzip
+    }
+}
+
+fn negotiated_quality(value: &str, encoding: &str) -> f32 {
+    let mut wildcard_quality = None;
+    let mut specific_quality = None;
+
+    for entry in value.split(',') {
+        let mut parts = entry.trim().split(';');
+        let token = parts.next().unwrap_or("").trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        let mut quality = 1.0_f32;
+        for parameter in parts {
+            let parameter = parameter.trim();
+            if let Some(raw_q) = parameter.strip_prefix("q=") {
+                quality = raw_q
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|q| (0.0..=1.0).contains(q))
+                    .unwrap_or(0.0);
+            }
+        }
+
+        if token.eq_ignore_ascii_case(encoding) {
+            specific_quality = Some(quality);
+        } else if token == "*" {
+            wildcard_quality = Some(quality);
+        }
+    }
+
+    specific_quality.or(wildcard_quality).unwrap_or(0.0)
 }
 
 pub(crate) fn ui_asset_mode() -> &'static UiAssetMode {
@@ -80,7 +142,7 @@ pub(crate) fn resolve_ui_asset_mode() -> UiAssetMode {
 pub(crate) async fn serve_embedded_ui(
     request_path: &str,
     head_only: bool,
-    accept_gzip: bool,
+    preferred_encoding: UiContentEncoding,
 ) -> Response {
     if should_serve_spa_index(request_path) {
         return serve_embedded_index(head_only).await;
@@ -95,58 +157,71 @@ pub(crate) async fn serve_embedded_ui(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    // Don't serve .gz files directly — they're only used as pre-compressed variants.
-    if relative_path.ends_with(".gz") {
+    // Don't serve pre-compressed files directly — they're only used as negotiated variants.
+    if relative_path.ends_with(".gz") || relative_path.ends_with(".br") {
         return StatusCode::NOT_FOUND.into_response();
     }
 
     let content_type = infer_content_type(Path::new(relative_path));
     let cache_control = cache_control_for_asset(relative_path);
-    let gz_path = format!("{relative_path}.gz");
+    let brotli_path = format!("{relative_path}.br");
 
-    // Try pre-compressed .gz variant first (only version stored for JS/CSS/SVG/JSON).
-    if let Some(gz_bytes) = embedded_ui_asset(&gz_path) {
-        if accept_gzip {
-            // Client accepts gzip — serve compressed bytes directly.
-            let content_len = gz_bytes.len().to_string();
-            let response = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type)
-                .header(header::CONTENT_ENCODING, "gzip")
-                .header(header::CONTENT_LENGTH, &content_len)
-                .header(header::CACHE_CONTROL, cache_control)
-                .body(if head_only {
-                    Body::empty()
-                } else {
-                    Body::from(gz_bytes)
-                });
-            return response.unwrap_or_else(|error| {
-                tracing::warn!(error = %error, path = relative_path, "failed to build compressed asset response");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            });
-        }
-
-        // Client doesn't accept gzip — decompress on the fly.
-        use flate2::read::GzDecoder;
-        use std::io::Read;
-        let mut decoder = GzDecoder::new(gz_bytes);
-        let mut decompressed = Vec::new();
-        if decoder.read_to_end(&mut decompressed).is_ok() {
-            let content_len = decompressed.len().to_string();
-            let response = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type)
-                .header(header::CONTENT_LENGTH, &content_len)
-                .header(header::CACHE_CONTROL, cache_control)
-                .body(if head_only {
-                    Body::empty()
-                } else {
-                    Body::from(decompressed)
-                });
-            return response.unwrap_or_else(|error| {
-                tracing::warn!(error = %error, path = relative_path, "failed to build decompressed asset response");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            });
+    if let Some(brotli_bytes) = embedded_ui_asset(&brotli_path) {
+        match preferred_encoding {
+            UiContentEncoding::Brotli => {
+                return negotiated_asset_response(
+                    brotli_bytes.len(),
+                    content_type,
+                    cache_control,
+                    Some("br"),
+                    head_only,
+                    if head_only {
+                        Body::empty()
+                    } else {
+                        Body::from(brotli_bytes)
+                    },
+                );
+            }
+            UiContentEncoding::Gzip => match gzip_from_brotli_cached(relative_path, brotli_bytes) {
+                Ok(gzip_bytes) => {
+                    return negotiated_asset_response(
+                        gzip_bytes.len(),
+                        content_type,
+                        cache_control,
+                        Some("gzip"),
+                        head_only,
+                        if head_only {
+                            Body::empty()
+                        } else {
+                            Body::from(gzip_bytes)
+                        },
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, path = relative_path, "failed to build cached gzip asset from Brotli bytes");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            },
+            UiContentEncoding::Identity => match decompress_brotli_bytes(brotli_bytes) {
+                Ok(raw_bytes) => {
+                    return negotiated_asset_response(
+                        raw_bytes.len(),
+                        content_type,
+                        cache_control,
+                        None,
+                        head_only,
+                        if head_only {
+                            Body::empty()
+                        } else {
+                            Body::from(raw_bytes)
+                        },
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, path = relative_path, "failed to decompress Brotli asset to raw bytes");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            },
         }
     }
 
@@ -215,7 +290,7 @@ pub(crate) async fn serve_ui_path(
     dist_dir: &Path,
     request_path: &str,
     head_only: bool,
-    accept_gzip: bool,
+    preferred_encoding: UiContentEncoding,
 ) -> Response {
     if !dist_dir.exists() {
         return serve_fallback_ui(request_path).await;
@@ -231,8 +306,8 @@ pub(crate) async fn serve_ui_path(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    // Don't serve .gz files directly.
-    if relative_path.ends_with(".gz") {
+    // Don't serve negotiated pre-compressed files directly.
+    if relative_path.ends_with(".gz") || relative_path.ends_with(".br") {
         return StatusCode::NOT_FOUND.into_response();
     }
 
@@ -250,15 +325,32 @@ pub(crate) async fn serve_ui_path(
     }
     match fs::metadata(&canonical).await {
         Ok(metadata) if metadata.is_file() => {
-            // Try pre-compressed variant for filesystem mode too.
-            if accept_gzip {
-                let gz_candidate = dist_dir.join(format!("{relative_path}.gz"));
-                if let Ok(gz_canonical) = gz_candidate.canonicalize()
-                    && gz_canonical.starts_with(&canonical_root)
-                    && let Ok(gz_meta) = fs::metadata(&gz_canonical).await
-                    && gz_meta.is_file()
-                {
-                    return serve_file_gzipped(gz_canonical, &canonical, head_only).await;
+            let brotli_candidate = dist_dir.join(format!("{relative_path}.br"));
+            if let Ok(brotli_canonical) = brotli_candidate.canonicalize()
+                && brotli_canonical.starts_with(&canonical_root)
+                && let Ok(brotli_meta) = fs::metadata(&brotli_canonical).await
+                && brotli_meta.is_file()
+            {
+                match preferred_encoding {
+                    UiContentEncoding::Brotli => {
+                        return serve_file_precompressed(
+                            brotli_canonical,
+                            &canonical,
+                            "br",
+                            head_only,
+                        )
+                        .await;
+                    }
+                    UiContentEncoding::Gzip => {
+                        return serve_file_gzip_from_brotli(
+                            brotli_canonical,
+                            &canonical,
+                            relative_path,
+                            head_only,
+                        )
+                        .await;
+                    }
+                    UiContentEncoding::Identity => {}
                 }
             }
             serve_file(canonical, head_only).await
@@ -293,7 +385,7 @@ pub(crate) fn is_reserved_non_spa_path(request_path: &str) -> bool {
 
     matches!(
         first_segment,
-        Some("graphql" | "graphiql" | "health" | "metrics" | "admin" | "images")
+        Some("graphql" | "health" | "metrics" | "admin" | "images")
     )
 }
 
@@ -355,12 +447,7 @@ pub(crate) async fn serve_file(path: PathBuf, head_only: bool) -> Response {
     match fs::read(&path).await {
         Ok(bytes) => {
             let asset_path = path.to_string_lossy();
-            let relative_key = asset_path
-                .rsplit_once("/dist/")
-                .map(|(_, rest)| rest)
-                .or_else(|| asset_path.rsplit_once("/out/").map(|(_, rest)| rest))
-                .or_else(|| asset_path.rsplit_once("/ui/").map(|(_, rest)| rest))
-                .unwrap_or(&asset_path);
+            let relative_key = relative_asset_key(&asset_path);
             let content_len = bytes.len().to_string();
             let response = Response::builder()
                 .status(StatusCode::OK)
@@ -391,39 +478,139 @@ pub(crate) async fn serve_file(path: PathBuf, head_only: bool) -> Response {
     }
 }
 
-/// Serve a pre-compressed `.gz` file with the content type of the original path.
-async fn serve_file_gzipped(gz_path: PathBuf, original_path: &Path, head_only: bool) -> Response {
-    match fs::read(&gz_path).await {
+/// Serve a pre-compressed asset with the content type of the original path.
+async fn serve_file_precompressed(
+    compressed_path: PathBuf,
+    original_path: &Path,
+    content_encoding: &'static str,
+    head_only: bool,
+) -> Response {
+    match fs::read(&compressed_path).await {
         Ok(bytes) => {
             let asset_path = original_path.to_string_lossy();
-            let relative_key = asset_path
-                .rsplit_once("/dist/")
-                .map(|(_, rest)| rest)
-                .or_else(|| asset_path.rsplit_once("/out/").map(|(_, rest)| rest))
-                .or_else(|| asset_path.rsplit_once("/ui/").map(|(_, rest)| rest))
-                .unwrap_or(&asset_path);
-            let content_len = bytes.len().to_string();
-            let response = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, infer_content_type(original_path))
-                .header(header::CONTENT_ENCODING, "gzip")
-                .header(header::CONTENT_LENGTH, &content_len)
-                .header(header::CACHE_CONTROL, cache_control_for_asset(relative_key))
-                .body(if head_only {
+            let relative_key = relative_asset_key(&asset_path);
+            negotiated_asset_response(
+                bytes.len(),
+                infer_content_type(original_path),
+                cache_control_for_asset(relative_key),
+                Some(content_encoding),
+                head_only,
+                if head_only {
                     Body::empty()
                 } else {
                     Body::from(bytes)
-                });
-            response.unwrap_or_else(|error| {
-                tracing::warn!(error = %error, path = %gz_path.display(), "failed to build gzipped file response");
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::empty())
-                    .expect("response build")
-            })
+                },
+            )
         }
         Err(_) => serve_file(original_path.to_path_buf(), head_only).await,
     }
+}
+
+async fn serve_file_gzip_from_brotli(
+    brotli_path: PathBuf,
+    original_path: &Path,
+    cache_key: &str,
+    head_only: bool,
+) -> Response {
+    match fs::read(&brotli_path).await {
+        Ok(bytes) => match gzip_from_brotli_cached(cache_key, &bytes) {
+            Ok(gzip_bytes) => {
+                let asset_path = original_path.to_string_lossy();
+                let relative_key = relative_asset_key(&asset_path);
+                negotiated_asset_response(
+                    gzip_bytes.len(),
+                    infer_content_type(original_path),
+                    cache_control_for_asset(relative_key),
+                    Some("gzip"),
+                    head_only,
+                    if head_only {
+                        Body::empty()
+                    } else {
+                        Body::from(gzip_bytes)
+                    },
+                )
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, path = %brotli_path.display(), "failed to build cached gzip asset from Brotli file");
+                serve_file(original_path.to_path_buf(), head_only).await
+            }
+        },
+        Err(_) => serve_file(original_path.to_path_buf(), head_only).await,
+    }
+}
+
+fn negotiated_asset_response(
+    bytes_len: usize,
+    content_type: &'static str,
+    cache_control: &'static str,
+    content_encoding: Option<&'static str>,
+    head_only: bool,
+    body: Body,
+) -> Response {
+    let content_len = bytes_len.to_string();
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, &content_len)
+        .header(header::CACHE_CONTROL, cache_control)
+        .header(header::VARY, "Accept-Encoding");
+
+    if let Some(content_encoding) = content_encoding {
+        builder = builder.header(header::CONTENT_ENCODING, content_encoding);
+    }
+
+    builder
+        .body(if head_only { Body::empty() } else { body })
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "failed to build negotiated asset response");
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .expect("response build")
+        })
+}
+
+fn relative_asset_key(asset_path: &str) -> &str {
+    asset_path
+        .rsplit_once("/dist/")
+        .map(|(_, rest)| rest)
+        .or_else(|| asset_path.rsplit_once("/out/").map(|(_, rest)| rest))
+        .or_else(|| asset_path.rsplit_once("/ui/").map(|(_, rest)| rest))
+        .unwrap_or(asset_path)
+}
+
+fn gzip_from_brotli_cached(cache_key: &str, brotli_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    if let Ok(cache) = GZIP_UI_ASSET_CACHE.read()
+        && let Some(bytes) = cache.get(cache_key)
+    {
+        return Ok(bytes.clone());
+    }
+
+    let raw_bytes = decompress_brotli_bytes(brotli_bytes)?;
+    let gzip_bytes = gzip_compress_bytes(&raw_bytes)?;
+
+    if let Ok(mut cache) = GZIP_UI_ASSET_CACHE.write() {
+        let bytes = cache
+            .entry(cache_key.to_string())
+            .or_insert_with(|| gzip_bytes.clone())
+            .clone();
+        return Ok(bytes);
+    }
+
+    Ok(gzip_bytes)
+}
+
+fn decompress_brotli_bytes(brotli_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = Decompressor::new(Cursor::new(brotli_bytes), BROTLI_BUFFER_SIZE);
+    let mut raw_bytes = Vec::new();
+    decoder.read_to_end(&mut raw_bytes)?;
+    Ok(raw_bytes)
+}
+
+fn gzip_compress_bytes(raw_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(raw_bytes)?;
+    encoder.finish()
 }
 
 pub(crate) async fn serve_index_html(dist_dir: &Path, head_only: bool) -> Response {
@@ -486,10 +673,11 @@ fn render_index_html(index_html: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_control_for_asset, infer_content_type, looks_like_static_asset_request,
+        UiContentEncoding, cache_control_for_asset, infer_content_type,
+        looks_like_static_asset_request, negotiated_quality, preferred_content_encoding,
         serve_fallback_ui, should_serve_spa_index,
     };
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use std::path::Path;
 
     #[test]
@@ -506,6 +694,50 @@ mod tests {
         assert!(!should_serve_spa_index("/health"));
         assert!(!should_serve_spa_index("/assets/app.js"));
         assert!(looks_like_static_asset_request("/assets/app.js"));
+    }
+
+    #[test]
+    fn negotiated_quality_honors_specific_and_wildcard_values() {
+        assert_eq!(negotiated_quality("br, gzip;q=0.5", "br"), 1.0);
+        assert_eq!(negotiated_quality("gzip;q=0.8, *;q=0.3", "br"), 0.3);
+        assert_eq!(negotiated_quality("br;q=0, gzip;q=1", "br"), 0.0);
+    }
+
+    #[test]
+    fn preferred_content_encoding_prefers_brotli_then_gzip_then_identity() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br;q=1.0, gzip;q=0.8"),
+        );
+        assert_eq!(
+            preferred_content_encoding(&headers),
+            UiContentEncoding::Brotli
+        );
+
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip;q=1.0, br;q=0.2"),
+        );
+        assert_eq!(
+            preferred_content_encoding(&headers),
+            UiContentEncoding::Gzip
+        );
+
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        assert_eq!(
+            preferred_content_encoding(&headers),
+            UiContentEncoding::Identity
+        );
+
+        let headers = HeaderMap::new();
+        assert_eq!(
+            preferred_content_encoding(&headers),
+            UiContentEncoding::Identity
+        );
     }
 
     #[test]

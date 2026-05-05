@@ -1,0 +1,3 @@
+mutation CancelJob($id: Int!) {
+  cancelJob(id: $id)
+}

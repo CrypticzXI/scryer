@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
-use reqwest::Client;
 use reqwest::multipart;
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
@@ -13,6 +12,7 @@ use scryer_domain::{
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+    default_reqwest_client,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -29,12 +29,12 @@ use super::{
     parse_download_client_config_json, read_config_string, resolve_download_client_base_url,
     resolve_staged_nzb_for_request,
 };
+use crate::graphql::weaver as graphql_docs;
 
 #[derive(Clone)]
 pub struct WeaverDownloadClient {
     graphql_url: String,
     api_key: Option<String>,
-    http_client: Client,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
@@ -265,12 +265,11 @@ impl WeaverDownloadClient {
     ) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         let graphql_url = format!("{base}/graphql");
-        let http_client = Client::new();
+        let http_client = default_reqwest_client();
         Self {
             graphql_url,
             api_key,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
-            http_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
@@ -356,7 +355,8 @@ impl WeaverDownloadClient {
             .outbound_http
             .send(policy, || {
                 self.with_auth_headers(
-                    self.http_client
+                    self.outbound_http
+                        .client()
                         .post(&self.graphql_url)
                         .header("Content-Type", "application/json")
                         .json(&payload),
@@ -422,9 +422,14 @@ impl WeaverDownloadClient {
                         .text("map", json!({ "0": [upload_variable_path] }).to_string())
                         .part("0", part);
 
-                    Ok::<reqwest::RequestBuilder, AppError>(self.with_auth_headers(
-                        self.http_client.post(&self.graphql_url).multipart(form),
-                    ))
+                    Ok::<reqwest::RequestBuilder, AppError>(
+                        self.with_auth_headers(
+                            self.outbound_http
+                                .client()
+                                .post(&self.graphql_url)
+                                .multipart(form),
+                        ),
+                    )
                 }
             })
             .await
@@ -488,15 +493,15 @@ impl WeaverDownloadClient {
 
     /// Test connectivity by querying metrics.
     pub async fn test_connection(&self) -> AppResult<String> {
-        let query = "query { systemMetrics { bytesDownloaded } }";
         match self
-            .graphql_request::<SystemMetricsPayload>(query, json!({}))
+            .graphql_request::<SystemMetricsPayload>(graphql_docs::TEST_CONNECTION_QUERY, json!({}))
             .await
         {
             Ok(_) => {}
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"systemMetrics\"") => {
-                let compat_query = "query { version }";
-                let _: VersionPayload = self.graphql_request(compat_query, json!({})).await?;
+                let _: VersionPayload = self
+                    .graphql_request(graphql_docs::VERSION_COMPAT_QUERY, json!({}))
+                    .await?;
             }
             Err(error) => return Err(error),
         }
@@ -508,29 +513,8 @@ impl WeaverDownloadClient {
         title_id: Option<&str>,
         use_title_filter: bool,
     ) -> AppResult<Vec<WeaverQueueItem>> {
-        let query = r#"
-            query($filter: QueueFilterInput) {
-                queueItems(filter: $filter) {
-                    id
-                    name
-                    state
-                    error
-                    progressPercent
-                    totalBytes
-                    downloadedBytes
-                    failedBytes
-                    health
-                    category
-                    outputDir
-                    createdAt
-                    clientRequestId
-                    attributes { key value }
-                    attention { code message }
-                }
-            }
-        "#;
         self.graphql_request::<QueueItemsPayload>(
-            query,
+            graphql_docs::QUEUE_ITEMS_QUERY,
             json!({
                 "filter": if use_title_filter {
                     title_attribute_filter(title_id)
@@ -590,33 +574,11 @@ impl WeaverDownloadClient {
         title_id: Option<&str>,
         use_title_filter: bool,
     ) -> AppResult<Vec<WeaverQueueItem>> {
-        let query = r#"
-            query($filter: QueueFilterInput, $first: Int, $after: String) {
-                historyItems(filter: $filter, first: $first, after: $after) {
-                    id
-                    name
-                    state
-                    error
-                    progressPercent
-                    totalBytes
-                    downloadedBytes
-                    failedBytes
-                    health
-                    category
-                    outputDir
-                    createdAt
-                    completedAt
-                    clientRequestId
-                    attributes { key value }
-                    attention { code message }
-                }
-            }
-        "#;
         let after = offset.map(|value| {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("off:{value}"))
         });
         self.graphql_request::<HistoryItemsPayload>(
-            query,
+            graphql_docs::HISTORY_ITEMS_QUERY,
             json!({
                 "filter": if use_title_filter && title_id.is_some() {
                     title_attribute_filter(title_id)
@@ -661,28 +623,9 @@ impl WeaverDownloadClient {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> AppResult<Vec<WeaverQueueItem>> {
-        let query = r#"
-            query($status: [JobStatusGql!], $limit: Int, $offset: Int) {
-                jobs(status: $status, limit: $limit, offset: $offset) {
-                    id
-                    name
-                    status
-                    error
-                    progressPercent: progress
-                    totalBytes
-                    downloadedBytes
-                    failedBytes
-                    health
-                    category
-                    metadata { key value }
-                    outputDir
-                    createdAt
-                }
-            }
-        "#;
         let data: PublishedJobsPayload = self
             .graphql_request(
-                query,
+                graphql_docs::JOBS_COMPAT_QUERY,
                 json!({
                     "status": statuses.map(|values| values.to_vec()),
                     "limit": limit.and_then(|value| i32::try_from(value).ok()),
@@ -1012,16 +955,6 @@ impl DownloadClient for WeaverDownloadClient {
         );
 
         let result: AppResult<DownloadGrabResult> = async {
-            let query = r#"
-                mutation($input: SubmitNzbInput!) {
-                    submitNzb(input: $input) {
-                        accepted
-                        clientRequestId
-                        item { id name state }
-                    }
-                }
-            "#;
-
             let variables = json!({
                 "input": {
                     "nzbUpload": Value::Null,
@@ -1043,7 +976,7 @@ impl DownloadClient for WeaverDownloadClient {
             match self
                 .graphql_multipart_request::<SubmissionPayload>(
                     "weaver_submit_nzb",
-                    query,
+                    graphql_docs::SUBMIT_NZB_MUTATION,
                     variables.clone(),
                     "variables.input.nzbUpload",
                     format!("{nzb_filename}.zst"),
@@ -1102,29 +1035,10 @@ impl DownloadClient for WeaverDownloadClient {
                                 staged.staged_nzb.compressed_path.display()
                             ))
                         })?;
-                    let compat_query = r#"
-                        mutation(
-                            $source: NzbSourceInput!
-                            $filename: String
-                            $password: String
-                            $category: String
-                            $metadata: [MetadataInput!]
-                        ) {
-                            submitNzb(
-                                source: $source
-                                filename: $filename
-                                password: $password
-                                category: $category
-                                metadata: $metadata
-                            ) {
-                                id
-                            }
-                        }
-                    "#;
                     let compat_data: PublishedSubmissionPayload = self
                         .graphql_request_with_policy(
                             self.mutation_policy("weaver_submit_nzb_compat"),
-                            compat_query,
+                            graphql_docs::SUBMIT_NZB_COMPAT_MUTATION,
                             json!({
                                 "source": {
                                     "nzbBase64": base64::engine::general_purpose::STANDARD.encode(nzb_bytes),
@@ -1300,11 +1214,10 @@ impl DownloadClient for WeaverDownloadClient {
         let job_id: u64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
-        let query = "mutation($id: Int!) { pauseQueueItem(id: $id) { success } }";
         match self
             .graphql_request_with_policy::<PauseQueueItemPayload>(
                 self.mutation_policy("weaver_pause_queue_item"),
-                query,
+                graphql_docs::PAUSE_QUEUE_ITEM_MUTATION,
                 json!({ "id": job_id }),
             )
             .await
@@ -1317,11 +1230,10 @@ impl DownloadClient for WeaverDownloadClient {
                 }
             }
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"pauseQueueItem\"") => {
-                let compat_query = "mutation($id: Int!) { pauseJob(id: $id) }";
                 let data: PublishedBoolPayload = self
                     .graphql_request_with_policy(
                         self.mutation_policy("weaver_pause_job"),
-                        compat_query,
+                        graphql_docs::PAUSE_JOB_MUTATION,
                         json!({ "id": job_id }),
                     )
                     .await?;
@@ -1340,11 +1252,10 @@ impl DownloadClient for WeaverDownloadClient {
         let job_id: u64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
-        let query = "mutation($id: Int!) { resumeQueueItem(id: $id) { success } }";
         match self
             .graphql_request_with_policy::<ResumeQueueItemPayload>(
                 self.mutation_policy("weaver_resume_queue_item"),
-                query,
+                graphql_docs::RESUME_QUEUE_ITEM_MUTATION,
                 json!({ "id": job_id }),
             )
             .await
@@ -1357,11 +1268,10 @@ impl DownloadClient for WeaverDownloadClient {
                 }
             }
             Err(error) if is_weaver_schema_error(&error, "Unknown field \"resumeQueueItem\"") => {
-                let compat_query = "mutation($id: Int!) { resumeJob(id: $id) }";
                 let data: PublishedBoolPayload = self
                     .graphql_request_with_policy(
                         self.mutation_policy("weaver_resume_job"),
-                        compat_query,
+                        graphql_docs::RESUME_JOB_MUTATION,
                         json!({ "id": job_id }),
                     )
                     .await?;
@@ -1380,16 +1290,11 @@ impl DownloadClient for WeaverDownloadClient {
         let job_id: u64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
-        let query = if is_history {
-            "mutation($ids: [Int!]!) { removeHistoryItems(ids: $ids) { success removedIds } }"
-        } else {
-            "mutation($id: Int!) { cancelQueueItem(id: $id) { success } }"
-        };
         if is_history {
             match self
                 .graphql_request_with_policy::<RemoveHistoryItemsPayload>(
                     self.mutation_policy("weaver_remove_history_items"),
-                    query,
+                    graphql_docs::REMOVE_HISTORY_ITEMS_MUTATION,
                     json!({ "ids": [job_id] }),
                 )
                 .await
@@ -1404,11 +1309,10 @@ impl DownloadClient for WeaverDownloadClient {
                 Err(error)
                     if is_weaver_schema_error(&error, "Unknown field \"removeHistoryItems\"") =>
                 {
-                    let compat_query = "mutation($ids: [Int!]!, $deleteFiles: Boolean!) { deleteHistoryBatch(ids: $ids, deleteFiles: $deleteFiles) }";
                     let data: PublishedDeleteHistoryPayload = self
                         .graphql_request_with_policy(
                             self.mutation_policy("weaver_delete_history_batch"),
-                            compat_query,
+                            graphql_docs::DELETE_HISTORY_BATCH_MUTATION,
                             json!({ "ids": [job_id], "deleteFiles": false }),
                         )
                         .await?;
@@ -1424,7 +1328,7 @@ impl DownloadClient for WeaverDownloadClient {
             match self
                 .graphql_request_with_policy::<CancelQueueItemPayload>(
                     self.mutation_policy("weaver_cancel_queue_item"),
-                    query,
+                    graphql_docs::CANCEL_QUEUE_ITEM_MUTATION,
                     json!({ "id": job_id }),
                 )
                 .await
@@ -1439,11 +1343,10 @@ impl DownloadClient for WeaverDownloadClient {
                 Err(error)
                     if is_weaver_schema_error(&error, "Unknown field \"cancelQueueItem\"") =>
                 {
-                    let compat_query = "mutation($id: Int!) { cancelJob(id: $id) }";
                     let data: PublishedBoolPayload = self
                         .graphql_request_with_policy(
                             self.mutation_policy("weaver_cancel_job"),
-                            compat_query,
+                            graphql_docs::CANCEL_JOB_MUTATION,
                             json!({ "id": job_id }),
                         )
                         .await?;

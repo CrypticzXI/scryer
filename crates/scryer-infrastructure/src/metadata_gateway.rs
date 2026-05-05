@@ -14,6 +14,7 @@ use scryer_application::{
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+    metadata_gateway_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -57,202 +58,7 @@ impl ApqCache {
     }
 }
 
-use crate::smg_enrollment;
-
-const SEARCH_TVDB_QUERY: &str = r#"
-    query SearchTvdb($query: String!, $type: String, $limit: Int, $year: Int) {
-        searchTvdb(query: $query, type: $type, limit: $limit, year: $year) {
-      results {
-        tvdb_id
-        name
-        year
-      }
-    }
-  }
-"#;
-
-const SEARCH_TVDB_BATCH_QUERY: &str = r#"
-    query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!, $language: String!) {
-        searchTvdbBatch(requests: $requests, language: $language) {
-            query
-            type
-            year
-            limit
-            total_results
-            results {
-                tvdb_id
-                name
-                year
-            }
-        }
-    }
-"#;
-
-const SEARCH_TVDB_RICH_QUERY: &str = r#"
-  query SearchTvdbRich($query: String!, $type: String, $limit: Int, $language: String, $year: Int) {
-    searchTvdb(query: $query, type: $type, limit: $limit, language: $language, year: $year) {
-      results {
-        tvdb_id
-        name
-        imdb_id
-        slug
-        type
-        year
-        status
-        overview
-        popularity
-        poster_url
-        language
-        runtime_minutes
-        sort_title
-      }
-    }
-  }
-"#;
-
-const SEARCH_TVDB_MULTI_QUERY: &str = r#"
-  query SearchTvdbMulti($query: String!, $limit: Int, $language: String) {
-    searchTvdbMulti(query: $query, limit: $limit, language: $language) {
-      movies {
-        tvdb_id name imdb_id slug type year status overview
-        popularity poster_url language runtime_minutes sort_title
-      }
-      series {
-        tvdb_id name imdb_id slug type year status overview
-        popularity poster_url language runtime_minutes sort_title
-      }
-      anime {
-        tvdb_id name imdb_id slug type year status overview
-        popularity poster_url language runtime_minutes sort_title
-      }
-    }
-  }
-"#;
-
-const GET_MOVIE_QUERY: &str = r#"
-  query GetMovie($tvdbId: Int!, $language: String!) {
-    movie(tvdbId: $tvdbId, language: $language) {
-      movie {
-        tvdb_id
-        name
-        slug
-        year
-        status
-        overview
-        poster_url
-        language
-        runtime_minutes
-        sort_title
-        imdb_id
-        anidb_id
-        genres
-        studio
-        tmdb_release_date
-        artworks {
-          kind
-          url
-        }
-      }
-    }
-  }
-"#;
-
-const GET_SERIES_QUERY: &str = r#"
-  query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
-    series(id: $id, includeEpisodes: $includeEpisodes, language: $language) {
-      series {
-        tvdb_id
-        name
-        sort_name
-        slug
-        status
-        year
-        first_aired
-        overview
-        network
-        runtime_minutes
-        poster_url
-        country
-        genres
-        aliases
-        tagged_aliases { name language }
-        artworks {
-          kind
-          url
-        }
-        seasons {
-          tvdb_id
-          number
-          label
-          episode_type
-        }
-        episodes {
-          tvdb_id
-          episode_number
-          season_number
-          name
-          aired
-          runtime_minutes
-          is_filler
-          is_recap
-          overview
-          absolute_number
-        }
-        anime_mappings {
-          mal_id
-          mal_dub_id
-          anilist_id
-          anidb_id
-          kitsu_id
-          simkl_id
-          thetvdb_id
-          themoviedb_id
-          imdb_id
-          trakt_id
-          alt_tvdb_id
-          thetvdb_season
-          thetvdb_part
-          score
-          anime_media_type
-          global_media_type
-          status
-          mapping_type
-          episode_mappings {
-            tvdb_season
-            episode_start
-            episode_end
-          }
-        }
-        anime_movies {
-          movie_tvdb_id
-          movie_tmdb_id
-          movie_imdb_id
-          movie_mal_id
-          movie_anidb_id
-          name
-          slug
-          year
-          content_status
-          overview
-          poster_url
-          language
-          runtime_minutes
-          sort_title
-          imdb_id
-          genres
-          studio
-          digital_release_date
-          association_confidence
-          continuity_status
-          movie_form
-          placement
-          confidence
-          signal_summary
-        }
-      }
-    }
-  }
-"#;
+use crate::{graphql::metadata_gateway as graphql_docs, smg_enrollment};
 
 fn sha256_hex(input: &str) -> String {
     let hash = digest::digest(&digest::SHA256, input.as_bytes());
@@ -279,10 +85,6 @@ pub struct SmgEnrollmentConfig {
 /// Signing materials for application-layer instance authentication.
 #[derive(Clone)]
 enum InstanceAuth {
-    Legacy {
-        private_key_pem: Arc<String>,
-        cert_der_b64: Arc<String>,
-    },
     Pq {
         instance_id: Arc<String>,
         seed_b64: Arc<String>,
@@ -313,14 +115,12 @@ fn sha256_hex_bytes(data: &[u8]) -> String {
         })
 }
 
-/// Attach instance auth headers. Legacy certificate auth signs the historic
-/// `timestamp:hash` message, while PQ auth signs the full request target.
+/// Attach PQ instance auth headers by signing the full request target.
 async fn apply_instance_auth_headers(
     req: reqwest::RequestBuilder,
     auth: &InstanceAuth,
     method: &str,
     url: &reqwest::Url,
-    legacy_hash_bytes: &[u8],
     body_bytes: &[u8],
 ) -> AppResult<reqwest::RequestBuilder> {
     let timestamp = std::time::SystemTime::now()
@@ -328,25 +128,6 @@ async fn apply_instance_auth_headers(
         .map_err(|e| AppError::Repository(format!("system clock before UNIX_EPOCH: {e}")))?
         .as_secs() as i64;
     match auth {
-        InstanceAuth::Legacy {
-            private_key_pem,
-            cert_der_b64,
-        } => {
-            let body_hash = sha256_hex_bytes(legacy_hash_bytes);
-            let signature = smg_enrollment::sign_request(private_key_pem, timestamp, &body_hash)
-                .map_err(|e| AppError::Repository(format!("failed to sign request: {e}")))?;
-            debug!(
-                timestamp,
-                cert_b64_len = cert_der_b64.len(),
-                sig_len = signature.len(),
-                body_hash,
-                "attaching legacy X-Scryer-* instance auth headers"
-            );
-            Ok(req
-                .header("X-Scryer-Cert", &**cert_der_b64)
-                .header("X-Scryer-Timestamp", timestamp.to_string())
-                .header("X-Scryer-Signature", signature))
-        }
         InstanceAuth::Pq {
             seed_b64, key_id, ..
         } => {
@@ -527,11 +308,11 @@ impl MetadataGatewayClient {
             warn!("metadata gateway client: TLS certificate verification DISABLED");
         }
 
-        let search_hash = apq_hash(SEARCH_TVDB_QUERY);
-        let search_rich_hash = apq_hash(SEARCH_TVDB_RICH_QUERY);
-        let search_multi_hash = apq_hash(SEARCH_TVDB_MULTI_QUERY);
-        let movie_hash = apq_hash(GET_MOVIE_QUERY);
-        let series_hash = apq_hash(GET_SERIES_QUERY);
+        let search_hash = apq_hash(graphql_docs::SEARCH_TVDB_QUERY);
+        let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
+        let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
+        let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
+        let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
 
         // Derive registration URL from GraphQL endpoint
         let registration_url = if endpoint.ends_with("/graphql") {
@@ -555,10 +336,7 @@ impl MetadataGatewayClient {
             "metadata gateway client initialized (APQ enabled)"
         );
 
-        let http = Client::builder()
-            .timeout(Duration::from_secs(100))
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .build()
+        let http = metadata_gateway_reqwest_client(accept_invalid_certs)
             .expect("failed to build HTTP client");
 
         Self {
@@ -694,29 +472,8 @@ impl MetadataGatewayClient {
                 },
             ));
         }
-
-        let identity = smg_enrollment::build_mtls_identity(&state)
-            .map_err(smg_enrollment::EnrollmentError::Other)?;
-        let ca_cert = smg_enrollment::build_ca_certificate(&state)
-            .map_err(smg_enrollment::EnrollmentError::Other)?;
-        let cert_der_b64 = smg_enrollment::cert_pem_to_base64_der(&state.client_cert_pem)
-            .map_err(smg_enrollment::EnrollmentError::Other)?;
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(100))
-            .identity(identity)
-            .add_root_certificate(ca_cert)
-            .build()
-            .map_err(|e| {
-                smg_enrollment::EnrollmentError::Other(format!("failed to build mTLS client: {e}"))
-            })?;
-
-        Ok((
-            client,
-            InstanceAuth::Legacy {
-                private_key_pem: Arc::new(state.client_key_pem),
-                cert_der_b64: Arc::new(cert_der_b64),
-            },
+        Err(smg_enrollment::EnrollmentError::Other(
+            "SMG enrollment completed without PQ request-signing state".to_string(),
         ))
     }
 
@@ -860,7 +617,6 @@ impl MetadataGatewayClient {
                             reqwest::Method::POST.as_str(),
                             &endpoint_url,
                             &body_bytes,
-                            &body_bytes,
                         )
                         .await?;
                     }
@@ -968,13 +724,12 @@ impl MetadataGatewayClient {
 
         let (client, auth) = self.get_http_client().await?;
 
-        // Build URL with query params so we know the exact query string for signing.
+        // Build URL with query params so the GET request target is complete before signing.
         let mut url = reqwest::Url::parse(&self.endpoint)
             .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
         url.query_pairs_mut()
             .append_pair("extensions", &extensions_str)
             .append_pair("variables", &variables_str);
-        let raw_query = url.query().unwrap_or("").to_string();
 
         let get_result = self
             .send_request_with_retry(
@@ -983,7 +738,6 @@ impl MetadataGatewayClient {
                     let cached_etag = cached_etag.clone();
                     let auth = auth.clone();
                     let url = url.clone();
-                    let raw_query = raw_query.clone();
                     async move {
                         let mut req = client.get(url.clone());
                         if let Some(ref etag) = cached_etag {
@@ -995,7 +749,6 @@ impl MetadataGatewayClient {
                                 auth,
                                 reqwest::Method::GET.as_str(),
                                 &url,
-                                raw_query.as_bytes(),
                                 &[],
                             )
                             .await?;
@@ -1348,7 +1101,6 @@ impl MetadataGatewayClient {
                         reqwest::Method::POST.as_str(),
                         &endpoint_url,
                         &body_bytes,
-                        &body_bytes,
                     )
                     .await?;
                 }
@@ -1405,7 +1157,6 @@ impl MetadataGatewayClient {
                         reqwest::Method::POST.as_str(),
                         &endpoint_url,
                         &body_bytes,
-                        &body_bytes,
                     )
                     .await?;
                 }
@@ -1455,7 +1206,6 @@ impl MetadataGatewayClient {
                             auth2,
                             reqwest::Method::POST.as_str(),
                             &endpoint_url,
-                            &body_bytes,
                             &body_bytes,
                         )
                         .await?;
@@ -1514,26 +1264,6 @@ impl MetadataGatewayClient {
 // ---------------------------------------------------------------------------
 // Bulk query builders (GraphQL aliases)
 // ---------------------------------------------------------------------------
-
-const MOVIE_FIELD_SELECTION: &str = "\
-    tvdb_id name slug year status overview poster_url language \
-    runtime_minutes sort_title imdb_id anidb_id genres studio tmdb_release_date \
-    artworks { kind url }";
-
-const SERIES_FIELD_SELECTION: &str = "\
-    tvdb_id name sort_name slug status year first_aired overview network \
-    runtime_minutes poster_url country genres aliases tagged_aliases { name language } artworks { kind url } \
-    seasons { tvdb_id number label episode_type } \
-    episodes { tvdb_id episode_number season_number name aired runtime_minutes \
-               is_filler is_recap overview absolute_number } \
-    anime_mappings { mal_id mal_dub_id anilist_id anidb_id kitsu_id simkl_id thetvdb_id themoviedb_id imdb_id trakt_id \
-                     alt_tvdb_id thetvdb_season thetvdb_part score \
-                     anime_media_type global_media_type status mapping_type \
-                     episode_mappings { tvdb_season episode_start episode_end } } \
-    anime_movies { movie_tvdb_id movie_tmdb_id movie_imdb_id movie_mal_id movie_anidb_id name slug year \
-                   content_status overview poster_url language runtime_minutes sort_title imdb_id \
-                   genres studio digital_release_date association_confidence continuity_status \
-                   movie_form placement confidence signal_summary }";
 
 #[derive(Clone, Copy)]
 enum BulkMetadataAliasRequest {
@@ -1763,36 +1493,52 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
     for (i, &id) in movie_ids.iter().enumerate() {
         let _ = writeln!(
             q,
-            "  m{i}: movie(tvdbId: {id}, language: \"{language}\") {{ movie {{ {MOVIE_FIELD_SELECTION} }} }}"
+            "  m{i}: movie(tvdbId: {id}, language: \"{language}\") {{ movie {{ ...MovieFields }} }}"
         );
     }
     for (i, &id) in series_ids.iter().enumerate() {
         let _ = writeln!(
             q,
-            "  s{i}: series(id: \"{id}\", includeEpisodes: true, language: \"{language}\") {{ series {{ {SERIES_FIELD_SELECTION} }} }}"
+            "  s{i}: series(id: \"{id}\", includeEpisodes: true, language: \"{language}\") {{ series {{ ...SeriesFields }} }}"
         );
     }
     q.push_str("}\n");
+
+    if !movie_ids.is_empty() {
+        q.push_str(graphql_docs::MOVIE_FIELDS_FRAGMENT);
+        q.push('\n');
+    }
+
+    if !series_ids.is_empty() {
+        q.push_str(graphql_docs::SERIES_FIELDS_FRAGMENT);
+        q.push('\n');
+    }
+
     q
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataSearchQuery, SEARCH_TVDB_BATCH_QUERY, build_bulk_mixed_query,
-        build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
-        next_version_compatibility_poll_delay_at, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_version_compatibility_success,
+        MetadataSearchQuery, build_bulk_mixed_query, build_search_tvdb_batch_query,
+        compatibility_poll_phase, enrollment_retry_delay, next_version_compatibility_poll_delay_at,
+        normalize_artwork_url, normalize_optional_artwork_url, parse_version_compatibility_success,
     };
     use std::time::{Duration, SystemTime};
 
-    use crate::smg_enrollment::{EnrollmentError, RateLimited};
+    use crate::{
+        graphql::metadata_gateway as graphql_docs,
+        smg_enrollment::{EnrollmentError, RateLimited},
+    };
 
     #[test]
     fn bulk_series_query_requests_tagged_aliases() {
         let query = build_bulk_mixed_query(&[], &[424536], "eng");
 
-        assert!(query.contains("tagged_aliases { name language }"));
+        assert!(query.contains("...SeriesFields"));
+        assert!(query.contains("fragment SeriesFields on TvdbSeries"));
+        assert!(query.contains("tagged_aliases"));
+        assert!(query.contains("language"));
     }
 
     #[test]
@@ -1841,8 +1587,8 @@ mod tests {
 
     #[test]
     fn search_tvdb_batch_query_uses_dedicated_field() {
-        assert!(SEARCH_TVDB_BATCH_QUERY.contains("searchTvdbBatch"));
-        assert!(!SEARCH_TVDB_BATCH_QUERY.contains("searchTvdb(query:"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdbBatch"));
+        assert!(!graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdb(query:"));
     }
 
     #[test]
@@ -2318,7 +2064,11 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: SearchTvdbResponse = self
-            .execute_graphql_apq(SEARCH_TVDB_QUERY, &self.search_hash, variables)
+            .execute_graphql_apq(
+                graphql_docs::SEARCH_TVDB_QUERY,
+                &self.search_hash,
+                variables,
+            )
             .await?;
 
         Ok(data
@@ -2362,7 +2112,7 @@ impl MetadataGateway for MetadataGatewayClient {
                 })
                 .collect::<Vec<_>>();
             let payload = json!({
-                "query": SEARCH_TVDB_BATCH_QUERY,
+                "query": graphql_docs::SEARCH_TVDB_BATCH_QUERY,
                 "variables": {
                     "requests": request_inputs,
                     "language": language,
@@ -2417,7 +2167,11 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: SearchTvdbRichResponse = self
-            .execute_graphql_apq(SEARCH_TVDB_RICH_QUERY, &self.search_rich_hash, variables)
+            .execute_graphql_apq(
+                graphql_docs::SEARCH_TVDB_RICH_QUERY,
+                &self.search_rich_hash,
+                variables,
+            )
             .await?;
 
         Ok(data
@@ -2455,7 +2209,11 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: SearchTvdbMultiResponse = self
-            .execute_graphql_apq(SEARCH_TVDB_MULTI_QUERY, &self.search_multi_hash, variables)
+            .execute_graphql_apq(
+                graphql_docs::SEARCH_TVDB_MULTI_QUERY,
+                &self.search_multi_hash,
+                variables,
+            )
             .await?;
 
         let convert = |items: Vec<SearchTvdbRichItem>| -> Vec<RichMetadataSearchItem> {
@@ -2493,7 +2251,7 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: MovieResponse = self
-            .execute_graphql_apq(GET_MOVIE_QUERY, &self.movie_hash, variables)
+            .execute_graphql_apq(graphql_docs::GET_MOVIE_QUERY, &self.movie_hash, variables)
             .await?;
         let m = data.movie.movie;
 
@@ -2526,7 +2284,7 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: SeriesResponse = self
-            .execute_graphql_apq(GET_SERIES_QUERY, &self.series_hash, variables)
+            .execute_graphql_apq(graphql_docs::GET_SERIES_QUERY, &self.series_hash, variables)
             .await?;
         let s = data.series.series;
 

@@ -1,0 +1,21 @@
+query QueueItems($filter: QueueFilterInput) {
+  queueItems(filter: $filter) {
+    id
+    name
+    state
+    error
+    progressPercent
+    totalBytes
+    category
+    outputDir
+    createdAt
+    clientRequestId
+    attributes {
+      key
+      value
+    }
+    attention {
+      message
+    }
+  }
+}

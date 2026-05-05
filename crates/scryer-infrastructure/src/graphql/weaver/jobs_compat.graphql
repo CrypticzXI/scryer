@@ -1,0 +1,17 @@
+query JobsCompat($status: [JobStatusGql!], $limit: Int, $offset: Int) {
+  jobs(status: $status, limit: $limit, offset: $offset) {
+    id
+    name
+    status
+    error
+    progressPercent: progress
+    totalBytes
+    category
+    metadata {
+      key
+      value
+    }
+    outputDir
+    createdAt
+  }
+}
