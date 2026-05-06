@@ -17,8 +17,8 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
     DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, User,
-    is_video_file,
+    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet,
+    TrackedDownloadState, User, is_video_file,
 };
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -351,28 +351,19 @@ pub async fn try_import_completed_downloads(
 
     for item in completed_items {
         let source_ref = &item.download_client_item_id;
-        match app
+        let already_imported = match app
             .services
             .workflow
             .imports
             .is_already_imported(&item.client_type, source_ref)
             .await
         {
-            Ok(true) => {
-                tracing::debug!(
-                    source_ref = %source_ref,
-                    title = %item.title_name,
-                    "import: skipping already-imported download"
-                );
-                processed_ids.insert(source_ref.clone());
-                continue;
-            }
-            Ok(false) => {}
+            Ok(result) => result,
             Err(error) => {
                 tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
                 continue;
             }
-        }
+        };
 
         // Find the matching CompletedDownload
         let completed = match completed_downloads
@@ -389,16 +380,6 @@ pub async fn try_import_completed_downloads(
                 continue;
             }
         };
-
-        // Skip if dest_dir is empty
-        if completed.dest_dir.is_empty() {
-            tracing::info!(
-                source_ref = %source_ref,
-                title = %item.title_name,
-                "import: skipping download with empty dest_dir"
-            );
-            continue;
-        }
 
         // Only auto-import downloads that originated from scryer.
         // NZBGet embeds *scryer_title_id via PPParameters. SABnzbd has no
@@ -465,6 +446,54 @@ pub async fn try_import_completed_downloads(
             }
         };
 
+        if already_imported {
+            tracing::debug!(
+                source_ref = %source_ref,
+                title = %item.title_name,
+                "import: treating already-imported download as terminal imported for cleanup"
+            );
+            let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                app,
+                &completed,
+                TrackedDownloadState::Imported,
+            )
+            .await;
+            if terminal_download_cleanup_is_complete(cleanup) {
+                processed_ids.insert(source_ref.clone());
+            }
+            continue;
+        }
+
+        if let Some(state) = completed_download_tracked_state(app, &completed).await
+            && matches!(
+                state,
+                TrackedDownloadState::Imported | TrackedDownloadState::Failed
+            )
+        {
+            tracing::debug!(
+                source_ref = %source_ref,
+                title = %item.title_name,
+                state = state.as_str(),
+                "import: retrying terminal cleanup from persisted tracked state"
+            );
+            let cleanup =
+                reconcile_terminal_download_cleanup_for_completed(app, &completed, state).await;
+            if terminal_download_cleanup_is_complete(cleanup) {
+                processed_ids.insert(source_ref.clone());
+            }
+            continue;
+        }
+
+        // Skip if dest_dir is empty for fresh import attempts.
+        if completed.dest_dir.is_empty() {
+            tracing::info!(
+                source_ref = %source_ref,
+                title = %item.title_name,
+                "import: skipping download with empty dest_dir"
+            );
+            continue;
+        }
+
         let facet_label = extract_parameter(&completed.parameters, "*scryer_facet")
             .unwrap_or_else(|| "unknown".to_string());
         tracing::info!(
@@ -474,7 +503,6 @@ pub async fn try_import_completed_downloads(
             facet = %facet_label,
             "import: triggering import for completed download"
         );
-        processed_ids.insert(source_ref.clone());
         let import_start = std::time::Instant::now();
         match import_completed_download(app, actor, &completed).await {
             Ok(result) => {
@@ -507,40 +535,20 @@ pub async fn try_import_completed_downloads(
                         completed.name
                     );
                 }
-                let completed_facet = facet_for_completed_download(&completed);
-                let should_remove_completed = if matches!(result.decision, ImportDecision::Imported)
-                {
-                    match completed_facet.as_ref() {
-                        Some(facet) => {
-                            app.should_remove_completed_download(facet, &completed.client_id)
-                                .await
-                        }
-                        None => false,
-                    }
-                } else {
-                    false
-                };
-                let should_remove_failed = if matches!(
-                    result.decision,
-                    ImportDecision::Failed | ImportDecision::Rejected
-                ) {
-                    match completed_facet.as_ref() {
-                        Some(facet) => {
-                            app.should_remove_failed_download(facet, &completed.client_id)
-                                .await
-                        }
-                        None => false,
-                    }
-                } else {
-                    false
-                };
                 metrics::counter!("scryer_imports_total", "decision" => result.decision.as_str(), "facet" => facet_label.clone()).increment(1);
                 metrics::histogram!("scryer_import_duration_seconds", "facet" => facet_label)
                     .record(import_start.elapsed().as_secs_f64());
-                if should_remove_completed {
-                    remove_download_history_item(app, &completed, "completed").await;
-                } else if should_remove_failed {
-                    remove_download_history_item(app, &completed, "failed").await;
+
+                if let Some(state) = terminal_tracked_state_for_import_result(&result) {
+                    persist_completed_download_tracked_state(app, &completed, state).await;
+                    let cleanup =
+                        reconcile_terminal_download_cleanup_for_completed(app, &completed, state)
+                            .await;
+                    if terminal_download_cleanup_is_complete(cleanup) {
+                        processed_ids.insert(source_ref.clone());
+                    }
+                } else {
+                    processed_ids.insert(source_ref.clone());
                 }
             }
             Err(error) => {
@@ -552,6 +560,7 @@ pub async fn try_import_completed_downloads(
                 metrics::counter!("scryer_imports_total", "decision" => "error", "facet" => facet_label.clone()).increment(1);
                 metrics::histogram!("scryer_import_duration_seconds", "facet" => facet_label)
                     .record(import_start.elapsed().as_secs_f64());
+                processed_ids.insert(source_ref.clone());
             }
         }
     }
@@ -573,30 +582,262 @@ fn facet_for_completed_download(completed: &CompletedDownload) -> Option<MediaFa
     }
 }
 
-async fn remove_download_history_item(
+fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("movie") => Some(MediaFacet::Movie),
+        Some("series") => Some(MediaFacet::Series),
+        Some("anime") => Some(MediaFacet::Anime),
+        _ => None,
+    }
+}
+
+fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(completed.client_id.as_str()),
+        &completed.client_type,
+        &completed.download_client_item_id,
+    )
+}
+
+async fn persist_completed_download_tracked_state(
     app: &AppUseCase,
     completed: &CompletedDownload,
-    outcome_label: &str,
+    state: TrackedDownloadState,
 ) {
+    if !state.is_terminal() {
+        return;
+    }
+
     if let Err(error) = app
         .services
-        .integrations
-        .download_client
-        .delete_queue_item_for_client(
-            &completed.client_type,
-            &completed.download_client_item_id,
-            true,
-        )
+        .workflow
+        .download_submissions
+        .update_tracked_state(&completed_download_identity(completed), state.as_str())
         .await
     {
         tracing::warn!(
-            client_id = completed.client_id.as_str(),
-            download_client_item_id = completed.download_client_item_id.as_str(),
-            outcome = outcome_label,
             error = %error,
-            "failed to delete completed download from client history"
+            client_id = completed.client_id.as_str(),
+            client_type = completed.client_type.as_str(),
+            download_client_item_id = completed.download_client_item_id.as_str(),
+            state = state.as_str(),
+            "failed to persist completed download terminal state"
         );
     }
+}
+
+async fn terminal_download_item_is_still_visible(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    is_history: bool,
+) -> bool {
+    let lookup = if is_history {
+        app.services
+            .integrations
+            .download_client
+            .list_history()
+            .await
+    } else {
+        app.services.integrations.download_client.list_queue().await
+    };
+
+    match lookup {
+        Ok(items) => items.iter().any(|item| {
+            item.download_client_item_id == download_client_item_id
+                && item.client_type.eq_ignore_ascii_case(client_type)
+                && (client_id.is_empty() || item.client_id.trim() == client_id)
+        }),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                client_id,
+                client_type,
+                download_client_item_id,
+                is_history,
+                "failed to confirm download item visibility after delete error"
+            );
+            true
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalDownloadCleanupOutcome {
+    NotConfigured,
+    Removed,
+    AlreadyGone,
+    RetryableFailure,
+}
+
+pub(crate) fn terminal_download_cleanup_is_complete(
+    outcome: TerminalDownloadCleanupOutcome,
+) -> bool {
+    matches!(
+        outcome,
+        TerminalDownloadCleanupOutcome::NotConfigured
+            | TerminalDownloadCleanupOutcome::Removed
+            | TerminalDownloadCleanupOutcome::AlreadyGone
+    )
+}
+
+async fn reconcile_terminal_download_cleanup(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    facet: Option<&MediaFacet>,
+    state: TrackedDownloadState,
+) -> TerminalDownloadCleanupOutcome {
+    let client_id = client_id.trim();
+    let routing_key = if client_id.is_empty() {
+        client_type
+    } else {
+        client_id
+    };
+
+    let should_remove = match state {
+        TrackedDownloadState::Imported => match facet {
+            Some(facet) => {
+                app.should_remove_completed_download(facet, routing_key)
+                    .await
+            }
+            None => false,
+        },
+        TrackedDownloadState::Failed => match facet {
+            Some(facet) => app.should_remove_failed_download(facet, routing_key).await,
+            None => false,
+        },
+        TrackedDownloadState::Ignored => true,
+        _ => false,
+    };
+
+    if !should_remove {
+        return TerminalDownloadCleanupOutcome::NotConfigured;
+    }
+
+    let is_history = matches!(
+        state,
+        TrackedDownloadState::Imported
+            | TrackedDownloadState::Failed
+            | TrackedDownloadState::Ignored
+    );
+
+    let delete_result = if client_id.is_empty() {
+        app.services
+            .integrations
+            .download_client
+            .delete_queue_item_for_client(client_type, download_client_item_id, is_history)
+            .await
+    } else {
+        app.services
+            .integrations
+            .download_client
+            .delete_queue_item_for_client_id(client_id, download_client_item_id, is_history)
+            .await
+    };
+
+    match delete_result {
+        Ok(()) => TerminalDownloadCleanupOutcome::Removed,
+        Err(error) => {
+            if !terminal_download_item_is_still_visible(
+                app,
+                client_id,
+                client_type,
+                download_client_item_id,
+                is_history,
+            )
+            .await
+            {
+                tracing::debug!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    error = %error,
+                    "download item was already absent after delete error"
+                );
+                TerminalDownloadCleanupOutcome::AlreadyGone
+            } else {
+                tracing::warn!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    error = %error,
+                    "failed to remove terminal download from client"
+                );
+                TerminalDownloadCleanupOutcome::RetryableFailure
+            }
+        }
+    }
+}
+
+pub(crate) async fn reconcile_terminal_download_cleanup_for_completed(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    state: TrackedDownloadState,
+) -> TerminalDownloadCleanupOutcome {
+    let facet = facet_for_completed_download(completed);
+    reconcile_terminal_download_cleanup(
+        app,
+        &completed.client_id,
+        &completed.client_type,
+        &completed.download_client_item_id,
+        facet.as_ref(),
+        state,
+    )
+    .await
+}
+
+pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
+    app: &AppUseCase,
+    tracked: &crate::tracked_downloads::TrackedDownload,
+    state: TrackedDownloadState,
+) -> TerminalDownloadCleanupOutcome {
+    let facet = facet_from_tracked_label(tracked.facet.as_deref());
+    reconcile_terminal_download_cleanup(
+        app,
+        &tracked.client_id,
+        &tracked.client_type,
+        &tracked.client_item.download_client_item_id,
+        facet.as_ref(),
+        state,
+    )
+    .await
+}
+
+fn terminal_tracked_state_for_import_result(result: &ImportResult) -> Option<TrackedDownloadState> {
+    match result.decision {
+        ImportDecision::Imported => Some(TrackedDownloadState::Imported),
+        ImportDecision::Failed | ImportDecision::Rejected => Some(TrackedDownloadState::Failed),
+        ImportDecision::Skipped
+            if result.skip_reason == Some(ImportSkipReason::AlreadyImported) =>
+        {
+            Some(TrackedDownloadState::Imported)
+        }
+        _ => None,
+    }
+}
+
+async fn completed_download_tracked_state(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+) -> Option<TrackedDownloadState> {
+    app.services
+        .workflow
+        .download_submissions
+        .get_tracked_state(&completed_download_identity(completed))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| TrackedDownloadState::from_str_opt(&value))
 }
 
 async fn maybe_remove_completed_manual_import_download(
@@ -625,12 +866,15 @@ async fn maybe_remove_completed_manual_import_download(
         return;
     };
 
-    if app
-        .should_remove_completed_download(&facet, &completed.client_id)
-        .await
-    {
-        remove_download_history_item(app, completed, "manual_import_completed").await;
-    }
+    let _ = reconcile_terminal_download_cleanup(
+        app,
+        &completed.client_id,
+        &completed.client_type,
+        &completed.download_client_item_id,
+        Some(&facet),
+        TrackedDownloadState::Imported,
+    )
+    .await;
 }
 
 pub async fn import_completed_download(

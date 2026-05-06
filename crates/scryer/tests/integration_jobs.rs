@@ -162,6 +162,11 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         )
         .await
         .expect("background series refresh should succeed");
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("load default admin");
 
     assert!(
         ctx.app.active_library_scan_sessions().await.is_empty(),
@@ -169,7 +174,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     );
     assert!(
         ctx.app
-            .active_job_runs(&User::new_admin("admin"))
+            .active_job_runs(&admin)
             .await
             .expect("load active job runs")
             .is_empty(),
@@ -358,6 +363,7 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
     let mut rx = ctx
         .app
         .subscribe_job_run_events(&admin)
+        .await
         .expect("subscribe to job events");
 
     let run = ctx

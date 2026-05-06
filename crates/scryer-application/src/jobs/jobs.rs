@@ -269,15 +269,12 @@ impl AppUseCase {
             .collect())
     }
 
-    pub fn subscribe_job_run_events(&self, actor: &User) -> AppResult<broadcast::Receiver<JobRun>> {
-        if !actor
-            .authorization
-            .has_app_permission(scryer_domain::AppPermission::ManageSystemSettings)
-        {
-            return Err(AppError::Unauthorized(
-                "You need permission to manage system settings.".to_string(),
-            ));
-        }
+    pub async fn subscribe_job_run_events(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<JobRun>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {

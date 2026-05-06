@@ -3762,6 +3762,7 @@ struct StubDownloadClient {
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
+    deleted_requests: Arc<Mutex<Vec<(Option<String>, Option<String>, String, bool)>>>,
     delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
     queue_calls: Arc<Mutex<usize>>,
@@ -3774,6 +3775,29 @@ struct StubDownloadClient {
 impl StubDownloadClient {
     async fn set_delete_error(&self, error: Option<&str>) {
         *self.delete_error.lock().await = error.map(str::to_string);
+    }
+
+    async fn record_delete(
+        &self,
+        client_id: Option<&str>,
+        client_type: Option<&str>,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        if let Some(error) = self.delete_error.lock().await.clone() {
+            return Err(AppError::Repository(error));
+        }
+        self.deleted_items
+            .lock()
+            .await
+            .push((id.to_string(), is_history));
+        self.deleted_requests.lock().await.push((
+            client_id.map(str::to_string),
+            client_type.map(str::to_string),
+            id.to_string(),
+            is_history,
+        ));
+        Ok(())
     }
 }
 
@@ -3862,14 +3886,27 @@ impl DownloadClient for StubDownloadClient {
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
-        if let Some(error) = self.delete_error.lock().await.clone() {
-            return Err(AppError::Repository(error));
-        }
-        self.deleted_items
-            .lock()
+        self.record_delete(None, None, id, is_history).await
+    }
+
+    async fn delete_queue_item_for_client_id(
+        &self,
+        client_id: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        self.record_delete(Some(client_id), None, id, is_history)
             .await
-            .push((id.to_string(), is_history));
-        Ok(())
+    }
+
+    async fn delete_queue_item_for_client(
+        &self,
+        client_type: &str,
+        id: &str,
+        is_history: bool,
+    ) -> AppResult<()> {
+        self.record_delete(None, Some(client_type), id, is_history)
+            .await
     }
 }
 
@@ -4082,7 +4119,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(MockSettingsRepo);
+    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
@@ -4133,7 +4170,7 @@ fn bootstrap_with_metadata_gateway_and_titles(
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(MockSettingsRepo);
+    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
@@ -4267,7 +4304,7 @@ fn bootstrap_with_cleanup_tracking_and_tracked_handle(
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(MockSettingsRepo);
+    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
     let services = AppServices::builder(
@@ -4324,7 +4361,7 @@ fn bootstrap_with_cleanup_tracking_and_indexer(
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(MockSettingsRepo);
+    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
     let services = AppServices::builder(
@@ -9829,6 +9866,51 @@ fn completed_download_fixture_item(
     }
 }
 
+async fn create_enabled_download_client_config(
+    app: &AppUseCase,
+    user: &User,
+    name: &str,
+    client_type: &str,
+) -> DownloadClientConfig {
+    app.create_download_client_config(
+        user,
+        NewDownloadClientConfig {
+            name: name.to_string(),
+            client_type: client_type.to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config")
+}
+
+async fn set_download_client_cleanup_routing(
+    app: &AppUseCase,
+    user: &User,
+    facet: &str,
+    client_id: &str,
+    remove_completed: bool,
+    remove_failed: bool,
+) {
+    app.update_download_client_routing(
+        user,
+        facet,
+        vec![DownloadClientRoutingSettingsEntry {
+            client_id: client_id.to_string(),
+            enabled: true,
+            category: None,
+            recent_queue_priority: None,
+            older_queue_priority: None,
+            remove_completed,
+            remove_failed,
+        }],
+    )
+    .await
+    .expect("update download client routing");
+}
+
 #[tokio::test]
 async fn list_download_import_page_returns_only_import_rows_for_selected_filter() {
     let download_client = Arc::new(StubDownloadClient::default());
@@ -10240,6 +10322,342 @@ async fn download_import_page_stays_responsive_while_background_import_worker_is
     poller
         .await
         .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until_delete_succeeds() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Imported Cleanup Retry".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let item_id = "imported-cleanup-1";
+    let tracked_id =
+        crate::tracked_downloads::tracked_download_id(Some(config.id.as_str()), "nzbget", item_id);
+    let mut history_item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    history_item.client_id = config.id.clone();
+    history_item.client_name = config.name.clone();
+    history_item.title_id = Some(title.id.clone());
+    history_item.title_name = title.name.clone();
+    history_item.facet = Some("movie".to_string());
+    *download_client.history_items.lock().await = vec![history_item];
+
+    download_submissions
+        .update_tracked_state(
+            &DownloadSourceIdentity::new(Some(config.id.as_str()), "nzbget", item_id),
+            TrackedDownloadState::Imported.as_str(),
+        )
+        .await
+        .expect("seed imported tracked state");
+
+    download_client
+        .set_delete_error(Some("repository: delete failed"))
+        .await;
+
+    let (_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(crate::integration::start_download_queue_poller(
+        app.clone(),
+        token.child_token(),
+        tracked_download_rx,
+    ));
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .contains_key(&tracked_id)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("tracked imported item should stay visible after retryable delete failure");
+    assert!(download_client.deleted_items.lock().await.is_empty());
+
+    let mut pushed_out_history = (0..105)
+        .map(|index| {
+            let mut item = queue_history_fixture_item(
+                &format!("recent-history-{index}"),
+                DownloadQueueState::Completed,
+                1_000 - index as i64,
+            );
+            item.client_id = config.id.clone();
+            item.client_name = config.name.clone();
+            item
+        })
+        .collect::<Vec<_>>();
+    let mut hidden_target =
+        queue_history_fixture_item(item_id, DownloadQueueState::Completed, 1);
+    hidden_target.client_id = config.id.clone();
+    hidden_target.client_name = config.name.clone();
+    hidden_target.title_id = Some(title.id.clone());
+    hidden_target.title_name = title.name.clone();
+    hidden_target.facet = Some("movie".to_string());
+    pushed_out_history.push(hidden_target);
+    *download_client.history_items.lock().await = pushed_out_history;
+
+    download_client.set_delete_error(None).await;
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if !download_client.deleted_requests.lock().await.is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("poller should retry imported cleanup on the next cycle");
+
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if !app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .contains_key(&tracked_id)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("tracked imported item should disappear once cleanup succeeds");
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) =
+        bootstrap_with_cleanup_tracking(download_client.clone(), download_submissions, pending_releases);
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Series NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, false, true).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Failed Cleanup".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let item_id = "failed-cleanup-1";
+    let mut history_item = queue_history_fixture_item(item_id, DownloadQueueState::Failed, 40);
+    history_item.client_id = config.id.clone();
+    history_item.client_name = config.name.clone();
+    history_item.title_id = Some(title.id.clone());
+    history_item.title_name = title.name.clone();
+    history_item.facet = Some("movie".to_string());
+    let tracked = crate::tracked_downloads::TrackedDownload {
+        id: crate::tracked_downloads::tracked_download_id(
+            Some(config.id.as_str()),
+            "nzbget",
+            item_id,
+        ),
+        client_id: config.id.clone(),
+        client_type: "nzbget".to_string(),
+        client_item: history_item,
+        state: TrackedDownloadState::Failed,
+        status: scryer_domain::TrackedDownloadStatus::Ok,
+        status_messages: Vec::new(),
+        title_id: Some(title.id.clone()),
+        facet: Some("movie".to_string()),
+        source_title: Some(title.name.clone()),
+        indexer: None,
+        added_at: None,
+        notified_manual_interaction: false,
+        match_type: scryer_domain::TitleMatchType::Submission,
+        is_trackable: true,
+        import_attempted: true,
+        path_missing_since: None,
+    };
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        crate::import::import::TerminalDownloadCleanupOutcome::Removed
+    );
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_removes_already_imported_history_with_exact_client_id() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Legacy Cleanup".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let now = Utc::now().to_rfc3339();
+    let item_id = "legacy-completed-1";
+    import_repo.records.lock().await.push(ImportRecord {
+        id: Id::new().0,
+        source_system: "nzbget".to_string(),
+        source_ref: item_id.to_string(),
+        import_type: ImportType::MovieDownload,
+        status: ImportStatus::Completed,
+        payload_json: String::new(),
+        result_json: None,
+        started_at: Some(now.clone()),
+        finished_at: Some(now.clone()),
+        created_at: now.clone(),
+        updated_at: now,
+    });
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        "Legacy.Cleanup.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(processed.contains(item_id));
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed_when_completed_download_is_missing()
+{
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let now = Utc::now().to_rfc3339();
+    let item_id = "legacy-missing-completed-1";
+    import_repo.records.lock().await.push(ImportRecord {
+        id: Id::new().0,
+        source_system: "nzbget".to_string(),
+        source_ref: item_id.to_string(),
+        import_type: ImportType::MovieDownload,
+        status: ImportStatus::Completed,
+        payload_json: String::new(),
+        result_json: None,
+        started_at: Some(now.clone()),
+        finished_at: Some(now.clone()),
+        created_at: now.clone(),
+        updated_at: now,
+    });
+
+    let item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert!(download_client.deleted_requests.lock().await.is_empty());
 }
 
 #[tokio::test]

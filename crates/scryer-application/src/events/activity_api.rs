@@ -1284,8 +1284,11 @@ impl AppUseCase {
         self.subscribe_download_queue(actor)
     }
 
-    pub fn subscribe_job_run_state(&self, actor: &User) -> AppResult<broadcast::Receiver<JobRun>> {
-        self.subscribe_job_run_events(actor)
+    pub async fn subscribe_job_run_state(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<JobRun>> {
+        self.subscribe_job_run_events(actor).await
     }
 
     pub async fn list_title_history(

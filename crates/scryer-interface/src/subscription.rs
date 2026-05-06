@@ -512,7 +512,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_job_run_state(&actor) {
+        let receiver = match app.subscribe_job_run_state(&actor).await {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("job_run_events: subscribe failed: {error}");
@@ -550,7 +550,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_job_run_state(&actor) {
+        let receiver = match app.subscribe_job_run_state(&actor).await {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("job_run_state: subscribe failed: {error}");

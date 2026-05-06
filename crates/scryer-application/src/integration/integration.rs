@@ -2898,6 +2898,7 @@ pub async fn start_download_queue_poller(
                         }
 
                         tracker.update_trackable(&seen_ids);
+                        reconcile_terminal_tracked_downloads(&app, &mut tracker).await;
                         publish_runtime_tracked_download_snapshot_cache(&app, &tracker).await;
 
                         // Phase 2: Dispatch — import pending and failed items.
@@ -3014,10 +3015,8 @@ async fn handle_tracked_download_command(
                 tracker
                     .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
                     .await;
-                if let Some(td) = tracker.find(&id) {
-                    try_remove_from_client(app, td, TrackedDownloadState::Imported).await;
-                }
-                tracker.stop_tracking(&id);
+                finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
+                    .await;
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!("tracked download {id}")))
@@ -3041,10 +3040,8 @@ async fn handle_tracked_download_command(
                 tracker
                     .persist_terminal_state(app, &id, TrackedDownloadState::Ignored)
                     .await;
-                if let Some(td) = tracker.find(&id) {
-                    try_remove_from_client(app, td, TrackedDownloadState::Ignored).await;
-                }
-                tracker.stop_tracking(&id);
+                finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Ignored)
+                    .await;
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!("tracked download {id}")))
@@ -3345,126 +3342,44 @@ async fn handle_tracked_download_background_work_result(
         );
         let persisted = tracker.persist_terminal_state(app, &result.id, state).await;
         if persisted {
-            if let Some(td) = tracker.find(&result.id) {
-                try_remove_from_client(app, td, state).await;
-            }
-            tracker.stop_tracking(&result.id);
+            finalize_tracked_terminal_state(app, tracker, &result.id, state).await;
         }
     }
 
     publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
 }
 
-/// Remove a download from the client after reaching a terminal state,
-/// if the client's config has `remove_completed` or `remove_failed` enabled.
-async fn try_remove_from_client(
+async fn finalize_tracked_terminal_state(
     app: &AppUseCase,
-    td: &crate::tracked_downloads::TrackedDownload,
-    state: scryer_domain::TrackedDownloadState,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    id: &str,
+    state: TrackedDownloadState,
 ) {
-    // Look up the exact configured client when the tracked download carries one.
-    // Native queue IDs are scoped to a client instance, not just a client type.
-    let config = if td.client_id.trim().is_empty() {
-        match app
-            .services
-            .integrations
-            .download_client_configs
-            .list(Some(td.client_type.clone()))
-            .await
-        {
-            Ok(configs) => configs.into_iter().next(),
-            Err(_) => None,
-        }
-    } else {
-        match app
-            .services
-            .integrations
-            .download_client_configs
-            .get_by_id(&td.client_id)
-            .await
-        {
-            Ok(Some(config)) if config.client_type.eq_ignore_ascii_case(&td.client_type) => {
-                Some(config)
-            }
-            Ok(_) => None,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    client_id = %td.client_id,
-                    client_type = %td.client_type,
-                    "failed to load download client config for auto-remove decision"
-                );
-                None
-            }
-        }
-    };
-
-    let should_remove = if let Some(config) = config {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&config.config_json).unwrap_or_default();
-        match state {
-            scryer_domain::TrackedDownloadState::Imported => parsed
-                .get("remove_completed")
-                .or_else(|| parsed.get("removeCompleted"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            scryer_domain::TrackedDownloadState::Failed => parsed
-                .get("remove_failed")
-                .or_else(|| parsed.get("removeFailed"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            scryer_domain::TrackedDownloadState::Ignored => {
-                // Always remove ignored downloads — the user explicitly dismissed them.
-                true
-            }
-            _ => false,
-        }
-    } else {
-        false
-    };
-
-    if !should_remove {
+    let Some(td) = tracker.find(id) else {
         return;
-    }
-
-    let item_id = &td.client_item.download_client_item_id;
-    // Completed/failed items are in the client's history, not the active queue.
-    let is_history = matches!(
-        state,
-        scryer_domain::TrackedDownloadState::Imported
-            | scryer_domain::TrackedDownloadState::Failed
-            | scryer_domain::TrackedDownloadState::Ignored
-    );
-
-    tracing::info!(
-        id = %td.id,
-        item_id,
-        state = state.as_str(),
-        is_history,
-        "removing download from client"
-    );
-
-    let delete_result = if td.client_id.trim().is_empty() {
-        app.services
-            .integrations
-            .download_client
-            .delete_queue_item_for_client(&td.client_type, item_id, is_history)
-            .await
-    } else {
-        app.services
-            .integrations
-            .download_client
-            .delete_queue_item_for_client_id(&td.client_id, item_id, is_history)
-            .await
     };
 
-    if let Err(error) = delete_result {
-        tracing::warn!(
-            error = %error,
-            id = %td.id,
-            item_id,
-            "failed to remove download from client"
-        );
+    let cleanup =
+        crate::import::import::reconcile_terminal_download_cleanup_for_tracked(app, td, state)
+            .await;
+    if crate::import::import::terminal_download_cleanup_is_complete(cleanup) {
+        tracker.stop_tracking(id);
+    }
+}
+
+async fn reconcile_terminal_tracked_downloads(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+) {
+    let terminal_ids: Vec<(String, TrackedDownloadState)> = tracker
+        .get_all()
+        .into_iter()
+        .filter(|tracked| tracked.state.is_terminal())
+        .map(|tracked| (tracked.id.clone(), tracked.state))
+        .collect();
+
+    for (id, state) in terminal_ids {
+        finalize_tracked_terminal_state(app, tracker, &id, state).await;
     }
 }
 
