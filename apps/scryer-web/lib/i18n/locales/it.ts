@@ -132,6 +132,7 @@ const it: LocaleDictionary = {
   "facetSettings.generalPolicies": "Politiche",
   "facetSettings.sidecarFiles": "File sidecar",
   "facetSettings.scoringPersona": "Persona di valutazione",
+  "facetSettings.scoringPersonaOverrideLabel": "Override della persona di valutazione",
   "facetSettings.scoringPersonaUseDefault": "Usa predefinito del profilo",
   "facetSettings.scoringBehavior": "Comportamento di valutazione",
   "facetSettings.scoringBehaviorHint":
@@ -171,6 +172,8 @@ const it: LocaleDictionary = {
     "HDR: Dolby Vision penalizzato (rischio compatibilità)",
   "settings.moviesLibrarySettings": "Impostazioni media film",
   "settings.seriesLibrarySettings": "Impostazioni media serie",
+  "libraryFilter.all": "Tutte le librerie",
+  "libraryFilter.selectedCount": "{{count}} librerie",
   "settings.rootFoldersLabel": "Cartelle radice",
   "settings.rootFoldersEmpty":
     "Nessuna cartella radice configurata. Aggiungi almeno un percorso.",
@@ -178,8 +181,13 @@ const it: LocaleDictionary = {
     "Le cartelle radice sono le directory principali in cui vengono archiviati i media. La cartella con la stella è quella predefinita per i nuovi titoli.",
   "settings.rootFolderAdd": "Aggiungi cartella radice",
   "settings.rootFolderEdit": "Modifica cartella radice",
+  "settings.rootFolderConflict":
+    "Questa cartella radice è già usata da {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Imposta come predefinita",
+  "settings.librarySelectionScopeTitle": "Libreria attiva",
+  "settings.librarySelectionScopeHelp":
+    "La libreria selezionata definisce l’ambito delle sostituzioni e dell’azione di scansione in questa sezione.",
   "settings.libraryScanTitle": "Scansione libreria",
   "settings.libraryScanHelp":
     "Scansiona la cartella dei film e importa i titoli mancanti.",

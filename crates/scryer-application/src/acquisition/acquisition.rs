@@ -474,12 +474,14 @@ impl AppUseCase {
                 // Skip filler movies unless the user opted in
                 if movie.continuity_status.as_deref() == Some("filler") {
                     let monitor_filler = self
-                        .read_setting_string_value("anime.monitor_filler_movies", None)
+                        .resolve_library_bool_setting(
+                            "anime.monitor_filler_movies",
+                            Some(&title.library_id),
+                            Some(title.facet.as_str()),
+                            false,
+                        )
                         .await
-                        .ok()
-                        .flatten()
-                        .as_deref()
-                        == Some("true");
+                        .unwrap_or(false);
                     if !monitor_filler {
                         continue;
                     }
@@ -1181,7 +1183,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         .workflow
         .wanted_items
         .list_wanted_items(WantedItemsQuery {
-            status: Some("grabbed".into()),
+            statuses: vec!["grabbed".into()],
             limit: 200,
             ..WantedItemsQuery::default()
         })
@@ -1368,7 +1370,7 @@ async fn resolve_failed_collection_episode_wanted_items(
         .workflow
         .wanted_items
         .list_wanted_items(WantedItemsQuery {
-            media_type: Some("episode".into()),
+            media_types: vec!["episode".into()],
             title_id: Some(submission.title_id.clone()),
             limit: 500,
             ..WantedItemsQuery::default()
@@ -1725,7 +1727,7 @@ async fn resolve_failure_wanted_item(
         .workflow
         .wanted_items
         .list_wanted_items(WantedItemsQuery {
-            status: Some("grabbed".into()),
+            statuses: vec!["grabbed".into()],
             title_id: Some(title_id.to_string()),
             limit: 25,
             ..WantedItemsQuery::default()
@@ -3355,12 +3357,12 @@ impl AppUseCase {
         library_ids: Vec<String>,
     ) -> AppResult<(Vec<WantedItem>, i64)> {
         let WantedItemsQuery {
-            status,
-            media_type,
+            statuses,
+            media_types,
             title_id,
             library_ids: _,
             title_search,
-            latest_decision_code,
+            latest_decision_codes,
             limit,
             offset,
         } = query;
@@ -3376,12 +3378,12 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .list_wanted_items(WantedItemsQuery {
-                status: status.clone(),
-                media_type: media_type.clone(),
+                statuses: statuses.clone(),
+                media_types: media_types.clone(),
                 title_id: title_id.clone(),
                 library_ids: library_ids.clone(),
                 title_search: title_search.clone(),
-                latest_decision_code: latest_decision_code.clone(),
+                latest_decision_codes: latest_decision_codes.clone(),
                 limit,
                 offset,
             })
@@ -3391,12 +3393,12 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .count_wanted_items(WantedItemsQuery {
-                status,
-                media_type,
+                statuses,
+                media_types,
                 title_id,
                 library_ids,
                 title_search,
-                latest_decision_code,
+                latest_decision_codes,
                 ..WantedItemsQuery::default()
             })
             .await?;
@@ -3669,7 +3671,7 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .list_wanted_items(WantedItemsQuery {
-                status: Some("wanted".into()),
+                statuses: vec!["wanted".into()],
                 title_id: Some(title_id.to_string()),
                 limit: 500,
                 ..WantedItemsQuery::default()
@@ -3733,8 +3735,8 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .list_wanted_items(WantedItemsQuery {
-                status: Some("wanted".into()),
-                media_type: Some("episode".into()),
+                statuses: vec!["wanted".into()],
+                media_types: vec!["episode".into()],
                 title_id: Some(title_id.to_string()),
                 limit: 500,
                 ..WantedItemsQuery::default()

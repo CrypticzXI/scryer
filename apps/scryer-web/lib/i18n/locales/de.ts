@@ -133,6 +133,7 @@ const de: LocaleDictionary = {
   "facetSettings.generalPolicies": "Richtlinien",
   "facetSettings.sidecarFiles": "Sidecar-Dateien",
   "facetSettings.scoringPersona": "Scoring-Persona",
+  "facetSettings.scoringPersonaOverrideLabel": "Persona-Überschreibung",
   "facetSettings.scoringPersonaUseDefault": "Profil-Standard verwenden",
   "facetSettings.scoringBehavior": "Scoring-Verhalten",
   "facetSettings.scoringBehaviorHint":
@@ -171,6 +172,8 @@ const de: LocaleDictionary = {
     "HDR: Dolby Vision bestraft (Kompatibilitätsrisiko)",
   "settings.moviesLibrarySettings": "Film-Medieneinstellungen",
   "settings.seriesLibrarySettings": "Serien-Medieneinstellungen",
+  "libraryFilter.all": "Alle Bibliotheken",
+  "libraryFilter.selectedCount": "{{count}} Bibliotheken",
   "settings.rootFoldersLabel": "Stammordner",
   "settings.rootFoldersEmpty":
     "Keine Stammordner konfiguriert. Füge mindestens einen Pfad hinzu.",
@@ -178,8 +181,13 @@ const de: LocaleDictionary = {
     "Stammordner sind die obersten Verzeichnisse, in denen Medien gespeichert werden. Der markierte Ordner ist der Standard für neue Titel.",
   "settings.rootFolderAdd": "Stammordner hinzufügen",
   "settings.rootFolderEdit": "Stammordner bearbeiten",
+  "settings.rootFolderConflict":
+    "Dieser Stammordner wird bereits von {{libraries}} verwendet.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Als Standard festlegen",
+  "settings.librarySelectionScopeTitle": "Aktive Bibliothek",
+  "settings.librarySelectionScopeHelp":
+    "Die ausgewählte Bibliothek legt den Geltungsbereich für die Überschreibungen und die Scan-Aktion in diesem Abschnitt fest.",
   "settings.libraryScanTitle": "Bibliothek scannen",
   "settings.libraryScanHelp":
     "Filmordner scannen und fehlende Titel importieren.",

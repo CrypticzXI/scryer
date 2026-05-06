@@ -82,6 +82,16 @@ export type LibrarySettingsRecord = {
   qualityProfileId: string;
   scoringPersonaOverride: string | null;
   scoringPersona: string;
+  fillerPolicyOverride: string | null;
+  fillerPolicy: string | null;
+  recapPolicyOverride: string | null;
+  recapPolicy: string | null;
+  monitorSpecialsOverride: boolean | null;
+  monitorSpecials: boolean | null;
+  interSeasonMoviesOverride: boolean | null;
+  interSeasonMovies: boolean | null;
+  monitorFillerMoviesOverride: boolean | null;
+  monitorFillerMovies: boolean | null;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: unknown[] | null;
 };
@@ -90,6 +100,11 @@ export type LibrarySettingsDraft = {
   requiredAudioLanguages: string[] | null;
   qualityProfileId: string | null;
   scoringPersona: string | null;
+  fillerPolicy: string | null;
+  recapPolicy: string | null;
+  monitorSpecials: boolean | null;
+  interSeasonMovies: boolean | null;
+  monitorFillerMovies: boolean | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: unknown[] | null;
 };

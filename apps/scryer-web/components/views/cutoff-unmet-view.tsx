@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
   Select,
@@ -47,9 +48,8 @@ type CutoffUnmetViewState = {
   setFacetFilter: (v: string | undefined) => void;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
-  selectedLibraryId: string;
-  allLibrariesValue: string;
-  setSelectedLibraryId: (value: string) => void;
+  selectedLibraryIds: string[];
+  setSelectedLibraryIds: (value: string[]) => void;
   autoSearchingId: string | null;
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
@@ -221,9 +221,8 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     setFacetFilter,
     libraries,
     librariesLoading,
-    selectedLibraryId,
-    allLibrariesValue,
-    setSelectedLibraryId,
+    selectedLibraryIds,
+    setSelectedLibraryIds,
     autoSearchingId,
     interactiveSearchingId,
     activeInteractiveItemId,
@@ -280,23 +279,13 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
       </CardHeader>
       <CardContent>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-          <Select
-            value={selectedLibraryId}
-            onValueChange={setSelectedLibraryId}
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={setSelectedLibraryIds}
             disabled={librariesLoading}
-          >
-            <SelectTrigger className="w-full sm:w-[210px]">
-              <SelectValue placeholder="Library" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
-              {libraries.map((library) => (
-                <SelectItem key={library.id} value={library.id}>
-                  {library.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            triggerClassName="w-full sm:w-[210px]"
+          />
 
           <Select
             value={facetFilter ?? "__all__"}

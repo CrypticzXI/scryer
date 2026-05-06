@@ -693,14 +693,25 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
-        library_id: Option<String>,
+        requested_library_ids: Option<Vec<String>>,
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         let mut library_ids = self
             .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
             .await?;
-        if let Some(requested_library_id) = library_id {
-            library_ids.retain(|id| id == &requested_library_id);
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
         }
         self.services
             .catalog
@@ -757,7 +768,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
-        library_id: Option<String>,
+        requested_library_ids: Option<Vec<String>>,
     ) -> AppResult<Vec<CutoffUnmetItem>> {
         let authorized_libraries = self
             .list_libraries_for_permission(
@@ -778,8 +789,19 @@ impl AppUseCase {
             .iter()
             .map(|library| library.id.clone())
             .collect::<Vec<_>>();
-        if let Some(requested_library_id) = library_id {
-            library_ids.retain(|id| id == &requested_library_id);
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
         }
         let titles = self
             .services
@@ -1864,12 +1886,14 @@ impl AppUseCase {
             if let Some(per_title) = extract_tag_bool(&title.tags, "scryer:monitor-specials:") {
                 per_title
             } else {
-                self.read_setting_string_value("anime.monitor_specials", Some("anime"))
-                    .await
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == Some("true") // Default: false
+                self.resolve_library_bool_setting(
+                    "anime.monitor_specials",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    false,
+                )
+                .await
+                .unwrap_or(false)
             }
         } else {
             false
@@ -1879,12 +1903,14 @@ impl AppUseCase {
             if let Some(per_title) = extract_tag_bool(&title.tags, "scryer:inter-season-movies:") {
                 per_title
             } else {
-                self.read_setting_string_value("anime.inter_season_movies", Some("anime"))
-                    .await
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    != Some("false") // Default: true
+                self.resolve_library_bool_setting(
+                    "anime.inter_season_movies",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    true,
+                )
+                .await
+                .unwrap_or(true)
             }
         } else {
             false
@@ -2272,11 +2298,14 @@ impl AppUseCase {
             let effective = match extract_tag_string(&title.tags, "scryer:filler-policy:") {
                 Some(v) => v.to_string(),
                 None => self
-                    .read_setting_string_value("anime.filler_policy", Some("anime"))
+                    .resolve_library_string_setting(
+                        "anime.filler_policy",
+                        Some(&title.library_id),
+                        Some(title.facet.as_str()),
+                        "download_all",
+                    )
                     .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|_| "download_all".to_string()),
             };
             effective == "skip_filler"
         } else {
@@ -2286,11 +2315,14 @@ impl AppUseCase {
             let effective = match extract_tag_string(&title.tags, "scryer:recap-policy:") {
                 Some(v) => v.to_string(),
                 None => self
-                    .read_setting_string_value("anime.recap_policy", Some("anime"))
+                    .resolve_library_string_setting(
+                        "anime.recap_policy",
+                        Some(&title.library_id),
+                        Some(title.facet.as_str()),
+                        "download_all",
+                    )
                     .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|_| "download_all".to_string()),
             };
             effective == "skip_recap"
         } else {
@@ -4865,14 +4897,27 @@ impl AppUseCase {
         actor: &User,
         start_date: &str,
         end_date: &str,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
     ) -> AppResult<Vec<CalendarEpisode>> {
         let authorized = self
             .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
-        let requested = library_id.filter(|id| authorized.contains(id));
+        let requested_library_ids = library_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|library_id| library_id.trim().to_string())
+            .filter(|library_id| !library_id.is_empty())
+            .collect::<HashSet<_>>();
+        let visible_library_ids = if requested_library_ids.is_empty() {
+            authorized
+        } else {
+            authorized
+                .intersection(&requested_library_ids)
+                .cloned()
+                .collect::<HashSet<_>>()
+        };
         let episodes = self
             .services
             .catalog
@@ -4881,12 +4926,7 @@ impl AppUseCase {
             .await?;
         Ok(episodes
             .into_iter()
-            .filter(|episode| {
-                requested.as_ref().map_or_else(
-                    || authorized.contains(&episode.library_id),
-                    |id| episode.library_id == *id,
-                )
-            })
+            .filter(|episode| visible_library_ids.contains(&episode.library_id))
             .collect())
     }
 

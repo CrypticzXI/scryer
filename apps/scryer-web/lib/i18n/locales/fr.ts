@@ -133,6 +133,7 @@ const fr: LocaleDictionary = {
   "facetSettings.generalPolicies": "Politiques",
   "facetSettings.sidecarFiles": "Fichiers annexes",
   "facetSettings.scoringPersona": "Persona de scoring",
+  "facetSettings.scoringPersonaOverrideLabel": "Remplacement de la persona de scoring",
   "facetSettings.scoringPersonaUseDefault": "Utiliser le profil par défaut",
   "facetSettings.scoringBehavior": "Comportement de scoring",
   "facetSettings.scoringBehaviorHint":
@@ -174,6 +175,8 @@ const fr: LocaleDictionary = {
     "HDR : Dolby Vision pénalisé (risque de compatibilité)",
   "settings.moviesLibrarySettings": "Paramètres des médias films",
   "settings.seriesLibrarySettings": "Paramètres des médias séries",
+  "libraryFilter.all": "Toutes les bibliothèques",
+  "libraryFilter.selectedCount": "{{count}} bibliothèques",
   "settings.rootFoldersLabel": "Dossiers racine",
   "settings.rootFoldersEmpty":
     "Aucun dossier racine configuré. Ajoutez au moins un chemin.",
@@ -181,8 +184,13 @@ const fr: LocaleDictionary = {
     "Les dossiers racine sont les répertoires principaux où les médias sont stockés. Le dossier étoilé est celui par défaut pour les nouveaux titres.",
   "settings.rootFolderAdd": "Ajouter un dossier racine",
   "settings.rootFolderEdit": "Modifier le dossier racine",
+  "settings.rootFolderConflict":
+    "Ce dossier racine est déjà utilisé par {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Définir par défaut",
+  "settings.librarySelectionScopeTitle": "Bibliothèque active",
+  "settings.librarySelectionScopeHelp":
+    "La bibliothèque sélectionnée détermine la portée des remplacements et de l’action d’analyse dans cette section.",
   "settings.libraryScanTitle": "Analyse de la bibliothèque",
   "settings.libraryScanHelp":
     "Analyser le dossier de films et importer les titres manquants.",

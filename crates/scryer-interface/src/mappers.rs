@@ -210,6 +210,16 @@ pub(crate) fn from_library_settings(settings: LibrarySettings) -> LibrarySetting
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
         scoring_persona: ScoringPersonaValue::from_application(settings.scoring_persona),
+        filler_policy_override: settings.filler_policy_override,
+        filler_policy: settings.filler_policy,
+        recap_policy_override: settings.recap_policy_override,
+        recap_policy: settings.recap_policy,
+        monitor_specials_override: settings.monitor_specials_override,
+        monitor_specials: settings.monitor_specials,
+        inter_season_movies_override: settings.inter_season_movies_override,
+        inter_season_movies: settings.inter_season_movies,
+        monitor_filler_movies_override: settings.monitor_filler_movies_override,
+        monitor_filler_movies: settings.monitor_filler_movies,
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()

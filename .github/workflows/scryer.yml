@@ -587,7 +587,7 @@ jobs:
         working-directory: release-artifacts
         run: shasum -a 256 scryer-*.tar.gz scryer-*.zip > scryer-checksums.txt
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_meta.outputs.tag_name }}
           name: ${{ steps.release_meta.outputs.tag_name }}

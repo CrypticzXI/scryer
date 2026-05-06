@@ -393,7 +393,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: MediaFacet,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
         status: PendingImportStatus,
         limit: i64,
         offset: i64,
@@ -409,6 +409,12 @@ impl AppUseCase {
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
+        let requested_library_ids = library_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|library_id| library_id.trim().to_string())
+            .filter(|library_id| !library_id.is_empty())
+            .collect::<HashSet<_>>();
         let filtered = self
             .services
             .library
@@ -418,9 +424,8 @@ impl AppUseCase {
             .into_iter()
             .filter(|item| {
                 manageable.contains(&item.library_id)
-                    && library_id
-                        .as_ref()
-                        .is_none_or(|expected| expected == &item.library_id)
+                    && (requested_library_ids.is_empty()
+                        || requested_library_ids.contains(&item.library_id))
             })
             .collect::<Vec<_>>();
         let total = filtered.len() as i64;

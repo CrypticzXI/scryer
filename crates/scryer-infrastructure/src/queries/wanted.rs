@@ -547,12 +547,12 @@ pub(crate) async fn list_wanted_items_query(
     query: &WantedItemsQuery,
 ) -> AppResult<Vec<WantedItem>> {
     let WantedItemsQuery {
-        status,
-        media_type,
+        statuses,
+        media_types,
         title_id,
         library_ids,
         title_search,
-        latest_decision_code,
+        latest_decision_codes,
         limit,
         offset,
     } = query;
@@ -621,13 +621,25 @@ pub(crate) async fn list_wanted_items_query(
 
     builder.push("WHERE 1=1");
 
-    if let Some(s) = status.as_deref() {
-        builder.push(" AND w.status = ");
-        builder.push_bind(s.to_string());
+    if !statuses.is_empty() {
+        builder.push(" AND w.status IN (");
+        for (index, status) in statuses.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(status);
+        }
+        builder.push(")");
     }
-    if let Some(mt) = media_type.as_deref() {
-        builder.push(" AND w.media_type = ");
-        builder.push_bind(mt.to_string());
+    if !media_types.is_empty() {
+        builder.push(" AND w.media_type IN (");
+        for (index, media_type) in media_types.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(media_type);
+        }
+        builder.push(")");
     }
     if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
@@ -643,9 +655,15 @@ pub(crate) async fn list_wanted_items_query(
         }
         builder.push(")");
     }
-    if let Some(code) = latest_decision_code.as_deref() {
-        builder.push(" AND latest_decision.decision_code = ");
-        builder.push_bind(code.to_string());
+    if !latest_decision_codes.is_empty() {
+        builder.push(" AND latest_decision.decision_code IN (");
+        for (index, code) in latest_decision_codes.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(code);
+        }
+        builder.push(")");
     }
 
     builder.push(" ORDER BY w.updated_at DESC LIMIT ");
@@ -671,12 +689,12 @@ pub(crate) async fn count_wanted_items_query(
     query: &WantedItemsQuery,
 ) -> AppResult<i64> {
     let WantedItemsQuery {
-        status,
-        media_type,
+        statuses,
+        media_types,
         title_id,
         library_ids,
         title_search,
-        latest_decision_code,
+        latest_decision_codes,
         ..
     } = query;
     let search_plan = title_search
@@ -707,13 +725,25 @@ pub(crate) async fn count_wanted_items_query(
 
     builder.push("WHERE 1=1");
 
-    if let Some(s) = status.as_deref() {
-        builder.push(" AND w.status = ");
-        builder.push_bind(s.to_string());
+    if !statuses.is_empty() {
+        builder.push(" AND w.status IN (");
+        for (index, status) in statuses.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(status);
+        }
+        builder.push(")");
     }
-    if let Some(mt) = media_type.as_deref() {
-        builder.push(" AND w.media_type = ");
-        builder.push_bind(mt.to_string());
+    if !media_types.is_empty() {
+        builder.push(" AND w.media_type IN (");
+        for (index, media_type) in media_types.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(media_type);
+        }
+        builder.push(")");
     }
     if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
@@ -729,9 +759,15 @@ pub(crate) async fn count_wanted_items_query(
         }
         builder.push(")");
     }
-    if let Some(code) = latest_decision_code.as_deref() {
-        builder.push(" AND latest_decision.decision_code = ");
-        builder.push_bind(code.to_string());
+    if !latest_decision_codes.is_empty() {
+        builder.push(" AND latest_decision.decision_code IN (");
+        for (index, code) in latest_decision_codes.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(code);
+        }
+        builder.push(")");
     }
 
     let row: SqliteRow = builder

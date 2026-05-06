@@ -9,8 +9,10 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { CalendarEpisodeItem } from "@/components/views/calendar-view";
 import type { LibraryRecord } from "@/lib/types";
-
-const ALL_LIBRARIES_VALUE = "__all__";
+import {
+  normalizeLibraryFilterSelection,
+  selectedLibraryIdsToQueryValue,
+} from "@/lib/utils/library-filter";
 
 const CalendarView = lazy(() =>
   import("@/components/views/calendar-view").then((m) => ({ default: m.CalendarView })),
@@ -35,7 +37,7 @@ export const CalendarContainer = memo(function CalendarContainer({
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = useState(false);
-  const [selectedLibraryId, setSelectedLibraryId] = useState(ALL_LIBRARIES_VALUE);
+  const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
   const lastCalendarRangeRef = useRef<{ start: string; end: string } | null>(null);
 
   useEffect(() => {
@@ -57,6 +59,9 @@ export const CalendarContainer = memo(function CalendarContainer({
         }
         const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
         setLibraries(nextLibraries);
+        setSelectedLibraryIds((current) =>
+          normalizeLibraryFilterSelection(current, nextLibraries),
+        );
       })
       .catch((error) => {
         if (!cancelled) {
@@ -83,8 +88,7 @@ export const CalendarContainer = memo(function CalendarContainer({
           .query(calendarEpisodesQuery, {
             startDate: start,
             endDate: end,
-            libraryId:
-              selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
+            libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
           })
           .toPromise();
         if (error) throw error;
@@ -96,7 +100,7 @@ export const CalendarContainer = memo(function CalendarContainer({
         setCalendarLoading(false);
       }
     },
-    [client, selectedLibraryId, setGlobalStatus, t],
+    [client, selectedLibraryIds, setGlobalStatus, t],
   );
 
   useEffect(() => {
@@ -104,7 +108,7 @@ export const CalendarContainer = memo(function CalendarContainer({
     if (range) {
       void refreshCalendar(range.start, range.end);
     }
-  }, [refreshCalendar, selectedLibraryId]);
+  }, [refreshCalendar, selectedLibraryIds]);
 
   const handleCalendarEpisodeClick = useCallback(
     (episode: CalendarEpisodeItem) => {
@@ -144,9 +148,8 @@ export const CalendarContainer = memo(function CalendarContainer({
           loading={calendarLoading}
           libraries={libraries}
           librariesLoading={librariesLoading}
-          selectedLibraryId={selectedLibraryId}
-          allLibrariesValue={ALL_LIBRARIES_VALUE}
-          onSelectedLibraryChange={setSelectedLibraryId}
+          selectedLibraryIds={selectedLibraryIds}
+          onSelectedLibraryIdsChange={setSelectedLibraryIds}
           onDateRangeChange={refreshCalendar}
           onEpisodeClick={handleCalendarEpisodeClick}
         />

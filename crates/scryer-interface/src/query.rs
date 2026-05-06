@@ -326,14 +326,14 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
         query: Option<String>,
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let parsed_facet = facet.map(MediaFacetValue::into_domain);
         let titles = app
-            .list_titles(&actor, parsed_facet, library_id, query)
+            .list_titles(&actor, parsed_facet, library_ids, query)
             .await
             .map_err(to_gql_error)?;
 
@@ -858,7 +858,7 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
         status: PendingImportStatusValue,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
@@ -869,7 +869,7 @@ impl QueryRoot {
             .pending_imports(
                 &actor,
                 facet.into_domain(),
-                library_id,
+                library_ids,
                 status.into_application(),
                 limit,
                 offset,
@@ -1546,28 +1546,35 @@ impl QueryRoot {
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
-        status: Option<WantedStatusValue>,
-        media_type: Option<WantedMediaTypeValue>,
+        statuses: Option<Vec<WantedStatusValue>>,
+        media_types: Option<Vec<WantedMediaTypeValue>>,
         title_id: Option<String>,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
         title_search: Option<String>,
-        latest_decision_code: Option<String>,
+        latest_decision_codes: Option<Vec<String>>,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
     ) -> GqlResult<WantedItemsListPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let library_ids = library_id.into_iter().collect::<Vec<_>>();
         let (items, total) = app
             .list_wanted_items(
                 &actor,
                 WantedItemsQuery {
-                    status: status.map(|value| value.as_str().to_string()),
-                    media_type: media_type.map(|value| value.as_str().to_string()),
+                    statuses: statuses
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| value.as_str().to_string())
+                        .collect(),
+                    media_types: media_types
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| value.as_str().to_string())
+                        .collect(),
                     title_id,
-                    library_ids,
+                    library_ids: library_ids.unwrap_or_default(),
                     title_search,
-                    latest_decision_code,
+                    latest_decision_codes: latest_decision_codes.unwrap_or_default(),
                     limit,
                     offset,
                 },
@@ -1584,12 +1591,12 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
     ) -> GqlResult<Vec<CutoffUnmetItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let items = app
-            .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain), library_id)
+            .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain), library_ids)
             .await
             .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
@@ -1984,12 +1991,12 @@ impl QueryRoot {
         ctx: &Context<'_>,
         start_date: String,
         end_date: String,
-        library_id: Option<String>,
+        library_ids: Option<Vec<String>>,
     ) -> GqlResult<Vec<CalendarEpisodePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let episodes = app
-            .list_calendar_episodes(&actor, &start_date, &end_date, library_id)
+            .list_calendar_episodes(&actor, &start_date, &end_date, library_ids)
             .await
             .map_err(to_gql_error)?;
         Ok(episodes.into_iter().map(from_calendar_episode).collect())
@@ -2283,12 +2290,12 @@ impl TitlePayload {
             .list_wanted_items(
                 &actor,
                 WantedItemsQuery {
-                    status,
-                    media_type: None,
+                    statuses: status.into_iter().collect(),
+                    media_types: Vec::new(),
                     title_id: Some(self.id.clone()),
                     library_ids: Vec::new(),
                     title_search: None,
-                    latest_decision_code: None,
+                    latest_decision_codes: Vec::new(),
                     limit: 500,
                     offset: 0,
                 },

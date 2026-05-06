@@ -4182,7 +4182,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
 
     let items = workflow
         .list_wanted_items(WantedItemsQuery {
-            latest_decision_code: Some("title_mismatch".into()),
+            latest_decision_codes: vec!["title_mismatch".into()],
             limit: 50,
             ..WantedItemsQuery::default()
         })
@@ -4190,7 +4190,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         .expect("filtered wanted items should load");
     let count = workflow
         .count_wanted_items(WantedItemsQuery {
-            latest_decision_code: Some("title_mismatch".into()),
+            latest_decision_codes: vec!["title_mismatch".into()],
             ..WantedItemsQuery::default()
         })
         .await
@@ -5011,6 +5011,125 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
 
     drop(services);
     let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0104_accepts_plain_path_settings_without_choking_on_unrelated_invalid_json() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE settings_definitions (
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            key_name TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            default_value_json TEXT,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            validation_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("settings_definitions should create");
+
+    sqlx::query(
+        "CREATE TABLE settings_values (
+            id TEXT PRIMARY KEY,
+            setting_definition_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            scope_id TEXT,
+            value_json TEXT NOT NULL,
+            source TEXT NOT NULL,
+            updated_by_user_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("settings_values should create");
+
+    sqlx::query(
+        "CREATE TEMP TABLE _default_library_roots (
+            library_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            is_default INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("_default_library_roots should create");
+
+    for (id, key_name) in [
+        ("def-movies-path", "movies.path"),
+        ("def-series-path", "series.path"),
+        ("def-unrelated", "service:system:smg.client_key"),
+    ] {
+        sqlx::query(
+            "INSERT INTO settings_definitions (
+                id, category, scope, key_name, data_type, default_value_json,
+                is_sensitive, validation_json, created_at, updated_at
+            ) VALUES (?, 'test', 'system', ?, 'string', '\"\"', 0, NULL, 'now', 'now')",
+        )
+        .bind(id)
+        .bind(key_name)
+        .execute(&pool)
+        .await
+        .expect("setting definition should insert");
+    }
+
+    sqlx::query(
+        "INSERT INTO settings_values (
+            id, setting_definition_id, scope, scope_id, value_json, source,
+            updated_by_user_id, created_at, updated_at
+        ) VALUES
+            ('row-movies', 'def-movies-path', 'media', NULL, '\"/Volumes/Media/Movies\"', 'test', NULL, 'now', 'now'),
+            ('row-series', 'def-series-path', 'media', NULL, '/Volumes/Media/TV', 'test', NULL, 'now', 'now'),
+            ('row-unrelated', 'def-unrelated', 'system', NULL, 'enc:v1:not-json', 'test', NULL, 'now', 'now')",
+    )
+    .execute(&pool)
+    .await
+    .expect("setting values should insert");
+
+    let migration_sql = include_str!(
+        "../../scryer/src/db/migrations/0104_first_class_libraries_and_permissions.sql"
+    );
+    let statement = migration_sql
+        .split(';')
+        .map(str::trim)
+        .find(|statement| statement.starts_with("INSERT INTO _default_library_roots (library_id, path, is_default)\nSELECT\n    CASE sd.key_name\n        WHEN 'movies.path'"))
+        .expect("0104 path backfill statement should exist");
+
+    sqlx::query(statement)
+        .execute(&pool)
+        .await
+        .expect("legacy plain path values should backfill without malformed json errors");
+
+    let roots: Vec<(String, String)> =
+        sqlx::query_as("SELECT library_id, path FROM _default_library_roots ORDER BY library_id")
+            .fetch_all(&pool)
+            .await
+            .expect("backfilled roots should load");
+    assert_eq!(
+        roots,
+        vec![
+            (
+                "movie_default_library".to_string(),
+                "/Volumes/Media/Movies".to_string()
+            ),
+            (
+                "series_default_library".to_string(),
+                "/Volumes/Media/TV".to_string()
+            ),
+        ]
+    );
 }
 
 #[tokio::test]

@@ -2291,8 +2291,8 @@ async fn mark_wanted_completed_for_collection(
         .workflow
         .wanted_items
         .list_wanted_items(WantedItemsQuery {
-            status: Some("wanted".into()),
-            media_type: Some("interstitial_movie".into()),
+            statuses: vec!["wanted".into()],
+            media_types: vec!["interstitial_movie".into()],
             title_id: Some(title_id.to_string()),
             limit: 100,
             ..WantedItemsQuery::default()

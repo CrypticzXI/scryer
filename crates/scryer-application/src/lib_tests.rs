@@ -3225,11 +3225,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
 
     async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
         let WantedItemsQuery {
-            status,
-            media_type,
+            statuses,
+            media_types,
             title_id,
             title_search,
-            latest_decision_code,
+            latest_decision_codes,
             limit,
             offset,
             library_ids: _,
@@ -3246,12 +3246,12 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status
-                    .as_deref()
-                    .is_none_or(|status| item.status.as_str() == status)
-                    && media_type
-                        .as_deref()
-                        .is_none_or(|media_type| item.media_type == media_type)
+                (statuses.is_empty()
+                    || statuses.iter().any(|status| item.status.as_str() == status))
+                    && (media_types.is_empty()
+                        || media_types
+                            .iter()
+                            .any(|media_type| item.media_type == *media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -3260,11 +3260,12 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                             title_name.to_lowercase().contains(title_search)
                         })
                     })
-                    && latest_decision_code.as_deref().is_none_or(|code| {
-                        latest_decision
-                            .as_ref()
-                            .is_some_and(|decision| decision.decision_code == code)
-                    })
+                    && (latest_decision_codes.is_empty()
+                        || latest_decision_codes.iter().any(|code| {
+                            latest_decision
+                                .as_ref()
+                                .is_some_and(|decision| decision.decision_code == *code)
+                        }))
             })
             .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
@@ -3275,11 +3276,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
 
     async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
         let WantedItemsQuery {
-            status,
-            media_type,
+            statuses,
+            media_types,
             title_id,
             title_search,
-            latest_decision_code,
+            latest_decision_codes,
             ..
         } = query;
         let latest_decisions = self.release_decisions.lock().await.clone();
@@ -3294,12 +3295,12 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .iter()
                     .filter(|decision| decision.wanted_item_id == item.id)
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
-                status
-                    .as_deref()
-                    .is_none_or(|status| item.status.as_str() == status)
-                    && media_type
-                        .as_deref()
-                        .is_none_or(|media_type| item.media_type == media_type)
+                (statuses.is_empty()
+                    || statuses.iter().any(|status| item.status.as_str() == status))
+                    && (media_types.is_empty()
+                        || media_types
+                            .iter()
+                            .any(|media_type| item.media_type == *media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -3308,11 +3309,12 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                             title_name.to_lowercase().contains(title_search)
                         })
                     })
-                    && latest_decision_code.as_deref().is_none_or(|code| {
-                        latest_decision
-                            .as_ref()
-                            .is_some_and(|decision| decision.decision_code == code)
-                    })
+                    && (latest_decision_codes.is_empty()
+                        || latest_decision_codes.iter().any(|code| {
+                            latest_decision
+                                .as_ref()
+                                .is_some_and(|decision| decision.decision_code == *code)
+                        }))
             })
             .count() as i64)
     }
@@ -10417,8 +10419,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
             item
         })
         .collect::<Vec<_>>();
-    let mut hidden_target =
-        queue_history_fixture_item(item_id, DownloadQueueState::Completed, 1);
+    let mut hidden_target = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 1);
     hidden_target.client_id = config.id.clone();
     hidden_target.client_name = config.name.clone();
     hidden_target.title_id = Some(title.id.clone());
@@ -10474,8 +10475,11 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let (app, user) =
-        bootstrap_with_cleanup_tracking(download_client.clone(), download_submissions, pending_releases);
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
 
     let config =
         create_enabled_download_client_config(&app, &user, "Series NZBGet", "nzbget").await;
@@ -10623,7 +10627,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
 
 #[tokio::test]
 async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed_when_completed_download_is_missing()
-{
+ {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());

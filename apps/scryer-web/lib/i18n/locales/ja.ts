@@ -132,6 +132,7 @@ const ja: LocaleDictionary = {
   "facetSettings.generalPolicies": "ポリシー",
   "facetSettings.sidecarFiles": "サイドカーファイル",
   "facetSettings.scoringPersona": "スコアリングペルソナ",
+  "facetSettings.scoringPersonaOverrideLabel": "ペルソナの上書き",
   "facetSettings.scoringPersonaUseDefault": "プロファイルのデフォルトを使用",
   "facetSettings.scoringBehavior": "スコアリング動作",
   "facetSettings.scoringBehaviorHint":
@@ -171,6 +172,8 @@ const ja: LocaleDictionary = {
   "persona.trait.compatible.hdr": "HDR: Dolby Vision減点 (互換性リスク)",
   "settings.moviesLibrarySettings": "映画メディア設定",
   "settings.seriesLibrarySettings": "シリーズメディア設定",
+  "libraryFilter.all": "すべてのライブラリ",
+  "libraryFilter.selectedCount": "{{count}}件のライブラリ",
   "settings.rootFoldersLabel": "ルートフォルダ",
   "settings.rootFoldersEmpty":
     "ルートフォルダが設定されていません。少なくとも1つのパスを追加してください。",
@@ -178,8 +181,13 @@ const ja: LocaleDictionary = {
     "ルートフォルダはメディアが保存される最上位ディレクトリです。スター付きのフォルダが新しいタイトルのデフォルトです。",
   "settings.rootFolderAdd": "ルートフォルダを追加",
   "settings.rootFolderEdit": "ルートフォルダを編集",
+  "settings.rootFolderConflict":
+    "このルートフォルダはすでに {{libraries}} で使われています。",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "デフォルトに設定",
+  "settings.librarySelectionScopeTitle": "アクティブなライブラリ",
+  "settings.librarySelectionScopeHelp":
+    "このセクションの上書き設定とスキャン操作は、選択したライブラリを対象にします。",
   "settings.libraryScanTitle": "ライブラリスキャン",
   "settings.libraryScanHelp":
     "映画フォルダをスキャンして不足しているタイトルをインポートします。",

@@ -41,7 +41,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
 export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   overview: "overview",
   import: "import",
-  settings: "settings",
+  library: "settings/library",
   general: "settings/general",
   quality: "settings/quality",
   renaming: "settings/renaming",
@@ -147,10 +147,10 @@ export function parseContentSectionFromPath(value: string | null, subValue?: str
     return "overview";
   }
   if (value === "settings" && subValue) {
-    return CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID[subValue] ?? "general";
+    return CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID[subValue] ?? "library";
   }
   if (value === "settings") {
-    return "general";
+    return "library";
   }
   return CONTENT_SECTION_PATH_TO_ID[value] ?? "overview";
 }

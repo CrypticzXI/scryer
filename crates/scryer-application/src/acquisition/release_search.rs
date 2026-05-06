@@ -841,7 +841,7 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .list_wanted_items(WantedItemsQuery {
-                media_type: Some("interstitial_movie".into()),
+                media_types: vec!["interstitial_movie".into()],
                 title_id: Some(title.id.clone()),
                 limit: 500,
                 ..WantedItemsQuery::default()

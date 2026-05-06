@@ -5,13 +5,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
@@ -103,7 +97,7 @@ function CompactTableIcon() {
 
 function isMediaSettingsSection(section: ContentSettingsSection): boolean {
   return (
-    section === "settings" ||
+    section === "library" ||
     section === "general" ||
     section === "quality" ||
     section === "renaming" ||
@@ -244,9 +238,9 @@ export function MediaContentView({
     libraryScanSummary: LibraryScanSummary | null;
     libraries: LibraryRecord[];
     librariesLoading: boolean;
-    selectedLibraryId: string;
+    selectedLibraryIds: string[];
     allLibrariesValue: string;
-    setSelectedLibraryId: (value: string) => void;
+    setSelectedLibraryIds: (value: string[]) => void;
     loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
     createLibrary: (input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     updateLibrary: (libraryId: string, input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
@@ -361,9 +355,9 @@ export function MediaContentView({
     libraryScanSummary,
     libraries,
     librariesLoading,
-    selectedLibraryId,
+    selectedLibraryIds,
     allLibrariesValue,
-    setSelectedLibraryId,
+    setSelectedLibraryIds,
     scanLibrary,
     onOpenOverview,
     deleteCatalogTitle,
@@ -415,11 +409,15 @@ export function MediaContentView({
     hasConfiguredRootFolders === false;
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
-      ? buildViewPath(view, undefined, "settings")
+      ? buildViewPath(view, undefined, "library")
       : undefined;
 
   const mediaLibrarySettingsTitle =
-    view === "series" ? t("settings.seriesLibrarySettings") : t("settings.moviesLibrarySettings");
+    view === "series"
+      ? t("settings.seriesLibrarySettings")
+      : view === "anime"
+        ? t("settings.animeSettings")
+        : t("settings.moviesLibrarySettings");
 
   const handleRenameTemplateChange = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -643,47 +641,51 @@ export function MediaContentView({
             moveDownloadClientInScope={moveDownloadClientInScope}
           />
         </div>
-      ) : effectiveContentSettingsSection === "settings" || effectiveContentSettingsSection === "general" ? (
-        <div className="space-y-4">
-          {view === "movies" || view === "series" || view === "anime" ? (
-            <MediaLibrarySettingsPanel
-              settingsTitle={mediaLibrarySettingsTitle}
-              libraries={libraries}
-              librariesLoading={librariesLoading}
-              preferredLibraryId={selectedLibraryId}
-              allLibrariesValue={allLibrariesValue}
-              loading={mediaSettingsLoading}
-              saving={librarySettingsSaving}
-              scanLoading={libraryScanLoading}
-              scanNotice={libraryScanNotice}
-              scanSummary={libraryScanSummary}
-              qualityProfiles={qualityProfiles}
-              loadLibrarySettings={state.loadLibrarySettings}
-              onCreateLibrary={state.createLibrary}
-              onUpdateLibrary={state.updateLibrary}
-              onDeleteLibrary={state.deleteEmptyLibrary}
-              onScan={handleLibraryScan}
-            />
-          ) : null}
-          <GeneralSettingsPanel
-            activeQualityScopeId={activeQualityScopeId}
-            mediaSettingsLoading={mediaSettingsLoading}
-            categoryFillerPolicies={categoryFillerPolicies}
-            handleFillerPolicyChange={handleFillerPolicyChange}
-            categoryRecapPolicies={categoryRecapPolicies}
-            handleRecapPolicyChange={handleRecapPolicyChange}
-            categoryMonitorSpecials={categoryMonitorSpecials}
-            handleMonitorSpecialsChange={handleMonitorSpecialsChange}
-            categoryInterSeasonMovies={categoryInterSeasonMovies}
-            handleInterSeasonMoviesChange={handleInterSeasonMoviesChange}
-            categoryMonitorFillerMovies={categoryMonitorFillerMovies}
-            handleMonitorFillerMoviesChange={handleMonitorFillerMoviesChange}
-            nfoWriteOnImport={nfoWriteOnImport}
-            handleNfoWriteChange={handleNfoWriteChange}
-            plexmatchWriteOnImport={plexmatchWriteOnImport}
-            handlePlexmatchWriteChange={handlePlexmatchWriteChange}
+      ) : effectiveContentSettingsSection === "library" ? (
+        view === "movies" || view === "series" || view === "anime" ? (
+          <MediaLibrarySettingsPanel
+            facet={view === "movies" ? "movie" : view === "series" ? "series" : "anime"}
+            settingsTitle={mediaLibrarySettingsTitle}
+            libraries={libraries}
+            librariesLoading={librariesLoading}
+            preferredLibraryId={
+              selectedLibraryIds.length === 1
+                ? selectedLibraryIds[0]
+                : allLibrariesValue
+            }
+            allLibrariesValue={allLibrariesValue}
+            loading={mediaSettingsLoading}
+            saving={librarySettingsSaving}
+            scanLoading={libraryScanLoading}
+            scanNotice={libraryScanNotice}
+            scanSummary={libraryScanSummary}
+            qualityProfiles={qualityProfiles}
+            loadLibrarySettings={state.loadLibrarySettings}
+            onCreateLibrary={state.createLibrary}
+            onUpdateLibrary={state.updateLibrary}
+            onDeleteLibrary={state.deleteEmptyLibrary}
+            onScan={handleLibraryScan}
           />
-        </div>
+        ) : null
+      ) : effectiveContentSettingsSection === "general" ? (
+        <GeneralSettingsPanel
+          activeQualityScopeId={activeQualityScopeId}
+          mediaSettingsLoading={mediaSettingsLoading}
+          categoryFillerPolicies={categoryFillerPolicies}
+          handleFillerPolicyChange={handleFillerPolicyChange}
+          categoryRecapPolicies={categoryRecapPolicies}
+          handleRecapPolicyChange={handleRecapPolicyChange}
+          categoryMonitorSpecials={categoryMonitorSpecials}
+          handleMonitorSpecialsChange={handleMonitorSpecialsChange}
+          categoryInterSeasonMovies={categoryInterSeasonMovies}
+          handleInterSeasonMoviesChange={handleInterSeasonMoviesChange}
+          categoryMonitorFillerMovies={categoryMonitorFillerMovies}
+          handleMonitorFillerMoviesChange={handleMonitorFillerMoviesChange}
+          nfoWriteOnImport={nfoWriteOnImport}
+          handleNfoWriteChange={handleNfoWriteChange}
+          plexmatchWriteOnImport={plexmatchWriteOnImport}
+          handlePlexmatchWriteChange={handlePlexmatchWriteChange}
+        />
       ) : (
         view === "movies" || view === "series" || view === "anime" ? (
           <Card>
@@ -698,23 +700,13 @@ export function MediaContentView({
                   onChange={handleTitleFilterChange}
                   className="w-full sm:flex-1"
                 />
-                <Select
-                  value={selectedLibraryId}
-                  onValueChange={setSelectedLibraryId}
+                <LibraryMultiSelect
+                  libraries={libraries}
+                  selectedLibraryIds={selectedLibraryIds}
+                  onSelectedLibraryIdsChange={setSelectedLibraryIds}
                   disabled={librariesLoading || libraries.length === 0}
-                >
-                  <SelectTrigger className="w-full sm:w-[180px]">
-                    <SelectValue placeholder="Library" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
-                    {libraries.map((library) => (
-                      <SelectItem key={library.id} value={library.id}>
-                        {library.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  triggerClassName="w-full sm:w-[180px]"
+                />
                 {!isMobile ? (
                   <ToggleGroup
                     type="single"

@@ -50,118 +50,22 @@ export function GeneralSettingsPanel({
   handlePlexmatchWriteChange: (checked: boolean) => void;
 }) {
   const t = useTranslate();
+  const showAnimePolicies = activeQualityScopeId === "anime";
+  const showPlexmatch =
+    activeQualityScopeId === "series" || activeQualityScopeId === "anime";
 
   return (
     <div className="space-y-4">
-      {activeQualityScopeId === "anime" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("facetSettings.generalPolicies")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {activeQualityScopeId === "anime" && (
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-2">
-                  <Label className="text-sm text-card-foreground">
-                    {t("settings.fillerPolicyLabel")}
-                  </Label>
-                  <Select value={categoryFillerPolicies[activeQualityScopeId]} onValueChange={handleFillerPolicyChange} disabled={mediaSettingsLoading}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {FILLER_POLICY_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-                <label className="space-y-2">
-                  <Label className="text-sm text-card-foreground">
-                    {t("settings.recapPolicyLabel")}
-                  </Label>
-                  <Select value={categoryRecapPolicies[activeQualityScopeId]} onValueChange={handleRecapPolicyChange} disabled={mediaSettingsLoading}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {RECAP_POLICY_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-                <div className="space-y-2">
-                  <Label className="text-sm text-card-foreground">
-                    {t("settings.monitorSpecialsLabel")}
-                  </Label>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={categoryMonitorSpecials[activeQualityScopeId] !== "false"}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
-                      onClick={() => handleMonitorSpecialsChange(categoryMonitorSpecials[activeQualityScopeId] === "false")}
-                      disabled={mediaSettingsLoading}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
-                      />
-                    </button>
-                    <span className="text-xs text-muted-foreground">{t("settings.monitorSpecialsDescription")}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-sm text-card-foreground">
-                    {t("settings.interSeasonMoviesLabel")}
-                  </Label>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={categoryInterSeasonMovies[activeQualityScopeId] !== "false"}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
-                      onClick={() => handleInterSeasonMoviesChange(categoryInterSeasonMovies[activeQualityScopeId] === "false")}
-                      disabled={mediaSettingsLoading}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
-                      />
-                    </button>
-                    <span className="text-xs text-muted-foreground">{t("settings.interSeasonMoviesDescription")}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-sm text-card-foreground">
-                    {t("settings.monitorFillerMoviesLabel")}
-                  </Label>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={categoryMonitorFillerMovies[activeQualityScopeId] === "true"}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryMonitorFillerMovies[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
-                      onClick={() => handleMonitorFillerMoviesChange(categoryMonitorFillerMovies[activeQualityScopeId] !== "true")}
-                      disabled={mediaSettingsLoading}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryMonitorFillerMovies[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
-                      />
-                    </button>
-                    <span className="text-xs text-muted-foreground">{t("settings.monitorFillerMoviesDescription")}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       <Card>
         <CardHeader>
-          <CardTitle>{t("facetSettings.sidecarFiles")}</CardTitle>
+          <CardTitle>{t("facetSettings.general")}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-card-foreground">
+              {t("facetSettings.sidecarFiles")}
+            </h3>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label className="text-sm text-card-foreground">
@@ -173,17 +77,21 @@ export function GeneralSettingsPanel({
                   role="switch"
                   aria-checked={nfoWriteOnImport[activeQualityScopeId] === "true"}
                   className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${nfoWriteOnImport[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
-                  onClick={() => handleNfoWriteChange(nfoWriteOnImport[activeQualityScopeId] !== "true")}
+                  onClick={() =>
+                    handleNfoWriteChange(nfoWriteOnImport[activeQualityScopeId] !== "true")
+                  }
                   disabled={mediaSettingsLoading}
                 >
                   <span
                     className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${nfoWriteOnImport[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
                   />
                 </button>
-                <span className="text-xs text-muted-foreground">{t("settings.nfoWriteOnImportDescription")}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t("settings.nfoWriteOnImportDescription")}
+                </span>
               </div>
             </div>
-            {(activeQualityScopeId === "series" || activeQualityScopeId === "anime") && (
+            {showPlexmatch ? (
               <div className="space-y-2">
                 <Label className="text-sm text-card-foreground">
                   {t("settings.plexmatchWriteOnImportLabel")}
@@ -194,21 +102,158 @@ export function GeneralSettingsPanel({
                     role="switch"
                     aria-checked={plexmatchWriteOnImport[activeQualityScopeId] === "true"}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${plexmatchWriteOnImport[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
-                    onClick={() => handlePlexmatchWriteChange(plexmatchWriteOnImport[activeQualityScopeId] !== "true")}
+                    onClick={() =>
+                      handlePlexmatchWriteChange(
+                        plexmatchWriteOnImport[activeQualityScopeId] !== "true",
+                      )
+                    }
                     disabled={mediaSettingsLoading}
                   >
                     <span
                       className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${plexmatchWriteOnImport[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
                     />
                   </button>
-                  <span className="text-xs text-muted-foreground">{t("settings.plexmatchWriteOnImportDescription")}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.plexmatchWriteOnImportDescription")}
+                  </span>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         </CardContent>
       </Card>
 
+      {showAnimePolicies ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("facetSettings.generalPolicies")}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.fillerPolicyLabel")}
+                </Label>
+                <Select
+                  value={categoryFillerPolicies[activeQualityScopeId]}
+                  onValueChange={handleFillerPolicyChange}
+                  disabled={mediaSettingsLoading}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FILLER_POLICY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.recapPolicyLabel")}
+                </Label>
+                <Select
+                  value={categoryRecapPolicies[activeQualityScopeId]}
+                  onValueChange={handleRecapPolicyChange}
+                  disabled={mediaSettingsLoading}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RECAP_POLICY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <div className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.monitorSpecialsLabel")}
+                </Label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={categoryMonitorSpecials[activeQualityScopeId] !== "false"}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
+                    onClick={() =>
+                      handleMonitorSpecialsChange(
+                        categoryMonitorSpecials[activeQualityScopeId] === "false",
+                      )
+                    }
+                    disabled={mediaSettingsLoading}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
+                    />
+                  </button>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.monitorSpecialsDescription")}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.interSeasonMoviesLabel")}
+                </Label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={categoryInterSeasonMovies[activeQualityScopeId] !== "false"}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
+                    onClick={() =>
+                      handleInterSeasonMoviesChange(
+                        categoryInterSeasonMovies[activeQualityScopeId] === "false",
+                      )
+                    }
+                    disabled={mediaSettingsLoading}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
+                    />
+                  </button>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.interSeasonMoviesDescription")}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.monitorFillerMoviesLabel")}
+                </Label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={categoryMonitorFillerMovies[activeQualityScopeId] === "true"}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryMonitorFillerMovies[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
+                    onClick={() =>
+                      handleMonitorFillerMoviesChange(
+                        categoryMonitorFillerMovies[activeQualityScopeId] !== "true",
+                      )
+                    }
+                    disabled={mediaSettingsLoading}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryMonitorFillerMovies[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
+                    />
+                  </button>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.monitorFillerMoviesDescription")}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

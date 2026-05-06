@@ -7977,11 +7977,11 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
         .list_wanted_items(
             &scryer_domain::User::new_admin("admin"),
             scryer_application::WantedItemsQuery {
-                status: None,
-                media_type: None,
+                statuses: Vec::new(),
+                media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),
                 title_search: None,
-                latest_decision_code: None,
+                latest_decision_codes: Vec::new(),
                 limit: 10,
                 offset: 0,
                 library_ids: Vec::new(),
@@ -9051,11 +9051,11 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
         .list_wanted_items(
             &scryer_domain::User::new_admin("admin"),
             scryer_application::WantedItemsQuery {
-                status: None,
-                media_type: None,
+                statuses: Vec::new(),
+                media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),
                 title_search: None,
-                latest_decision_code: None,
+                latest_decision_codes: Vec::new(),
                 limit: 10,
                 offset: 0,
                 library_ids: Vec::new(),

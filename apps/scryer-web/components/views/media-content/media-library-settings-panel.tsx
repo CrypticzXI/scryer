@@ -1,5 +1,6 @@
 import * as React from "react";
-import { FolderOpen, Pencil, Plus, Save, Trash2 } from "lucide-react";
+import { FolderOpen, Pencil, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +26,21 @@ import type {
 } from "@/lib/types";
 
 const INHERIT_VALUE = "__inherit__";
+const BOOLEAN_TRUE_VALUE = "true";
+const BOOLEAN_FALSE_VALUE = "false";
+const FILLER_POLICY_OPTIONS = [
+  { value: "download_all", labelKey: "settings.fillerPolicyDownloadAll" },
+  { value: "skip_filler", labelKey: "settings.fillerPolicySkipFiller" },
+] as const;
+const RECAP_POLICY_OPTIONS = [
+  { value: "download_all", labelKey: "settings.recapPolicyDownloadAll" },
+  { value: "skip_recap", labelKey: "settings.recapPolicySkipRecap" },
+] as const;
+const BOOLEAN_OVERRIDE_OPTIONS = [
+  { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
+  { value: BOOLEAN_TRUE_VALUE, labelKey: "label.enabled" },
+  { value: BOOLEAN_FALSE_VALUE, labelKey: "label.disabled" },
+] as const;
 
 type LibraryMutationInput = {
   name: string;
@@ -33,6 +49,7 @@ type LibraryMutationInput = {
 };
 
 type MediaLibrarySettingsPanelProps = {
+  facet: LibraryRecord["facet"];
   settingsTitle: string;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
@@ -58,6 +75,10 @@ function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
     path: root.path,
     isDefault: root.isDefault,
   }));
+}
+
+function normalizeComparableRootPath(path: string): string {
+  return path.trim().replace(/\/+$/u, "").toLowerCase();
 }
 
 function normalizeRoots(roots: RootFolderOption[]): RootFolderOption[] {
@@ -97,7 +118,36 @@ function rootsEqual(left: RootFolderOption[], right: RootFolderOption[]): boolea
   });
 }
 
+function booleanOverrideSelectValue(value: boolean | null | undefined): string {
+  if (value == null) {
+    return INHERIT_VALUE;
+  }
+
+  return value ? BOOLEAN_TRUE_VALUE : BOOLEAN_FALSE_VALUE;
+}
+
+function booleanOverrideFromSelectValue(value: string): boolean | null {
+  if (value === INHERIT_VALUE) {
+    return null;
+  }
+
+  return value === BOOLEAN_TRUE_VALUE;
+}
+
+function fillerPolicyLabelKey(value: string | null | undefined): string {
+  return value === "skip_filler"
+    ? "settings.fillerPolicySkipFiller"
+    : "settings.fillerPolicyDownloadAll";
+}
+
+function recapPolicyLabelKey(value: string | null | undefined): string {
+  return value === "skip_recap"
+    ? "settings.recapPolicySkipRecap"
+    : "settings.recapPolicyDownloadAll";
+}
+
 export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySettingsPanel({
+  facet,
   settingsTitle,
   libraries,
   librariesLoading,
@@ -122,9 +172,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftRoots, setDraftRoots] = React.useState<RootFolderOption[]>([]);
   const [settingsLoading, setSettingsLoading] = React.useState(false);
   const [settingsError, setSettingsError] = React.useState<string | null>(null);
-  const [draftRequiredAudio, setDraftRequiredAudio] = React.useState("");
+  const [draftRequiredAudioLanguages, setDraftRequiredAudioLanguages] = React.useState<string[]>([]);
   const [draftQualityProfileId, setDraftQualityProfileId] = React.useState(INHERIT_VALUE);
   const [draftScoringPersona, setDraftScoringPersona] = React.useState(INHERIT_VALUE);
+  const [draftFillerPolicy, setDraftFillerPolicy] = React.useState(INHERIT_VALUE);
+  const [draftRecapPolicy, setDraftRecapPolicy] = React.useState(INHERIT_VALUE);
+  const [draftMonitorSpecials, setDraftMonitorSpecials] = React.useState(INHERIT_VALUE);
+  const [draftInterSeasonMovies, setDraftInterSeasonMovies] = React.useState(INHERIT_VALUE);
+  const [draftMonitorFillerMovies, setDraftMonitorFillerMovies] = React.useState(INHERIT_VALUE);
   const [savedSettings, setSavedSettings] = React.useState<LibrarySettingsRecord | null>(null);
   const [browserOpen, setBrowserOpen] = React.useState(false);
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
@@ -133,6 +188,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
     [activeLibraryId, libraries],
   );
+  const currentFacet = activeLibrary?.facet ?? facet;
+  const isAnimeFacet = currentFacet === "anime";
 
   React.useEffect(() => {
     if (mode === "new") {
@@ -160,9 +217,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   React.useEffect(() => {
     if (mode === "new") {
       setSavedSettings(null);
-      setDraftRequiredAudio("");
+      setDraftRequiredAudioLanguages([]);
       setDraftQualityProfileId(INHERIT_VALUE);
       setDraftScoringPersona(INHERIT_VALUE);
+      setDraftFillerPolicy(INHERIT_VALUE);
+      setDraftRecapPolicy(INHERIT_VALUE);
+      setDraftMonitorSpecials(INHERIT_VALUE);
+      setDraftInterSeasonMovies(INHERIT_VALUE);
+      setDraftMonitorFillerMovies(INHERIT_VALUE);
       return;
     }
     setDraftName(activeLibrary?.name ?? "");
@@ -185,9 +247,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           return;
         }
         setSavedSettings(settings);
-        setDraftRequiredAudio((settings?.requiredAudioLanguagesOverride ?? []).join(", "));
+        setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
         setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
         setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
+        setDraftFillerPolicy(settings?.fillerPolicyOverride ?? INHERIT_VALUE);
+        setDraftRecapPolicy(settings?.recapPolicyOverride ?? INHERIT_VALUE);
+        setDraftMonitorSpecials(booleanOverrideSelectValue(settings?.monitorSpecialsOverride));
+        setDraftInterSeasonMovies(
+          booleanOverrideSelectValue(settings?.interSeasonMoviesOverride),
+        );
+        setDraftMonitorFillerMovies(
+          booleanOverrideSelectValue(settings?.monitorFillerMoviesOverride),
+        );
       })
       .catch((error) => {
         if (!cancelled) {
@@ -209,6 +280,44 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     () => normalizeRoots(draftRoots),
     [draftRoots],
   );
+  const conflictingLibraryNamesByRootPath = React.useMemo(() => {
+    const otherLibrariesByRootPath = new Map<string, string[]>();
+    const currentLibraryId = mode === "existing" ? activeLibrary?.id ?? null : null;
+
+    libraries.forEach((library) => {
+      if (library.id === currentLibraryId) {
+        return;
+      }
+
+      library.roots.forEach((root) => {
+        const normalizedPath = normalizeComparableRootPath(root.path);
+        if (!normalizedPath) {
+          return;
+        }
+
+        const existingNames = otherLibrariesByRootPath.get(normalizedPath);
+        if (existingNames) {
+          if (!existingNames.includes(library.name)) {
+            existingNames.push(library.name);
+          }
+          return;
+        }
+
+        otherLibrariesByRootPath.set(normalizedPath, [library.name]);
+      });
+    });
+
+    const conflicts = new Map<string, string[]>();
+    normalizedDraftRoots.forEach((root) => {
+      const normalizedPath = normalizeComparableRootPath(root.path);
+      const libraryNames = otherLibrariesByRootPath.get(normalizedPath);
+      if (libraryNames?.length) {
+        conflicts.set(root.path, libraryNames);
+      }
+    });
+
+    return conflicts;
+  }, [activeLibrary?.id, libraries, mode, normalizedDraftRoots]);
   const sortedFolders = React.useMemo(
     () =>
       normalizedDraftRoots
@@ -216,17 +325,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         .sort((a, b) => (a.rf.isDefault === b.rf.isDefault ? 0 : a.rf.isDefault ? -1 : 1)),
     [normalizedDraftRoots],
   );
+  const hasRootFolderConflicts = conflictingLibraryNamesByRootPath.size > 0;
   const actionBusy = loading || librariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
   const savedRoots = React.useMemo(() => rootsFromLibrary(activeLibrary), [activeLibrary]);
-  const draftRequiredAudioLanguages = React.useMemo(
-    () =>
-      draftRequiredAudio
-        .split(",")
-        .map((language) => language.trim())
-        .filter(Boolean),
-    [draftRequiredAudio],
-  );
   const settingsDraft = React.useMemo<LibrarySettingsDraft>(
     () => ({
       requiredAudioLanguages:
@@ -237,13 +339,29 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         draftScoringPersona === INHERIT_VALUE
           ? null
           : (draftScoringPersona as ScoringPersonaId),
+      fillerPolicy:
+        isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? draftFillerPolicy : null,
+      recapPolicy:
+        isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? draftRecapPolicy : null,
+      monitorSpecials:
+        isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorSpecials) : null,
+      interSeasonMovies:
+        isAnimeFacet ? booleanOverrideFromSelectValue(draftInterSeasonMovies) : null,
+      monitorFillerMovies:
+        isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorFillerMovies) : null,
       indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       downloadClientRouting: savedSettings?.downloadClientRoutingOverride ?? null,
     }),
     [
+      draftFillerPolicy,
+      draftInterSeasonMovies,
+      draftMonitorFillerMovies,
+      draftMonitorSpecials,
       draftQualityProfileId,
+      draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
+      isAnimeFacet,
       savedSettings,
     ],
   );
@@ -253,7 +371,13 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       (draftRequiredAudioLanguages.join("\n") !==
         (savedSettings.requiredAudioLanguagesOverride ?? []).join("\n") ||
         settingsDraft.qualityProfileId !== savedSettings.qualityProfileIdOverride ||
-        settingsDraft.scoringPersona !== savedSettings.scoringPersonaOverride));
+        settingsDraft.scoringPersona !== savedSettings.scoringPersonaOverride ||
+        settingsDraft.fillerPolicy !== savedSettings.fillerPolicyOverride ||
+        settingsDraft.recapPolicy !== savedSettings.recapPolicyOverride ||
+        settingsDraft.monitorSpecials !== savedSettings.monitorSpecialsOverride ||
+        settingsDraft.interSeasonMovies !== savedSettings.interSeasonMoviesOverride ||
+        settingsDraft.monitorFillerMovies !==
+          savedSettings.monitorFillerMoviesOverride));
   const hasDraftChanges =
     mode === "new" ||
     draftName.trim() !== (activeLibrary?.name ?? "") ||
@@ -267,6 +391,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setActiveLibraryId(null);
       setDraftName("");
       setDraftRoots([]);
+      setSavedSettings(null);
+      setDraftRequiredAudioLanguages([]);
+      setDraftQualityProfileId(INHERIT_VALUE);
+      setDraftScoringPersona(INHERIT_VALUE);
+      setDraftFillerPolicy(INHERIT_VALUE);
+      setDraftRecapPolicy(INHERIT_VALUE);
+      setDraftMonitorSpecials(INHERIT_VALUE);
+      setDraftInterSeasonMovies(INHERIT_VALUE);
+      setDraftMonitorFillerMovies(INHERIT_VALUE);
       return;
     }
     setMode("existing");
@@ -331,9 +464,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftName("");
     setDraftRoots([]);
     setSavedSettings(null);
-    setDraftRequiredAudio("");
+    setDraftRequiredAudioLanguages([]);
     setDraftQualityProfileId(INHERIT_VALUE);
     setDraftScoringPersona(INHERIT_VALUE);
+    setDraftFillerPolicy(INHERIT_VALUE);
+    setDraftRecapPolicy(INHERIT_VALUE);
+    setDraftMonitorSpecials(INHERIT_VALUE);
+    setDraftInterSeasonMovies(INHERIT_VALUE);
+    setDraftMonitorFillerMovies(INHERIT_VALUE);
   };
 
   const handleSaveLibrary = async () => {
@@ -380,6 +518,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const browserTitle = editingIndex !== null
     ? t("settings.rootFolderEdit")
     : t("settings.rootFolderAdd");
+  const activeLibraryScopeLabel =
+    mode === "new"
+      ? t("settings.libraryNew")
+      : activeLibrary?.name ?? t("settings.librariesLabel");
+  const libraryScanDisabled =
+    scanLoading || actionBusy || mode === "new" || !activeLibrary;
   const libraryScanSummaryText = scanSummary
     ? t("settings.libraryScanSummary", {
         imported: scanSummary.imported,
@@ -391,8 +535,19 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   return (
     <>
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <CardTitle>{settingsTitle}</CardTitle>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleScan}
+            disabled={libraryScanDisabled}
+          >
+            <RefreshCw className={`mr-1.5 h-4 w-4${scanLoading ? " animate-spin" : ""}`} />
+            {scanLoading
+              ? t("settings.libraryScanRunning")
+              : t("settings.libraryScanButton")}
+          </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -426,6 +581,22 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
             </Button>
           </div>
 
+          <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+            <p className="text-sm font-medium text-card-foreground">
+              {t("settings.librarySelectionScopeTitle")}: {activeLibraryScopeLabel}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("settings.librarySelectionScopeHelp")}
+            </p>
+          </div>
+
+          {scanSummary ? (
+            <p className="text-xs text-muted-foreground">{libraryScanSummaryText}</p>
+          ) : null}
+          {scanNotice ? (
+            <p className="text-xs text-destructive">{scanNotice}</p>
+          ) : null}
+
           {libraries.length === 0 && !librariesLoading && mode !== "new" ? (
             <p className="text-sm text-muted-foreground">{t("settings.libraryEmpty")}</p>
           ) : null}
@@ -443,12 +614,6 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     disabled={actionBusy}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("settings.librarySlugLabel")}</Label>
-                  <div className="truncate rounded-md border border-border bg-muted/50 px-3 py-2 font-mono text-sm text-muted-foreground">
-                    {mode === "new" ? t("settings.librarySlugPending") : activeLibrary?.slug}
-                  </div>
-                </div>
               </div>
 
               <div className="space-y-3">
@@ -457,49 +622,63 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   <p className="text-xs text-muted-foreground">{t("settings.rootFoldersEmpty")}</p>
                 ) : null}
                 <ul className="space-y-2">
-                  {sortedFolders.map(({ rf, originalIndex: index }) => (
-                    <li key={`${rf.path}-${index}`} className="flex items-center gap-2">
-                      <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-1.5 font-mono text-sm">
-                        {rf.path}
-                      </code>
-                      {rf.isDefault ? (
-                        <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
-                          {t("label.default")}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                          onClick={() => handleSetDefault(index)}
-                          disabled={actionBusy}
-                        >
-                          {t("settings.rootFolderSetDefault")}
-                        </button>
-                      )}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
-                        onClick={() => openEdit(index)}
-                        disabled={actionBusy}
-                        aria-label={t("label.edit")}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                        onClick={() => handleRemovePath(index)}
-                        disabled={actionBusy}
-                        aria-label={t("label.delete")}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </li>
-                  ))}
+                  {sortedFolders.map(({ rf, originalIndex: index }) => {
+                    const conflictingLibraryNames =
+                      conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
+
+                    return (
+                      <li key={`${rf.path}-${index}`} className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-1.5 font-mono text-sm">
+                            {rf.path}
+                          </code>
+                          {rf.isDefault ? (
+                            <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                              {t("label.default")}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                              onClick={() => handleSetDefault(index)}
+                              disabled={actionBusy}
+                            >
+                              {t("settings.rootFolderSetDefault")}
+                            </button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            onClick={() => openEdit(index)}
+                            disabled={actionBusy}
+                            aria-label={t("label.edit")}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                            onClick={() => handleRemovePath(index)}
+                            disabled={actionBusy}
+                            aria-label={t("label.delete")}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        {conflictingLibraryNames ? (
+                          <p className="text-xs text-destructive">
+                            {t("settings.rootFolderConflict", {
+                              libraries: conflictingLibraryNames.join(", "),
+                            })}
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
                 <Button
                   type="button"
@@ -517,23 +696,19 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="space-y-2">
-                  <Label htmlFor="library-audio-languages">
-                    {t("settings.libraryRequiredAudioLabel")}
-                  </Label>
-                  <Input
-                    id="library-audio-languages"
-                    value={draftRequiredAudio}
-                    onChange={(event) => setDraftRequiredAudio(event.target.value)}
-                    placeholder={t("settings.libraryRequiredAudioPlaceholder")}
+                  <Label>{t("settings.libraryRequiredAudioLabel")}</Label>
+                  <SubtitleLanguagePicker
+                    value={draftRequiredAudioLanguages}
+                    onChange={setDraftRequiredAudioLanguages}
                     disabled={settingsBusy}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    {savedSettings
-                      ? t("settings.libraryEffectiveAudio", {
-                          value: savedSettings.requiredAudioLanguages.join(", ") || t("label.none"),
-                        })
-                      : t("label.loading")}
-                  </p>
+                  {savedSettings ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryEffectiveAudio", {
+                        value: savedSettings.requiredAudioLanguages.join(", ") || t("label.none"),
+                      })}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>
@@ -556,16 +731,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {savedSettings
-                      ? t("settings.libraryEffectiveProfile", {
-                          value:
-                            qualityProfiles.find(
-                              (profile) => profile.id === savedSettings.qualityProfileId,
-                            )?.name ?? savedSettings.qualityProfileId,
-                        })
-                      : t("label.loading")}
-                  </p>
+                  {savedSettings ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryEffectiveProfile", {
+                        value:
+                          qualityProfiles.find(
+                            (profile) => profile.id === savedSettings.qualityProfileId,
+                          )?.name ?? savedSettings.qualityProfileId,
+                      })}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryScoringPersonaLabel")}</Label>
@@ -588,19 +763,179 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {savedSettings
-                      ? t("settings.libraryEffectivePersona", {
-                          value: t(
-                            SCORING_PERSONA_CHOICES.find(
-                              (choice) => choice.value === savedSettings.scoringPersona,
-                            )?.labelKey ?? "qualityProfile.personaBalanced",
-                          ),
-                        })
-                      : t("label.loading")}
-                  </p>
+                  {savedSettings ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryEffectivePersona", {
+                        value: t(
+                          SCORING_PERSONA_CHOICES.find(
+                            (choice) => choice.value === savedSettings.scoringPersona,
+                          )?.labelKey ?? "qualityProfile.personaBalanced",
+                        ),
+                      })}
+                    </p>
+                  ) : null}
                 </div>
               </div>
+
+              {isAnimeFacet ? (
+                <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-medium text-card-foreground">
+                      {t("settings.animeSettings")}
+                    </h3>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label>{t("settings.fillerPolicyLabel")}</Label>
+                      <Select
+                        value={draftFillerPolicy}
+                        onValueChange={setDraftFillerPolicy}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={INHERIT_VALUE}>
+                            {t("settings.libraryInheritFacet")}
+                          </SelectItem>
+                          {FILLER_POLICY_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings?.fillerPolicy ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(fillerPolicyLabelKey(savedSettings.fillerPolicy)),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.recapPolicyLabel")}</Label>
+                      <Select
+                        value={draftRecapPolicy}
+                        onValueChange={setDraftRecapPolicy}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={INHERIT_VALUE}>
+                            {t("settings.libraryInheritFacet")}
+                          </SelectItem>
+                          {RECAP_POLICY_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings?.recapPolicy ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(recapPolicyLabelKey(savedSettings.recapPolicy)),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.monitorSpecialsLabel")}</Label>
+                      <Select
+                        value={draftMonitorSpecials}
+                        onValueChange={setDraftMonitorSpecials}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings?.monitorSpecials != null ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(
+                              savedSettings.monitorSpecials
+                                ? "label.enabled"
+                                : "label.disabled",
+                            ),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.interSeasonMoviesLabel")}</Label>
+                      <Select
+                        value={draftInterSeasonMovies}
+                        onValueChange={setDraftInterSeasonMovies}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings?.interSeasonMovies != null ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(
+                              savedSettings.interSeasonMovies
+                                ? "label.enabled"
+                                : "label.disabled",
+                            ),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t("settings.monitorFillerMoviesLabel")}</Label>
+                      <Select
+                        value={draftMonitorFillerMovies}
+                        onValueChange={setDraftMonitorFillerMovies}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {savedSettings?.monitorFillerMovies != null ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(
+                              savedSettings.monitorFillerMovies
+                                ? "label.enabled"
+                                : "label.disabled",
+                            ),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {settingsError ? (
                 <p className="text-xs text-destructive">{settingsError}</p>
               ) : null}
@@ -610,7 +945,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   type="button"
                   variant="primary"
                   onClick={handleSaveLibrary}
-                  disabled={settingsBusy || !draftName.trim() || !hasDraftChanges}
+                  disabled={
+                    settingsBusy ||
+                    !draftName.trim() ||
+                    !hasDraftChanges ||
+                    hasRootFolderConflicts
+                  }
                 >
                   <Save className="mr-1.5 h-4 w-4" />
                   {mode === "new"
@@ -628,36 +968,6 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 </Button>
               </div>
             </div>
-          ) : null}
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("settings.libraryScanTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-sm text-muted-foreground">{t("settings.libraryScanHelp")}</p>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              onClick={handleScan}
-              disabled={scanLoading || actionBusy || mode === "new" || !activeLibrary}
-            >
-              {scanLoading
-                ? t("settings.libraryScanRunning")
-                : t("settings.libraryScanButton")}
-            </Button>
-            {activeLibrary && mode !== "new" ? (
-              <span className="text-xs text-muted-foreground">{activeLibrary.name}</span>
-            ) : null}
-            {scanSummary ? (
-              <span className="text-xs text-muted-foreground">
-                {libraryScanSummaryText}
-              </span>
-            ) : null}
-          </div>
-          {scanNotice ? (
-            <p className="text-xs text-destructive">{scanNotice}</p>
           ) : null}
         </CardContent>
       </Card>

@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { KeyRound, Trash2, User2 } from "lucide-react";
+import { ChevronRight, KeyRound, Trash2, User2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -175,6 +175,24 @@ function LibraryPermissionRow({
   );
 }
 
+function CollapsiblePermissionSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="group rounded border border-border bg-background/40 p-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-card-foreground [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
+        <span>{title}</span>
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
+  );
+}
+
 export function SettingsUsersSection({
   settingsUsers,
   libraries,
@@ -311,8 +329,7 @@ export function SettingsUsersSection({
                     </TableCell>
                     <TableCell className="align-top">
                       <div className="space-y-3">
-                        <div className="rounded border border-border bg-background/40 p-2">
-                          <Label className="mb-2 block">App Permissions</Label>
+                        <CollapsiblePermissionSection title="App Permissions">
                           <PermissionChips
                             permissions={appPermissions}
                             selected={appSelected}
@@ -323,9 +340,8 @@ export function SettingsUsersSection({
                               void setUserAppPermissions(user.id, nextPermissions);
                             }}
                           />
-                        </div>
-                        <div className="rounded border border-border bg-background/40 p-2">
-                          <Label className="mb-2 block">Library Permissions</Label>
+                        </CollapsiblePermissionSection>
+                        <CollapsiblePermissionSection title="Library Permissions">
                           {libraries.map((library) => (
                             <LibraryPermissionRow
                               key={`${user.id}-${library.id}`}
@@ -344,7 +360,7 @@ export function SettingsUsersSection({
                               }}
                             />
                           ))}
-                        </div>
+                        </CollapsiblePermissionSection>
                       </div>
                     </TableCell>
                     <TableCell className="align-middle">

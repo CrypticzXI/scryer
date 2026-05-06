@@ -45,6 +45,11 @@ fn library_settings_draft(
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
+        filler_policy: input.filler_policy,
+        recap_policy: input.recap_policy,
+        monitor_specials: input.monitor_specials,
+        inter_season_movies: input.inter_season_movies,
+        monitor_filler_movies: input.monitor_filler_movies,
         indexer_routing: input.indexer_routing.map(|entries| {
             entries
                 .into_iter()

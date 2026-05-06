@@ -132,6 +132,7 @@ const es: LocaleDictionary = {
   "facetSettings.generalPolicies": "Políticas",
   "facetSettings.sidecarFiles": "Archivos sidecar",
   "facetSettings.scoringPersona": "Perfil de puntuación",
+  "facetSettings.scoringPersonaOverrideLabel": "Anulación del perfil de puntuación",
   "facetSettings.scoringPersonaUseDefault": "Usar perfil predeterminado",
   "facetSettings.scoringBehavior": "Comportamiento de puntuación",
   "facetSettings.scoringBehaviorHint":
@@ -172,6 +173,8 @@ const es: LocaleDictionary = {
     "HDR: Dolby Vision penalizado (riesgo de compatibilidad)",
   "settings.moviesLibrarySettings": "Ajustes de medios de películas",
   "settings.seriesLibrarySettings": "Ajustes de medios de series",
+  "libraryFilter.all": "Todas las bibliotecas",
+  "libraryFilter.selectedCount": "{{count}} bibliotecas",
   "settings.rootFoldersLabel": "Carpetas raíz",
   "settings.rootFoldersEmpty":
     "No hay carpetas raíz configuradas. Añade al menos una ruta.",
@@ -179,8 +182,13 @@ const es: LocaleDictionary = {
     "Las carpetas raíz son los directorios de nivel superior donde se almacenan los medios. La carpeta con estrella es la predeterminada para nuevos títulos.",
   "settings.rootFolderAdd": "Añadir carpeta raíz",
   "settings.rootFolderEdit": "Editar carpeta raíz",
+  "settings.rootFolderConflict":
+    "Esta carpeta raíz ya está en uso por {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Establecer como predeterminada",
+  "settings.librarySelectionScopeTitle": "Biblioteca activa",
+  "settings.librarySelectionScopeHelp":
+    "La biblioteca seleccionada define el alcance de las anulaciones y de la acción de escaneo en esta sección.",
   "settings.libraryScanTitle": "Escaneo de biblioteca",
   "settings.libraryScanHelp":
     "Escanear la carpeta de películas e importar los títulos faltantes.",

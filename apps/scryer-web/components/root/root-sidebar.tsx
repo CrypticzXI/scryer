@@ -149,6 +149,7 @@ const settingsEntries: Array<{
 ];
 
 const MEDIA_SETTINGS_SUB_PAGES: Array<{ id: ContentSettingsSection; labelKey: string }> = [
+  { id: "library", labelKey: "nav.library" },
   { id: "general", labelKey: "facetSettings.general" },
   { id: "quality", labelKey: "facetSettings.quality" },
   { id: "renaming", labelKey: "facetSettings.renaming" },
@@ -198,7 +199,7 @@ function LeafNavBadge({
 }
 
 function isSettingsSubPage(section: ContentSettingsSection): boolean {
-  return section === "settings" || section === "general" || section === "quality" || section === "renaming" || section === "routing";
+  return section === "library" || section === "general" || section === "quality" || section === "renaming" || section === "routing";
 }
 
 function getMediaOverviewLabel(_viewId: ViewId, t: Translate): string {
@@ -424,6 +425,11 @@ function RootSidebarContent({
                             {activityImportBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
+                        {item.id === "settings" && pluginUpdateCount > 0 ? (
+                          <SidebarMenuBadge className="bg-red-600 text-white dark:bg-red-500 dark:text-white">
+                            {pluginUpdateCount}
+                          </SidebarMenuBadge>
+                        ) : null}
                       </SidebarMenuItem>
 
                       {showSeparator ? <SidebarSeparator /> : null}
@@ -600,7 +606,7 @@ function RootSidebarContent({
                                       <SidebarMenuSubButton
                                         isActive={isSettingsSubPage(contentSettingsSection)}
                                         onClick={(event) => {
-                                          handleNavigate(event, item.id, undefined, "general");
+                                          handleNavigate(event, item.id, undefined, "library");
                                         }}
                                       >
                                         {getMediaSettingsLabel(item.id, t)}

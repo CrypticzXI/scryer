@@ -109,11 +109,12 @@ export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
 export const CONTENT_SECTION_PATH_TO_ID: Record<string, ContentSettingsSection> = {
   overview: "overview",
   import: "import",
-  settings: "settings",
-  media: "settings",
+  settings: "library",
+  media: "library",
 };
 
 export const CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID: Record<string, ContentSettingsSection> = {
+  library: "library",
   general: "general",
   quality: "quality",
   renaming: "renaming",

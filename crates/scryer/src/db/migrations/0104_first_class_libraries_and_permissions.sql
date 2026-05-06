@@ -70,12 +70,18 @@ SELECT
         WHEN 'series.path' THEN 'series_default_library'
         WHEN 'anime.path' THEN 'anime_default_library'
     END,
-    TRIM(json_extract(sv.value_json, '$')),
+    CASE
+        WHEN json_valid(sv.value_json) THEN TRIM(json_extract(sv.value_json, '$'))
+        ELSE TRIM(sv.value_json)
+    END,
     1
 FROM settings_values sv
 JOIN settings_definitions sd ON sd.id = sv.setting_definition_id
 WHERE sd.key_name IN ('movies.path', 'series.path', 'anime.path')
-  AND TRIM(COALESCE(json_extract(sv.value_json, '$'), '')) != ''
+  AND CASE
+      WHEN json_valid(sv.value_json) THEN TRIM(COALESCE(json_extract(sv.value_json, '$'), ''))
+      ELSE TRIM(COALESCE(sv.value_json, ''))
+  END != ''
   AND NOT EXISTS (
       SELECT 1
       FROM _default_library_roots existing
@@ -84,7 +90,10 @@ WHERE sd.key_name IN ('movies.path', 'series.path', 'anime.path')
           WHEN 'series.path' THEN 'series_default_library'
           WHEN 'anime.path' THEN 'anime_default_library'
       END
-        AND existing.path = TRIM(json_extract(sv.value_json, '$'))
+        AND existing.path = CASE
+            WHEN json_valid(sv.value_json) THEN TRIM(json_extract(sv.value_json, '$'))
+            ELSE TRIM(sv.value_json)
+        END
   );
 
 INSERT INTO _default_library_roots (library_id, path, is_default)

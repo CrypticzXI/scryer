@@ -126,7 +126,7 @@ function normalizeSmgVersionCompatibilityStatus(
 
 function isMediaSettingsSection(section: ContentSettingsSection): boolean {
   return (
-    section === "settings" ||
+    section === "library" ||
     section === "general" ||
     section === "quality" ||
     section === "renaming" ||

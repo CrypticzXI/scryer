@@ -743,6 +743,16 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
     qualityProfileId
     scoringPersonaOverride
     scoringPersona
+    fillerPolicyOverride
+    fillerPolicy
+    recapPolicyOverride
+    recapPolicy
+    monitorSpecialsOverride
+    monitorSpecials
+    interSeasonMoviesOverride
+    interSeasonMovies
+    monitorFillerMoviesOverride
+    monitorFillerMovies
     indexerRoutingOverride {
       indexerId
       enabled
@@ -761,8 +771,8 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
   }
 }`;
 
-export const titlesQuery = `query Titles($facet: MediaFacetValue, $libraryId: String, $query: String) {
-  titles(facet: $facet, libraryId: $libraryId, query: $query) {
+export const titlesQuery = `query Titles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
 ${TITLE_LIST_FIELDS}
   }
 }`;
@@ -1412,8 +1422,8 @@ export const seriesOverviewSettingsInitQuery = `query SeriesOverviewSettingsInit
   }
 }`;
 
-export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue, $libraryId: String) {
-  cutoffUnmetTitles(facet: $facet, libraryId: $libraryId) {
+export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue, $libraryIds: [String!]) {
+  cutoffUnmetTitles(facet: $facet, libraryIds: $libraryIds) {
     titleId
     titleName
     titleSlug
@@ -1724,8 +1734,8 @@ export const previewManualImportQuery = `query PreviewManualImport($clientId: St
   }
 }`;
 
-export const wantedItemsQuery = `query WantedItems($status: WantedStatusValue, $mediaType: WantedMediaTypeValue, $titleId: String, $libraryId: String, $titleSearch: String, $latestDecisionCode: String, $limit: Int, $offset: Int) {
-  wantedItems(status: $status, mediaType: $mediaType, titleId: $titleId, libraryId: $libraryId, titleSearch: $titleSearch, latestDecisionCode: $latestDecisionCode, limit: $limit, offset: $offset) {
+export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!], $titleId: String, $libraryIds: [String!], $titleSearch: String, $latestDecisionCodes: [String!], $limit: Int, $offset: Int) {
+  wantedItems(statuses: $statuses, mediaTypes: $mediaTypes, titleId: $titleId, libraryIds: $libraryIds, titleSearch: $titleSearch, latestDecisionCodes: $latestDecisionCodes, limit: $limit, offset: $offset) {
     items {
       id
       titleId
@@ -1944,8 +1954,8 @@ export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
   }
 }`;
 
-export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryId: String, $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
-  pendingImports(facet: $facet, libraryId: $libraryId, status: $status, limit: $limit, offset: $offset) {
+export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [String!], $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
+  pendingImports(facet: $facet, libraryIds: $libraryIds, status: $status, limit: $limit, offset: $offset) {
     total
     items {
       id
@@ -2083,8 +2093,8 @@ export const pendingReleasesQuery = `query PendingReleases {
   }
 }`;
 
-export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: String!, $endDate: String!, $libraryId: String) {
-  calendarEpisodes(startDate: $startDate, endDate: $endDate, libraryId: $libraryId) {
+export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: String!, $endDate: String!, $libraryIds: [String!]) {
+  calendarEpisodes(startDate: $startDate, endDate: $endDate, libraryIds: $libraryIds) {
     id
     titleId
     libraryId

@@ -21,7 +21,7 @@ export type SettingsSection =
 export type ContentSettingsSection =
   | "overview"
   | "import"
-  | "settings"
+  | "library"
   | "general"
   | "quality"
   | "renaming"

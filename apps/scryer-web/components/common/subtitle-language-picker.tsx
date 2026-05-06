@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChevronDown, Search, X } from "lucide-react";
 import {
@@ -152,6 +152,28 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
     onChange(value.filter((c) => c !== code));
   };
 
+  const toggleOpen = React.useCallback(() => {
+    if (!disabled) {
+      setIsOpen((previous) => !previous);
+    }
+  }, [disabled]);
+
+  const handleTriggerKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (disabled) {
+        return;
+      }
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setIsOpen((previous) => !previous);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        setIsOpen(false);
+      }
+    },
+    [disabled],
+  );
+
   const floatingPanel =
     isOpen && panelPlacement
       ? createPortal(
@@ -224,21 +246,23 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
 
   return (
     <div ref={pickerRef} className={cn("relative inline-block w-full", className)}>
-      <Button
-        type="button"
-        variant="secondary"
+      <div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        aria-disabled={disabled}
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
         className={cn(
+          buttonVariants({ variant: "secondary" }),
           "h-auto min-h-10 w-full justify-between gap-2 border border-input bg-field px-3 py-2 text-sm",
+          "cursor-pointer",
           compact && "h-9 min-h-9 py-0",
+          disabled && "pointer-events-none cursor-not-allowed opacity-50",
           buttonClassName,
         )}
-        onClick={() => {
-          if (!disabled) {
-            setIsOpen((previous) => !previous);
-          }
-        }}
+        onClick={toggleOpen}
+        onKeyDown={handleTriggerKeyDown}
         aria-label={t("settings.sub.languagePickerAriaLabel")}
-        disabled={disabled}
       >
         {compact ? (
           <span className={cn("min-w-0 flex-1 truncate text-left", value.length === 0 && "text-muted-foreground")}>
@@ -278,7 +302,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
         <ChevronDown
           className={`h-4 w-4 shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`}
         />
-      </Button>
+      </div>
       {floatingPanel}
     </div>
   );

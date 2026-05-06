@@ -421,12 +421,12 @@ pub struct DeleteExecutionConfirmation {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WantedItemsQuery {
-    pub status: Option<String>,
-    pub media_type: Option<String>,
+    pub statuses: Vec<String>,
+    pub media_types: Vec<String>,
     pub title_id: Option<String>,
     pub library_ids: Vec<String>,
     pub title_search: Option<String>,
-    pub latest_decision_code: Option<String>,
+    pub latest_decision_codes: Vec<String>,
     pub limit: i64,
     pub offset: i64,
 }

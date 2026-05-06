@@ -112,7 +112,7 @@ export function buildRouteCommands({
         description: t(f.settingsLabelKey),
         keywords: [f.viewId, f.id, "settings", "media", "paths", "folder"],
         icon: Settings,
-        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "general"),
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "library"),
       });
 
       const facetSubSections: Array<{
@@ -120,6 +120,16 @@ export function buildRouteCommands({
         labelKey: string;
         extraKeywords: string[];
       }> = [
+        {
+          section: "library",
+          labelKey: "nav.library",
+          extraKeywords: ["library", "roots", "folders", "scan", "overrides"],
+        },
+        {
+          section: "general",
+          labelKey: "facetSettings.general",
+          extraKeywords: ["general", "sidecar", "nfo", "plexmatch"],
+        },
         {
           section: "quality",
           labelKey: "facetSettings.quality",

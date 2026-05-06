@@ -132,6 +132,7 @@ const ko: LocaleDictionary = {
   "facetSettings.generalPolicies": "정책",
   "facetSettings.sidecarFiles": "사이드카 파일",
   "facetSettings.scoringPersona": "스코어링 페르소나",
+  "facetSettings.scoringPersonaOverrideLabel": "페르소나 재정의",
   "facetSettings.scoringPersonaUseDefault": "프로필 기본값 사용",
   "facetSettings.scoringBehavior": "스코어링 동작",
   "facetSettings.scoringBehaviorHint":
@@ -166,6 +167,8 @@ const ko: LocaleDictionary = {
   "persona.trait.compatible.hdr": "HDR: Dolby Vision 감점 (호환성 위험)",
   "settings.moviesLibrarySettings": "영화 미디어 설정",
   "settings.seriesLibrarySettings": "시리즈 미디어 설정",
+  "libraryFilter.all": "모든 라이브러리",
+  "libraryFilter.selectedCount": "{{count}}개 라이브러리",
   "settings.rootFoldersLabel": "루트 폴더",
   "settings.rootFoldersEmpty":
     "루트 폴더가 설정되지 않았습니다. 최소 하나의 경로를 추가하세요.",
@@ -173,8 +176,13 @@ const ko: LocaleDictionary = {
     "루트 폴더는 미디어가 저장되는 최상위 디렉토리입니다. 별표가 표시된 폴더가 새 타이틀의 기본 폴더입니다.",
   "settings.rootFolderAdd": "루트 폴더 추가",
   "settings.rootFolderEdit": "루트 폴더 편집",
+  "settings.rootFolderConflict":
+    "이 루트 폴더는 이미 {{libraries}}에서 사용 중입니다.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "기본값으로 설정",
+  "settings.librarySelectionScopeTitle": "활성 라이브러리",
+  "settings.librarySelectionScopeHelp":
+    "선택한 라이브러리가 이 섹션의 재정의 설정과 스캔 작업 범위를 결정합니다.",
   "settings.libraryScanTitle": "라이브러리 스캔",
   "settings.libraryScanHelp":
     "영화 폴더를 스캔하고 누락된 타이틀을 가져옵니다.",

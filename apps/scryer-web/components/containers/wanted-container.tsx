@@ -40,6 +40,10 @@ import {
   assertNoReplaceConflict,
   retryWithReplaceOnConflict,
 } from "@/lib/utils/download-conflicts";
+import {
+  normalizeLibraryFilterSelection,
+  selectedLibraryIdsToQueryValue,
+} from "@/lib/utils/library-filter";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 
 type WantedContainerProps = {
@@ -50,8 +54,6 @@ type WantedContainerProps = {
     episodeId?: string,
   ) => void;
 };
-
-const ALL_LIBRARIES_VALUE = "__all__";
 
 function cutoffItemKey(item: CutoffUnmetItem) {
   return item.episodeId?.trim() || item.titleId;
@@ -95,13 +97,13 @@ export const WantedContainer = memo(function WantedContainer({
   const [items, setItems] = useState<WantedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<WantedStatus | undefined>(undefined);
-  const [mediaTypeFilter, setMediaTypeFilter] = useState<WantedMediaType | undefined>(undefined);
-  const [latestDecisionCodeFilter, setLatestDecisionCodeFilter] = useState<string | undefined>(undefined);
+  const [statusFilters, setStatusFilters] = useState<WantedStatus[]>([]);
+  const [mediaTypeFilters, setMediaTypeFilters] = useState<WantedMediaType[]>([]);
+  const [latestDecisionCodeFilters, setLatestDecisionCodeFilters] = useState<string[]>([]);
   const [selectedTitle, setSelectedTitle] = useState<TitleRecord | null>(null);
   const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = useState(false);
-  const [selectedLibraryId, setSelectedLibraryId] = useState(ALL_LIBRARIES_VALUE);
+  const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -205,11 +207,8 @@ export const WantedContainer = memo(function WantedContainer({
         }
         const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
         setLibraries(nextLibraries);
-        setSelectedLibraryId((current) =>
-          current === ALL_LIBRARIES_VALUE ||
-          nextLibraries.some((library) => library.id === current)
-            ? current
-            : ALL_LIBRARIES_VALUE,
+        setSelectedLibraryIds((current) =>
+          normalizeLibraryFilterSelection(current, nextLibraries),
         );
       })
       .catch((error) => {
@@ -232,11 +231,12 @@ export const WantedContainer = memo(function WantedContainer({
     try {
       const { data, error } = await client
         .query(wantedItemsQuery, {
-          status: statusFilter,
-          mediaType: mediaTypeFilter,
+          statuses: statusFilters.length > 0 ? statusFilters : null,
+          mediaTypes: mediaTypeFilters.length > 0 ? mediaTypeFilters : null,
           titleId: selectedTitle?.id,
-          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
-          latestDecisionCode: latestDecisionCodeFilter,
+          libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
+          latestDecisionCodes:
+            latestDecisionCodeFilters.length > 0 ? latestDecisionCodeFilters : null,
           limit,
           offset,
         })
@@ -252,11 +252,11 @@ export const WantedContainer = memo(function WantedContainer({
     }
   }, [
     client,
-    statusFilter,
-    mediaTypeFilter,
+    statusFilters,
+    mediaTypeFilters,
     selectedTitle,
-    selectedLibraryId,
-    latestDecisionCodeFilter,
+    selectedLibraryIds,
+    latestDecisionCodeFilters,
     offset,
     t,
     setGlobalStatus,
@@ -281,7 +281,7 @@ export const WantedContainer = memo(function WantedContainer({
       const { data, error } = await client
         .query(cutoffUnmetTitlesQuery, {
           facet: cutoffFacetFilter ?? null,
-          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
+          libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
         })
         .toPromise();
       if (error) throw error;
@@ -292,7 +292,7 @@ export const WantedContainer = memo(function WantedContainer({
     } finally {
       setCutoffLoading(false);
     }
-  }, [client, cutoffFacetFilter, selectedLibraryId, t, setGlobalStatus]);
+  }, [client, cutoffFacetFilter, selectedLibraryIds, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "cutoff") {
@@ -568,19 +568,18 @@ export const WantedContainer = memo(function WantedContainer({
           items,
           total,
           loading,
-          statusFilter,
-          setStatusFilter,
-          mediaTypeFilter,
-          setMediaTypeFilter,
-          latestDecisionCodeFilter,
-          setLatestDecisionCodeFilter,
+          statusFilters,
+          setStatusFilters,
+          mediaTypeFilters,
+          setMediaTypeFilters,
+          latestDecisionCodeFilters,
+          setLatestDecisionCodeFilters,
           selectedTitle,
           setSelectedTitle: handleSelectedTitleChange,
           libraries,
           librariesLoading,
-          selectedLibraryId,
-          allLibrariesValue: ALL_LIBRARIES_VALUE,
-          setSelectedLibraryId,
+          selectedLibraryIds,
+          setSelectedLibraryIds,
           offset,
           setOffset,
           limit,
@@ -602,9 +601,8 @@ export const WantedContainer = memo(function WantedContainer({
           setFacetFilter: setCutoffFacetFilter,
           libraries,
           librariesLoading,
-          selectedLibraryId,
-          allLibrariesValue: ALL_LIBRARIES_VALUE,
-          setSelectedLibraryId,
+          selectedLibraryIds,
+          setSelectedLibraryIds,
           autoSearchingId: cutoffAutoSearchingId,
           interactiveSearchingId: cutoffInteractiveSearchingId,
           activeInteractiveItemId: cutoffActiveInteractiveItemId,

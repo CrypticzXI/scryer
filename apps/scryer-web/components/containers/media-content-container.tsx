@@ -35,6 +35,11 @@ import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/comp
 import {
   toProfileOptions,
 } from "@/lib/utils/quality-profiles";
+import {
+  normalizeLibraryFilterSelection,
+  selectedLibraryIdsToQueryValue,
+  singleSelectedLibraryId,
+} from "@/lib/utils/library-filter";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
@@ -229,6 +234,11 @@ function librarySettingsInput(settings: LibrarySettingsDraft | undefined) {
     requiredAudioLanguages: settings.requiredAudioLanguages,
     qualityProfileId: settings.qualityProfileId,
     scoringPersona: settings.scoringPersona,
+    fillerPolicy: settings.fillerPolicy,
+    recapPolicy: settings.recapPolicy,
+    monitorSpecials: settings.monitorSpecials,
+    interSeasonMovies: settings.interSeasonMovies,
+    monitorFillerMovies: settings.monitorFillerMovies,
     indexerRouting: settings.indexerRouting,
     downloadClientRouting: settings.downloadClientRouting,
   };
@@ -443,7 +453,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
-  const [selectedLibraryId, setSelectedLibraryId] = React.useState(ALL_LIBRARIES_VALUE);
+  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
   const catalogTitleRequestSeqRef = React.useRef(0);
 
@@ -583,7 +593,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ended: false,
     });
     setSelectedTitleIds(new Set());
-    setSelectedLibraryId(ALL_LIBRARIES_VALUE);
+    setSelectedLibraryIds([]);
   }, [activeFacet]);
 
   React.useEffect(() => {
@@ -851,7 +861,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             titlesQuery,
             {
               facet: activeFacet,
-              libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
+              libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
               query: query || null,
             },
             { requestPolicy: "network-only" },
@@ -887,7 +897,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       activeFacet,
       client,
-      selectedLibraryId,
+      selectedLibraryIds,
       setMonitoredTitles,
       setTitleLoading,
       setTitleStatus,
@@ -1847,11 +1857,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       if (error) throw error;
       const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
       setLibraries(nextLibraries);
-      setSelectedLibraryId((current) =>
-        current === ALL_LIBRARIES_VALUE ||
-        nextLibraries.some((library) => library.id === current)
-          ? current
-          : ALL_LIBRARIES_VALUE,
+      setSelectedLibraryIds((current) =>
+        normalizeLibraryFilterSelection(current, nextLibraries),
       );
       return nextLibraries;
     } catch (error) {
@@ -1899,7 +1906,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         const library = data?.createLibrary ?? null;
         await refreshLibraries();
         if (library) {
-          setSelectedLibraryId(library.id);
+          setSelectedLibraryIds([library.id]);
           setGlobalStatus(t("settings.libraryCreated"));
         }
         return library;
@@ -1964,8 +1971,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         if (!data?.deleteEmptyLibrary) {
           throw new Error(t("settings.libraryDeleteFailed"));
         }
-        setSelectedLibraryId((current) =>
-          current === libraryId ? ALL_LIBRARIES_VALUE : current,
+        setSelectedLibraryIds((current) =>
+          current.filter((selectedLibraryId) => selectedLibraryId !== libraryId),
         );
         await refreshLibraries();
         setGlobalStatus(t("settings.libraryDeleted"));
@@ -1983,8 +1990,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const handleLibraryScan = React.useCallback(async (libraryId?: string) => {
-    const targetLibraryId = libraryId ?? selectedLibraryId;
-    if (targetLibraryId === ALL_LIBRARIES_VALUE) {
+    const targetLibraryId = libraryId ?? singleSelectedLibraryId(selectedLibraryIds);
+    if (!targetLibraryId) {
       setLibraryScanNotice("Choose a library to scan.");
       return;
     }
@@ -2049,7 +2056,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     activeFacetLabel,
     activeLibraryScanSession,
     client,
-    selectedLibraryId,
+    selectedLibraryIds,
     setLibraryScanLoading,
     setLibraryScanNotice,
     setLibraryScanSummary,
@@ -2088,7 +2095,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
 
     const isGeneralSettingsSection =
-      contentSettingsSection === "settings" ||
+      contentSettingsSection === "library" ||
       contentSettingsSection === "general";
     const isRoutingSection = contentSettingsSection === "routing";
 
@@ -2255,15 +2262,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           rulesSaving,
           onToggleRuleFacet,
           libraryScanLoading: libraryScanInProgress,
-          libraryScanDisabled:
-            libraryScanInProgress || selectedLibraryId === ALL_LIBRARIES_VALUE,
+          libraryScanDisabled: libraryScanInProgress || selectedLibraryIds.length !== 1,
           libraryScanNotice,
           libraryScanSummary,
           libraries,
           librariesLoading,
-          selectedLibraryId,
+          selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,
-          setSelectedLibraryId,
+          setSelectedLibraryIds,
           loadLibrarySettings,
           createLibrary,
           updateLibrary,

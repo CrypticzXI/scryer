@@ -1,17 +1,14 @@
 import { Fragment, useEffect, useState } from "react";
+import { FilterChipButton } from "@/components/common/filter-chip-button";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -24,6 +21,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Filter,
   Pause,
   Play,
   RefreshCw,
@@ -53,9 +51,8 @@ type CutoffUnmetViewState = {
   setFacetFilter: (v: string | undefined) => void;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
-  selectedLibraryId: string;
-  allLibrariesValue: string;
-  setSelectedLibraryId: (value: string) => void;
+  selectedLibraryIds: string[];
+  setSelectedLibraryIds: (value: string[]) => void;
   autoSearchingId: string | null;
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
@@ -73,19 +70,18 @@ type WantedViewState = {
   items: WantedItem[];
   total: number;
   loading: boolean;
-  statusFilter: WantedStatus | undefined;
-  setStatusFilter: (v: WantedStatus | undefined) => void;
-  mediaTypeFilter: WantedMediaType | undefined;
-  setMediaTypeFilter: (v: WantedMediaType | undefined) => void;
-  latestDecisionCodeFilter: string | undefined;
-  setLatestDecisionCodeFilter: (v: string | undefined) => void;
+  statusFilters: WantedStatus[];
+  setStatusFilters: (v: WantedStatus[]) => void;
+  mediaTypeFilters: WantedMediaType[];
+  setMediaTypeFilters: (v: WantedMediaType[]) => void;
+  latestDecisionCodeFilters: string[];
+  setLatestDecisionCodeFilters: (v: string[]) => void;
   selectedTitle: TitleRecord | null;
   setSelectedTitle: (title: TitleRecord | null) => void;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
-  selectedLibraryId: string;
-  allLibrariesValue: string;
-  setSelectedLibraryId: (value: string) => void;
+  selectedLibraryIds: string[];
+  setSelectedLibraryIds: (value: string[]) => void;
   offset: number;
   setOffset: (v: number) => void;
   limit: number;
@@ -109,7 +105,190 @@ const LATEST_DECISION_OPTIONS = [
   "upgrade_rejected",
   "pending_delay",
   "already_active",
-];
+ ] as const;
+
+type WantedFilterOption<T extends string> = {
+  value: T;
+  label: string;
+};
+
+function normalizeMultiSelectValues<T extends string>(
+  selectedValues: T[],
+  allValues: readonly T[],
+): T[] {
+  const selectedSet = new Set(selectedValues);
+  const normalized = allValues.filter((value) => selectedSet.has(value));
+  return normalized.length === 0 || normalized.length === allValues.length ? [] : normalized;
+}
+
+function toggleMultiSelectValue<T extends string>(
+  selectedValues: T[],
+  value: T,
+  allValues: readonly T[],
+): T[] {
+  const selectedSet = new Set(selectedValues.length > 0 ? selectedValues : allValues);
+  if (selectedSet.has(value)) {
+    selectedSet.delete(value);
+  } else {
+    selectedSet.add(value);
+  }
+
+  return normalizeMultiSelectValues(Array.from(selectedSet), allValues);
+}
+
+function WantedFilterSection<T extends string>({
+  title,
+  allLabel,
+  options,
+  selectedValues,
+  onSelectedValuesChange,
+}: {
+  title: string;
+  allLabel: string;
+  options: WantedFilterOption<T>[];
+  selectedValues: T[];
+  onSelectedValuesChange: (values: T[]) => void;
+}) {
+  const implicitAllSelected = selectedValues.length === 0;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <div className="flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={() => onSelectedValuesChange([])}
+          className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
+        >
+          <Checkbox checked={implicitAllSelected} className="pointer-events-none" />
+          <span>{allLabel}</span>
+        </button>
+        {options.map((option) => {
+          const checked = implicitAllSelected || selectedValues.includes(option.value);
+          const implicitChecked = implicitAllSelected && !selectedValues.includes(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() =>
+                onSelectedValuesChange(
+                  toggleMultiSelectValue(
+                    selectedValues,
+                    option.value,
+                    options.map((entry) => entry.value),
+                  ),
+                )
+              }
+              className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
+            >
+              <Checkbox
+                checked={checked}
+                className={[
+                  "pointer-events-none",
+                  implicitChecked
+                    ? "data-[state=checked]:border-muted-foreground/30 data-[state=checked]:bg-muted data-[state=checked]:text-muted-foreground"
+                    : "",
+                ].join(" ")}
+              />
+              <span className={implicitChecked ? "text-muted-foreground" : undefined}>
+                {option.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WantedFiltersPopover({
+  statusFilters,
+  setStatusFilters,
+  mediaTypeFilters,
+  setMediaTypeFilters,
+  latestDecisionCodeFilters,
+  setLatestDecisionCodeFilters,
+  onFilterChange,
+}: {
+  statusFilters: WantedStatus[];
+  setStatusFilters: (values: WantedStatus[]) => void;
+  mediaTypeFilters: WantedMediaType[];
+  setMediaTypeFilters: (values: WantedMediaType[]) => void;
+  latestDecisionCodeFilters: string[];
+  setLatestDecisionCodeFilters: (values: string[]) => void;
+  onFilterChange: () => void;
+}) {
+  const t = useTranslate();
+
+  const activeFilterCount =
+    statusFilters.length + mediaTypeFilters.length + latestDecisionCodeFilters.length;
+  const statusOptions = STATUS_OPTIONS.map((value) => ({
+    value,
+    label: formatWantedStatus(value, t),
+  }));
+  const mediaTypeOptions = MEDIA_TYPE_OPTIONS.map((value) => ({
+    value,
+    label: formatWantedMediaType(value, t),
+  }));
+  const latestDecisionOptions = LATEST_DECISION_OPTIONS.map((value) => ({
+    value,
+    label: formatWantedDecisionCode(value, t),
+  }));
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <FilterChipButton
+          selected={activeFilterCount > 0}
+          onClick={() => undefined}
+          icon={<Filter className="h-3.5 w-3.5" />}
+          className="w-full justify-between sm:w-auto"
+        >
+          <span>{t("label.filters")}</span>
+          {activeFilterCount > 0 ? (
+            <span className="rounded-full bg-background/20 px-1.5 py-0.5 text-[11px] leading-none">
+              {activeFilterCount}
+            </span>
+          ) : null}
+        </FilterChipButton>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-3">
+        <div className="flex flex-col gap-4">
+          <WantedFilterSection
+            title={t("wanted.filterStatus")}
+            allLabel={t("wanted.allStatuses")}
+            options={statusOptions}
+            selectedValues={statusFilters}
+            onSelectedValuesChange={(values) => {
+              setStatusFilters(values);
+              onFilterChange();
+            }}
+          />
+          <WantedFilterSection
+            title={t("wanted.filterMediaType")}
+            allLabel={t("wanted.allTypes")}
+            options={mediaTypeOptions}
+            selectedValues={mediaTypeFilters}
+            onSelectedValuesChange={(values) => {
+              setMediaTypeFilters(values);
+              onFilterChange();
+            }}
+          />
+          <WantedFilterSection
+            title={t("wanted.filterLatestDecision")}
+            allLabel={t("wanted.allDecisions")}
+            options={latestDecisionOptions}
+            selectedValues={latestDecisionCodeFilters}
+            onSelectedValuesChange={(values) => {
+              setLatestDecisionCodeFilters(values);
+              onFilterChange();
+            }}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 type ReleaseDecisionExplanationEntry = {
   code: string;
@@ -388,19 +567,18 @@ function WantedItemsCard({
     items,
     total,
     loading,
-    statusFilter,
-    setStatusFilter,
-    mediaTypeFilter,
-    setMediaTypeFilter,
-    latestDecisionCodeFilter,
-    setLatestDecisionCodeFilter,
+    statusFilters,
+    setStatusFilters,
+    mediaTypeFilters,
+    setMediaTypeFilters,
+    latestDecisionCodeFilters,
+    setLatestDecisionCodeFilters,
     selectedTitle,
     setSelectedTitle,
     libraries,
     librariesLoading,
-    selectedLibraryId,
-    allLibrariesValue,
-    setSelectedLibraryId,
+    selectedLibraryIds,
+    setSelectedLibraryIds,
     offset,
     setOffset,
     limit,
@@ -479,86 +657,26 @@ function WantedItemsCard({
             onSelectedTitleChange={setSelectedTitle}
           />
 
-          <Select
-            value={selectedLibraryId}
-            onValueChange={(v) => {
-              setSelectedLibraryId(v);
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={(libraryIds) => {
+              setSelectedLibraryIds(libraryIds);
               setOffset(0);
             }}
             disabled={librariesLoading || libraries.length === 0}
-          >
-            <SelectTrigger className="w-full sm:w-[180px]">
-              <SelectValue placeholder="Library" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
-              {libraries.map((library) => (
-                <SelectItem key={library.id} value={library.id}>
-                  {library.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            triggerClassName="w-full sm:w-[180px]"
+          />
 
-          <Select
-            value={statusFilter ?? "__all__"}
-            onValueChange={(v) => {
-              setStatusFilter(v === "__all__" ? undefined : (v as WantedStatus));
-              setOffset(0);
-            }}
-          >
-            <SelectTrigger className="w-full sm:w-[150px]">
-              <SelectValue placeholder={t("wanted.filterStatus")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">{t("wanted.allStatuses")}</SelectItem>
-              {STATUS_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {formatWantedStatus(s, t)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={mediaTypeFilter ?? "__all__"}
-            onValueChange={(v) => {
-              setMediaTypeFilter(v === "__all__" ? undefined : (v as WantedMediaType));
-              setOffset(0);
-            }}
-          >
-            <SelectTrigger className="w-full sm:w-[150px]">
-              <SelectValue placeholder={t("wanted.filterMediaType")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">{t("wanted.allTypes")}</SelectItem>
-              {MEDIA_TYPE_OPTIONS.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {formatWantedMediaType(m, t)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={latestDecisionCodeFilter ?? "__all__"}
-            onValueChange={(v) => {
-              setLatestDecisionCodeFilter(v === "__all__" ? undefined : v);
-              setOffset(0);
-            }}
-          >
-            <SelectTrigger className="w-full sm:w-[200px]">
-              <SelectValue placeholder={t("wanted.filterLatestDecision")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">{t("wanted.allDecisions")}</SelectItem>
-              {LATEST_DECISION_OPTIONS.map((code) => (
-                <SelectItem key={code} value={code}>
-                  {formatWantedDecisionCode(code, t)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <WantedFiltersPopover
+            statusFilters={statusFilters}
+            setStatusFilters={setStatusFilters}
+            mediaTypeFilters={mediaTypeFilters}
+            setMediaTypeFilters={setMediaTypeFilters}
+            latestDecisionCodeFilters={latestDecisionCodeFilters}
+            setLatestDecisionCodeFilters={setLatestDecisionCodeFilters}
+            onFilterChange={() => setOffset(0)}
+          />
 
           <span className="self-center text-sm text-muted-foreground sm:ml-auto">
             {t("wanted.totalCount", { count: total })}

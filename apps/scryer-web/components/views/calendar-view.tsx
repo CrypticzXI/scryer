@@ -11,14 +11,8 @@ import type {
   EventMountArg,
   MoreLinkContentArg,
 } from "@fullcalendar/core";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LibraryRecord } from "@/lib/types";
 
@@ -43,9 +37,8 @@ type CalendarViewProps = {
   loading: boolean;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
-  selectedLibraryId: string;
-  allLibrariesValue: string;
-  onSelectedLibraryChange: (value: string) => void;
+  selectedLibraryIds: string[];
+  onSelectedLibraryIdsChange: (value: string[]) => void;
   onDateRangeChange: (start: string, end: string) => void;
   onEpisodeClick?: (episode: CalendarEpisodeItem) => void;
 };
@@ -127,9 +120,8 @@ export function CalendarView({
   loading,
   libraries,
   librariesLoading,
-  selectedLibraryId,
-  allLibrariesValue,
-  onSelectedLibraryChange,
+  selectedLibraryIds,
+  onSelectedLibraryIdsChange,
   onDateRangeChange,
   onEpisodeClick,
 }: CalendarViewProps) {
@@ -236,23 +228,13 @@ export function CalendarView({
     <Card>
       <CardContent className="pt-6">
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Select
-            value={selectedLibraryId}
-            onValueChange={onSelectedLibraryChange}
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
             disabled={librariesLoading || libraries.length === 0}
-          >
-            <SelectTrigger className="h-8 w-[180px] text-xs">
-              <SelectValue placeholder="Library" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
-              {libraries.map((library) => (
-                <SelectItem key={library.id} value={library.id}>
-                  {library.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            triggerClassName="h-8 w-[180px] text-xs"
+          />
           {Object.entries(FACET_LABELS).map(([facet, label]) => {
             const active = facetFilter.includes(facet);
             return (

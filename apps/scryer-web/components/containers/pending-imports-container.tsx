@@ -4,19 +4,13 @@ import { Link } from "react-router-dom";
 import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitlePoster } from "@/components/title-poster";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import type { ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -44,6 +38,10 @@ import type {
 } from "@/lib/types";
 import { pendingImportFacetValueForView } from "@/lib/types";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import {
+  normalizeLibraryFilterSelection,
+  selectedLibraryIdsToQueryValue,
+} from "@/lib/utils/library-filter";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
 
 type PendingImportsContainerProps = {
@@ -52,7 +50,6 @@ type PendingImportsContainerProps = {
 };
 
 const PAGE_SIZE = 50;
-const ALL_LIBRARIES_VALUE = "__all__";
 
 type MetadataSearchResult = {
   tvdbId: string;
@@ -218,7 +215,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [ignoredLoaded, setIgnoredLoaded] = React.useState(false);
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
-  const [selectedLibraryId, setSelectedLibraryId] = React.useState(ALL_LIBRARIES_VALUE);
+  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const [pendingError, setPendingError] = React.useState<string | null>(null);
   const [ignoredError, setIgnoredError] = React.useState<string | null>(null);
   const [ignoredOpen, setIgnoredOpen] = React.useState(false);
@@ -265,11 +262,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         }
         const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
         setLibraries(nextLibraries);
-        setSelectedLibraryId((current) =>
-          current === ALL_LIBRARIES_VALUE ||
-          nextLibraries.some((library) => library.id === current)
-            ? current
-            : ALL_LIBRARIES_VALUE,
+        setSelectedLibraryIds((current) =>
+          normalizeLibraryFilterSelection(current, nextLibraries),
         );
       })
       .catch((error) => {
@@ -330,7 +324,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       const { data, error: queryError } = await client
         .query(pendingImportsQuery, {
           facet: pendingImportFacetValueForView(view),
-          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
+          libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
           status,
           limit: PAGE_SIZE,
           offset: pageOffset,
@@ -352,7 +346,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         })),
       };
     },
-    [client, librarySlugById, selectedLibraryId, view],
+    [client, librarySlugById, selectedLibraryIds, view],
   );
 
   const refresh = React.useCallback(
@@ -417,7 +411,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setIgnoredLoaded(false);
     setIgnoredOpen(false);
     clearActiveItem();
-  }, [clearActiveItem, selectedLibraryId, view]);
+  }, [clearActiveItem, selectedLibraryIds, view]);
 
   React.useEffect(() => {
     if (
@@ -1134,27 +1128,17 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           </p>
         </CardHeader>
         <CardContent>
-          <Select
-            value={selectedLibraryId}
-            onValueChange={(value) => {
-              setSelectedLibraryId(value);
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={(libraryIds) => {
+              setSelectedLibraryIds(libraryIds);
               setPendingOffset(0);
               setIgnoredOffset(0);
             }}
             disabled={librariesLoading || libraries.length === 0}
-          >
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Library" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_LIBRARIES_VALUE}>All Libraries</SelectItem>
-              {libraries.map((library) => (
-                <SelectItem key={library.id} value={library.id}>
-                  {library.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            triggerClassName="w-full sm:w-[220px]"
+          />
         </CardContent>
       </Card>
 

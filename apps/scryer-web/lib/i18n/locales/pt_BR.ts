@@ -133,6 +133,7 @@ const pt_BR: LocaleDictionary = {
   "facetSettings.generalPolicies": "Políticas",
   "facetSettings.sidecarFiles": "Arquivos sidecar",
   "facetSettings.scoringPersona": "Persona de pontuação",
+  "facetSettings.scoringPersonaOverrideLabel": "Substituição da persona de pontuação",
   "facetSettings.scoringPersonaUseDefault": "Usar perfil padrão",
   "facetSettings.scoringBehavior": "Comportamento de pontuação",
   "facetSettings.scoringBehaviorHint":
@@ -171,6 +172,8 @@ const pt_BR: LocaleDictionary = {
     "HDR: Dolby Vision penalizado (risco de compatibilidade)",
   "settings.moviesLibrarySettings": "Configurações de mídia de filmes",
   "settings.seriesLibrarySettings": "Configurações de mídia de séries",
+  "libraryFilter.all": "Todas as bibliotecas",
+  "libraryFilter.selectedCount": "{{count}} bibliotecas",
   "settings.rootFoldersLabel": "Pastas raiz",
   "settings.rootFoldersEmpty":
     "Nenhuma pasta raiz configurada. Adicione pelo menos um caminho.",
@@ -178,8 +181,13 @@ const pt_BR: LocaleDictionary = {
     "As pastas raiz são os diretórios de nível superior onde a mídia é armazenada. A pasta com estrela é a padrão para novos títulos.",
   "settings.rootFolderAdd": "Adicionar pasta raiz",
   "settings.rootFolderEdit": "Editar pasta raiz",
+  "settings.rootFolderConflict":
+    "Esta pasta raiz já está sendo usada por {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Definir como padrão",
+  "settings.librarySelectionScopeTitle": "Biblioteca ativa",
+  "settings.librarySelectionScopeHelp":
+    "A biblioteca selecionada define o escopo das substituições e da ação de verificação nesta seção.",
   "settings.libraryScanTitle": "Verificação da biblioteca",
   "settings.libraryScanHelp":
     "Verificar a pasta de filmes e importar títulos ausentes.",

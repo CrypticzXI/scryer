@@ -130,6 +130,7 @@ const zh_CN: LocaleDictionary = {
   "facetSettings.generalPolicies": "策略",
   "facetSettings.sidecarFiles": "附属文件",
   "facetSettings.scoringPersona": "评分人格",
+  "facetSettings.scoringPersonaOverrideLabel": "人格覆盖",
   "facetSettings.scoringPersonaUseDefault": "使用配置默认值",
   "facetSettings.scoringBehavior": "评分行为",
   "facetSettings.scoringBehaviorHint":
@@ -164,14 +165,20 @@ const zh_CN: LocaleDictionary = {
   "persona.trait.compatible.hdr": "HDR：Dolby Vision 扣分（兼容性风险）",
   "settings.moviesLibrarySettings": "电影媒体设置",
   "settings.seriesLibrarySettings": "剧集媒体设置",
+  "libraryFilter.all": "所有媒体库",
+  "libraryFilter.selectedCount": "{{count}} 个媒体库",
   "settings.rootFoldersLabel": "根文件夹",
   "settings.rootFoldersEmpty": "未配置根文件夹。请至少添加一个路径。",
   "settings.rootFoldersHelp":
     "根文件夹是存储媒体的顶级目录。标星的文件夹是新标题的默认文件夹。",
   "settings.rootFolderAdd": "添加根文件夹",
   "settings.rootFolderEdit": "编辑根文件夹",
+  "settings.rootFolderConflict": "此根文件夹已被 {{libraries}} 使用。",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "设为默认",
+  "settings.librarySelectionScopeTitle": "当前媒体库",
+  "settings.librarySelectionScopeHelp":
+    "所选媒体库决定了此区域中的覆盖设置和扫描操作范围。",
   "settings.libraryScanTitle": "媒体库扫描",
   "settings.libraryScanHelp": "扫描电影文件夹并导入缺失的标题。",
   "settings.libraryScanButton": "扫描媒体库",

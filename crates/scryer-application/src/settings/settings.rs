@@ -177,6 +177,11 @@ pub struct LibrarySettingsOverrideDraft {
     pub required_audio_languages: Option<Vec<String>>,
     pub quality_profile_id: Option<String>,
     pub scoring_persona: Option<ScoringPersona>,
+    pub filler_policy: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
     pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
@@ -189,6 +194,16 @@ pub struct LibrarySettings {
     pub quality_profile_id: String,
     pub scoring_persona_override: Option<ScoringPersona>,
     pub scoring_persona: ScoringPersona,
+    pub filler_policy_override: Option<String>,
+    pub filler_policy: Option<String>,
+    pub recap_policy_override: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials_override: Option<bool>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies_override: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies_override: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
     pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
@@ -1044,6 +1059,60 @@ impl AppUseCase {
         Ok(ScoringPersona::default())
     }
 
+    pub(crate) async fn resolve_library_string_setting(
+        &self,
+        key_name: &str,
+        library_id: Option<&str>,
+        scope_id: Option<&str>,
+        default: &str,
+    ) -> AppResult<String> {
+        if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_string_value(key_name, Some(library_id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        {
+            return Ok(value);
+        }
+
+        if let Some(scope_id) = scope_id
+            && let Some(value) = self
+                .read_setting_string_value(key_name, Some(scope_id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        {
+            return Ok(value);
+        }
+
+        Ok(default.to_string())
+    }
+
+    pub(crate) async fn resolve_library_bool_setting(
+        &self,
+        key_name: &str,
+        library_id: Option<&str>,
+        scope_id: Option<&str>,
+        default: bool,
+    ) -> AppResult<bool> {
+        if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_bool_value(key_name, Some(library_id))
+                .await?
+        {
+            return Ok(value);
+        }
+
+        if let Some(scope_id) = scope_id
+            && let Some(value) = self
+                .read_setting_bool_value(key_name, Some(scope_id))
+                .await?
+        {
+            return Ok(value);
+        }
+
+        Ok(default)
+    }
+
     async fn resolve_quality_profile_id(
         &self,
         library_id: Option<&str>,
@@ -1173,6 +1242,103 @@ impl AppUseCase {
         let scoring_persona = self
             .resolve_scoring_persona(Some(&library.id), Some(scope_id))
             .await?;
+        let filler_policy_override = if library.facet == MediaFacet::Anime {
+            self.read_setting_string_value(ANIME_FILLER_POLICY_KEY, Some(&library.id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        } else {
+            None
+        };
+        let filler_policy = if library.facet == MediaFacet::Anime {
+            Some(
+                self.resolve_library_string_setting(
+                    ANIME_FILLER_POLICY_KEY,
+                    Some(&library.id),
+                    Some(scope_id),
+                    DEFAULT_FILLER_POLICY,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let recap_policy_override = if library.facet == MediaFacet::Anime {
+            self.read_setting_string_value(ANIME_RECAP_POLICY_KEY, Some(&library.id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        } else {
+            None
+        };
+        let recap_policy = if library.facet == MediaFacet::Anime {
+            Some(
+                self.resolve_library_string_setting(
+                    ANIME_RECAP_POLICY_KEY,
+                    Some(&library.id),
+                    Some(scope_id),
+                    DEFAULT_RECAP_POLICY,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let monitor_specials_override = if library.facet == MediaFacet::Anime {
+            self.read_setting_bool_value(ANIME_MONITOR_SPECIALS_KEY, Some(&library.id))
+                .await?
+        } else {
+            None
+        };
+        let monitor_specials = if library.facet == MediaFacet::Anime {
+            Some(
+                self.resolve_library_bool_setting(
+                    ANIME_MONITOR_SPECIALS_KEY,
+                    Some(&library.id),
+                    Some(scope_id),
+                    false,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let inter_season_movies_override = if library.facet == MediaFacet::Anime {
+            self.read_setting_bool_value(ANIME_INTER_SEASON_MOVIES_KEY, Some(&library.id))
+                .await?
+        } else {
+            None
+        };
+        let inter_season_movies = if library.facet == MediaFacet::Anime {
+            Some(
+                self.resolve_library_bool_setting(
+                    ANIME_INTER_SEASON_MOVIES_KEY,
+                    Some(&library.id),
+                    Some(scope_id),
+                    true,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let monitor_filler_movies_override = if library.facet == MediaFacet::Anime {
+            self.read_setting_bool_value(ANIME_MONITOR_FILLER_MOVIES_KEY, Some(&library.id))
+                .await?
+        } else {
+            None
+        };
+        let monitor_filler_movies = if library.facet == MediaFacet::Anime {
+            Some(
+                self.resolve_library_bool_setting(
+                    ANIME_MONITOR_FILLER_MOVIES_KEY,
+                    Some(&library.id),
+                    Some(scope_id),
+                    false,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
         let download_client_routing_override = self
             .load_download_client_routing_override(&library.id)
@@ -1185,6 +1351,16 @@ impl AppUseCase {
             quality_profile_id,
             scoring_persona_override,
             scoring_persona,
+            filler_policy_override,
+            filler_policy,
+            recap_policy_override,
+            recap_policy,
+            monitor_specials_override,
+            monitor_specials,
+            inter_season_movies_override,
+            inter_season_movies,
+            monitor_filler_movies_override,
+            monitor_filler_movies,
             indexer_routing_override,
             download_client_routing_override,
         })
@@ -1205,6 +1381,18 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
         self.require_library_management_permission(actor, &library.id)
             .await?;
+        let is_anime_library = library.facet == MediaFacet::Anime;
+        if !is_anime_library
+            && (settings.filler_policy.is_some()
+                || settings.recap_policy.is_some()
+                || settings.monitor_specials.is_some()
+                || settings.inter_season_movies.is_some()
+                || settings.monitor_filler_movies.is_some())
+        {
+            return Err(AppError::Validation(
+                "anime-specific settings require an anime library".to_string(),
+            ));
+        }
 
         if let Some(languages) = settings.required_audio_languages {
             let languages = normalize_required_audio_languages(languages);
@@ -1252,6 +1440,73 @@ impl AppUseCase {
                 .await?;
         }
 
+        if is_anime_library {
+            if let Some(policy) = normalize_optional_string(settings.filler_policy) {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_FILLER_POLICY_KEY,
+                    &library.id,
+                    &policy,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(ANIME_FILLER_POLICY_KEY, &library.id)
+                    .await?;
+            }
+
+            if let Some(policy) = normalize_optional_string(settings.recap_policy) {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_RECAP_POLICY_KEY,
+                    &library.id,
+                    &policy,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(ANIME_RECAP_POLICY_KEY, &library.id)
+                    .await?;
+            }
+
+            if let Some(value) = settings.monitor_specials {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_MONITOR_SPECIALS_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(ANIME_MONITOR_SPECIALS_KEY, &library.id)
+                    .await?;
+            }
+
+            if let Some(value) = settings.inter_season_movies {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_INTER_SEASON_MOVIES_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(ANIME_INTER_SEASON_MOVIES_KEY, &library.id)
+                    .await?;
+            }
+
+            if let Some(value) = settings.monitor_filler_movies {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_MONITOR_FILLER_MOVIES_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(ANIME_MONITOR_FILLER_MOVIES_KEY, &library.id)
+                    .await?;
+            }
+        }
+
         if let Some(entries) = settings.indexer_routing {
             let payload = indexer_routing_payload(entries)?;
             self.upsert_scoped_system_setting_json(
@@ -1288,6 +1543,11 @@ impl AppUseCase {
                 REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
                 QUALITY_PROFILE_ID_KEY.to_string(),
                 SCORING_PERSONA_KEY.to_string(),
+                ANIME_FILLER_POLICY_KEY.to_string(),
+                ANIME_RECAP_POLICY_KEY.to_string(),
+                ANIME_MONITOR_SPECIALS_KEY.to_string(),
+                ANIME_INTER_SEASON_MOVIES_KEY.to_string(),
+                ANIME_MONITOR_FILLER_MOVIES_KEY.to_string(),
                 INDEXER_ROUTING_SETTINGS_KEY.to_string(),
                 DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string(),
             ],
@@ -2300,9 +2560,12 @@ impl AppUseCase {
             },
             monitor_filler_movies: if facet == MediaFacet::Anime {
                 Some(
-                    self.read_setting_bool_value(ANIME_MONITOR_FILLER_MOVIES_KEY, None)
-                        .await?
-                        .unwrap_or(false),
+                    self.read_setting_bool_value(
+                        ANIME_MONITOR_FILLER_MOVIES_KEY,
+                        Some(facet.as_str()),
+                    )
+                    .await?
+                    .unwrap_or(false),
                 )
             } else {
                 None
@@ -2560,7 +2823,7 @@ impl AppUseCase {
                     .upsert_setting_json(
                         SETTINGS_SCOPE_SYSTEM,
                         ANIME_MONITOR_FILLER_MOVIES_KEY,
-                        None,
+                        Some(facet.as_str().to_string()),
                         encode_setting_json(&value)?,
                         SETTINGS_SOURCE_TYPED_GRAPHQL,
                         Some(actor.id.clone()),
