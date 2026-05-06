@@ -281,30 +281,36 @@ async fn main() {
     // Spawn the full application bootstrap in the background.
     let bootstrap_shutdown = shutdown_token.clone();
     let bootstrap_bind = bind.clone();
-    tokio::spawn(async move {
-        match bootstrap_application(
-            db_path,
-            migration_mode,
-            jwt_issuer,
-            jwt_access_ttl_seconds,
-            bootstrap_bind,
-            cors,
-            bootstrap_shutdown,
-            log_ring_buffer,
-            metrics_handle,
-            data_dir,
-        )
-        .await
-        {
-            Ok(router) => {
-                let _ = status_tx.send(BootstrapStatus::Ready(router));
-            }
-            Err(error) => {
-                tracing::error!(error = %error, "application bootstrap failed");
-                let _ = status_tx.send(BootstrapStatus::Failed(error.to_string()));
-            }
-        }
-    });
+    let runtime_handle = tokio::runtime::Handle::current();
+    std::thread::Builder::new()
+        .name("scryer-bootstrap".to_string())
+        .spawn(move || {
+            runtime_handle.block_on(async move {
+                match bootstrap_application(
+                    db_path,
+                    migration_mode,
+                    jwt_issuer,
+                    jwt_access_ttl_seconds,
+                    bootstrap_bind,
+                    cors,
+                    bootstrap_shutdown,
+                    log_ring_buffer,
+                    metrics_handle,
+                    data_dir,
+                )
+                .await
+                {
+                    Ok(router) => {
+                        let _ = status_tx.send(BootstrapStatus::Ready(router));
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "application bootstrap failed");
+                        let _ = status_tx.send(BootstrapStatus::Failed(error.to_string()));
+                    }
+                }
+            });
+        })
+        .expect("failed to spawn bootstrap thread");
 
     // Start serving immediately — splash handlers delegate to the full app once ready.
     match (tls_cert_path, tls_key_path) {
@@ -391,7 +397,7 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "database initialized");
 
     let t = std::time::Instant::now();
-    seed_service_setting_definitions(&bootstrap_settings_store)
+    seed_service_setting_definitions(bootstrap_settings_store.clone())
         .await
         .map_err(|e| format!("failed to seed service setting definitions: {e}"))?;
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "setting definitions seeded");
@@ -410,18 +416,20 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    let _version_lifecycle = check_version_upgrade(&bootstrap_settings_store).await;
-    clear_legacy_history_retention_forever_override(&bootstrap_settings_store).await;
+    let _version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    clear_legacy_history_retention_forever_override(bootstrap_settings_store.clone()).await;
 
     let t = std::time::Instant::now();
-    if let Err(error) = seed_service_settings_from_environment(&bootstrap_settings_store).await {
+    if let Err(error) =
+        seed_service_settings_from_environment(bootstrap_settings_store.clone()).await
+    {
         tracing::warn!(
             error = %error,
             "failed to persist optional settings from environment"
         );
     }
     if let Err(error) =
-        migrate_legacy_download_client_routing_settings(&bootstrap_settings_store).await
+        migrate_legacy_download_client_routing_settings(bootstrap_settings_store.clone()).await
     {
         tracing::warn!(
             error = %error,
@@ -430,7 +438,8 @@ async fn bootstrap_application(
     }
 
     if let Err(error) =
-        migrate_legacy_download_client_default_category_settings(&bootstrap_settings_store).await
+        migrate_legacy_download_client_default_category_settings(bootstrap_settings_store.clone())
+            .await
     {
         tracing::warn!(
             error = %error,
@@ -440,8 +449,11 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "environment settings synced");
 
     let t = std::time::Instant::now();
-    if let Err(error) =
-        normalize_media_path_setting(&bootstrap_settings_store, MOVIES_PATH_KEY).await
+    if let Err(error) = normalize_media_path_setting(
+        bootstrap_settings_store.clone(),
+        MOVIES_PATH_KEY.to_string(),
+    )
+    .await
     {
         tracing::warn!(
             error = %error,
@@ -449,8 +461,11 @@ async fn bootstrap_application(
         );
     }
 
-    if let Err(error) =
-        normalize_media_path_setting(&bootstrap_settings_store, SERIES_PATH_KEY).await
+    if let Err(error) = normalize_media_path_setting(
+        bootstrap_settings_store.clone(),
+        SERIES_PATH_KEY.to_string(),
+    )
+    .await
     {
         tracing::warn!(
             error = %error,
@@ -469,9 +484,15 @@ async fn bootstrap_application(
     )));
     let facet_registry = Arc::new(registry);
 
-    if let Err(error) =
-        normalize_quality_profile_settings(&bootstrap_settings_store, &facet_registry.facet_ids())
-            .await
+    if let Err(error) = normalize_quality_profile_settings(
+        bootstrap_settings_store.clone(),
+        facet_registry
+            .facet_ids()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    )
+    .await
     {
         tracing::warn!(
             error = %error,
@@ -481,7 +502,7 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "settings normalized");
 
     let t = std::time::Instant::now();
-    let runtime_settings = load_service_runtime_settings(&bootstrap_settings_store)
+    let runtime_settings = load_service_runtime_settings(bootstrap_settings_store.clone())
         .await
         .map_err(|e| format!("failed to load service runtime settings: {e}"))?;
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "runtime settings loaded");
@@ -926,7 +947,10 @@ async fn bootstrap_application(
 
     let mut compressed_router = Router::new()
         .route("/health", get(health_handler))
-        .route("/graphql", post(graphql_handler).with_state(auth_state))
+        .route(
+            "/graphql",
+            post(graphql_handler).with_state(auth_state.clone()),
+        )
         .route(
             "/images/titles/{title_id}/{kind}/{variant}",
             get(title_image_handler).with_state(title_images_for_route),
@@ -954,7 +978,7 @@ async fn bootstrap_application(
         )
         .fallback(get(ui_fallback))
         .layer(axum::middleware::from_fn_with_state(
-            rate_limiter,
+            auth_state.clone(),
             rate_limit_http_api,
         ))
         .layer(CompressionLayer::new().zstd(true).br(true).gzip(true));
@@ -1317,7 +1341,7 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn check_version_upgrade(settings_store: &SqliteSettingsStore) -> VersionLifecycle {
+async fn check_version_upgrade(settings_store: SqliteSettingsStore) -> VersionLifecycle {
     const SCOPE: &str = "system";
     const KEY: &str = "last_run_version";
 
@@ -1359,7 +1383,7 @@ async fn check_version_upgrade(settings_store: &SqliteSettingsStore) -> VersionL
     lifecycle
 }
 
-async fn clear_legacy_history_retention_forever_override(settings_store: &SqliteSettingsStore) {
+async fn clear_legacy_history_retention_forever_override(settings_store: SqliteSettingsStore) {
     let keep_forever = settings_store
         .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
         .await
@@ -2167,7 +2191,7 @@ mod tests {
         .await
         .expect("sqlite services");
         let store = SqliteSettingsStore::new(&services);
-        seed_service_setting_definitions(&store)
+        seed_service_setting_definitions(store.clone())
             .await
             .expect("seed setting definitions");
         (temp, store)
@@ -2188,7 +2212,7 @@ mod tests {
             .await
             .expect("seed previous version");
 
-        let lifecycle = check_version_upgrade(&store).await;
+        let lifecycle = check_version_upgrade(store.clone()).await;
         assert_eq!(lifecycle, VersionLifecycle::Upgraded);
 
         store
@@ -2203,7 +2227,7 @@ mod tests {
             .await
             .expect("seed legacy migration override");
 
-        clear_legacy_history_retention_forever_override(&store).await;
+        clear_legacy_history_retention_forever_override(store.clone()).await;
 
         let keep_forever = store
             .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
@@ -2252,10 +2276,10 @@ mod tests {
             .await
             .expect("seed legacy migration override");
 
-        let lifecycle = check_version_upgrade(&store).await;
+        let lifecycle = check_version_upgrade(store.clone()).await;
         assert_eq!(lifecycle, VersionLifecycle::Upgraded);
 
-        clear_legacy_history_retention_forever_override(&store).await;
+        clear_legacy_history_retention_forever_override(store.clone()).await;
 
         let keep_forever = store
             .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)

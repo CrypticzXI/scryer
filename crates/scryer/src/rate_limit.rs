@@ -115,6 +115,15 @@ impl ScryerRateLimiter {
         bucket.check(&key.value, class)
     }
 
+    pub(crate) fn record_failed_login(&self, key: &RateLimitKey) -> Result<(), RateLimitDecision> {
+        if self.is_bypassed(key.client_ip) {
+            return Ok(());
+        }
+        self.inner
+            .login
+            .check(&key.value, GraphqlRateLimitClass::Login)
+    }
+
     pub(crate) fn check_http_api(&self, key: &RateLimitKey) -> Result<(), RateLimitDecision> {
         if self.is_bypassed(key.client_ip) {
             return Ok(());
@@ -352,5 +361,16 @@ mod tests {
             "query Titles($q: String!) { titles(query: $q) { id } }",
         ));
         assert_eq!(classify_graphql(&batch), GraphqlRateLimitClass::Search);
+    }
+
+    #[test]
+    fn failed_login_bucket_blocks_after_five_failures() {
+        let limiter = ScryerRateLimiter::from_env();
+        let key = RateLimitKey::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)), None);
+
+        for _ in 0..5 {
+            assert!(limiter.record_failed_login(&key).is_ok());
+        }
+        assert!(limiter.record_failed_login(&key).is_err());
     }
 }

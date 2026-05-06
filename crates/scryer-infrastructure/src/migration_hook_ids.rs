@@ -1,0 +1,15 @@
+pub(crate) fn is_known_migration_hook_id(hook_id: &str) -> bool {
+    match hook_id {
+        #[cfg(test)]
+        "test_insert_hook_marker" => true,
+        _ => false,
+    }
+}
+
+pub(crate) fn validate_migration_hook_id(hook_id: &str) -> Result<(), String> {
+    if is_known_migration_hook_id(hook_id) {
+        Ok(())
+    } else {
+        Err(format!("unknown migration hook id '{hook_id}'"))
+    }
+}

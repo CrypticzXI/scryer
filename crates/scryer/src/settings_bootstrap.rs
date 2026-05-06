@@ -772,7 +772,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
 }
 
 pub(crate) async fn seed_service_setting_definitions(
-    database: &SqliteSettingsStore,
+    database: SqliteSettingsStore,
 ) -> Result<(), String> {
     let definitions: Vec<scryer_infrastructure::SettingDefinitionSeed> = service_setting_seeds()
         .iter()
@@ -794,7 +794,7 @@ pub(crate) async fn seed_service_setting_definitions(
 }
 
 pub(crate) async fn seed_service_settings_from_environment(
-    database: &SqliteSettingsStore,
+    database: SqliteSettingsStore,
 ) -> Result<(), String> {
     let env_settings: Vec<(&str, &str, Option<Value>)> = vec![
         (
@@ -953,7 +953,7 @@ mod tests {
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(
-    database: &SqliteSettingsStore,
+    database: SqliteSettingsStore,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -1019,7 +1019,7 @@ pub(crate) async fn migrate_legacy_download_client_routing_settings(
 }
 
 pub(crate) async fn migrate_legacy_download_client_default_category_settings(
-    database: &SqliteSettingsStore,
+    database: SqliteSettingsStore,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -1085,11 +1085,12 @@ pub(crate) async fn migrate_legacy_download_client_default_category_settings(
 }
 
 pub(crate) async fn normalize_media_path_setting(
-    database: &SqliteSettingsStore,
-    key_name: &str,
+    database: SqliteSettingsStore,
+    key_name: String,
 ) -> Result<(), String> {
+    let media_key = key_name.clone();
     let media_path = database
-        .get_setting_with_defaults(SETTINGS_SCOPE_MEDIA, key_name, None)
+        .get_setting_with_defaults(SETTINGS_SCOPE_MEDIA, media_key, None)
         .await
         .map_err(|error| {
             format!("failed to read media {key_name} setting during bootstrap: {error}")
@@ -1099,8 +1100,9 @@ pub(crate) async fn normalize_media_path_setting(
         .as_ref()
         .is_none_or(|record| record.value_json.is_none())
     {
+        let system_key = key_name.clone();
         let system_record = database
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, key_name, None)
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, system_key, None)
             .await
             .map_err(|error| {
                 format!("failed to read legacy system {key_name} setting during bootstrap: {error}")
@@ -1109,10 +1111,11 @@ pub(crate) async fn normalize_media_path_setting(
         if let Some(system_record) = system_record
             && let Some(value_json) = system_record.value_json
         {
+            let upsert_key = key_name.clone();
             database
                 .upsert_setting_value(
                     SETTINGS_SCOPE_MEDIA,
-                    key_name,
+                    upsert_key,
                     None,
                     value_json,
                     "legacy-migration",
@@ -1129,8 +1132,8 @@ pub(crate) async fn normalize_media_path_setting(
 }
 
 pub(crate) async fn normalize_quality_profile_settings(
-    database: &SqliteSettingsStore,
-    scope_ids: &[&str],
+    database: SqliteSettingsStore,
+    scope_ids: Vec<String>,
 ) -> Result<(), String> {
     let mut profiles = database
         .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
@@ -1154,18 +1157,19 @@ pub(crate) async fn normalize_quality_profile_settings(
     }
 
     let profile_ids = collect_profile_ids(&final_profiles);
-    normalize_quality_profile_id_setting(database, None, &profile_ids).await?;
+    normalize_quality_profile_id_setting(&database, None, &profile_ids).await?;
 
-    for scope_id in scope_ids {
-        normalize_quality_profile_id_setting(database, Some(scope_id), &profile_ids).await?;
+    for scope_id in &scope_ids {
+        normalize_quality_profile_id_setting(&database, Some(scope_id.as_str()), &profile_ids)
+            .await?;
     }
 
     // Anime defaults to 1080p (not 4K) when the user hasn't chosen a profile
     if profile_ids.iter().any(|id| id == "1080p") {
-        seed_scope_default_if_unset(database, "anime", "1080p").await?;
+        seed_scope_default_if_unset(&database, "anime", "1080p").await?;
     }
 
-    sync_quality_profile_catalog_setting(database, &final_profiles).await?;
+    sync_quality_profile_catalog_setting(&database, &final_profiles).await?;
 
     Ok(())
 }
@@ -1466,7 +1470,7 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
 }
 
 pub(crate) async fn load_service_runtime_settings(
-    database: &SqliteSettingsStore,
+    database: SqliteSettingsStore,
 ) -> Result<ServiceRuntimeSettings, String> {
     let keys = vec![
         (

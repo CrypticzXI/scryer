@@ -1,0 +1,20 @@
+format_version = 1
+
+[legacy_sql]
+path = "migrations"
+through_version = 102
+
+[[migration]]
+version = 103
+description = "custom migrator runtime cutover"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0103_custom_migrator_runtime_cutover.sql"
+scope = "all"
+
+[[baseline]]
+through_version = 100
+file = "baselines/0100_baseline.sql"
+

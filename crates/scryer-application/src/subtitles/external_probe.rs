@@ -8,6 +8,9 @@ use whatlang::{Lang, detect};
 
 use crate::{AppError, AppResult};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 const MAX_TEXT_PROBE_SIZE_BYTES: i64 = 1024 * 1024;
 const MAX_LANGUAGE_SAMPLE_BYTES: usize = 16 * 1024;
 const MIN_SCRIPT_RELEVANT_CHARS: usize = 40;
@@ -359,6 +362,46 @@ fn validate_regular_subtitle_sidecar(metadata: &std::fs::Metadata) -> AppResult<
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SubtitleFileFingerprint {
+    len: u64,
+    modified_at: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+fn subtitle_file_fingerprint(metadata: &std::fs::Metadata) -> SubtitleFileFingerprint {
+    SubtitleFileFingerprint {
+        len: metadata.len(),
+        modified_at: metadata.modified().ok(),
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(unix)]
+        ino: metadata.ino(),
+    }
+}
+
+async fn open_subtitle_sidecar(path: &Path) -> AppResult<fs::File> {
+    #[cfg(unix)]
+    {
+        let mut options = fs::OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NOFOLLOW);
+        options
+            .open(path)
+            .await
+            .map_err(|error| AppError::Repository(format!("cannot open subtitle file: {error}")))
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::File::open(path)
+            .await
+            .map_err(|error| AppError::Repository(format!("cannot open subtitle file: {error}")))
+    }
+}
+
 fn cache_matches_fingerprint(
     cache_entry: &ExternalSubtitleProbeCacheEntry,
     fingerprint: &ExternalSubtitleFingerprint,
@@ -373,20 +416,24 @@ async fn read_subtitle_to_string(path: &Path) -> AppResult<DecodedSubtitleText> 
         .await
         .map_err(|error| AppError::Repository(format!("cannot stat subtitle file: {error}")))?;
     validate_regular_subtitle_sidecar(&metadata)?;
+    let fingerprint = subtitle_file_fingerprint(&metadata);
     if metadata.len() > MAX_TEXT_PROBE_SIZE_BYTES as u64 {
         return Err(AppError::Validation(
             "subtitle sidecar exceeds content probe size limit".into(),
         ));
     }
 
-    let file = fs::File::open(path)
-        .await
-        .map_err(|error| AppError::Repository(format!("cannot open subtitle file: {error}")))?;
+    let file = open_subtitle_sidecar(path).await?;
     let opened_metadata = file
         .metadata()
         .await
         .map_err(|error| AppError::Repository(format!("cannot stat subtitle file: {error}")))?;
     validate_regular_subtitle_sidecar(&opened_metadata)?;
+    if subtitle_file_fingerprint(&opened_metadata) != fingerprint {
+        return Err(AppError::Validation(
+            "subtitle sidecar changed during content probe".into(),
+        ));
+    }
     if opened_metadata.len() > MAX_TEXT_PROBE_SIZE_BYTES as u64 {
         return Err(AppError::Validation(
             "subtitle sidecar exceeds content probe size limit".into(),
@@ -748,6 +795,21 @@ mod tests {
             probe_version: EXTERNAL_SUBTITLE_PROBE_VERSION,
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_sidecars_are_rejected() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let target = tempdir.path().join("real.srt");
+        fs::write(&target, "1\n00:00:01,000 --> 00:00:02,000\nHello\n").expect("subtitle");
+        let symlink = tempdir.path().join("linked.srt");
+        std::os::unix::fs::symlink(&target, &symlink).expect("symlink");
+
+        let error = resolve_external_subtitle("media-1", &symlink, "srt", None, false, false, None)
+            .await
+            .expect_err("symlink should be rejected");
+        assert!(error.to_string().contains("must not be a symlink"));
     }
 
     #[tokio::test]

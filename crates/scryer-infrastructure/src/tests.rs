@@ -3312,6 +3312,90 @@ async fn migration_validate_mode_rejects_pending_schema() {
 }
 
 #[tokio::test]
+async fn migration_validate_mode_does_not_mutate_legacy_sqlx_ledger() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_validate_mode_legacy_ledger_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    sqlx::query("ALTER TABLE _sqlx_migrations RENAME TO _sqlx_migrations_current")
+        .execute(&services.pool)
+        .await
+        .expect("legacy ledger rename should succeed");
+    sqlx::query(
+        r#"
+CREATE TABLE _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN NOT NULL,
+    checksum BLOB NOT NULL,
+    execution_time BIGINT NOT NULL
+)
+        "#,
+    )
+    .execute(&services.pool)
+    .await
+    .expect("legacy migration ledger should be created");
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations
+            (version, description, installed_on, success, checksum, execution_time)
+         SELECT version, description, installed_on, success, checksum, execution_time
+           FROM _sqlx_migrations_current
+          WHERE version <= 102",
+    )
+    .execute(&services.pool)
+    .await
+    .expect("legacy migration rows should be copied");
+    sqlx::query("DROP TABLE _sqlx_migrations_current")
+        .execute(&services.pool)
+        .await
+        .expect("temporary migration ledger should be dropped");
+
+    drop(services);
+
+    let result =
+        SqliteServices::new_with_mode(db.to_string_lossy(), MigrationMode::ValidateOnly).await;
+    let err = match result {
+        Ok(_) => panic!("validate mode should reject missing migration 0103"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains("0103_custom_migrator_runtime_cutover"),
+        "validate mode should report the pending custom migration"
+    );
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pool should open");
+
+    let checksum_algo_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pragma_table_info('_sqlx_migrations')
+          WHERE name = 'checksum_algo'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pragma_table_info should succeed");
+    assert_eq!(checksum_algo_columns, 0);
+
+    let applied_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .expect("migration row count should load");
+    assert_eq!(applied_rows, 102);
+
+    drop(pool);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn migration_bootstrap_rejects_unknown_or_newer_schema_history() {
     let db = std::env::temp_dir().join(format!(
         "scryer_migration_compat_{}.db",
@@ -3363,6 +3447,104 @@ async fn migration_bootstrap_rejects_unknown_or_newer_schema_history() {
     assert!(message.contains("Please update scryer"));
 
     let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_status_listing_reads_legacy_ledger_without_mutating_schema() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_status_legacy_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pool should open");
+
+    sqlx::query(
+        r#"
+CREATE TABLE _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN NOT NULL,
+    checksum BLOB NOT NULL,
+    execution_time BIGINT NOT NULL
+)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy migration ledger should be created");
+
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations
+            (version, description, installed_on, success, checksum, execution_time)
+         VALUES (1, 'init', CURRENT_TIMESTAMP, 1, ?, 0)",
+    )
+    .bind(vec![1u8, 2, 3])
+    .execute(&pool)
+    .await
+    .expect("legacy migration row should be inserted");
+
+    let statuses = crate::migrations::list_applied_migrations(&pool)
+        .await
+        .expect("status listing should succeed");
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].migration_checksum_algo, "sha384");
+
+    let checksum_algo_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pragma_table_info('_sqlx_migrations')
+          WHERE name = 'checksum_algo'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pragma_table_info should succeed");
+    assert_eq!(checksum_algo_columns, 0);
+
+    drop(pool);
+    let _ = std::fs::remove_file(db);
+}
+
+#[test]
+fn compile_source_bundle_rejects_unknown_rust_hook_ids() {
+    let db_root = std::env::temp_dir().join(format!(
+        "scryer_migration_hook_fixture_{}",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    std::fs::create_dir_all(db_root.join("migrations")).expect("fixture migrations dir");
+    std::fs::write(
+        db_root.join("migrations/0001_initial.sql"),
+        "CREATE TABLE example (id INTEGER PRIMARY KEY);\n",
+    )
+    .expect("write legacy migration");
+    std::fs::write(
+        db_root.join("migration_manifest.toml"),
+        r#"
+format_version = 1
+
+[legacy_sql]
+path = "migrations"
+through_version = 1
+
+[[migration]]
+version = 2
+description = "bad hook"
+checksum_algo = "blake3"
+steps = [
+  { kind = "rust", hook_id = "missing_hook", scope = "all" },
+]
+"#,
+    )
+    .expect("write manifest");
+
+    let error = crate::migration_assets::compile_source_bundle(&db_root)
+        .expect_err("unknown hook id should fail manifest compilation");
+    assert!(error.contains("unknown migration hook id 'missing_hook'"));
+
+    let _ = std::fs::remove_dir_all(db_root);
 }
 
 #[tokio::test]

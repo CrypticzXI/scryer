@@ -1023,7 +1023,7 @@ async fn import_movie_download(
         .or(title.year)
         .map(|y| format!(" ({})", y))
         .unwrap_or_default();
-    let title_folder = sanitize_filesystem_component(&format!("{}{}", title.name, year_str));
+    let title_folder = sanitized_title_folder_component(&format!("{}{}", title.name, year_str));
     let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
 
     if title.folder_path.is_none() {
@@ -1526,7 +1526,7 @@ async fn import_interstitial_movie_download(
 
     // Build destination: <media_root>/<title folder>/Season 00/<filename>
     let year_str = title.year.map(|y| format!(" ({})", y)).unwrap_or_default();
-    let title_folder = sanitize_filesystem_component(&format!("{}{}", title.name, year_str));
+    let title_folder = sanitized_title_folder_component(&format!("{}{}", title.name, year_str));
     let dest_path = PathBuf::from(&media_root)
         .join(&title_folder)
         .join("Season 00")
@@ -2071,7 +2071,7 @@ async fn import_series_download(
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
     let (media_root, rename_template) = resolve_import_paths(app, title).await?;
-    let title_folder = sanitize_filesystem_component(&title.name);
+    let title_folder = sanitized_title_folder_component(&title.name);
     let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
 
     if title.folder_path.is_none() {
@@ -3031,6 +3031,15 @@ pub(crate) fn use_season_folders(title: &scryer_domain::Title) -> bool {
                 .eq_ignore_ascii_case("disabled")
         })
         .unwrap_or(true)
+}
+
+fn sanitized_title_folder_component(raw: &str) -> String {
+    let sanitized = sanitize_filesystem_component(raw);
+    if sanitized.is_empty() {
+        "untitled".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Build the common rename token map from parsed release metadata.
@@ -4258,7 +4267,7 @@ pub async fn execute_manual_import(
         .ok_or_else(|| AppError::NotFound(format!("title not found: {}", title_id)))?;
 
     let (media_root, rename_template) = resolve_import_paths(app, &title).await?;
-    let title_folder = sanitize_filesystem_component(&title.name);
+    let title_folder = sanitized_title_folder_component(&title.name);
     let quality_profile = resolve_import_quality_profile(app, &title).await;
 
     let mut results = Vec::new();
@@ -4588,6 +4597,24 @@ pub async fn execute_queued_manual_import(
     );
 
     Ok((status, result_json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitized_title_folder_component;
+
+    #[test]
+    fn title_folder_component_falls_back_when_sanitized_empty() {
+        assert_eq!(sanitized_title_folder_component("///...___---"), "untitled");
+    }
+
+    #[test]
+    fn title_folder_component_keeps_nonempty_values() {
+        assert_eq!(
+            sanitized_title_folder_component("Movie Title (2024)"),
+            "Movie Title (2024)"
+        );
+    }
 }
 
 #[cfg(test)]

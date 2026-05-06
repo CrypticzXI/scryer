@@ -14,7 +14,7 @@ unsafe extern "C" {
 
 static SPELLFIX_AUTO_EXTENSION: OnceLock<Result<(), String>> = OnceLock::new();
 
-pub(crate) fn register_spellfix_auto_extension() -> AppResult<()> {
+pub fn register_spellfix_auto_extension() -> AppResult<()> {
     let result = SPELLFIX_AUTO_EXTENSION.get_or_init(|| {
         let rc = unsafe { sqlite3_auto_extension(Some(sqlite3_spellfix_init)) };
         if rc == SQLITE_OK {

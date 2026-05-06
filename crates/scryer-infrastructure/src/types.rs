@@ -1,6 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct MigrationStatus {
     pub migration_key: String,
+    pub migration_checksum_algo: String,
     pub migration_checksum: String,
     pub applied_at: String,
     pub success: bool,
@@ -129,6 +130,7 @@ pub struct SettingDefinitionSeed {
 pub struct EmbeddedMigrationDescriptor {
     pub filename: String,
     pub key: String,
+    pub checksum_algo: String,
     pub checksum: String,
 }
 

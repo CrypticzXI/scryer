@@ -148,7 +148,9 @@ pub(crate) struct AdminMigrationsResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct AdminAppliedMigration {
     migration_key: String,
+    migration_checksum_algo: String,
     migration_checksum: String,
+    migration_checksum_algo_expected: Option<String>,
     migration_checksum_expected: Option<String>,
     checksum_mismatch: bool,
     applied_at: String,
@@ -280,7 +282,7 @@ pub(crate) async fn admin_settings_list(
 
 #[derive(Debug)]
 pub(crate) struct EmbeddedMigrationCatalog {
-    migrations: HashMap<String, String>,
+    migrations: HashMap<String, (String, String)>,
     order: Vec<String>,
 }
 
@@ -293,7 +295,7 @@ pub(crate) fn load_embedded_migration_catalog() -> Result<EmbeddedMigrationCatal
 
     for migration in embedded {
         order.push(migration.key.clone());
-        migrations.insert(migration.key, migration.checksum);
+        migrations.insert(migration.key, (migration.checksum_algo, migration.checksum));
     }
 
     Ok(EmbeddedMigrationCatalog { migrations, order })
@@ -346,9 +348,11 @@ pub(crate) async fn admin_migrations_handler(database: SqliteSettingsStore) -> R
 
     for status in &applied {
         let expected = catalog.migrations.get(&status.migration_key).cloned();
-        let checksum_mismatch = expected
-            .as_ref()
-            .is_none_or(|expected| expected != &status.migration_checksum);
+        let expected_algo = expected.as_ref().map(|(algo, _)| algo.clone());
+        let expected_checksum = expected.as_ref().map(|(_, checksum)| checksum.clone());
+        let checksum_mismatch = expected.as_ref().is_none_or(|(algo, checksum)| {
+            algo != &status.migration_checksum_algo || checksum != &status.migration_checksum
+        });
 
         if checksum_mismatch {
             migration_checksum_mismatch_flags.push(status.migration_key.clone());
@@ -369,8 +373,10 @@ pub(crate) async fn admin_migrations_handler(database: SqliteSettingsStore) -> R
 
         applied_migrations.push(AdminAppliedMigration {
             migration_key: status.migration_key.clone(),
+            migration_checksum_algo: status.migration_checksum_algo.clone(),
             migration_checksum: status.migration_checksum.clone(),
-            migration_checksum_expected: expected,
+            migration_checksum_algo_expected: expected_algo,
+            migration_checksum_expected: expected_checksum,
             checksum_mismatch,
             applied_at: status.applied_at.clone(),
             success: status.success,

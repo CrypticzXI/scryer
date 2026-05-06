@@ -11,10 +11,13 @@ async-trait = { workspace = true }
 base64 = "0.22"
 serde_json = { workspace = true }
 serde = { workspace = true }
+toml = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
 quick-xml = { workspace = true }
+blake3 = "1"
+sha2 = "0.10"
 libsqlite3-sys = { version = "0.30.1", default-features = false, features = ["bundled"] }
 unicode-normalization = "0.1"
 zstd = "0.13"
@@ -52,5 +55,11 @@ tempfile = "3"
 wiremock = { workspace = true }
 
 [build-dependencies]
+blake3 = "1"
 cc = "1.1"
 graphql-parser = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+toml = { workspace = true }
+zstd = "0.13"

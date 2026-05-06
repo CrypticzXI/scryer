@@ -13,12 +13,14 @@ clap = { version = "4", features = ["derive"] }
 dotenvy = { workspace = true }
 quick-xml = { workspace = true, features = ["serialize"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+scryer-infrastructure = { path = "../crates/scryer-infrastructure" }
 scryer-plugin-sdk = { path = "../crates/scryer-plugin-sdk" }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 signal-hook = "0.3"
+sqlx = { workspace = true }
 const-oid = "0.9"
 sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"] }
 scryer-release-parser = { path = "../crates/scryer-release-parser" }

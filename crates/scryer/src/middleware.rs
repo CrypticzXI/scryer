@@ -361,9 +361,10 @@ pub(crate) async fn graphql_handler(
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
     let rate_limit_class = classify_graphql(&batch);
-    if let Err(decision) = state
-        .rate_limiter
-        .check_graphql(rate_limit_class, &rate_limit_key)
+    if rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login
+        && let Err(decision) = state
+            .rate_limiter
+            .check_graphql(rate_limit_class, &rate_limit_key)
     {
         let batch_response = rate_limited_graphql_response(&decision);
         let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
@@ -389,8 +390,15 @@ pub(crate) async fn graphql_handler(
     // Wrap execution in a single-item stream so the future is dropped (cancelled)
     // when hyper detects the client has disconnected.
     let schema = state.schema.clone();
+    let rate_limiter = state.rate_limiter.clone();
     let body_stream = futures_util::stream::once(async move {
-        let batch_response = schema.execute_batch(batch).await;
+        let mut batch_response = schema.execute_batch(batch).await;
+        if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
+            && !batch_response.is_ok()
+            && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
+        {
+            batch_response = rate_limited_graphql_response(&decision);
+        }
         Ok::<_, std::io::Error>(
             serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec()),
         )
@@ -633,7 +641,7 @@ pub(crate) async fn health_handler() -> impl IntoResponse {
 }
 
 pub(crate) async fn rate_limit_http_api(
-    State(rate_limiter): State<ScryerRateLimiter>,
+    State(auth_state): State<AuthState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
     next: Next,
@@ -644,8 +652,9 @@ pub(crate) async fn rate_limit_http_api(
 
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
-    let key = RateLimitKey::new(client_ip, None);
-    match rate_limiter.check_http_api(&key) {
+    let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr)).await;
+    let key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    match auth_state.rate_limiter.check_http_api(&key) {
         Ok(()) => next.run(request).await,
         Err(decision) => {
             let mut response = (
@@ -665,42 +674,17 @@ pub(crate) async fn rate_limit_http_api(
     }
 }
 
-fn skip_http_rate_limit(method: &Method, path: &str) -> bool {
-    matches!(
-        path,
-        "/graphql" | "/graphql/ws" | "/health" | "/metrics" | "/favicon.ico"
-    ) || matches!(method, &Method::GET | &Method::HEAD) && is_static_asset_path(path)
+fn skip_http_rate_limit(_method: &Method, path: &str) -> bool {
+    !is_rate_limited_http_api_path(path)
 }
 
-fn is_static_asset_path(path: &str) -> bool {
-    if path == "/" {
-        return true;
-    }
-    let Some((_, extension)) = path.rsplit_once('.') else {
-        return false;
-    };
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "avif"
-            | "br"
-            | "css"
-            | "gif"
-            | "gz"
-            | "html"
-            | "ico"
-            | "jpeg"
-            | "jpg"
-            | "js"
-            | "json"
-            | "map"
-            | "png"
-            | "svg"
-            | "txt"
-            | "webmanifest"
-            | "webp"
-            | "woff"
-            | "woff2"
-    )
+fn is_rate_limited_http_api_path(path: &str) -> bool {
+    path == "/admin"
+        || path.starts_with("/admin/")
+        || path == "/api"
+        || path.starts_with("/api/")
+        || path == "/images"
+        || path.starts_with("/images/")
 }
 
 pub(crate) fn map_app_error(error: AppError) -> Response {
@@ -896,6 +880,21 @@ mod tests {
             client_ip,
             Some(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0x25))),
         );
+    }
+
+    #[test]
+    fn spa_fallback_routes_do_not_consume_http_api_quota() {
+        assert!(skip_http_rate_limit(&Method::GET, "/activity"));
+        assert!(skip_http_rate_limit(&Method::GET, "/settings/profile"));
+    }
+
+    #[test]
+    fn admin_and_image_routes_still_consume_http_api_quota() {
+        assert!(!skip_http_rate_limit(&Method::GET, "/admin/settings"));
+        assert!(!skip_http_rate_limit(
+            &Method::GET,
+            "/images/titles/title-1/poster/original"
+        ));
     }
 
     #[test]

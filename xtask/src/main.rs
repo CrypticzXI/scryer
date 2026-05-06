@@ -40,6 +40,7 @@ use x509_cert::{
 };
 
 mod corpus;
+mod migrations;
 mod profile;
 mod release_parser;
 mod release_parser_compare;
@@ -188,6 +189,7 @@ struct Cli {
 enum Commands {
     Release(ReleaseArgs),
     Builtins(BuiltinsArgs),
+    Migrations(MigrationsArgs),
     Sdk(SdkArgs),
     ValidateTrashGuides,
     Ci(CiArgs),
@@ -208,6 +210,25 @@ struct BuiltinsArgs {
 #[derive(Subcommand)]
 enum BuiltinsCommand {
     Sync,
+}
+
+#[derive(Args)]
+struct MigrationsArgs {
+    #[command(subcommand)]
+    command: MigrationsCommand,
+}
+
+#[derive(Subcommand)]
+enum MigrationsCommand {
+    Rebaseline(RebaselineArgs),
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct RebaselineArgs {
+    #[arg(long)]
+    through: i64,
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -524,6 +545,9 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Migrations(args) => match args.command {
+            MigrationsCommand::Rebaseline(args) => migrations::run_rebaseline(&ctx, args),
+        },
         Commands::Sdk(args) => match args.command {
             SdkCommand::Release(args) => run_sdk_release(&ctx, args),
         },
@@ -701,6 +725,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     let db_path = serve_db_path()?;
     let db_url = format!("sqlite://{}", db_path.display());
     let encryption_key = serve_encryption_key();
+    let backend_binary = ctx.path("target/debug/scryer");
     let backend_log = PathBuf::from(
         std::env::var("SCRYER_DEV_BACKEND_LOG")
             .unwrap_or_else(|_| "/tmp/scryer-dev-backend.log".to_string()),
@@ -710,8 +735,14 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     }
     fs::write(&backend_log, "")?;
 
+    step("Building Scryer backend");
+    let mut build = ctx.command_in("cargo", &ctx.repo_root);
+    build.args(["build", "--locked", "-p", "scryer"]);
+    run_checked(&mut build)?;
+
     step(format!(
-        "Starting Scryer backend with cargo run on {}",
+        "Starting Scryer backend from {} on {}",
+        backend_binary.display(),
         args.bind
     ));
     if env_file.is_file() {
@@ -735,7 +766,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
         .append(true)
         .open(&backend_log)?;
     let log_err = log.try_clone()?;
-    let mut serve = ctx.command_in("cargo", &ctx.repo_root);
+    let mut serve = ctx.command(&backend_binary);
     configure_backend_process_group(&mut serve);
     for (key, value) in &dotenv_envs {
         serve.env(key, value);
@@ -747,7 +778,6 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
         .env("SCRYER_OPEN_BROWSER", "false")
         .env("SCRYER_WEB_UI_URL", &frontend_url)
         .env("SCRYER_BIND", &args.bind)
-        .args(["run", "--locked", "-p", "scryer"])
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     let mut backend = serve.spawn()?;
