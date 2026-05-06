@@ -4047,6 +4047,19 @@ fn test_admin_user() -> User {
     user
 }
 
+fn test_user_with_app_permissions(username: &str, app_permissions: AppPermissionMask) -> User {
+    let mut user = User {
+        id: Id::new().0,
+        username: username.to_string(),
+        password_hash: None,
+        entitlements: Vec::new(),
+        authorization: Default::default(),
+    };
+    user.authorization.app = app_permissions;
+    user.authorization.loaded = true;
+    user
+}
+
 async fn title_updated_events(app: &AppUseCase, title_id: &str) -> Vec<DomainEvent> {
     app.services
         .events
@@ -9185,6 +9198,65 @@ async fn create_user_and_list_users() {
     let users = app.list_users(&user).await.expect("list users");
     assert!(users.iter().any(|entry| entry.username == created.username));
     assert_eq!(users.len(), 1);
+}
+
+#[tokio::test]
+async fn create_user_without_permission_grants_allows_manage_users_only_actor() {
+    let (app, _) = bootstrap();
+    let actor = test_user_with_app_permissions("user-admin", AppPermissionMask::MANAGE_USERS);
+
+    let created = app
+        .create_user(
+            &actor,
+            "plain-user".to_string(),
+            "password123".to_string(),
+            AppPermissionMask::NONE,
+            Vec::new(),
+        )
+        .await
+        .expect("create user without grants");
+
+    assert_eq!(created.username, "plain-user");
+}
+
+#[tokio::test]
+async fn create_user_with_app_permission_grants_requires_manage_permissions() {
+    let (app, _) = bootstrap();
+    let actor = test_user_with_app_permissions("user-admin", AppPermissionMask::MANAGE_USERS);
+
+    let result = app
+        .create_user(
+            &actor,
+            "privileged-user".to_string(),
+            "password123".to_string(),
+            AppPermissionMask::MANAGE_SYSTEM_SETTINGS,
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(AppError::Unauthorized(_))));
+}
+
+#[tokio::test]
+async fn create_user_with_library_permission_grants_requires_manage_permissions() {
+    let (app, _) = bootstrap();
+    let actor = test_user_with_app_permissions("user-admin", AppPermissionMask::MANAGE_USERS);
+
+    let result = app
+        .create_user(
+            &actor,
+            "library-user".to_string(),
+            "password123".to_string(),
+            AppPermissionMask::NONE,
+            vec![scryer_domain::LibraryGrant {
+                user_id: String::new(),
+                library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+                permissions: scryer_domain::LibraryPermissionMask::VIEW,
+            }],
+        )
+        .await;
+
+    assert!(matches!(result, Err(AppError::Unauthorized(_))));
 }
 
 #[tokio::test]

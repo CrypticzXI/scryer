@@ -48,7 +48,7 @@ fn validate_graphql_documents(manifest_dir: &Path) {
                 continue;
             }
 
-            if !path.extension().is_some_and(|ext| ext == "graphql") {
+            if path.extension().is_none_or(|ext| ext != "graphql") {
                 continue;
             }
 

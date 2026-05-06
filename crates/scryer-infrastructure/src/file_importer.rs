@@ -101,7 +101,7 @@ fn ensure_same_file_identity(path: &Path, expected: &FileFingerprint) -> AppResu
 }
 
 fn io_other(error: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, error.to_string())
+    io::Error::other(error.to_string())
 }
 
 #[async_trait]

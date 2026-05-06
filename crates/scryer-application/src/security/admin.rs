@@ -333,6 +333,14 @@ impl AppUseCase {
     ) -> AppResult<User> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
+        if !app_permissions.is_empty()
+            || library_grants
+                .iter()
+                .any(|grant| !grant.permissions.is_empty())
+        {
+            self.require_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
+                .await?;
+        }
 
         let username = username.trim().to_string();
         if username.is_empty() {

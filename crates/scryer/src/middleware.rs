@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase};
-use scryer_domain::Entitlement;
+use scryer_domain::AppPermission;
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch};
 use std::net::{IpAddr, SocketAddr};
 
@@ -471,37 +471,35 @@ pub(crate) fn parse_bearer_token(raw: &str) -> Option<&str> {
     }
 }
 
-pub(crate) async fn resolve_actor_with_entitlement(
+pub(crate) async fn resolve_actor_with_app_permission(
     app_use_case: &AppUseCase,
     auth_runtime: &AuthRuntimeStateHandle,
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
-    required_entitlement: Entitlement,
+    required_permission: AppPermission,
 ) -> Result<String, AppError> {
     let snapshot = auth_runtime.snapshot();
-    if !snapshot.effective_form_login_enabled {
-        let actor = app_use_case.find_or_create_default_user().await?;
-        return Ok(actor.id);
-    }
-
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
-    let actor = match authorization_token_from_headers(headers) {
-        Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
-            Ok(actor) => actor,
+    let actor = if !snapshot.effective_form_login_enabled {
+        app_use_case.find_or_create_default_user().await?
+    } else {
+        match authorization_token_from_headers(headers) {
+            Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
+                Ok(actor) => actor,
+                Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
+                Err(error) => return Err(error),
+            },
+            Ok(None) if local_bypass => app_use_case.find_or_create_default_user().await?,
+            Ok(None) => return Err(AppError::Unauthorized("authorization required".into())),
             Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
             Err(error) => return Err(error),
-        },
-        Ok(None) if local_bypass => app_use_case.find_or_create_default_user().await?,
-        Ok(None) => return Err(AppError::Unauthorized("authorization required".into())),
-        Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
-        Err(error) => return Err(error),
+        }
     };
 
-    if !actor.has_entitlement(&required_entitlement) {
-        return Err(AppError::Unauthorized(
-            "authenticated user does not have required entitlement".into(),
-        ));
-    }
+    let actor = app_use_case.attach_user_authorization(actor).await?;
+    app_use_case
+        .require_app_permission(&actor, required_permission)
+        .await?;
 
     Ok(actor.id)
 }

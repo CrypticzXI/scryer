@@ -70,10 +70,10 @@ fn rows_to_libraries(rows: Vec<sqlx::sqlite::SqliteRow>) -> AppResult<Vec<Librar
                 )?,
             });
         }
-        if root_id.is_some() {
-            if let Some(library) = libraries.last_mut() {
-                library.roots.push(row_to_root(&row)?);
-            }
+        if root_id.is_some()
+            && let Some(library) = libraries.last_mut()
+        {
+            library.roots.push(row_to_root(&row)?);
         }
     }
     Ok(libraries)

@@ -53,12 +53,12 @@ pub enum StepScope {
 
 impl StepScope {
     pub fn applies_to(self, install_kind: MigrationInstallKind) -> bool {
-        match (self, install_kind) {
-            (Self::All, _) => true,
-            (Self::UpgradeOnly, MigrationInstallKind::Upgrade) => true,
-            (Self::NewInstallOnly, MigrationInstallKind::FreshInstall) => true,
-            _ => false,
-        }
+        matches!(
+            (self, install_kind),
+            (Self::All, _)
+                | (Self::UpgradeOnly, MigrationInstallKind::Upgrade)
+                | (Self::NewInstallOnly, MigrationInstallKind::FreshInstall)
+        )
     }
 }
 
@@ -271,8 +271,7 @@ pub fn compile_source_bundle(db_root: &Path) -> Result<CompiledMigrationBundle, 
     let mut explicit = manifest.migrations.clone();
     explicit.sort_by_key(|migration| migration.version);
 
-    let mut expected_version = legacy_through_version + 1;
-    for migration in explicit {
+    for (expected_version, migration) in (legacy_through_version + 1..).zip(explicit) {
         if migration.version != expected_version {
             return Err(format!(
                 "explicit migration versions must be contiguous starting at {expected_version:04}; found {:04}",
@@ -285,7 +284,6 @@ pub fn compile_source_bundle(db_root: &Path) -> Result<CompiledMigrationBundle, 
             &migration,
             &mut payload_bytes,
         )?);
-        expected_version += 1;
     }
 
     validate_contiguous_versions(&migrations)?;
@@ -362,7 +360,7 @@ fn compile_legacy_migrations(
         let entry = entry
             .map_err(|error| format!("failed to read {}: {error}", migrations_dir.display()))?;
         let path = entry.path();
-        if !path.extension().is_some_and(|value| value == "sql") {
+        if path.extension().is_none_or(|value| value != "sql") {
             continue;
         }
         let file_name = entry.file_name();

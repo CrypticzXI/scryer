@@ -5,14 +5,14 @@ use axum::Json;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use scryer_application::AppUseCase;
-use scryer_domain::{Entitlement, NewIndexerConfig};
+use scryer_domain::{AppPermission, NewIndexerConfig};
 use scryer_infrastructure::SqliteSettingsStore;
 use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
 
-use crate::middleware::{map_app_error, resolve_actor_with_entitlement};
+use crate::middleware::{map_app_error, resolve_actor_with_app_permission};
 use crate::normalize_env_option;
-use crate::settings_bootstrap::SETTINGS_SCOPE_SYSTEM;
+use crate::settings_bootstrap::{SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM};
 
 pub(crate) async fn bootstrap_admin_password(app_use_case: &AppUseCase) {
     let admin = match app_use_case.find_or_create_default_user().await {
@@ -197,6 +197,14 @@ pub(crate) struct AdminSettingsQuery {
     category: Option<String>,
 }
 
+fn permission_for_settings_scope(scope: &str) -> AppPermission {
+    if scope == SETTINGS_SCOPE_MEDIA {
+        AppPermission::ManageCatalogSettings
+    } else {
+        AppPermission::ManageSystemSettings
+    }
+}
+
 pub(crate) async fn admin_settings_list(
     database: SqliteSettingsStore,
     app_use_case: AppUseCase,
@@ -205,12 +213,18 @@ pub(crate) async fn admin_settings_list(
     remote_addr: SocketAddr,
     query: AdminSettingsQuery,
 ) -> Response {
-    let _actor = match resolve_actor_with_entitlement(
+    let scope = query
+        .scope
+        .as_deref()
+        .unwrap_or(SETTINGS_SCOPE_SYSTEM)
+        .to_string();
+    let required_permission = permission_for_settings_scope(&scope);
+    let _actor = match resolve_actor_with_app_permission(
         &app_use_case,
         &auth_runtime,
         &headers,
         Some(remote_addr),
-        Entitlement::ManageConfig,
+        required_permission,
     )
     .await
     {
@@ -218,9 +232,6 @@ pub(crate) async fn admin_settings_list(
         Err(error) => return map_app_error(error),
     };
 
-    let scope = query
-        .scope
-        .unwrap_or_else(|| SETTINGS_SCOPE_SYSTEM.to_string());
     let category_filter = query.category.map(|value| value.trim().to_string());
 
     let records = match database
@@ -420,5 +431,26 @@ pub(crate) fn parse_env_bool(name: &str, default: bool) -> bool {
         "1" | "true" | "yes" | "y" | "on" => true,
         "0" | "false" | "no" | "n" | "off" => false,
         _ => default,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_settings_scope_requires_catalog_settings_permission() {
+        assert_eq!(
+            permission_for_settings_scope(SETTINGS_SCOPE_MEDIA),
+            AppPermission::ManageCatalogSettings
+        );
+    }
+
+    #[test]
+    fn system_settings_scope_requires_system_settings_permission() {
+        assert_eq!(
+            permission_for_settings_scope(SETTINGS_SCOPE_SYSTEM),
+            AppPermission::ManageSystemSettings
+        );
     }
 }
