@@ -11,12 +11,12 @@ use crate::{
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
     parse_release_metadata,
     polling_worker::PollingWorker,
-    render_rename_template, require, sanitize_filesystem_component,
+    render_rename_template, sanitize_filesystem_component,
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
-    DownloadQueueState, Entitlement, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
+    DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
     ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, User,
     is_video_file,
 };
@@ -200,8 +200,6 @@ pub async fn retry_failed_import(
     import_id: &str,
     password: Option<&str>,
 ) -> AppResult<ImportResult> {
-    crate::require(actor, &Entitlement::ManageTitle)?;
-
     let record = app
         .services
         .workflow
@@ -220,6 +218,37 @@ pub async fn retry_failed_import(
 
     let completed: CompletedDownload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
+
+    if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let title = app
+            .services
+            .catalog
+            .titles
+            .get_by_id(&title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        app.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
+    } else if app
+        .authorized_library_ids(
+            actor,
+            None,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?
+        .is_empty()
+    {
+        return Err(AppError::Unauthorized(
+            "You do not have access to this library".to_string(),
+        ));
+    }
 
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
@@ -3151,6 +3180,7 @@ async fn resolve_import_quality_profile(
     match app
         .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
             title_tags: &title.tags,
+            library_id: Some(title.library_id.as_str()),
             imdb_id: title.imdb_id.as_deref(),
             tvdb_id,
             category_hint: Some(category_hint),
@@ -3175,11 +3205,15 @@ async fn resolve_import_audio_persona(
 ) -> (Vec<String>, crate::ScoringPersona) {
     let category_hint = crate::post_download_gate::facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(Some(&title.id), Some(category_hint))
+        .resolve_required_audio_languages(
+            Some(&title.id),
+            Some(title.library_id.as_str()),
+            Some(category_hint),
+        )
         .await
         .unwrap_or_default();
     let persona = app
-        .resolve_scoring_persona(Some(category_hint))
+        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
         .await
         .unwrap_or_default();
 
@@ -3830,10 +3864,25 @@ pub struct ManualImportPreview {
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
 pub async fn preview_manual_import(
     app: &AppUseCase,
+    actor: &User,
     client_id: Option<&str>,
     download_client_item_id: &str,
     title_id: &str,
 ) -> AppResult<ManualImportPreview> {
+    let title = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+    app.require_library_permission(
+        actor,
+        &title.library_id,
+        scryer_domain::LibraryPermission::ResolveImports,
+    )
+    .await?;
+
     let completed = match app
         .resolve_manual_import_source(client_id, None, download_client_item_id)
         .await?
@@ -4257,7 +4306,6 @@ pub async fn execute_manual_import(
     completed: Option<&CompletedDownload>,
     files: Vec<ManualImportFileMapping>,
 ) -> AppResult<Vec<ManualImportFileResult>> {
-    require(actor, &Entitlement::ManageTitle)?;
     let title = app
         .services
         .catalog
@@ -4265,6 +4313,12 @@ pub async fn execute_manual_import(
         .get_by_id(title_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("title not found: {}", title_id)))?;
+    app.require_library_permission(
+        actor,
+        &title.library_id,
+        scryer_domain::LibraryPermission::ResolveImports,
+    )
+    .await?;
 
     let (media_root, rename_template) = resolve_import_paths(app, &title).await?;
     let title_folder = sanitized_title_folder_component(&title.name);

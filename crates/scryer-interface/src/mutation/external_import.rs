@@ -6,13 +6,13 @@ use scryer_application::{
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
     ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotPayload, IndexerConfigUpdate,
 };
-use scryer_domain::{Entitlement, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
+use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use scryer_infrastructure::external_import::{
     self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ExternalArrClient,
 };
 use tokio::task::JoinSet;
 
-use crate::context::{actor_from_ctx, app_from_ctx};
+use crate::context::{actor_from_ctx, app_from_ctx, require_app_permission};
 use crate::types::*;
 
 #[derive(Default)]
@@ -28,10 +28,7 @@ impl ExternalImportMutations {
         ctx: &Context<'_>,
         input: PreviewExternalImportInput,
     ) -> GqlResult<ExternalImportPreviewPayload> {
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
 
         if input.sonarr.is_none() && input.radarr.is_none() {
             return Err(async_graphql::Error::new(
@@ -127,9 +124,6 @@ impl ExternalImportMutations {
         input: ExecuteExternalImportInput,
     ) -> GqlResult<ExternalImportResultPayload> {
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
 
         let app = app_from_ctx(ctx)?;
 

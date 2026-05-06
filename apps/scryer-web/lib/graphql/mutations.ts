@@ -11,7 +11,11 @@ export const loginMutation = `mutation Login($input: LoginInput!) {
     user {
       id
       username
-      entitlements
+      appPermissions
+      libraryPermissions {
+        libraryId
+        permissions
+      }
     }
     expiresAt
   }
@@ -21,7 +25,11 @@ export const createUserMutation = `mutation CreateUser($input: CreateUserInput!)
   createUser(input: $input) {
     id
     username
-    entitlements
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
   }
 }`;
 
@@ -29,15 +37,35 @@ export const setUserPasswordMutation = `mutation SetUserPassword($input: SetUser
   setUserPassword(input: $input) {
     id
     username
-    entitlements
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
   }
 }`;
 
-export const setUserEntitlementsMutation = `mutation SetUserEntitlements($input: SetUserEntitlementsInput!) {
-  setUserEntitlements(input: $input) {
+export const setUserAppPermissionsMutation = `mutation SetUserAppPermissions($input: SetUserAppPermissionsInput!) {
+  setUserAppPermissions(input: $input) {
     id
     username
-    entitlements
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
+  }
+}`;
+
+export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermissions($input: SetUserLibraryPermissionsInput!) {
+  setUserLibraryPermissions(input: $input) {
+    id
+    username
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
   }
 }`;
 
@@ -183,8 +211,8 @@ export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteM
   deleteMediaFile(input: $input)
 }`;
 
-export const scanLibraryMutation = `mutation ScanLibrary($facet: MediaFacetValue!) {
-  scanLibrary(facet: $facet) {
+export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!) {
+  scanLibrary(libraryId: $libraryId) {
     sessionId
     facet
     mode
@@ -192,6 +220,32 @@ export const scanLibraryMutation = `mutation ScanLibrary($facet: MediaFacetValue
     startedAt
     updatedAt
   }
+}`;
+
+const LIBRARY_FIELDS = `
+    id
+    facet
+    name
+    slug
+    isDefault
+    roots {
+      id
+      path
+      isDefault
+    }`;
+
+export const createLibraryMutation = `mutation CreateLibrary($input: CreateLibraryInput!) {
+  createLibrary(input: $input) {${LIBRARY_FIELDS}
+  }
+}`;
+
+export const updateLibraryMutation = `mutation UpdateLibrary($input: UpdateLibraryInput!) {
+  updateLibrary(input: $input) {${LIBRARY_FIELDS}
+  }
+}`;
+
+export const deleteEmptyLibraryMutation = `mutation DeleteEmptyLibrary($input: DeleteLibraryInput!) {
+  deleteEmptyLibrary(input: $input)
 }`;
 
 export const cancelLibraryScanMutation = `mutation CancelLibraryScan($input: CancelLibraryScanInput!) {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
 
-use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle};
+use scryer_domain::{ExternalId, MediaFacet, NewTitle};
 
 use chrono::Utc;
 use tracing::warn;
@@ -76,6 +76,8 @@ fn pending_import_item_from_unmatched(item: LibraryScanUnmatchedItem) -> Pending
 
     PendingImportItem {
         id: item.id,
+        library_id: item.library_id,
+        library_slug: None,
         facet: item.facet,
         status: item.status,
         title_id: item.title_id,
@@ -346,29 +348,39 @@ impl AppUseCase {
     }
 
     pub async fn pending_import_counts(&self, actor: &User) -> AppResult<PendingImportCounts> {
-        require(actor, &Entitlement::ManageTitle)?;
-
+        let manageable = self
+            .authorized_library_ids(
+                actor,
+                None,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
         let repository = self.services.library.library_scan_unmatched_items.clone();
-        let movie_repo = repository.clone();
-        let series_repo = repository.clone();
-        let anime_repo = repository;
-        let (movie, series, anime) = tokio::try_join!(
-            movie_repo.count_library_scan_unmatched_items(
-                Some(MediaFacet::Movie),
-                None,
-                Some(PendingImportStatus::Pending),
-            ),
-            series_repo.count_library_scan_unmatched_items(
-                Some(MediaFacet::Series),
-                None,
-                Some(PendingImportStatus::Pending),
-            ),
-            anime_repo.count_library_scan_unmatched_items(
-                Some(MediaFacet::Anime),
-                None,
-                Some(PendingImportStatus::Pending),
-            ),
-        )?;
+        let mut movie = 0;
+        let mut series = 0;
+        let mut anime = 0;
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let items = repository
+                .list_library_scan_unmatched_items(
+                    Some(facet.clone()),
+                    None,
+                    Some(PendingImportStatus::Pending),
+                    i64::MAX,
+                    0,
+                )
+                .await?;
+            let count = items
+                .into_iter()
+                .filter(|item| manageable.contains(&item.library_id))
+                .count() as i64;
+            match facet {
+                MediaFacet::Movie => movie = count,
+                MediaFacet::Series => series = count,
+                MediaFacet::Anime => anime = count,
+            }
+        }
 
         Ok(PendingImportCounts {
             movie,
@@ -381,27 +393,41 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: MediaFacet,
+        library_id: Option<String>,
         status: PendingImportStatus,
         limit: i64,
         offset: i64,
     ) -> AppResult<PendingImportConnection> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let limit = limit.clamp(0, MAX_PENDING_IMPORTS_PAGE_SIZE);
         let offset = offset.max(0);
-        let total = self
-            .services
-            .library
-            .library_scan_unmatched_items
-            .count_library_scan_unmatched_items(Some(facet.clone()), None, Some(status))
-            .await?;
-        let mut items = self
-            .services
-            .library
-            .library_scan_unmatched_items
-            .list_library_scan_unmatched_items(Some(facet), None, Some(status), limit, offset)
+        let manageable = self
+            .authorized_library_ids(
+                actor,
+                Some(facet.clone()),
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
             .await?
             .into_iter()
+            .collect::<HashSet<_>>();
+        let filtered = self
+            .services
+            .library
+            .library_scan_unmatched_items
+            .list_library_scan_unmatched_items(Some(facet), None, Some(status), i64::MAX, 0)
+            .await?
+            .into_iter()
+            .filter(|item| {
+                manageable.contains(&item.library_id)
+                    && library_id
+                        .as_ref()
+                        .is_none_or(|expected| expected == &item.library_id)
+            })
+            .collect::<Vec<_>>();
+        let total = filtered.len() as i64;
+        let mut items = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
             .map(pending_import_item_from_unmatched)
             .collect::<Vec<_>>();
         self.hydrate_pending_import_known_titles(&mut items).await?;
@@ -454,8 +480,6 @@ impl AppUseCase {
         actor: &User,
         pending_import_id: &str,
     ) -> AppResult<IgnorePendingImportResult> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let pending_import_id = pending_import_id.trim();
         if pending_import_id.is_empty() {
             return Err(AppError::Validation("pending import id is required".into()));
@@ -470,6 +494,12 @@ impl AppUseCase {
             .get_library_scan_unmatched_item(pending_import_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+        self.require_library_permission(
+            actor,
+            &item.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
 
         if item.status != PendingImportStatus::Ignored {
             item.status = PendingImportStatus::Ignored;
@@ -493,8 +523,6 @@ impl AppUseCase {
         pending_import_id: &str,
         target_tvdb_id: &str,
     ) -> AppResult<ResolvePendingImportResult> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let pending_import_id = pending_import_id.trim();
         if pending_import_id.is_empty() {
             return Err(AppError::Validation("pending import id is required".into()));
@@ -517,6 +545,12 @@ impl AppUseCase {
             .get_library_scan_unmatched_item(pending_import_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+        self.require_library_permission(
+            actor,
+            &item.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         if item.title_id.is_some() {
             return Err(AppError::Validation(
                 "pending import requires explicit episode binding".into(),
@@ -528,7 +562,8 @@ impl AppUseCase {
             .catalog
             .titles
             .find_by_external_id_in_facet(item.facet.clone(), "tvdb", target_tvdb_id)
-            .await?;
+            .await?
+            .filter(|title| title.library_id == item.library_id);
 
         let (title, created) = if let Some(existing_title) = existing_title {
             (existing_title, false)
@@ -591,7 +626,11 @@ impl AppUseCase {
                 }
             };
             let created = self
-                .create_title_without_hydration(actor, new_title)
+                .create_title_without_hydration_in_library(
+                    actor,
+                    new_title,
+                    item.library_id.clone(),
+                )
                 .await?;
             (created.title, !created.reused_existing)
         };
@@ -735,7 +774,11 @@ impl AppUseCase {
         self.services
             .library
             .library_scan_unmatched_items
-            .delete_library_scan_unmatched_item(item.facet.clone(), &item.item_path)
+            .delete_library_scan_unmatched_item(
+                &item.library_id,
+                item.facet.clone(),
+                &item.item_path,
+            )
             .await?;
 
         let refreshed_title = self
@@ -758,8 +801,6 @@ impl AppUseCase {
         actor: &User,
         pending_import_id: &str,
     ) -> AppResult<PendingImportBindingPreview> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let pending_import_id = pending_import_id.trim();
         if pending_import_id.is_empty() {
             return Err(AppError::Validation("pending import id is required".into()));
@@ -772,6 +813,12 @@ impl AppUseCase {
             .get_library_scan_unmatched_item(pending_import_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+        self.require_library_permission(
+            actor,
+            &item.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         let title_id = item.title_id.as_deref().ok_or_else(|| {
             AppError::Validation("pending import does not have a known title".into())
         })?;
@@ -830,8 +877,6 @@ impl AppUseCase {
         collection_id: Option<&str>,
         episode_ids: &[String],
     ) -> AppResult<ResolvePendingImportResult> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let pending_import_id = pending_import_id.trim();
         if pending_import_id.is_empty() {
             return Err(AppError::Validation("pending import id is required".into()));
@@ -846,6 +891,12 @@ impl AppUseCase {
             .get_library_scan_unmatched_item(pending_import_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("pending import {pending_import_id}")))?;
+        self.require_library_permission(
+            actor,
+            &item.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         let title_id = item.title_id.as_deref().ok_or_else(|| {
             AppError::Validation("pending import does not have a known title".into())
         })?;
@@ -957,7 +1008,11 @@ impl AppUseCase {
         self.services
             .library
             .library_scan_unmatched_items
-            .delete_library_scan_unmatched_item(item.facet.clone(), &item.item_path)
+            .delete_library_scan_unmatched_item(
+                &item.library_id,
+                item.facet.clone(),
+                &item.item_path,
+            )
             .await?;
 
         let refreshed_title = self

@@ -10,6 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -22,6 +29,7 @@ import {
 import {
   pendingImportBindingPreviewQuery,
   pendingImportsQuery,
+  librariesQuery,
   searchMetadataQuery,
 } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
@@ -31,6 +39,7 @@ import type {
   PendingImportConnection,
   PendingImportItem,
   PendingImportStatus,
+  LibraryRecord,
   ResolvePendingImportResult,
 } from "@/lib/types";
 import { pendingImportFacetValueForView } from "@/lib/types";
@@ -43,6 +52,7 @@ type PendingImportsContainerProps = {
 };
 
 const PAGE_SIZE = 50;
+const ALL_LIBRARIES_VALUE = "__all__";
 
 type MetadataSearchResult = {
   tvdbId: string;
@@ -94,8 +104,9 @@ function pendingImportKnownTitleHref(item: PendingImportItem): string | null {
   }
 
   const titleSlug = item.titleSlug?.trim() || null;
-  const path = buildOverviewDetailPath(viewForPendingImportFacet(item.facet), titleSlug);
-  if (titleSlug) {
+  const librarySlug = item.librarySlug?.trim() || null;
+  const path = buildOverviewDetailPath(viewForPendingImportFacet(item.facet), librarySlug, titleSlug);
+  if (titleSlug && librarySlug) {
     return path;
   }
 
@@ -107,11 +118,7 @@ function pendingImportKnownTitleLabel(item: PendingImportItem): string {
   return item.titleName?.trim() || item.titleId?.trim() || "";
 }
 
-function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string {
-  if (episode.episodeLabel?.trim()) {
-    return episode.episodeLabel.trim();
-  }
-
+function formatBindingEpisodeKey(episode: PendingImportBindingEpisode): string | null {
   const season = episode.seasonNumber?.trim();
   const episodeNumber = episode.episodeNumber?.trim();
   if (season && episodeNumber) {
@@ -120,13 +127,49 @@ function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string
   if (episodeNumber) {
     return `Episode ${episodeNumber}`;
   }
-  return episode.title?.trim() || episode.id;
+  return null;
+}
+
+function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string {
+  return episode.episodeLabel?.trim() || episode.title?.trim() || episode.id;
+}
+
+function formatBindingEpisodeDisplay(episode: PendingImportBindingEpisode) {
+  const key = formatBindingEpisodeKey(episode);
+  const label = formatBindingEpisodeLabel(episode);
+  return {
+    key,
+    label,
+    showSeparateLabel: Boolean(key && label !== key),
+  };
+}
+
+function bindingSeasonKeyForEpisode(episode: PendingImportBindingEpisode): string {
+  return episode.seasonNumber?.trim() || "specials";
+}
+
+function bindingSeasonKeysForSelection(
+  episodes: PendingImportBindingEpisode[],
+  selectedEpisodeIds: string[],
+): string[] {
+  if (selectedEpisodeIds.length === 0) {
+    return [];
+  }
+
+  const selectedIds = new Set(selectedEpisodeIds);
+  const expandedKeys = new Set<string>();
+  for (const episode of episodes) {
+    if (selectedIds.has(episode.id)) {
+      expandedKeys.add(bindingSeasonKeyForEpisode(episode));
+    }
+  }
+  return Array.from(expandedKeys);
 }
 
 function groupBindingEpisodes(episodes: PendingImportBindingEpisode[]) {
   const groups = new Map<string, PendingImportBindingEpisode[]>();
   for (const episode of episodes) {
-    const key = episode.seasonNumber?.trim() || "specials";
+    const key = bindingSeasonKeyForEpisode(episode);
     const group = groups.get(key);
     if (group) {
       group.push(episode);
@@ -173,6 +216,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [ignoredLoading, setIgnoredLoading] = React.useState(false);
   const [pendingLoaded, setPendingLoaded] = React.useState(false);
   const [ignoredLoaded, setIgnoredLoaded] = React.useState(false);
+  const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
+  const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [selectedLibraryId, setSelectedLibraryId] = React.useState(ALL_LIBRARIES_VALUE);
   const [pendingError, setPendingError] = React.useState<string | null>(null);
   const [ignoredError, setIgnoredError] = React.useState<string | null>(null);
   const [ignoredOpen, setIgnoredOpen] = React.useState(false);
@@ -187,9 +233,59 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [bindingLoading, setBindingLoading] = React.useState(false);
   const [bindingError, setBindingError] = React.useState<string | null>(null);
   const [selectedEpisodeIds, setSelectedEpisodeIds] = React.useState<string[]>([]);
+  const [expandedBindingSeasonKeys, setExpandedBindingSeasonKeys] = React.useState<string[]>([]);
   const [resolvingItemId, setResolvingItemId] = React.useState<string | null>(null);
   const [ignoringItemId, setIgnoringItemId] = React.useState<string | null>(null);
   const [ignoreTargetItem, setIgnoreTargetItem] = React.useState<PendingImportItem | null>(null);
+  const libraryNameById = React.useMemo(
+    () => new Map(libraries.map((library) => [library.id, library.name])),
+    [libraries],
+  );
+  const librarySlugById = React.useMemo(
+    () => new Map(libraries.map((library) => [library.id, library.slug])),
+    [libraries],
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLibrariesLoading(true);
+    void client
+      .query(
+        librariesQuery,
+        { facet: pendingImportFacetValueForView(view), permission: "resolveImports" },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          throw error;
+        }
+        const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+        setLibraries(nextLibraries);
+        setSelectedLibraryId((current) =>
+          current === ALL_LIBRARIES_VALUE ||
+          nextLibraries.some((library) => library.id === current)
+            ? current
+            : ALL_LIBRARIES_VALUE,
+        );
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLibrariesLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, setGlobalStatus, t, view]);
 
   const clearActiveItem = React.useCallback(() => {
     setActiveItemRef(null);
@@ -200,6 +296,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setBindingLoading(false);
     setBindingError(null);
     setSelectedEpisodeIds([]);
+    setExpandedBindingSeasonKeys([]);
     setIgnoreTargetItem(null);
   }, []);
 
@@ -233,6 +330,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       const { data, error: queryError } = await client
         .query(pendingImportsQuery, {
           facet: pendingImportFacetValueForView(view),
+          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
           status,
           limit: PAGE_SIZE,
           offset: pageOffset,
@@ -242,12 +340,19 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         throw queryError;
       }
 
-      return (data?.pendingImports ?? {
+      const connection = (data?.pendingImports ?? {
         total: 0,
         items: [],
       }) as PendingImportConnection;
+      return {
+        ...connection,
+        items: connection.items.map((item) => ({
+          ...item,
+          librarySlug: item.librarySlug ?? librarySlugById.get(item.libraryId) ?? null,
+        })),
+      };
     },
-    [client, view],
+    [client, librarySlugById, selectedLibraryId, view],
   );
 
   const refresh = React.useCallback(
@@ -312,7 +417,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setIgnoredLoaded(false);
     setIgnoredOpen(false);
     clearActiveItem();
-  }, [clearActiveItem, view]);
+  }, [clearActiveItem, selectedLibraryId, view]);
 
   React.useEffect(() => {
     if (
@@ -432,6 +537,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     setBindingPreview(null);
     setBindingError(null);
     setSelectedEpisodeIds([]);
+    setExpandedBindingSeasonKeys([]);
 
     if (item.titleId) {
       setSearchQuery("");
@@ -444,8 +550,16 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         .then(({ data, error }) => {
           if (error) throw error;
           const preview = data?.pendingImportBindingPreview as PendingImportBindingPreview | undefined;
-          setBindingPreview(preview ?? null);
-          setSelectedEpisodeIds(preview?.file.suggestedEpisodeIds ?? []);
+          const bindingPreview = preview ?? null;
+          const suggestedEpisodeIds = bindingPreview?.file.suggestedEpisodeIds ?? [];
+          setBindingPreview(bindingPreview);
+          setSelectedEpisodeIds(suggestedEpisodeIds);
+          setExpandedBindingSeasonKeys(
+            bindingSeasonKeysForSelection(
+              bindingPreview?.availableEpisodes ?? [],
+              suggestedEpisodeIds,
+            ),
+          );
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : "Failed to load binding preview";
@@ -652,6 +766,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         const isBusy = isResolving || isIgnoring || (isActive && bindingLoading);
         const knownTitleHref = pendingImportKnownTitleHref(item);
         const knownTitleLabel = pendingImportKnownTitleLabel(item);
+        const libraryLabel = item.libraryName ?? libraryNameById.get(item.libraryId) ?? item.libraryId;
 
         return (
           <Card key={item.id} className="border-border/80 bg-card/60">
@@ -660,6 +775,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                 <div className="space-y-1">
                   <CardTitle className="text-base">{item.displayName}</CardTitle>
                   <p className="text-sm text-muted-foreground">{summarizePendingImport(item)}</p>
+                  <p className="text-xs text-muted-foreground">Library: {libraryLabel}</p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Button
@@ -754,9 +870,16 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                               size="sm"
                               variant="outline"
                               disabled={isBusy}
-                              onClick={() =>
-                                setSelectedEpisodeIds(bindingPreview.file.suggestedEpisodeIds)
-                              }
+                              onClick={() => {
+                                const suggestedEpisodeIds = bindingPreview.file.suggestedEpisodeIds;
+                                setSelectedEpisodeIds(suggestedEpisodeIds);
+                                setExpandedBindingSeasonKeys(
+                                  bindingSeasonKeysForSelection(
+                                    bindingPreview.availableEpisodes,
+                                    suggestedEpisodeIds,
+                                  ),
+                                );
+                              }}
                             >
                               Use Suggested
                             </Button>
@@ -765,63 +888,118 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
                               size="sm"
                               variant="outline"
                               disabled={isBusy}
-                              onClick={() => setSelectedEpisodeIds([])}
+                              onClick={() => {
+                                setSelectedEpisodeIds([]);
+                                setExpandedBindingSeasonKeys([]);
+                              }}
                             >
                               Clear
                             </Button>
                           </div>
 
                           <div className="space-y-4">
-                            {bindingGroups.map(([seasonKey, episodes]) => (
-                              <div key={seasonKey} className="space-y-2">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="text-sm font-medium text-foreground">
-                                    {seasonKey === "specials" ? "Specials" : `Season ${seasonKey}`}
-                                  </div>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    disabled={isBusy}
-                                    onClick={() =>
-                                      setSelectedEpisodeIds((current) => {
-                                        const next = new Set(current);
-                                        for (const episode of episodes) {
-                                          next.add(episode.id);
-                                        }
-                                        return Array.from(next);
-                                      })
-                                    }
-                                  >
-                                    Select Season
-                                  </Button>
-                                </div>
-                                <div className="space-y-2 rounded-md border border-border/70 p-3">
-                                  {episodes.map((episode) => (
-                                    <label
-                                      key={episode.id}
-                                      className="flex items-start gap-3 text-sm text-foreground"
+                            {bindingGroups.map(([seasonKey, episodes]) => {
+                              const seasonOpen = expandedBindingSeasonKeys.includes(seasonKey);
+                              return (
+                                <Collapsible
+                                  key={seasonKey}
+                                  open={seasonOpen}
+                                  onOpenChange={(open) =>
+                                    setExpandedBindingSeasonKeys((current) =>
+                                      open
+                                        ? current.includes(seasonKey)
+                                          ? current
+                                          : [...current, seasonKey]
+                                        : current.filter((key) => key !== seasonKey),
+                                    )
+                                  }
+                                  className="space-y-2"
+                                >
+                                  <div className="flex items-center justify-between gap-3">
+                                    <CollapsibleTrigger asChild>
+                                      <button
+                                        type="button"
+                                        className="flex min-w-0 items-center gap-2 text-left text-sm font-medium text-foreground"
+                                      >
+                                        <ChevronDown
+                                          className={`h-4 w-4 shrink-0 transition-transform ${
+                                            seasonOpen ? "rotate-0" : "-rotate-90"
+                                          }`}
+                                        />
+                                        <span>
+                                          {seasonKey === "specials"
+                                            ? "Specials"
+                                            : `Season ${seasonKey}`}
+                                        </span>
+                                      </button>
+                                    </CollapsibleTrigger>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={isBusy}
+                                      onClick={() => {
+                                        setSelectedEpisodeIds((current) => {
+                                          const next = new Set(current);
+                                          for (const episode of episodes) {
+                                            next.add(episode.id);
+                                          }
+                                          return Array.from(next);
+                                        });
+                                        setExpandedBindingSeasonKeys((current) =>
+                                          current.includes(seasonKey)
+                                            ? current
+                                            : [...current, seasonKey],
+                                        );
+                                      }}
                                     >
-                                      <Checkbox
-                                        checked={selectedEpisodeIds.includes(episode.id)}
-                                        onCheckedChange={(checked) =>
-                                          toggleEpisodeSelection(episode.id, Boolean(checked))
-                                        }
-                                        disabled={isBusy}
-                                      />
-                                      <span className="min-w-0">
-                                        {formatBindingEpisodeLabel(episode)}
-                                        {!episode.monitored ? (
-                                          <span className="ml-2 text-xs text-muted-foreground">
-                                            unmonitored
-                                          </span>
-                                        ) : null}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
+                                      Select Season
+                                    </Button>
+                                  </div>
+                                  <CollapsibleContent>
+                                    <div className="space-y-2 rounded-md border border-border/70 p-3">
+                                      {episodes.map((episode) => {
+                                        const episodeDisplay =
+                                          formatBindingEpisodeDisplay(episode);
+                                        return (
+                                          <label
+                                            key={episode.id}
+                                            className="flex items-start gap-3 text-sm text-foreground"
+                                          >
+                                            <Checkbox
+                                              checked={selectedEpisodeIds.includes(episode.id)}
+                                              onCheckedChange={(checked) =>
+                                                toggleEpisodeSelection(
+                                                  episode.id,
+                                                  Boolean(checked),
+                                                )
+                                              }
+                                              disabled={isBusy}
+                                            />
+                                            <span className="min-w-0">
+                                              {episodeDisplay.showSeparateLabel ? (
+                                                <>
+                                                  <span className="font-medium">
+                                                    {episodeDisplay.key}
+                                                  </span>
+                                                  <span className="ml-2 text-muted-foreground">
+                                                    {episodeDisplay.label}
+                                                  </span>
+                                                </>
+                                              ) : (
+                                                <span>
+                                                  {episodeDisplay.key ?? episodeDisplay.label}
+                                                </span>
+                                              )}
+                                            </span>
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              );
+                            })}
                           </div>
 
                           <div className="flex justify-end">
@@ -927,11 +1105,13 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     bindingLoading,
     bindingPreview,
     clearActiveItem,
+    expandedBindingSeasonKeys,
     handleBind,
     handleOpenSearch,
     handleRequestIgnore,
     handleResolve,
     ignoringItemId,
+    libraryNameById,
     resolvingItemId,
     searchQuery,
     searchResults,
@@ -953,6 +1133,29 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             })}
           </p>
         </CardHeader>
+        <CardContent>
+          <Select
+            value={selectedLibraryId}
+            onValueChange={(value) => {
+              setSelectedLibraryId(value);
+              setPendingOffset(0);
+              setIgnoredOffset(0);
+            }}
+            disabled={librariesLoading || libraries.length === 0}
+          >
+            <SelectTrigger className="w-full sm:w-[220px]">
+              <SelectValue placeholder="Library" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_LIBRARIES_VALUE}>All Libraries</SelectItem>
+              {libraries.map((library) => (
+                <SelectItem key={library.id} value={library.id}>
+                  {library.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </CardContent>
       </Card>
 
       {pendingLoading || ignoredLoading ? (

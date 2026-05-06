@@ -68,6 +68,7 @@ async fn seed_series_title(
     let title = Title {
         id: id.to_string(),
         name: name.to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         monitored: true,
         tags: vec![format!(
@@ -229,6 +230,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         .pending_imports(
             &actor,
             MediaFacet::Series,
+            None,
             PendingImportStatus::Pending,
             20,
             0,
@@ -268,6 +270,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         .pending_imports(
             &actor,
             MediaFacet::Series,
+            None,
             PendingImportStatus::Pending,
             20,
             0,
@@ -331,6 +334,7 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
         .pending_imports(
             &actor,
             MediaFacet::Series,
+            None,
             PendingImportStatus::Pending,
             20,
             0,
@@ -351,6 +355,7 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
         .pending_imports(
             &actor,
             MediaFacet::Series,
+            None,
             PendingImportStatus::Pending,
             20,
             0,
@@ -447,6 +452,7 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
     let now = chrono::Utc::now().to_rfc3339();
     let pending_item = LibraryScanUnmatchedItem {
         id: Id::new().0,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         facet: MediaFacet::Series,
         status: PendingImportStatus::Pending,
         title_id: None,

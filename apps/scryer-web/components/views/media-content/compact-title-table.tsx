@@ -116,7 +116,7 @@ export function CompactTitleTable({
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const columnCount = isMovieView ? 6 : 8;
+  const columnCount = isMovieView ? 7 : 9;
   const selectedVisibleCount = titles.filter((title) =>
     selectedTitleIds.has(title.id),
   ).length;
@@ -133,6 +133,7 @@ export function CompactTitleTable({
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
+      <col style={{ width: "8rem" }} />
       <col style={{ width: "5.5rem" }} />
       <col style={{ width: "9rem" }} />
       {!isMovieView ? <col style={{ width: "8.5rem" }} /> : null}
@@ -409,6 +410,9 @@ export function CompactTitleTable({
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
+          <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-muted-foreground">
+            <span className="block truncate">{item.libraryName ?? item.libraryId}</span>
+          </TableCell>
           <TableCell className="text-center align-middle">
             <span
               className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
@@ -597,6 +601,7 @@ export function CompactTitleTable({
           />
         </TableHead>
         {renderSortableHeader("name", t("label.name"))}
+        <TableHead className="whitespace-nowrap">Library</TableHead>
         {renderSortableHeader(
           "monitored",
           t("title.table.monitored"),

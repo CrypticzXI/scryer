@@ -221,6 +221,9 @@ const PosterCard = React.memo(function PosterCard({
                   {t("title.ended")}
                 </div>
               ) : null}
+              <div className="absolute bottom-1.5 left-1.5 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
+                <span className="block truncate">{title.libraryName ?? title.libraryId}</span>
+              </div>
             </div>
           </button>
         </div>

@@ -9,15 +9,45 @@ use crate::event_views::{
 };
 use crate::events::retention::user_facing_domain_event_types;
 use scryer_domain::{
-    AcquisitionCandidateRejectedEventData, AcquisitionSearchCompletedEventData,
+    AcquisitionCandidateRejectedEventData, AcquisitionSearchCompletedEventData, AppPermission,
     ConfigurationChangeAction, ConfigurationChangedEventData, DiscoverySearchCompletedEventData,
     DomainEventPayload, DownloadQueueCommandAction, DownloadQueueItemCommandIssuedEventData,
     ImportRecoveryCompletedEventData, ImportRequestKind, ImportRequestedEventData,
-    MetadataHydrationState, MetadataHydrationUpdatedEventData, PostProcessingCompletedEventData,
-    PostProcessingResult, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
-    TitleUpdatedEventData,
+    LibraryPermission, MediaFacet, MetadataHydrationState, MetadataHydrationUpdatedEventData,
+    PostProcessingCompletedEventData, PostProcessingResult, SubtitleDownloadedEventData,
+    SubtitleSearchFailedEventData, TitleUpdatedEventData,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+async fn load_library_scan_visibility(
+    app: &AppUseCase,
+    actor: &User,
+) -> AppResult<HashMap<MediaFacet, HashSet<String>>> {
+    let mut visibility = HashMap::new();
+    for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+        let library_ids = app
+            .authorized_library_ids(actor, Some(facet.clone()), LibraryPermission::View)
+            .await?;
+        if !library_ids.is_empty() {
+            visibility.insert(facet, library_ids.into_iter().collect());
+        }
+    }
+    Ok(visibility)
+}
+
+fn library_scan_session_visible(
+    session: &LibraryScanSession,
+    visibility: &HashMap<MediaFacet, HashSet<String>>,
+) -> bool {
+    let Some(visible_library_ids) = visibility.get(&session.facet) else {
+        return false;
+    };
+    match session.library_id.as_deref() {
+        Some(library_id) => visible_library_ids.contains(library_id),
+        None => !visible_library_ids.is_empty(),
+    }
+}
+
 async fn load_recent_projected_domain_events<T, F>(
     app: &AppUseCase,
     mut filter: DomainEventFilter,
@@ -60,6 +90,161 @@ where
     }
 
     Ok(projected)
+}
+
+async fn load_recent_authorized_projected_domain_events<T, F>(
+    app: &AppUseCase,
+    actor: &User,
+    mut filter: DomainEventFilter,
+    target_len: usize,
+    mut map: F,
+) -> AppResult<Vec<T>>
+where
+    F: FnMut(&DomainEvent) -> Option<T>,
+{
+    if target_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let allowed_library_ids = app
+        .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut title_library_cache = HashMap::new();
+    let mut projected = Vec::new();
+    let mut before_sequence = None;
+
+    loop {
+        filter.after_sequence = None;
+        filter.before_sequence = before_sequence;
+        filter.limit = 500;
+
+        let batch = app.services.events.domain_events.list(&filter).await?;
+        if batch.is_empty() {
+            break;
+        }
+
+        before_sequence = batch.last().map(|event| event.sequence);
+        for event in &batch {
+            if !event_allowed(
+                app,
+                actor,
+                event,
+                &allowed_library_ids,
+                &mut title_library_cache,
+            )
+            .await?
+            {
+                continue;
+            }
+            if let Some(item) = map(event) {
+                projected.push(item);
+                if projected.len() >= target_len {
+                    return Ok(projected);
+                }
+            }
+        }
+
+        if batch.len() < 500 {
+            break;
+        }
+    }
+
+    Ok(projected)
+}
+
+async fn event_title_allowed(
+    app: &AppUseCase,
+    title_id: Option<&str>,
+    allowed_library_ids: &HashSet<String>,
+    title_library_cache: &mut HashMap<String, Option<String>>,
+) -> AppResult<bool> {
+    let Some(title_id) = title_id else {
+        return Ok(false);
+    };
+    if let Some(library_id) = title_library_cache.get(title_id) {
+        return Ok(library_id
+            .as_ref()
+            .is_some_and(|library_id| allowed_library_ids.contains(library_id)));
+    }
+    let library_id = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await?
+        .map(|title| title.library_id);
+    let allowed = library_id
+        .as_ref()
+        .is_some_and(|library_id| allowed_library_ids.contains(library_id));
+    title_library_cache.insert(title_id.to_string(), library_id);
+    Ok(allowed)
+}
+
+async fn actor_can_view_titleless_operational_event(
+    app: &AppUseCase,
+    actor: &User,
+) -> AppResult<bool> {
+    app.has_app_permission(actor, AppPermission::ManageSystemSettings)
+        .await
+}
+
+async fn require_actor_view_library(app: &AppUseCase, actor: &User) -> AppResult<()> {
+    if app
+        .has_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized(
+            "You do not have access to this library".to_string(),
+        ))
+    }
+}
+
+async fn event_allowed(
+    app: &AppUseCase,
+    actor: &User,
+    event: &DomainEvent,
+    allowed_library_ids: &HashSet<String>,
+    title_library_cache: &mut HashMap<String, Option<String>>,
+) -> AppResult<bool> {
+    if event.title_id.is_some() {
+        return event_title_allowed(
+            app,
+            event.title_id.as_deref(),
+            allowed_library_ids,
+            title_library_cache,
+        )
+        .await;
+    }
+
+    match &event.payload {
+        DomainEventPayload::ConfigurationChanged(data)
+            if data.resource_type == "library"
+                && data
+                    .resource_id
+                    .as_ref()
+                    .is_some_and(|library_id| allowed_library_ids.contains(library_id)) =>
+        {
+            Ok(true)
+        }
+        DomainEventPayload::LibraryScanStarted(data) => Ok(data
+            .library_id
+            .as_ref()
+            .is_some_and(|library_id| allowed_library_ids.contains(library_id))),
+        DomainEventPayload::LibraryScanTitleDiscovered(data) => {
+            event_title_allowed(
+                app,
+                Some(&data.title_id),
+                allowed_library_ids,
+                title_library_cache,
+            )
+            .await
+        }
+        _ => actor_can_view_titleless_operational_event(app, actor).await,
+    }
 }
 
 pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
@@ -120,16 +305,24 @@ async fn project_title_history_page(
     // The legacy `title_history` table is deprecated compatibility state and must not
     // be used for live reads or writes.
     let matched_title_ids = resolve_title_history_title_ids(app, filter).await?;
-    if filter.title_search.is_some() && matched_title_ids.is_empty() {
+    if (filter.title_search.is_some() || filter.library_ids.is_some())
+        && matched_title_ids.is_empty()
+    {
         return Ok(TitleHistoryPage {
             records: Vec::new(),
             total_count: 0,
         });
     }
-    let effective_title_ids = match (&filter.title_ids, filter.title_search.as_ref()) {
-        (Some(_), Some(_)) | (None, Some(_)) => Some(matched_title_ids.clone()),
-        (Some(title_ids), None) => Some(title_ids.clone()),
-        (None, None) => None,
+    let effective_title_ids = match (
+        &filter.title_ids,
+        filter.title_search.as_ref(),
+        filter.library_ids.as_ref(),
+    ) {
+        (Some(_), Some(_), _) | (None, Some(_), _) | (_, None, Some(_)) => {
+            Some(matched_title_ids.clone())
+        }
+        (Some(title_ids), None, None) => Some(title_ids.clone()),
+        (None, None, None) => None,
     };
     if effective_title_ids
         .as_ref()
@@ -255,32 +448,52 @@ async fn resolve_title_history_title_ids(
     app: &AppUseCase,
     filter: &TitleHistoryFilter,
 ) -> AppResult<Vec<String>> {
-    let search_ids = if let Some(search) = filter.title_search.as_deref() {
-        app.services
-            .catalog
-            .titles
-            .list(None, Some(search.to_string()))
-            .await?
-            .into_iter()
-            .map(|title| title.id)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
+    let scoped_titles = match filter.library_ids.as_deref() {
+        Some(library_ids) => Some(
+            app.services
+                .catalog
+                .titles
+                .list_for_libraries(
+                    None,
+                    library_ids,
+                    filter.title_search.as_deref().map(str::to_string),
+                )
+                .await?,
+        ),
+        None if filter.title_search.is_some() => Some(
+            app.services
+                .catalog
+                .titles
+                .list(None, filter.title_search.as_deref().map(str::to_string))
+                .await?,
+        ),
+        None => None,
     };
+    let scoped_ids = scoped_titles
+        .unwrap_or_default()
+        .into_iter()
+        .map(|title| title.id)
+        .collect::<Vec<_>>();
 
-    Ok(match (&filter.title_ids, filter.title_search.as_ref()) {
-        (Some(title_ids), Some(_)) => {
-            let search_set = search_ids.iter().cloned().collect::<HashSet<_>>();
-            title_ids
-                .iter()
-                .filter(|title_id| search_set.contains(*title_id))
-                .cloned()
-                .collect()
-        }
-        (Some(title_ids), None) => title_ids.clone(),
-        (None, Some(_)) => search_ids,
-        (None, None) => Vec::new(),
-    })
+    Ok(
+        match (
+            &filter.title_ids,
+            filter.title_search.as_ref(),
+            filter.library_ids.as_ref(),
+        ) {
+            (Some(title_ids), Some(_), _) | (Some(title_ids), None, Some(_)) => {
+                let scoped_set = scoped_ids.iter().cloned().collect::<HashSet<_>>();
+                title_ids
+                    .iter()
+                    .filter(|title_id| scoped_set.contains(*title_id))
+                    .cloned()
+                    .collect()
+            }
+            (Some(title_ids), None, None) => title_ids.clone(),
+            (None, Some(_), _) | (None, None, Some(_)) => scoped_ids,
+            (None, None, None) => Vec::new(),
+        },
+    )
 }
 
 async fn hydrate_title_history_record_contexts(
@@ -677,7 +890,19 @@ impl AppUseCase {
         actor: &User,
         input: PolicyInput,
     ) -> AppResult<PolicyOutput> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&input.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", input.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let mut reason_codes = vec!["default_policy_evaluation".to_string()];
         if input.has_existing_file {
@@ -710,12 +935,29 @@ impl AppUseCase {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<HistoryEvent>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        if let Some(title_id) = title_id.as_deref() {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        } else {
+            require_actor_view_library(self, actor).await?;
+        }
         let offset = offset.max(0) as usize;
         let limit = limit.max(1) as usize;
         let user_facing_event_types = user_facing_domain_event_types();
-        let history = load_recent_projected_domain_events(
+        let history = load_recent_authorized_projected_domain_events(
             self,
+            actor,
             DomainEventFilter {
                 title_id,
                 event_types: Some(user_facing_event_types),
@@ -755,8 +997,22 @@ impl AppUseCase {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<ActivityEvent>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.recent_activity_page(limit, offset).await
+        require_actor_view_library(self, actor).await?;
+        let offset = offset.max(0) as usize;
+        let limit = limit.max(1) as usize;
+        let user_facing_event_types = user_facing_domain_event_types();
+        let activities = load_recent_authorized_projected_domain_events(
+            self,
+            actor,
+            DomainEventFilter {
+                event_types: Some(user_facing_event_types),
+                ..DomainEventFilter::default()
+            },
+            offset.saturating_add(limit),
+            activity_event_from_domain_event,
+        )
+        .await?;
+        Ok(activities.into_iter().skip(offset).take(limit).collect())
     }
 
     pub async fn list_domain_events(
@@ -764,8 +1020,65 @@ impl AppUseCase {
         actor: &User,
         filter: &DomainEventFilter,
     ) -> AppResult<Vec<DomainEvent>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.services.events.domain_events.list(filter).await
+        require_actor_view_library(self, actor).await?;
+        let target_len = if filter.limit == 0 {
+            100
+        } else {
+            filter.limit.min(500)
+        };
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut title_library_cache = HashMap::new();
+        let mut visible = Vec::new();
+
+        let forward = filter.after_sequence.is_some() && filter.before_sequence.is_none();
+        let mut page_filter = filter.clone();
+        page_filter.limit = 500;
+
+        loop {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&page_filter)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+
+            let next_sequence = events.last().map(|event| event.sequence);
+            let batch_len = events.len();
+            for event in events {
+                if event_allowed(
+                    self,
+                    actor,
+                    &event,
+                    &allowed_library_ids,
+                    &mut title_library_cache,
+                )
+                .await?
+                {
+                    visible.push(event);
+                    if visible.len() >= target_len {
+                        return Ok(visible);
+                    }
+                }
+            }
+
+            if batch_len < 500 {
+                break;
+            }
+
+            if forward {
+                page_filter.after_sequence = next_sequence;
+            } else {
+                page_filter.before_sequence = next_sequence;
+            }
+        }
+        Ok(visible)
     }
 
     pub async fn list_activity_events_after_sequence(
@@ -774,32 +1087,33 @@ impl AppUseCase {
         after_sequence: i64,
         limit: usize,
     ) -> AppResult<Vec<(i64, ActivityEvent)>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require_actor_view_library(self, actor).await?;
         let user_facing_event_types = user_facing_domain_event_types();
+        let mut visible = Vec::new();
         let events = self
-            .services
-            .events
-            .domain_events
-            .list(&DomainEventFilter {
-                event_types: Some(user_facing_event_types),
-                after_sequence: Some(after_sequence),
-                limit: limit.max(1),
-                ..DomainEventFilter::default()
-            })
+            .list_domain_events(
+                actor,
+                &DomainEventFilter {
+                    event_types: Some(user_facing_event_types),
+                    after_sequence: Some(after_sequence),
+                    limit: limit.max(1),
+                    ..DomainEventFilter::default()
+                },
+            )
             .await?;
-        Ok(events
-            .into_iter()
-            .filter_map(|event| {
-                activity_event_from_domain_event(&event).map(|activity| (event.sequence, activity))
-            })
-            .collect())
+        for event in events {
+            if let Some(activity) = activity_event_from_domain_event(&event) {
+                visible.push((event.sequence, activity));
+            }
+        }
+        Ok(visible)
     }
 
-    pub fn subscribe_activity_events(
+    pub async fn subscribe_activity_events(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<ActivityEvent>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require_actor_view_library(self, actor).await?;
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         let actor = actor.clone();
@@ -844,34 +1158,40 @@ impl AppUseCase {
         Ok(rx)
     }
 
-    pub fn subscribe_domain_event_sequences(
+    pub async fn subscribe_domain_event_sequences(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<i64>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        require_actor_view_library(self, actor).await?;
         Ok(self.runtime.events.domain_event_broadcast.subscribe())
     }
 
-    pub fn subscribe_import_history(&self, actor: &User) -> AppResult<broadcast::Receiver<()>> {
-        require(actor, &Entitlement::ManageTitle)?;
+    pub async fn subscribe_import_history(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<()>> {
+        require_actor_view_library(self, actor).await?;
         Ok(self.runtime.events.import_history_broadcast.subscribe())
     }
 
     pub async fn active_library_scans(&self, actor: &User) -> AppResult<Vec<LibraryScanSession>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let visibility = load_library_scan_visibility(self, actor).await?;
         Ok(self
             .runtime
             .library
             .library_scan_tracker
             .list_active()
-            .await)
+            .await
+            .into_iter()
+            .filter(|session| library_scan_session_visible(session, &visibility))
+            .collect())
     }
 
-    pub fn subscribe_library_scan_progress(
+    pub async fn subscribe_library_scan_progress(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<LibraryScanSession>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let visibility = load_library_scan_visibility(self, actor).await?;
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
@@ -882,6 +1202,9 @@ impl AppUseCase {
                 .subscribe_with_initial_snapshot()
                 .await;
             for session in initial_sessions {
+                if !library_scan_session_visible(&session, &visibility) {
+                    continue;
+                }
                 if tx.send(session).is_err() {
                     return;
                 }
@@ -890,6 +1213,9 @@ impl AppUseCase {
             loop {
                 match receiver.recv().await {
                     Ok(session) => {
+                        if !library_scan_session_visible(&session, &visibility) {
+                            continue;
+                        }
                         if tx.send(session).is_err() {
                             return;
                         }
@@ -904,26 +1230,27 @@ impl AppUseCase {
         Ok(rx)
     }
 
-    pub fn subscribe_library_scan_state(
+    pub async fn subscribe_library_scan_state(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<LibraryScanSession>> {
-        self.subscribe_library_scan_progress(actor)
+        self.subscribe_library_scan_progress(actor).await
     }
 
-    pub fn subscribe_settings_changed(
+    pub async fn subscribe_settings_changed(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<String>>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        require_actor_view_library(self, actor).await?;
         Ok(self.runtime.events.settings_changed_broadcast.subscribe())
     }
 
-    pub fn subscribe_provider_catalog_changed(
+    pub async fn subscribe_provider_catalog_changed(
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<crate::ProviderCatalogFamily>>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         Ok(self
             .runtime
             .events
@@ -936,7 +1263,8 @@ impl AppUseCase {
         actor: &User,
         plugin_id: &str,
     ) -> AppResult<tokio::sync::watch::Receiver<crate::PluginInstallProgressSnapshot>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.runtime
             .plugins
             .plugin_install_orchestrator
@@ -965,8 +1293,12 @@ impl AppUseCase {
         actor: &User,
         filter: &TitleHistoryFilter,
     ) -> AppResult<TitleHistoryPage> {
-        require(actor, &Entitlement::ManageTitle)?;
-        project_title_history_page(self, filter).await
+        let library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        let mut scoped_filter = filter.clone();
+        scoped_filter.library_ids = Some(library_ids);
+        project_title_history_page(self, &scoped_filter).await
     }
 
     pub async fn list_title_history_for_title(
@@ -977,12 +1309,25 @@ impl AppUseCase {
         limit: usize,
         offset: usize,
     ) -> AppResult<TitleHistoryPage> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         project_title_history_page(
             self,
             &TitleHistoryFilter {
                 event_types: event_types.map(|types| types.to_vec()),
                 title_ids: Some(vec![title_id.to_string()]),
+                library_ids: Some(vec![title.library_id]),
                 title_search: None,
                 download_id: None,
                 episode_id: None,
@@ -1000,7 +1345,26 @@ impl AppUseCase {
         episode_id: &str,
         limit: usize,
     ) -> AppResult<Vec<TitleHistoryRecord>> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let episode = self
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&episode.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", episode.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         project_episode_title_history(self, episode_id, limit).await
     }
 }

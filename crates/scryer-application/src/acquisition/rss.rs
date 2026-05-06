@@ -229,7 +229,13 @@ pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title
 impl AppUseCase {
     /// Run a single RSS sync cycle: fetch latest releases from all enabled indexers,
     /// match against monitored titles, score, and grab approved releases.
-    pub async fn run_rss_sync(&self) -> AppResult<RssSyncReport> {
+    pub async fn run_rss_sync(&self, actor: &User) -> AppResult<RssSyncReport> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+        self.run_scheduled_rss_sync().await
+    }
+
+    pub(crate) async fn run_scheduled_rss_sync(&self) -> AppResult<RssSyncReport> {
         // Process expired pending releases BEFORE evaluating fresh RSS.
         // Ensures delayed releases are grabbed before new RSS results
         // compete for the same wanted item.  Mirrors Sonarr's pattern of
@@ -273,7 +279,7 @@ impl AppUseCase {
         let rss_categories = {
             let mut cats: std::collections::HashSet<String> = std::collections::HashSet::new();
             for scope in &["movie", "series", "anime"] {
-                if let Some(plan) = self.resolve_indexer_routing(Some(scope)).await {
+                if let Some(plan) = self.resolve_indexer_routing(None, Some(scope)).await {
                     for entry in plan.entries.values() {
                         if entry.enabled {
                             for cat in rss_categories_for_routing_entry(scope, entry) {
@@ -739,6 +745,7 @@ impl AppUseCase {
         let quality_profile = self
             .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
                 title_tags,
+                library_id: None,
                 imdb_id: imdb_id.as_deref(),
                 tvdb_id: tvdb_id.as_deref(),
                 category_hint: category.as_deref(),
@@ -747,17 +754,21 @@ impl AppUseCase {
         let scope_id =
             self.quality_profile_scope_id(crate::app_usecase_discovery::QualityProfileLookup {
                 title_tags,
+                library_id: None,
                 imdb_id: imdb_id.as_deref(),
                 tvdb_id: tvdb_id.as_deref(),
                 category_hint: category.as_deref(),
             });
-        let indexer_routing = self.resolve_indexer_routing(scope_id.as_deref()).await;
+        let indexer_routing = self
+            .resolve_indexer_routing(None, scope_id.as_deref())
+            .await;
 
         Ok(self
             .score_release_results(
                 releases.to_vec(),
                 &quality_profile,
                 title_id,
+                None,
                 scope_id.as_deref(),
                 indexer_routing.as_ref(),
                 category.as_deref(),
@@ -1179,6 +1190,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             facet: MediaFacet::Movie,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
             monitored: true,
             tags: vec![],
             external_ids: vec![],

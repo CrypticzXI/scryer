@@ -8,6 +8,7 @@ import { securitySettingsQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useAuth } from "@/lib/hooks/use-auth";
 import type { SecuritySettings } from "@/lib/types/settings";
+import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
@@ -16,8 +17,6 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   envOverrideActive: false,
   envOverrideDescription: null,
 };
-const MANAGE_USERS_ENTITLEMENT = "manage_users";
-
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
@@ -123,7 +122,7 @@ export function SettingsSecurityContainer() {
       return;
     }
 
-    if (!verifiedSession.user?.entitlements.includes(MANAGE_USERS_ENTITLEMENT)) {
+    if (!hasAppPermission(verifiedSession.user, APP_PERMISSIONS.manageUsers)) {
       setConfirmError(t("settings.securityCredentialsInsufficient"));
       setConfirmBusy(false);
       return;

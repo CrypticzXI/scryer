@@ -177,6 +177,17 @@ impl SettingsRepository for SqliteSettingsStore {
             .await?;
         Ok(())
     }
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        self.db
+            .delete_setting_value(scope.to_string(), key_name.to_string(), scope_id)
+            .await
+    }
 }
 
 #[async_trait]
@@ -204,33 +215,20 @@ impl QualityProfileRepository for SqliteSettingsStore {
 #[async_trait]
 impl SystemInfoProvider for SqliteSettingsStore {
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
-        let applied = crate::migrations::list_applied_migrations(&self.pool).await?;
-        let latest = applied
-            .iter()
-            .filter(|m| m.success)
-            .max_by_key(|m| {
-                m.migration_key
-                    .split('_')
-                    .next()
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .unwrap_or(-1)
-            })
-            .map(|m| m.migration_key.clone());
-        Ok(latest)
-    }
+        let latest = sqlx::query_as::<_, (i64, String)>(
+            "SELECT version, description
+               FROM _sqlx_migrations
+              WHERE success = 1
+              ORDER BY version DESC, description DESC
+              LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| scryer_application::AppError::Repository(error.to_string()))?;
 
-    async fn pending_migration_count(&self) -> AppResult<usize> {
-        let applied = crate::migrations::list_applied_migrations(&self.pool).await?;
-        let applied_keys: std::collections::HashSet<String> = applied
-            .iter()
-            .filter(|m| m.success)
-            .map(|m| m.migration_key.clone())
-            .collect();
-        let embedded = crate::list_embedded_migrations()?;
-        Ok(embedded
-            .iter()
-            .filter(|m| !applied_keys.contains(&m.key))
-            .count())
+        Ok(latest.map(|(version, description)| {
+            crate::migration_assets::migration_key_from_version_and_desc(version, &description)
+        }))
     }
 
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {

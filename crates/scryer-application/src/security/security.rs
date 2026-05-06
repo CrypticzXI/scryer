@@ -5,11 +5,33 @@ use ring::hmac;
 
 use super::*;
 use crate::services::AppAssembly;
-use crate::types::ReleaseCandidateTokenClaims;
+use crate::types::{JwtLibraryPermissionClaim, ReleaseCandidateTokenClaims};
 
 impl AppUseCase {
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
+
+    fn app_permission_claim_string(permission: scryer_domain::AppPermission) -> &'static str {
+        match permission {
+            scryer_domain::AppPermission::ManageUsers => "manageUsers",
+            scryer_domain::AppPermission::ManagePermissions => "managePermissions",
+            scryer_domain::AppPermission::ManageSystemSettings => "manageSystemSettings",
+            scryer_domain::AppPermission::ManageCatalogSettings => "manageCatalogSettings",
+        }
+    }
+
+    fn library_permission_claim_string(
+        permission: scryer_domain::LibraryPermission,
+    ) -> &'static str {
+        match permission {
+            scryer_domain::LibraryPermission::View => "view",
+            scryer_domain::LibraryPermission::ManageTitles => "manageTitles",
+            scryer_domain::LibraryPermission::ResolveImports => "resolveImports",
+            scryer_domain::LibraryPermission::ManageLibrary => "manageLibrary",
+            scryer_domain::LibraryPermission::Request => "request",
+            scryer_domain::LibraryPermission::AutoApproveRequests => "autoApproveRequests",
+        }
+    }
 
     pub fn new(
         assembly: AppAssembly,
@@ -92,6 +114,57 @@ impl AppUseCase {
         claims
     }
 
+    fn canonical_app_permission_claims(user: &User) -> Vec<String> {
+        let mut claims = user
+            .authorization
+            .app
+            .to_permissions()
+            .into_iter()
+            .map(Self::app_permission_claim_string)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        claims.sort();
+        claims.dedup();
+        claims
+    }
+
+    fn canonical_library_permission_claims(user: &User) -> Vec<JwtLibraryPermissionClaim> {
+        let mut claims = user
+            .authorization
+            .libraries
+            .iter()
+            .map(|(library_id, permissions)| {
+                let mut permissions = permissions
+                    .to_permissions()
+                    .into_iter()
+                    .map(Self::library_permission_claim_string)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                permissions.sort();
+                permissions.dedup();
+                JwtLibraryPermissionClaim {
+                    library_id: library_id.clone(),
+                    permissions,
+                }
+            })
+            .collect::<Vec<_>>();
+        claims.sort_by(|left, right| left.library_id.cmp(&right.library_id));
+        claims
+    }
+
+    fn authorization_fingerprint(user: &User) -> String {
+        let app_claims = Self::canonical_app_permission_claims(user).join("\n");
+        let library_claims = Self::canonical_library_permission_claims(user)
+            .into_iter()
+            .map(|grant| format!("{}:{}", grant.library_id, grant.permissions.join(",")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let legacy_claims = Self::canonical_entitlement_claims(&user.entitlements).join("\n");
+        sha256_hex(format!(
+            "app\n{app_claims}\nlibrary\n{library_claims}\nlegacy\n{legacy_claims}"
+        ))
+    }
+
     /// Derive a per-user JWT signing key:
     /// HMAC-SHA256(key=salt, msg="{password_hash}\n{entitlements_fingerprint}").
     ///
@@ -100,23 +173,34 @@ impl AppUseCase {
     pub(crate) fn derive_jwt_key(
         &self,
         password_hash: &str,
-        entitlements: &[Entitlement],
+        authorization_fingerprint: &str,
     ) -> Vec<u8> {
-        let entitlement_claims = Self::canonical_entitlement_claims(entitlements);
-        let entitlement_fingerprint = sha256_hex(entitlement_claims.join("\n"));
-        let signing_material = format!("{password_hash}\n{entitlement_fingerprint}");
+        let signing_material = format!("{password_hash}\n{authorization_fingerprint}");
         let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, self.auth.jwt_signing_salt.as_bytes());
         hmac::sign(&hmac_key, signing_material.as_bytes())
             .as_ref()
             .to_vec()
     }
 
-    fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
+    async fn user_with_authorization(&self, user: &User) -> AppResult<User> {
+        if user.authorization.loaded {
+            return Ok(user.clone());
+        }
+        let mut user = user.clone();
+        user.authorization = self.load_user_authorization(&user).await?;
+        Ok(user)
+    }
+
+    async fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
         let Some(password_hash) = user.password_hash.as_deref() else {
             return Ok(None);
         };
+        let user = self.user_with_authorization(user).await?;
 
-        Ok(Some(self.derive_jwt_key(password_hash, &user.entitlements)))
+        Ok(Some(self.derive_jwt_key(
+            password_hash,
+            &Self::authorization_fingerprint(&user),
+        )))
     }
 
     async fn write_cached_jwt_signing_key(&self, user: &User, evict_first: bool) -> AppResult<()> {
@@ -127,7 +211,7 @@ impl AppUseCase {
             cache.remove(&user.id);
         }
 
-        match self.derive_jwt_key_for_user(user)? {
+        match self.derive_jwt_key_for_user(user).await? {
             Some(signing_key) => {
                 cache.insert(user.id.clone(), signing_key);
             }
@@ -166,7 +250,7 @@ impl AppUseCase {
         let mut cache = self.jwt_signing_keys.write().await;
         cache.clear();
         for user in users {
-            if let Some(signing_key) = self.derive_jwt_key_for_user(&user)? {
+            if let Some(signing_key) = self.derive_jwt_key_for_user(&user).await? {
                 cache.insert(user.id, signing_key);
             }
         }
@@ -178,17 +262,20 @@ impl AppUseCase {
         self.auth.access_ttl_seconds as i64
     }
 
-    pub fn issue_access_token(&self, actor: &User) -> AppResult<String> {
+    pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
         let password_hash = actor
             .password_hash
             .as_deref()
             .ok_or_else(|| AppError::Unauthorized("cannot issue token: no password hash".into()))?;
+        let actor = self.user_with_authorization(actor).await?;
 
         let now = Utc::now();
         let iat = now.timestamp();
         let exp = (now + Duration::seconds(self.token_lifetime())).timestamp();
 
         let entitlements = Self::canonical_entitlement_claims(&actor.entitlements);
+        let app_permissions = Self::canonical_app_permission_claims(&actor);
+        let library_permissions = Self::canonical_library_permission_claims(&actor);
 
         let claims = JwtClaims {
             sub: actor.id.clone(),
@@ -197,10 +284,13 @@ impl AppUseCase {
             iss: self.auth.issuer.clone(),
             username: actor.username.clone(),
             entitlements,
+            app_permissions,
+            library_permissions,
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-        let signing_key = self.derive_jwt_key(password_hash, &actor.entitlements);
+        let signing_key =
+            self.derive_jwt_key(password_hash, &Self::authorization_fingerprint(&actor));
         let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
 
         let token = jsonwebtoken::encode(&header, &claims, &key)

@@ -266,6 +266,7 @@ impl AppUseCase {
         mut raw_results: Vec<IndexerSearchResult>,
         quality_profile: &QualityProfile,
         title_id: &str,
+        library_id: Option<&str>,
         scope_id: Option<&str>,
         indexer_routing: Option<&IndexerRoutingPlan>,
         category: Option<&str>,
@@ -322,14 +323,15 @@ impl AppUseCase {
             .map(|guard| guard.clone())
             .unwrap_or_else(|_| scryer_rules::UserRulesEngine::empty());
         let mut user_evaluator = user_rules_engine.evaluator();
-        let resolved_persona = self.resolve_scoring_persona(scope_id).await.unwrap_or_else(
-            |error| {
+        let resolved_persona = self
+            .resolve_scoring_persona(library_id, scope_id)
+            .await
+            .unwrap_or_else(|error| {
                 warn!(error = %error, "failed to resolve scoring persona, using canonical default");
                 crate::ScoringPersona::default()
-            },
-        );
+            });
         let required_audio_languages = self
-            .resolve_required_audio_languages(Some(title_id), scope_id)
+            .resolve_required_audio_languages(Some(title_id), library_id, scope_id)
             .await
             .unwrap_or_else(|error| {
                 warn!(
@@ -559,6 +561,7 @@ impl AppUseCase {
             facet,
             title_id,
             title_tags,
+            library_id,
             caller_label,
             mode,
             runtime_minutes,
@@ -571,6 +574,7 @@ impl AppUseCase {
         } = request;
         let quality_profile_lookup = QualityProfileLookup {
             title_tags,
+            library_id,
             imdb_id: imdb_id.as_deref(),
             tvdb_id: tvdb_id.as_deref(),
             category_hint: category.as_deref(),
@@ -578,7 +582,9 @@ impl AppUseCase {
         let quality_profile = self.resolve_quality_profile(quality_profile_lookup).await?;
 
         let scope_id = self.quality_profile_scope_id(quality_profile_lookup);
-        let indexer_routing = self.resolve_indexer_routing(scope_id.as_deref()).await;
+        let indexer_routing = self
+            .resolve_indexer_routing(library_id, scope_id.as_deref())
+            .await;
 
         // If routing exists and every indexer is disabled, skip the search entirely.
         if let Some(ref plan) = indexer_routing {
@@ -692,6 +698,7 @@ impl AppUseCase {
                 raw_results,
                 &quality_profile,
                 title_id,
+                library_id,
                 scope_id.as_deref(),
                 indexer_routing.as_ref(),
                 category.as_deref(),
@@ -722,6 +729,7 @@ impl AppUseCase {
                 facet: Some(subject.facet.clone()),
                 title_id: subject.title_id.as_str(),
                 title_tags: &subject.title_tags,
+                library_id: Some(title.library_id.as_str()),
                 caller_label,
                 mode,
                 runtime_minutes: subject.runtime_minutes,
@@ -844,8 +852,6 @@ impl AppUseCase {
         actor: &User,
         title_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -853,6 +859,12 @@ impl AppUseCase {
             .get_by_id(&title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let subject = self
             .resolve_release_search_subject_for_title(&title)
             .await?;
@@ -888,8 +900,6 @@ impl AppUseCase {
         title_id: String,
         collection_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -897,6 +907,12 @@ impl AppUseCase {
             .get_by_id(&title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let collection = self
             .services
             .catalog
@@ -960,8 +976,6 @@ impl AppUseCase {
         season: String,
         episode: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -969,6 +983,12 @@ impl AppUseCase {
             .get_by_id(&title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let subject = self
             .resolve_release_search_subject_for_episode(&title, &season, &episode)
             .await?;
@@ -1028,6 +1048,7 @@ pub(crate) fn is_release_blocklisted(
 #[derive(Clone, Copy)]
 pub(crate) struct QualityProfileLookup<'a> {
     pub(crate) title_tags: &'a [String],
+    pub(crate) library_id: Option<&'a str>,
     pub(crate) imdb_id: Option<&'a str>,
     pub(crate) tvdb_id: Option<&'a str>,
     pub(crate) category_hint: Option<&'a str>,
@@ -1042,6 +1063,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) facet: Option<String>,
     pub(crate) title_id: &'a str,
     pub(crate) title_tags: &'a [String],
+    pub(crate) library_id: Option<&'a str>,
     pub(crate) caller_label: &'a str,
     pub(crate) mode: SearchMode,
     pub(crate) runtime_minutes: Option<i32>,
@@ -1070,12 +1092,20 @@ impl AppUseCase {
         let category_profile_id = self
             .read_setting_string_value(QUALITY_PROFILE_ID_KEY, category_scope_id.as_deref())
             .await?;
+        let library_profile_id = match lookup.library_id {
+            Some(library_id) => {
+                self.read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(library_id))
+                    .await?
+            }
+            None => None,
+        };
         let global_profile_id = self
             .read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
             .await?;
 
         let active_profile_id = resolve_profile_id_for_title(
             title_profile_id.as_deref(),
+            library_profile_id.as_deref(),
             category_profile_id.as_deref(),
             global_profile_id.as_deref(),
         );
@@ -1196,8 +1226,30 @@ impl AppUseCase {
     /// disabled for this scope (caller should skip search).
     pub(crate) async fn resolve_indexer_routing(
         &self,
+        library_id: Option<&str>,
         scope_id: Option<&str>,
     ) -> Option<IndexerRoutingPlan> {
+        if let Some(library_id) = library_id {
+            match self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(library_id))
+                .await
+            {
+                Ok(Some(value)) => {
+                    if let Some(plan) = self.parse_indexer_routing_plan(library_id, &value) {
+                        return Some(plan);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        library_id = library_id,
+                        "failed to read library indexer routing setting, falling back to facet defaults"
+                    );
+                }
+            }
+        }
+
         let scope_id = scope_id?;
 
         let raw_json = match self
@@ -1216,7 +1268,15 @@ impl AppUseCase {
             }
         };
 
-        let parsed: Value = match serde_json::from_str(&raw_json) {
+        self.parse_indexer_routing_plan(scope_id, &raw_json)
+    }
+
+    pub(crate) fn parse_indexer_routing_plan(
+        &self,
+        scope_id: &str,
+        raw_json: &str,
+    ) -> Option<IndexerRoutingPlan> {
+        let parsed: Value = match serde_json::from_str(raw_json) {
             Ok(value) => value,
             Err(_) => return None,
         };

@@ -5,6 +5,7 @@ import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import {
   cutoffUnmetTitlesQuery,
+  librariesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
   searchForEpisodeQuery,
@@ -24,6 +25,7 @@ import {
 } from "@/lib/graphql/mutations";
 import type {
   PendingReleaseItem,
+  LibraryRecord,
   Release,
   ReleaseDecisionItem,
   TitleRecord,
@@ -48,6 +50,8 @@ type WantedContainerProps = {
     episodeId?: string,
   ) => void;
 };
+
+const ALL_LIBRARIES_VALUE = "__all__";
 
 function cutoffItemKey(item: CutoffUnmetItem) {
   return item.episodeId?.trim() || item.titleId;
@@ -95,6 +99,9 @@ export const WantedContainer = memo(function WantedContainer({
   const [mediaTypeFilter, setMediaTypeFilter] = useState<WantedMediaType | undefined>(undefined);
   const [latestDecisionCodeFilter, setLatestDecisionCodeFilter] = useState<string | undefined>(undefined);
   const [selectedTitle, setSelectedTitle] = useState<TitleRecord | null>(null);
+  const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
+  const [librariesLoading, setLibrariesLoading] = useState(false);
+  const [selectedLibraryId, setSelectedLibraryId] = useState(ALL_LIBRARIES_VALUE);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -174,7 +181,51 @@ export const WantedContainer = memo(function WantedContainer({
     [executeDismiss, refreshPending, setGlobalStatus, t],
   );
 
-  // --- Wanted data fetching ---
+  // --- Shared library filters ---
+
+  useEffect(() => {
+    if (wantedSection !== "wanted" && wantedSection !== "cutoff") {
+      return;
+    }
+    let cancelled = false;
+    setLibrariesLoading(true);
+    void client
+      .query(
+        librariesQuery,
+        { facet: null, permission: "view" },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          throw error;
+        }
+        const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+        setLibraries(nextLibraries);
+        setSelectedLibraryId((current) =>
+          current === ALL_LIBRARIES_VALUE ||
+          nextLibraries.some((library) => library.id === current)
+            ? current
+            : ALL_LIBRARIES_VALUE,
+        );
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLibrariesLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, setGlobalStatus, t, wantedSection]);
 
   const refreshItems = useCallback(async () => {
     setLoading(true);
@@ -184,6 +235,7 @@ export const WantedContainer = memo(function WantedContainer({
           status: statusFilter,
           mediaType: mediaTypeFilter,
           titleId: selectedTitle?.id,
+          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
           latestDecisionCode: latestDecisionCodeFilter,
           limit,
           offset,
@@ -203,6 +255,7 @@ export const WantedContainer = memo(function WantedContainer({
     statusFilter,
     mediaTypeFilter,
     selectedTitle,
+    selectedLibraryId,
     latestDecisionCodeFilter,
     offset,
     t,
@@ -228,6 +281,7 @@ export const WantedContainer = memo(function WantedContainer({
       const { data, error } = await client
         .query(cutoffUnmetTitlesQuery, {
           facet: cutoffFacetFilter ?? null,
+          libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
         })
         .toPromise();
       if (error) throw error;
@@ -238,7 +292,7 @@ export const WantedContainer = memo(function WantedContainer({
     } finally {
       setCutoffLoading(false);
     }
-  }, [client, cutoffFacetFilter, t, setGlobalStatus]);
+  }, [client, cutoffFacetFilter, selectedLibraryId, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "cutoff") {
@@ -522,6 +576,11 @@ export const WantedContainer = memo(function WantedContainer({
           setLatestDecisionCodeFilter,
           selectedTitle,
           setSelectedTitle: handleSelectedTitleChange,
+          libraries,
+          librariesLoading,
+          selectedLibraryId,
+          allLibrariesValue: ALL_LIBRARIES_VALUE,
+          setSelectedLibraryId,
           offset,
           setOffset,
           limit,
@@ -541,6 +600,11 @@ export const WantedContainer = memo(function WantedContainer({
           loading: cutoffLoading,
           facetFilter: cutoffFacetFilter,
           setFacetFilter: setCutoffFacetFilter,
+          libraries,
+          librariesLoading,
+          selectedLibraryId,
+          allLibrariesValue: ALL_LIBRARIES_VALUE,
+          setSelectedLibraryId,
           autoSearchingId: cutoffAutoSearchingId,
           interactiveSearchingId: cutoffInteractiveSearchingId,
           activeInteractiveItemId: cutoffActiveInteractiveItemId,

@@ -549,7 +549,6 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageTitle)?;
         let title = self
             .services
             .catalog
@@ -557,6 +556,8 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_management_permission(actor, &title.library_id)
+            .await?;
 
         let facet_plan = match title.facet {
             MediaFacet::Movie => {
@@ -612,7 +613,8 @@ impl AppUseCase {
         title: Title,
         discovered_files: Vec<LibraryFile>,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_library_management_permission(actor, &title.library_id)
+            .await?;
 
         let facet_plan = match title.facet {
             MediaFacet::Movie => {
@@ -773,7 +775,6 @@ impl AppUseCase {
         mode: LibraryScanTitleWalkMode,
         cancel_token: Option<CancellationToken>,
     ) -> AppResult<LibraryTitleWalkResult> {
-        require(actor, &Entitlement::ManageTitle)?;
         let started_at = Instant::now();
         let session_coordinator =
             session_id.map(|value| LibraryScanCoordinator::new(self.clone(), value.to_string()));
@@ -947,6 +948,7 @@ impl AppUseCase {
                     _ => {
                         let unmatched_item = build_title_bound_unmatched_scan_item(
                             &title.facet,
+                            &title.library_id,
                             &title.id,
                             session_id,
                             &title_dir_str,
@@ -981,6 +983,7 @@ impl AppUseCase {
                 if target_episodes.is_empty() {
                     let unmatched_item = build_title_bound_unmatched_scan_item(
                         &title.facet,
+                        &title.library_id,
                         &title.id,
                         session_id,
                         &title_dir_str,
@@ -1117,8 +1120,13 @@ impl AppUseCase {
                     )
                     .await;
                     if outcome.progress.failed == 0
-                        && let Err(error) =
-                            clear_library_scan_unmatched_item(self, &title.facet, &file_path).await
+                        && let Err(error) = clear_library_scan_unmatched_item(
+                            self,
+                            &title.facet,
+                            &title.library_id,
+                            &file_path,
+                        )
+                        .await
                     {
                         warn!(
                             error = %error,
@@ -1211,8 +1219,13 @@ impl AppUseCase {
                 )
                 .await;
                 if outcome.progress.failed == 0
-                    && let Err(error) =
-                        clear_library_scan_unmatched_item(self, &title.facet, &file_path).await
+                    && let Err(error) = clear_library_scan_unmatched_item(
+                        self,
+                        &title.facet,
+                        &title.library_id,
+                        &file_path,
+                    )
+                    .await
                 {
                     warn!(
                         error = %error,
@@ -1294,8 +1307,14 @@ impl AppUseCase {
             {
                 let tags = merge_title_scan_option_tags(title.tags.clone(), use_season_folders);
                 let db_started = Instant::now();
-                self.update_title_metadata(actor, &title.id, None, None, Some(tags))
-                    .await?;
+                self.apply_title_metadata_update(
+                    Some(actor.id.clone()),
+                    &title.id,
+                    None,
+                    None,
+                    Some(tags),
+                )
+                .await?;
                 db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                 title_updated_after_scan = true;
             }

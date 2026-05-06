@@ -8,7 +8,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::TestContext;
-use scryer_application::{LibraryScanSession, LibraryScanStatus};
+use scryer_application::{
+    LibraryRepository, LibraryRootDraft, LibraryScanSession, LibraryScanStatus,
+};
 use scryer_domain::{Id, MediaFacet};
 use scryer_infrastructure::SettingDefinitionSeed;
 
@@ -78,6 +80,25 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         )
         .await
         .expect("upsert media path setting");
+
+    let (library_id, name, slug) = match key_name {
+        "movies.path" => ("movie_default_library", "Movies", "movies"),
+        "series.path" => ("series_default_library", "Series", "series"),
+        "anime.path" => ("anime_default_library", "Anime", "anime"),
+        _ => return,
+    };
+    ctx.catalog
+        .update(
+            library_id,
+            name.to_string(),
+            slug.to_string(),
+            vec![LibraryRootDraft {
+                path: value.to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("update default library root");
 }
 
 async fn wait_for_scan_status(
@@ -148,14 +169,14 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
-                scanLibrary(facet: $facet) {
+            "query": r#"mutation ScanLibrary($libraryId: String!) {
+                scanLibrary(libraryId: $libraryId) {
                     sessionId
                     facet
                     status
                 }
             }"#,
-            "variables": { "facet": "series" }
+            "variables": { "libraryId": "series_default_library" }
         }))
         .send()
         .await
@@ -234,15 +255,15 @@ async fn scan_library_mutation_returns_ok_status_and_started_session() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
-                scanLibrary(facet: $facet) {
+            "query": r#"mutation ScanLibrary($libraryId: String!) {
+                scanLibrary(libraryId: $libraryId) {
                     sessionId
                     facet
                     mode
                     status
                 }
             }"#,
-            "variables": { "facet": "movie" }
+            "variables": { "libraryId": "movie_default_library" }
         }))
         .send()
         .await
@@ -276,6 +297,7 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
     let mut progress_rx = ctx
         .app
         .subscribe_library_scan_progress(&admin)
+        .await
         .expect("subscribe to library scan progress");
 
     let missing_path = format!("/definitely/missing/anime-{}", Id::new().0);
@@ -285,15 +307,15 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
-                scanLibrary(facet: $facet) {
+            "query": r#"mutation ScanLibrary($libraryId: String!) {
+                scanLibrary(libraryId: $libraryId) {
                     sessionId
                     facet
                     mode
                     status
                 }
             }"#,
-            "variables": { "facet": "anime" }
+            "variables": { "libraryId": "anime_default_library" }
         }))
         .send()
         .await
@@ -327,6 +349,7 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
     let mut progress_rx = ctx
         .app
         .subscribe_library_scan_progress(&admin)
+        .await
         .expect("subscribe to library scan progress");
 
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -354,13 +377,13 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($facet: MediaFacetValue!) {
-                scanLibrary(facet: $facet) {
+            "query": r#"mutation ScanLibrary($libraryId: String!) {
+                scanLibrary(libraryId: $libraryId) {
                     sessionId
                     status
                 }
             }"#,
-            "variables": { "facet": "series" }
+            "variables": { "libraryId": "series_default_library" }
         }))
         .send()
         .await

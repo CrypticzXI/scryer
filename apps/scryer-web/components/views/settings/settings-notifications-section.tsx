@@ -132,8 +132,10 @@ function formatResolvedTitleLabel(title: TitleRecord): string {
 }
 
 function titleOverviewHref(title: TitleRecord): string {
-  const basePath = buildOverviewDetailPath(viewFromFacet(title.facet), title.slug ?? null);
-  if (title.slug?.trim()) {
+  const titleSlug = title.slug?.trim() || null;
+  const librarySlug = title.librarySlug?.trim() || null;
+  const basePath = buildOverviewDetailPath(viewFromFacet(title.facet), librarySlug, titleSlug);
+  if (titleSlug && librarySlug) {
     return basePath;
   }
   return `${basePath}?id=${encodeURIComponent(title.id)}`;

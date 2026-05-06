@@ -6,7 +6,6 @@ use scryer_application::{
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
-use scryer_domain::Entitlement;
 
 use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
 use crate::mappers::{
@@ -397,9 +396,6 @@ impl SettingsMutations {
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let scope = input.scope;
         app.update_media_settings(
             &actor,
@@ -440,9 +436,6 @@ impl SettingsMutations {
     ) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.update_library_paths(
             &actor,
             scryer_application::UpdateLibraryPaths {
@@ -463,9 +456,6 @@ impl SettingsMutations {
     ) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.update_service_settings(
             &actor,
             scryer_application::UpdateServiceSettings {
@@ -485,9 +475,6 @@ impl SettingsMutations {
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let current = app
             .get_quality_profile_settings(&actor)
             .await
@@ -551,9 +538,6 @@ impl SettingsMutations {
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let scope = input.scope;
         app.update_download_client_routing(
             &actor,
@@ -591,9 +575,6 @@ impl SettingsMutations {
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let scope = input.scope;
         app.update_indexer_routing(
             &actor,
@@ -626,9 +607,6 @@ impl SettingsMutations {
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.delete_quality_profile(&actor, &input.profile_id)
             .await
             .map(from_quality_profile_settings)
@@ -642,9 +620,6 @@ impl SettingsMutations {
     ) -> GqlResult<TvdbScanOperationPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let source = input.source.trim().to_string();
         let operation = app
             .queue_tvdb_movies_scan(&actor, input.limit, &source)
@@ -660,7 +635,7 @@ impl SettingsMutations {
             .authenticate_credentials(&input.username, &input.password)
             .await
             .map_err(to_gql_error)?;
-        let token = app.issue_access_token(&user).map_err(to_gql_error)?;
+        let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
         let expires_at =
             (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
         Ok(LoginPayload {
@@ -682,7 +657,7 @@ impl SettingsMutations {
             .find_or_create_default_user()
             .await
             .map_err(to_gql_error)?;
-        let token = app.issue_access_token(&user).map_err(to_gql_error)?;
+        let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
         let expires_at =
             (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
         Ok(LoginPayload {
@@ -696,9 +671,6 @@ impl SettingsMutations {
     async fn complete_setup(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.complete_setup(&actor).await.map_err(to_gql_error)
     }
 }

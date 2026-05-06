@@ -16,6 +16,9 @@ export type WantedItem = {
   titleName: string | null;
   titleSlug: string | null;
   titleFacet: string | null;
+  libraryId: string | null;
+  libraryName: string | null;
+  librarySlug: string | null;
   episodeId: string | null;
   collectionId: string | null;
   seasonNumber: string | null;

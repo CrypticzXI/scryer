@@ -483,7 +483,9 @@ pub(crate) async fn get_wanted_item_by_id_query(
 ) -> AppResult<Option<WantedItem>> {
     let row: Option<SqliteRow> = sqlx::query(
         "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
-                t.facet AS title_facet, w.episode_id, w.collection_id,
+                t.facet AS title_facet, t.library_id AS library_id,
+                libraries.name AS library_name, libraries.slug AS library_slug,
+                w.episode_id, w.collection_id,
                 e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
                 w.current_score,
@@ -518,6 +520,7 @@ pub(crate) async fn get_wanted_item_by_id_query(
                 w.created_at, w.updated_at
          FROM wanted_items w
          LEFT JOIN titles t ON t.id = w.title_id
+         LEFT JOIN libraries ON libraries.id = t.library_id
          LEFT JOIN episodes e ON e.id = w.episode_id
          LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
              SELECT rd.id
@@ -547,6 +550,7 @@ pub(crate) async fn list_wanted_items_query(
         status,
         media_type,
         title_id,
+        library_ids,
         title_search,
         latest_decision_code,
         limit,
@@ -562,7 +566,9 @@ pub(crate) async fn list_wanted_items_query(
 
     builder.push(
         "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
-                t.facet AS title_facet, w.episode_id, w.collection_id,
+                t.facet AS title_facet, t.library_id AS library_id,
+                libraries.name AS library_name, libraries.slug AS library_slug,
+                w.episode_id, w.collection_id,
                 e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status,
                 w.grabbed_release, w.current_score,
@@ -597,6 +603,7 @@ pub(crate) async fn list_wanted_items_query(
                 w.created_at, w.updated_at
          FROM wanted_items w
          LEFT JOIN titles t ON t.id = w.title_id
+         LEFT JOIN libraries ON libraries.id = t.library_id
          LEFT JOIN episodes e ON e.id = w.episode_id
          LEFT JOIN release_decisions latest_decision ON latest_decision.id = (
              SELECT rd.id
@@ -625,6 +632,16 @@ pub(crate) async fn list_wanted_items_query(
     if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
         builder.push_bind(tid.to_string());
+    }
+    if !library_ids.is_empty() {
+        builder.push(" AND t.library_id IN (");
+        for (index, library_id) in library_ids.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(library_id);
+        }
+        builder.push(")");
     }
     if let Some(code) = latest_decision_code.as_deref() {
         builder.push(" AND latest_decision.decision_code = ");
@@ -657,6 +674,7 @@ pub(crate) async fn count_wanted_items_query(
         status,
         media_type,
         title_id,
+        library_ids,
         title_search,
         latest_decision_code,
         ..
@@ -700,6 +718,16 @@ pub(crate) async fn count_wanted_items_query(
     if let Some(tid) = title_id.as_deref() {
         builder.push(" AND w.title_id = ");
         builder.push_bind(tid.to_string());
+    }
+    if !library_ids.is_empty() {
+        builder.push(" AND t.library_id IN (");
+        for (index, library_id) in library_ids.iter().enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            builder.push_bind(library_id);
+        }
+        builder.push(")");
     }
     if let Some(code) = latest_decision_code.as_deref() {
         builder.push(" AND latest_decision.decision_code = ");
@@ -846,6 +874,9 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         title_name: row.try_get("title_name").unwrap_or(None),
         title_slug: row.try_get("title_slug").unwrap_or(None),
         title_facet: row.try_get("title_facet").unwrap_or(None),
+        library_id: row.try_get("library_id").unwrap_or(None),
+        library_name: row.try_get("library_name").unwrap_or(None),
+        library_slug: row.try_get("library_slug").unwrap_or(None),
         episode_id: row.try_get("episode_id").unwrap_or(None),
         collection_id: row.try_get("collection_id").unwrap_or(None),
         season_number: row.try_get("season_number").unwrap_or(None),

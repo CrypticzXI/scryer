@@ -512,7 +512,8 @@ async fn bootstrap_application(
     let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
     let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
     let users: Arc<dyn scryer_application::UserRepository> = catalog_store.clone();
-    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store;
+    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store.clone();
+    let libraries: Arc<dyn scryer_application::LibraryRepository> = catalog_store;
     let config_store = Arc::new(SqliteConfigStore::new(&db));
     let release_store = Arc::new(SqliteReleaseStore::new(&db));
     let settings_store = Arc::new(SqliteSettingsStore::new(&db));
@@ -728,6 +729,7 @@ async fn bootstrap_application(
         quality_profiles,
         db_path.clone(),
     )
+    .with_libraries(libraries)
     .with_library_state_store(library_state_store)
     .with_customization_store(customization_store)
     .with_acquisition_state(workflow_store.clone())

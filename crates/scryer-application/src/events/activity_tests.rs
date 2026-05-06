@@ -7,6 +7,7 @@ fn sample_title() -> Title {
         id: "title-1".to_string(),
         name: "Example Show".to_string(),
         facet: MediaFacet::Series,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
         tags: vec![],
         external_ids: vec![

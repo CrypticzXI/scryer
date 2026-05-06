@@ -4,6 +4,7 @@ pub mod domain_event;
 pub mod download_client;
 pub mod housekeeping;
 pub mod indexer;
+pub mod library;
 pub mod library_scan_unmatched;
 pub mod media_file;
 pub mod notification_channel;

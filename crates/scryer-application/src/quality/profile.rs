@@ -460,11 +460,13 @@ pub(crate) fn normalize_quality_tier(raw: Option<&str>) -> Option<String> {
 
 pub fn resolve_profile_id_for_title(
     title_profile_id: Option<&str>,
+    library_profile_id: Option<&str>,
     category_profile_id: Option<&str>,
     global_profile_id: Option<&str>,
 ) -> Option<String> {
     title_profile_id
         .map(std::string::ToString::to_string)
+        .or_else(|| library_profile_id.map(std::string::ToString::to_string))
         .or_else(|| category_profile_id.map(std::string::ToString::to_string))
         .or_else(|| global_profile_id.map(std::string::ToString::to_string))
 }

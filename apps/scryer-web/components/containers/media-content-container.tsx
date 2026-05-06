@@ -5,16 +5,21 @@ import {
   buildDeleteTitleBatchMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
+  createLibraryMutation,
+  deleteEmptyLibraryMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
   deleteTitleMutation,
   setTitleMonitoredMutation,
+  updateLibraryMutation,
   updateRuleSetMutation,
 } from "@/lib/graphql/mutations";
 import {
   buildDeleteTitlePreviewBatchQuery,
   deleteTitlePreviewQuery,
+  librariesQuery,
+  librarySettingsQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
@@ -37,7 +42,15 @@ import { useMediaSettings } from "@/lib/hooks/use-media-settings";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { useQueueFormState } from "@/lib/hooks/use-queue-form-state";
 import { useTitleManagementState } from "@/lib/hooks/use-title-management-state";
-import type { Release, TitleRecord, RuleSetRecord } from "@/lib/types";
+import type {
+  LibraryRecord,
+  LibrarySettingsDraft,
+  LibrarySettingsRecord,
+  Release,
+  RootFolderOption,
+  TitleRecord,
+  RuleSetRecord,
+} from "@/lib/types";
 import type { DeletePreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -71,6 +84,7 @@ import {
 
 const HYDRATION_POSTER_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
+const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
   view: ViewId;
@@ -196,6 +210,28 @@ function batchFailureDetail(error: unknown): string | null {
 
 function withFailureDetail(message: string, detail: string | null): string {
   return detail ? `${message} ${detail}` : message;
+}
+
+function libraryRootsInput(roots: RootFolderOption[]) {
+  return roots
+    .map((root) => ({
+      path: root.path.trim(),
+      isDefault: root.isDefault,
+    }))
+    .filter((root) => root.path.length > 0);
+}
+
+function librarySettingsInput(settings: LibrarySettingsDraft | undefined) {
+  if (!settings) {
+    return undefined;
+  }
+  return {
+    requiredAudioLanguages: settings.requiredAudioLanguages,
+    qualityProfileId: settings.qualityProfileId,
+    scoringPersona: settings.scoringPersona,
+    indexerRouting: settings.indexerRouting,
+    downloadClientRouting: settings.downloadClientRouting,
+  };
 }
 
 function splitSucceededTitleIds(
@@ -404,6 +440,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [bulkDeletePreviewsByTitleId, setBulkDeletePreviewsByTitleId] =
     React.useState<Record<string, DeletePreview>>({});
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
+  const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
+  const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
+  const [selectedLibraryId, setSelectedLibraryId] = React.useState(ALL_LIBRARIES_VALUE);
   const activeCatalogQueryRef = React.useRef("");
   const catalogTitleRequestSeqRef = React.useRef(0);
 
@@ -467,13 +507,51 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }),
     [activeFacet, titleQuickFilters],
   );
+  const libraryNameById = React.useMemo(
+    () => new Map(libraries.map((library) => [library.id, library.name])),
+    [libraries],
+  );
+  const librarySlugById = React.useMemo(
+    () => new Map(libraries.map((library) => [library.id, library.slug])),
+    [libraries],
+  );
+  const monitoredTitlesWithLibraries = React.useMemo(
+    () =>
+      monitoredTitles.map((title) => ({
+        ...title,
+        libraryName:
+          title.libraryName ?? libraryNameById.get(title.libraryId) ?? title.libraryId,
+        librarySlug:
+          title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
+      })),
+    [libraryNameById, librarySlugById, monitoredTitles],
+  );
   const visibleTitles = React.useMemo(
-    () => filterTitlesByQuickFilters(monitoredTitles, effectiveTitleQuickFilters),
-    [effectiveTitleQuickFilters, monitoredTitles],
+    () => filterTitlesByQuickFilters(monitoredTitlesWithLibraries, effectiveTitleQuickFilters),
+    [effectiveTitleQuickFilters, monitoredTitlesWithLibraries],
   );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
+  );
+  const selectedTitleLibraryIds = React.useMemo(
+    () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
+    [selectedTitles],
+  );
+  const selectedTitleLibrary = React.useMemo(
+    () =>
+      selectedTitleLibraryIds.length === 1
+        ? libraries.find((library) => library.id === selectedTitleLibraryIds[0]) ?? null
+        : null,
+    [libraries, selectedTitleLibraryIds],
+  );
+  const bulkRootFolders = React.useMemo(
+    () =>
+      (selectedTitleLibrary?.roots ?? []).map((root) => ({
+        path: root.path,
+        isDefault: root.isDefault,
+      })),
+    [selectedTitleLibrary],
   );
 
   useOverviewWindowScrollRestoration({
@@ -505,6 +583,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ended: false,
     });
     setSelectedTitleIds(new Set());
+    setSelectedLibraryId(ALL_LIBRARIES_VALUE);
   }, [activeFacet]);
 
   React.useEffect(() => {
@@ -581,8 +660,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setMoviesPath,
     seriesPath,
     setSeriesPath,
-    rootFolders,
-    saveRootFolders,
     saveSetting,
     mediaSettingsLoading,
     mediaSettingsSaving,
@@ -772,7 +849,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         const { data, error } = await client
           .query(
             titlesQuery,
-            { facet: activeFacet, query: query || null },
+            {
+              facet: activeFacet,
+              libraryId: selectedLibraryId === ALL_LIBRARIES_VALUE ? null : selectedLibraryId,
+              query: query || null,
+            },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -803,7 +884,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
       }
     },
-    [activeFacet, client, setMonitoredTitles, setTitleLoading, setTitleStatus, t],
+    [
+      activeFacet,
+      client,
+      selectedLibraryId,
+      setMonitoredTitles,
+      setTitleLoading,
+      setTitleStatus,
+      t,
+    ],
   );
 
   const refreshTitles = React.useCallback(async (query?: string) => {
@@ -1624,11 +1713,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (selectedTitles.length === 0 || bulkActionBusy) {
       return;
     }
+    if (selectedTitleLibraryIds.length !== 1) {
+      setGlobalStatus("Bulk actions require titles from one library.");
+      return;
+    }
     setBulkEditDialogOpen(true);
-  }, [bulkActionBusy, selectedTitles.length]);
+  }, [bulkActionBusy, selectedTitleLibraryIds.length, selectedTitles.length, setGlobalStatus]);
 
   const openBulkTitleDelete = React.useCallback(() => {
     if (selectedTitles.length === 0 || bulkActionBusy) {
+      return;
+    }
+    if (selectedTitleLibraryIds.length !== 1) {
+      setGlobalStatus("Bulk actions require titles from one library.");
       return;
     }
     setBulkDeleteFilesOnDisk(false);
@@ -1637,7 +1734,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewError(null);
     setBulkDeletePreviewsByTitleId({});
     setBulkDeleteDialogOpen(true);
-  }, [bulkActionBusy, selectedTitles.length]);
+  }, [bulkActionBusy, selectedTitleLibraryIds.length, selectedTitles.length, setGlobalStatus]);
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -1733,7 +1830,164 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       (titleDeletePreview.requiresTypedConfirmation &&
         titleDeleteTypedConfirmation.trim() !== "DELETE"));
 
-  const handleLibraryScan = React.useCallback(async () => {
+  const refreshLibraries = React.useCallback(async (): Promise<LibraryRecord[] | null> => {
+    if (!isMediaView) {
+      setLibraries([]);
+      return [];
+    }
+    setLibrariesLoading(true);
+    try {
+      const { data, error } = await client
+        .query(
+          librariesQuery,
+          { facet: activeFacet, permission: "view" },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+      const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+      setLibraries(nextLibraries);
+      setSelectedLibraryId((current) =>
+        current === ALL_LIBRARIES_VALUE ||
+        nextLibraries.some((library) => library.id === current)
+          ? current
+          : ALL_LIBRARIES_VALUE,
+      );
+      return nextLibraries;
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToLoad"),
+      );
+      return null;
+    } finally {
+      setLibrariesLoading(false);
+    }
+  }, [activeFacet, client, isMediaView, setGlobalStatus, t]);
+
+  const loadLibrarySettings = React.useCallback(
+    async (libraryId: string): Promise<LibrarySettingsRecord | null> => {
+      const { data, error } = await client
+        .query<{ librarySettings: LibrarySettingsRecord }>(
+          librarySettingsQuery,
+          { libraryId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      return data?.librarySettings ?? null;
+    },
+    [client],
+  );
+
+  const createLibrary = React.useCallback(
+    async (input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft }) => {
+      setLibrarySettingsSaving(true);
+      try {
+        const { data, error } = await client
+          .mutation<{ createLibrary: LibraryRecord }>(createLibraryMutation, {
+            input: {
+              facet: activeFacet,
+              name: input.name,
+              roots: libraryRootsInput(input.roots),
+              settings: librarySettingsInput(input.settings),
+            },
+          })
+          .toPromise();
+        if (error) throw error;
+        const library = data?.createLibrary ?? null;
+        await refreshLibraries();
+        if (library) {
+          setSelectedLibraryId(library.id);
+          setGlobalStatus(t("settings.libraryCreated"));
+        }
+        return library;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("settings.librarySaveFailed"),
+        );
+        return null;
+      } finally {
+        setLibrarySettingsSaving(false);
+      }
+    },
+    [activeFacet, client, refreshLibraries, setGlobalStatus, t],
+  );
+
+  const updateLibrary = React.useCallback(
+    async (
+      libraryId: string,
+      input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft },
+    ) => {
+      setLibrarySettingsSaving(true);
+      try {
+        const { data, error } = await client
+          .mutation<{ updateLibrary: LibraryRecord }>(updateLibraryMutation, {
+            input: {
+              libraryId,
+              name: input.name,
+              roots: libraryRootsInput(input.roots),
+              settings: librarySettingsInput(input.settings),
+            },
+          })
+          .toPromise();
+        if (error) throw error;
+        const library = data?.updateLibrary ?? null;
+        await refreshLibraries();
+        if (library) {
+          setGlobalStatus(t("settings.librarySaved"));
+        }
+        return library;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("settings.librarySaveFailed"),
+        );
+        return null;
+      } finally {
+        setLibrarySettingsSaving(false);
+      }
+    },
+    [client, refreshLibraries, setGlobalStatus, t],
+  );
+
+  const deleteEmptyLibrary = React.useCallback(
+    async (libraryId: string) => {
+      setLibrarySettingsSaving(true);
+      try {
+        const { data, error } = await client
+          .mutation<{ deleteEmptyLibrary: boolean }>(deleteEmptyLibraryMutation, {
+            input: { libraryId },
+          })
+          .toPromise();
+        if (error) throw error;
+        if (!data?.deleteEmptyLibrary) {
+          throw new Error(t("settings.libraryDeleteFailed"));
+        }
+        setSelectedLibraryId((current) =>
+          current === libraryId ? ALL_LIBRARIES_VALUE : current,
+        );
+        await refreshLibraries();
+        setGlobalStatus(t("settings.libraryDeleted"));
+        return true;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("settings.libraryDeleteFailed"),
+        );
+        return false;
+      } finally {
+        setLibrarySettingsSaving(false);
+      }
+    },
+    [client, refreshLibraries, setGlobalStatus, t],
+  );
+
+  const handleLibraryScan = React.useCallback(async (libraryId?: string) => {
+    const targetLibraryId = libraryId ?? selectedLibraryId;
+    if (targetLibraryId === ALL_LIBRARIES_VALUE) {
+      setLibraryScanNotice("Choose a library to scan.");
+      return;
+    }
     if (activeLibraryScanSession) {
       setLibraryScanNotice(
         t("settings.libraryScanAlreadyRunning", {
@@ -1749,7 +2003,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setStartedLibraryScanSessionId(null);
     try {
       const result = await client
-        .mutation(scanLibraryMutation, { facet: activeFacet })
+        .mutation(scanLibraryMutation, { libraryId: targetLibraryId })
         .toPromise();
       if (result.error) throw result.error;
       setStartedLibraryScanSessionId(result.data?.scanLibrary?.sessionId ?? null);
@@ -1794,8 +2048,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [
     activeFacetLabel,
     activeLibraryScanSession,
-    activeFacet,
     client,
+    selectedLibraryId,
     setLibraryScanLoading,
     setLibraryScanNotice,
     setLibraryScanSummary,
@@ -1809,6 +2063,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setTitleStatus(t("title.noManaged"));
     }
   }, [t, titleStatus, setTitleStatus]);
+
+  React.useEffect(() => {
+    void refreshLibraries();
+  }, [refreshLibraries]);
 
   // Load media settings once per view/scope change (subscription handles live updates).
   // Deferred pattern: StrictMode unmount/remount cancels the stale call.
@@ -1909,10 +2167,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setMoviesPath,
           seriesPath,
           setSeriesPath,
-          rootFolders,
-          saveRootFolders,
           saveSetting,
           mediaSettingsLoading,
+          librarySettingsSaving,
           qualityProfiles: qualityProfiles,
           qualityProfileEntries,
           qualityProfileParseError,
@@ -1998,9 +2255,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           rulesSaving,
           onToggleRuleFacet,
           libraryScanLoading: libraryScanInProgress,
-          libraryScanDisabled: libraryScanInProgress,
+          libraryScanDisabled:
+            libraryScanInProgress || selectedLibraryId === ALL_LIBRARIES_VALUE,
           libraryScanNotice,
           libraryScanSummary,
+          libraries,
+          librariesLoading,
+          selectedLibraryId,
+          allLibrariesValue: ALL_LIBRARIES_VALUE,
+          setSelectedLibraryId,
+          loadLibrarySettings,
+          createLibrary,
+          updateLibrary,
+          deleteEmptyLibrary,
           onOpenOverview,
           scanLibrary: handleLibraryScan,
           deleteCatalogTitle: requestDeleteTitle,
@@ -2024,7 +2291,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         view={view}
         selectedTitles={selectedTitles}
         qualityProfiles={qualityProfiles}
-        rootFolders={rootFolders}
+        rootFolders={bulkRootFolders}
         busy={bulkActionBusy}
         onSubmit={applyBulkTitleOptions}
       />

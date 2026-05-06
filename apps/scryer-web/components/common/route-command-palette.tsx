@@ -97,9 +97,10 @@ export function RouteCommandPalette({
       }
 
       const normalizedSlug = overviewTarget.slug?.trim() || null;
-      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
+      const targetPath = buildOverviewDetailPath(targetView, normalizedLibrarySlug, normalizedSlug);
       const nextParams = new URLSearchParams();
-      if (!normalizedSlug) {
+      if (!normalizedSlug || !normalizedLibrarySlug) {
         nextParams.set("id", normalizedTitleId);
       }
 
@@ -115,6 +116,8 @@ export function RouteCommandPalette({
       handleOpenOverviewTarget(viewFromFacet(catalogFacetFromString(title.facet)), {
         id: title.id,
         slug: title.slug ?? null,
+        libraryId: title.libraryId,
+        librarySlug: title.librarySlug ?? null,
       });
     },
     [handleOpenOverviewTarget],

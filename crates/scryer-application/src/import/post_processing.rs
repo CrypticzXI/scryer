@@ -3,7 +3,7 @@ use chrono::Utc;
 use scryer_domain::{
     DomainEventPayload, DomainEventStream, DomainExternalIds, ExecutionMode, Id, MediaFacet,
     NewDomainEvent, PostProcessingCompletedEventData, PostProcessingResult, PostProcessingScript,
-    PostProcessingScriptRun, ScriptRunStatus, ScriptType, TitleContextSnapshot,
+    PostProcessingScriptRun, ScriptRunStatus, ScriptType, TitleContextSnapshot, User,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -32,15 +32,21 @@ pub struct PostProcessingContext {
 impl AppUseCase {
     pub async fn list_post_processing_scripts(
         &self,
+        actor: &User,
     ) -> crate::AppResult<Vec<PostProcessingScript>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services.customization.pp_scripts.list_scripts().await
     }
 
     pub async fn list_post_processing_script_runs(
         &self,
+        actor: &User,
         script_id: &str,
         limit: usize,
     ) -> crate::AppResult<Vec<PostProcessingScriptRun>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services
             .customization
             .pp_scripts
@@ -50,8 +56,11 @@ impl AppUseCase {
 
     pub async fn create_post_processing_script(
         &self,
+        actor: &User,
         script: PostProcessingScript,
     ) -> crate::AppResult<PostProcessingScript> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services
             .customization
             .pp_scripts
@@ -61,15 +70,21 @@ impl AppUseCase {
 
     pub async fn get_post_processing_script(
         &self,
+        actor: &User,
         id: &str,
     ) -> crate::AppResult<Option<PostProcessingScript>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services.customization.pp_scripts.get_script(id).await
     }
 
     pub async fn update_post_processing_script(
         &self,
+        actor: &User,
         script: PostProcessingScript,
     ) -> crate::AppResult<PostProcessingScript> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services
             .customization
             .pp_scripts
@@ -77,7 +92,13 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn delete_post_processing_script(&self, id: &str) -> crate::AppResult<()> {
+    pub async fn delete_post_processing_script(
+        &self,
+        actor: &User,
+        id: &str,
+    ) -> crate::AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services
             .customization
             .pp_scripts
@@ -87,8 +108,11 @@ impl AppUseCase {
 
     pub async fn toggle_post_processing_script(
         &self,
+        actor: &User,
         id: &str,
     ) -> crate::AppResult<PostProcessingScript> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         let mut script = self
             .services
             .customization

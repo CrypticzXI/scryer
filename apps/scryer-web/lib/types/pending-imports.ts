@@ -15,6 +15,9 @@ export type PendingImportSearchAttempt = {
 
 export type PendingImportItem = {
   id: string;
+  libraryId: string;
+  libraryName?: string | null;
+  librarySlug?: string | null;
   facet: "movie" | "series" | "anime";
   status: PendingImportStatus;
   titleId?: string | null;

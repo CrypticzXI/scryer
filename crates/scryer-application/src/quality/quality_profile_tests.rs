@@ -626,25 +626,37 @@ fn proper_upload_bonus() {
 
 #[test]
 fn resolve_profile_id_title_wins() {
-    let result = resolve_profile_id_for_title(Some("title"), Some("category"), Some("global"));
+    let result = resolve_profile_id_for_title(
+        Some("title"),
+        Some("library"),
+        Some("category"),
+        Some("global"),
+    );
     assert_eq!(result, Some("title".to_string()));
 }
 
 #[test]
+fn resolve_profile_id_library_fallback() {
+    let result =
+        resolve_profile_id_for_title(None, Some("library"), Some("category"), Some("global"));
+    assert_eq!(result, Some("library".to_string()));
+}
+
+#[test]
 fn resolve_profile_id_category_fallback() {
-    let result = resolve_profile_id_for_title(None, Some("category"), Some("global"));
+    let result = resolve_profile_id_for_title(None, None, Some("category"), Some("global"));
     assert_eq!(result, Some("category".to_string()));
 }
 
 #[test]
 fn resolve_profile_id_global_fallback() {
-    let result = resolve_profile_id_for_title(None, None, Some("global"));
+    let result = resolve_profile_id_for_title(None, None, None, Some("global"));
     assert_eq!(result, Some("global".to_string()));
 }
 
 #[test]
 fn resolve_profile_id_none_fallback() {
-    let result = resolve_profile_id_for_title(None, None, None);
+    let result = resolve_profile_id_for_title(None, None, None, None);
     assert_eq!(result, None);
 }
 

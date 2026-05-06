@@ -37,7 +37,8 @@ impl AppUseCase {
         &self,
         actor: &scryer_domain::User,
     ) -> AppResult<Vec<NotificationChannelConfig>> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_channels()?;
         repo.list_channels().await
     }
@@ -47,7 +48,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         id: &str,
     ) -> AppResult<Option<NotificationChannelConfig>> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_channels()?;
         repo.get_channel(id).await
     }
@@ -60,7 +62,8 @@ impl AppUseCase {
         config_json: String,
         is_enabled: bool,
     ) -> AppResult<NotificationChannelConfig> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         if name.trim().is_empty() {
             return Err(AppError::Validation(
@@ -93,7 +96,8 @@ impl AppUseCase {
         config_json: Option<String>,
         is_enabled: Option<bool>,
     ) -> AppResult<NotificationChannelConfig> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_channels()?;
 
         let mut channel = repo
@@ -120,7 +124,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         id: &str,
     ) -> AppResult<()> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_channels()?;
         repo.delete_channel(id).await
     }
@@ -130,7 +135,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         id: &str,
     ) -> AppResult<()> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let repo = self.notification_channels()?;
         let channel = repo
@@ -188,7 +194,8 @@ impl AppUseCase {
         &self,
         actor: &scryer_domain::User,
     ) -> AppResult<Vec<NotificationSubscription>> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_subscriptions()?;
         repo.list_subscriptions().await
     }
@@ -202,7 +209,8 @@ impl AppUseCase {
         scope_id: Option<String>,
         is_enabled: bool,
     ) -> AppResult<NotificationSubscription> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let parsed_event_type = parse_subscribable_notification_event_type(&event_type)?;
 
@@ -238,7 +246,8 @@ impl AppUseCase {
         scope_id: NotificationScopeIdUpdate,
         is_enabled: Option<bool>,
     ) -> AppResult<NotificationSubscription> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_subscriptions()?;
 
         // Find all subscriptions and locate ours
@@ -273,7 +282,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         id: &str,
     ) -> AppResult<()> {
-        crate::require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let repo = self.notification_subscriptions()?;
         repo.delete_subscription(id).await
     }

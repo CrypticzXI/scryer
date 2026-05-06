@@ -990,7 +990,8 @@ impl AppUseCase {
         actor: &User,
         provider_filter: Option<String>,
     ) -> AppResult<Vec<IndexerConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.services
             .integrations
             .indexer_configs
@@ -1003,7 +1004,8 @@ impl AppUseCase {
         actor: &User,
         config_id: &str,
     ) -> AppResult<Option<IndexerConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.services
             .integrations
             .indexer_configs
@@ -1016,7 +1018,8 @@ impl AppUseCase {
         actor: &User,
         input: NewIndexerConfig,
     ) -> AppResult<IndexerConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let name = input.name.trim().to_string();
         if name.is_empty() {
@@ -1084,7 +1087,8 @@ impl AppUseCase {
         actor: &User,
         update: IndexerConfigUpdate,
     ) -> AppResult<IndexerConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let config_id = update.id.trim();
         if config_id.is_empty() {
             return Err(AppError::Validation("indexer config id is required".into()));
@@ -1155,7 +1159,8 @@ impl AppUseCase {
     }
 
     pub async fn delete_indexer_config(&self, actor: &User, config_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.services
             .integrations
             .indexer_configs
@@ -1169,7 +1174,8 @@ impl AppUseCase {
         actor: &User,
         client_type: Option<String>,
     ) -> AppResult<Vec<DownloadClientConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let client_type = client_type
             .map(|value| value.trim().to_string())
@@ -1540,15 +1546,205 @@ impl AppUseCase {
         include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.collect_download_queue_items(
-            include_all_activity,
-            include_history_only,
-            include_import_activity,
-            activity_filter,
-            true,
+        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+            .await?;
+        let items = self
+            .collect_download_queue_items(
+                include_all_activity,
+                include_history_only,
+                include_import_activity,
+                activity_filter,
+                true,
+            )
+            .await?;
+        self.filter_download_queue_items_for_permission(
+            actor,
+            items,
+            scryer_domain::LibraryPermission::View,
         )
         .await
+    }
+
+    async fn require_title_library_permission(
+        &self,
+        actor: &User,
+        title_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Title> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(actor, &title.library_id, permission)
+            .await?;
+        Ok(title)
+    }
+
+    async fn require_any_library_permission(
+        &self,
+        actor: &User,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<()> {
+        if self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .is_empty()
+        {
+            Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn filter_download_queue_items_for_permission(
+        &self,
+        actor: &User,
+        items: Vec<DownloadQueueItem>,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let can_view_operational_history = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let mut title_library_cache = HashMap::<String, Option<String>>::new();
+        let mut visible = Vec::new();
+        for item in items {
+            let allowed = if let Some(title_id) = item.title_id.as_deref() {
+                let library_id = if let Some(cached) = title_library_cache.get(title_id) {
+                    cached.clone()
+                } else {
+                    let library_id = self
+                        .services
+                        .catalog
+                        .titles
+                        .get_by_id(title_id)
+                        .await?
+                        .map(|title| title.library_id);
+                    title_library_cache.insert(title_id.to_string(), library_id.clone());
+                    library_id
+                };
+                library_id
+                    .as_ref()
+                    .map(|library_id| allowed_library_ids.contains(library_id))
+                    .unwrap_or(can_view_operational_history)
+            } else {
+                can_view_operational_history
+            };
+            if allowed {
+                visible.push(item);
+            }
+        }
+        Ok(visible)
+    }
+
+    async fn require_download_item_permission(
+        &self,
+        actor: &User,
+        client_id: Option<&str>,
+        client_type: Option<&str>,
+        download_client_item_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<()> {
+        let item = self
+            .find_download_queue_item_raw(client_id, client_type, download_client_item_id)
+            .await?;
+        if let Some(item) = item
+            && let Some(title_id) = item.title_id.as_deref()
+        {
+            self.require_title_library_permission(actor, title_id, permission)
+                .await?;
+            return Ok(());
+        }
+        self.require_any_library_permission(actor, permission).await
+    }
+
+    async fn require_completed_download_permission(
+        &self,
+        actor: &User,
+        completed: &CompletedDownload,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<()> {
+        if let Some(title_id) =
+            crate::import_parameters::extract_parameter(&completed.parameters, "*scryer_title_id")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        {
+            self.require_title_library_permission(actor, &title_id, permission)
+                .await?;
+            Ok(())
+        } else {
+            self.require_any_library_permission(actor, permission).await
+        }
+    }
+
+    async fn find_download_queue_item_raw(
+        &self,
+        client_id: Option<&str>,
+        client_type: Option<&str>,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<DownloadQueueItem>> {
+        let target_download_client_item_id = download_client_item_id.trim();
+        if target_download_client_item_id.is_empty() {
+            return Err(AppError::Validation(
+                "download client item id is required".to_string(),
+            ));
+        }
+
+        let normalized_client_type = client_type
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        let normalized_client_id = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        let items = self
+            .collect_download_snapshot_items(true, true, true)
+            .await?;
+        Ok(items.into_iter().find(|item| {
+            item.download_client_item_id == target_download_client_item_id
+                && normalized_client_id
+                    .as_ref()
+                    .is_none_or(|client_id| item.client_id == *client_id)
+                && normalized_client_type
+                    .as_ref()
+                    .is_none_or(|client_type| item.client_type.eq_ignore_ascii_case(client_type))
+        }))
+    }
+
+    async fn collect_download_history_items_for_actor(
+        &self,
+        actor: &User,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let items = self.collect_download_history_items(true).await?;
+        self.filter_download_queue_items_for_permission(actor, items, permission)
+            .await
+    }
+
+    async fn collect_download_snapshot_items_for_actor(
+        &self,
+        actor: &User,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let items = self
+            .collect_download_snapshot_items(true, true, true)
+            .await?;
+        self.filter_download_queue_items_for_permission(actor, items, permission)
+            .await
     }
 
     pub async fn list_download_queue_for_title(
@@ -1560,7 +1756,12 @@ impl AppUseCase {
         include_import_activity: bool,
         activity_filter: DownloadActivityFilter,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
+        self.require_title_library_permission(
+            actor,
+            title_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.collect_download_queue_items_for_title(
             title_id,
             include_all_activity,
@@ -1579,11 +1780,18 @@ impl AppUseCase {
         offset: usize,
         filter: DownloadImportFilter,
     ) -> AppResult<DownloadImportPage> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_any_library_permission(
+            actor,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
 
         let limit = limit.clamp(1, 100);
         let items = self
-            .collect_download_history_items(true)
+            .collect_download_history_items_for_actor(
+                actor,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
             .await?
             .into_iter()
             .filter(|item| matches_download_import_filter(item, filter))
@@ -1633,10 +1841,17 @@ impl AppUseCase {
         actor: &User,
         filter: DownloadImportFilter,
     ) -> AppResult<i64> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_any_library_permission(
+            actor,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
 
         let count = self
-            .collect_download_history_items(true)
+            .collect_download_history_items_for_actor(
+                actor,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
             .await?
             .into_iter()
             .filter(|item| matches_download_import_filter(item, filter))
@@ -1675,7 +1890,8 @@ impl AppUseCase {
         scryer_submitted_only: bool,
         sort: Option<DownloadHistorySort>,
     ) -> AppResult<DownloadHistoryPage> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+            .await?;
 
         let limit = limit.clamp(1, 50);
         let normalized_client_ids = client_ids.map(|ids| {
@@ -1685,7 +1901,7 @@ impl AppUseCase {
                 .collect::<HashSet<_>>()
         });
         let mut items = self
-            .collect_download_history_items(true)
+            .collect_download_history_items_for_actor(actor, scryer_domain::LibraryPermission::View)
             .await?
             .into_iter()
             .filter(|item| {
@@ -1734,8 +1950,13 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
-        self.collect_download_snapshot_items(true, true, true).await
+        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+            .await?;
+        self.collect_download_snapshot_items_for_actor(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await
     }
 
     pub async fn find_download_queue_item(
@@ -1745,35 +1966,22 @@ impl AppUseCase {
         client_type: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadQueueItem>> {
-        require(actor, &Entitlement::ManageTitle)?;
-
-        let target_download_client_item_id = download_client_item_id.trim();
-        if target_download_client_item_id.is_empty() {
-            return Err(AppError::Validation(
-                "download client item id is required".to_string(),
-            ));
-        }
-
-        let normalized_client_type = client_type
-            .map(|value| value.trim().to_lowercase())
-            .filter(|value| !value.is_empty());
-        let normalized_client_id = client_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-
-        let items = self
-            .collect_download_snapshot_items(true, true, true)
+        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
             .await?;
-        Ok(items.into_iter().find(|item| {
-            item.download_client_item_id == target_download_client_item_id
-                && normalized_client_id
-                    .as_ref()
-                    .is_none_or(|client_id| item.client_id == *client_id)
-                && normalized_client_type
-                    .as_ref()
-                    .is_none_or(|client_type| item.client_type.eq_ignore_ascii_case(client_type))
-        }))
+        let item = self
+            .find_download_queue_item_raw(client_id, client_type, download_client_item_id)
+            .await?;
+        let Some(item) = item else {
+            return Ok(None);
+        };
+        let visible = self
+            .filter_download_queue_items_for_permission(
+                actor,
+                vec![item],
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        Ok(visible.into_iter().next())
     }
 
     pub async fn find_download_queue_scope(
@@ -1783,9 +1991,8 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<SubmissionScope>> {
-        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            require(actor, &Entitlement::ManageTitle)?;
-        }
+        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+            .await?;
 
         let submission = self
             .services
@@ -1797,6 +2004,14 @@ impl AppUseCase {
                 download_client_item_id,
             ))
             .await?;
+        if let Some(submission) = submission.as_ref() {
+            self.require_title_library_permission(
+                actor,
+                &submission.title_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
         Ok(submission.map(|submission| submission.scope))
     }
 
@@ -1804,7 +2019,14 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<broadcast::Receiver<Vec<DownloadQueueItem>>> {
-        crate::require_any(actor, &[Entitlement::ViewCatalog, Entitlement::ManageTitle])?;
+        if !actor
+            .authorization
+            .has_any_library_permission(scryer_domain::LibraryPermission::View)
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
         let (tx, rx) = broadcast::channel(32);
         let app = self.clone();
         let actor = actor.clone();
@@ -1880,7 +2102,20 @@ impl AppUseCase {
                 }
             }
 
-            let initial = sorted_download_queue_items(&items);
+            let initial = match app
+                .filter_download_queue_items_for_permission(
+                    &actor,
+                    sorted_download_queue_items(&items),
+                    scryer_domain::LibraryPermission::View,
+                )
+                .await
+            {
+                Ok(items) => items,
+                Err(error) => {
+                    tracing::warn!("download queue subscription initial filter failed: {error}");
+                    return;
+                }
+            };
             if tx.send(initial).is_err() {
                 return;
             }
@@ -1922,11 +2157,26 @@ impl AppUseCase {
 
                 for event in next_events {
                     cursor = event.sequence;
-                    if let Some(snapshot) =
-                        apply_download_queue_projection_event(&mut items, &event)
-                        && tx.send(snapshot).is_err()
-                    {
-                        return;
+                    if apply_download_queue_projection_event(&mut items, &event).is_some() {
+                        let snapshot = match app
+                            .filter_download_queue_items_for_permission(
+                                &actor,
+                                sorted_download_queue_items(&items),
+                                scryer_domain::LibraryPermission::View,
+                            )
+                            .await
+                        {
+                            Ok(items) => items,
+                            Err(error) => {
+                                tracing::warn!(
+                                    "download queue subscription event filter failed: {error}"
+                                );
+                                return;
+                            }
+                        };
+                        if tx.send(snapshot).is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -1943,8 +2193,6 @@ impl AppUseCase {
         download_client_item_id: String,
         files: Option<Vec<crate::ManualImportFileMapping>>,
     ) -> AppResult<String> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let source_ref = download_client_item_id.trim().to_string();
         if source_ref.is_empty() {
             return Err(AppError::Validation(
@@ -1962,6 +2210,21 @@ impl AppUseCase {
             return Err(AppError::Validation(
                 "title id is required for mapped manual import".to_string(),
             ));
+        }
+
+        if let Some(title_id) = title_id.as_deref() {
+            self.require_title_library_permission(
+                actor,
+                title_id,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
+            .await?;
+        } else {
+            self.require_any_library_permission(
+                actor,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
+            .await?;
         }
 
         match self
@@ -2039,8 +2302,6 @@ impl AppUseCase {
         completed: &CompletedDownload,
         override_title_id: Option<&str>,
     ) -> AppResult<scryer_domain::ImportResult> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         // If a title_id override is provided, inject it into the parameters
         let mut completed = completed.clone();
         if let Some(title_id) = override_title_id
@@ -2053,6 +2314,12 @@ impl AppUseCase {
                 .parameters
                 .push(("*scryer_title_id".to_string(), title_id.to_string()));
         }
+        self.require_completed_download_permission(
+            actor,
+            &completed,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
 
         crate::import_workflow::import_completed_download(self, actor, &completed).await
     }
@@ -2064,7 +2331,14 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            Some(client_type),
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         let handle = self
             .runtime
             .acquisition
@@ -2088,7 +2362,14 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            Some(client_type),
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         let handle = self
             .runtime
             .acquisition
@@ -2112,7 +2393,14 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            Some(client_type),
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         let handle = self
             .runtime
             .acquisition
@@ -2138,7 +2426,6 @@ impl AppUseCase {
         title_id: &str,
         scope: SubmissionScope,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
         let title = self
             .services
             .catalog
@@ -2146,6 +2433,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
         self.services
             .workflow
             .download_submissions
@@ -2187,7 +2480,14 @@ impl AppUseCase {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            None,
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
             self.services
                 .integrations
@@ -2216,7 +2516,14 @@ impl AppUseCase {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            None,
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         if let Some(client_id) = client_id.filter(|value| !value.trim().is_empty()) {
             self.services
                 .integrations
@@ -2247,7 +2554,14 @@ impl AppUseCase {
         download_client_item_id: &str,
         is_history: bool,
     ) -> AppResult<crate::DownloadQueueCommandRecord> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_download_item_permission(
+            actor,
+            client_id,
+            Some(client_type),
+            download_client_item_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let client_type = self.normalize_download_client_type(client_type)?;
         let command = self
             .services
@@ -2275,7 +2589,8 @@ impl AppUseCase {
         actor: &User,
         client_id: &str,
     ) -> AppResult<Option<DownloadClientConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let client_id = client_id.trim();
         if client_id.is_empty() {
             return Err(AppError::Validation("client id is required".into()));
@@ -2293,7 +2608,8 @@ impl AppUseCase {
         actor: &User,
         input: NewDownloadClientConfig,
     ) -> AppResult<DownloadClientConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let name = input.name.trim().to_string();
         if name.is_empty() {
@@ -2354,7 +2670,8 @@ impl AppUseCase {
         actor: &User,
         update: DownloadClientConfigUpdate,
     ) -> AppResult<DownloadClientConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let client_id = update.id.trim();
         if client_id.is_empty() {
             return Err(AppError::Validation("client id is required".into()));
@@ -2411,7 +2728,8 @@ impl AppUseCase {
         actor: &User,
         client_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let client_id = client_id.trim();
         if client_id.is_empty() {
             return Err(AppError::Validation("client id is required".into()));
@@ -2438,7 +2756,8 @@ impl AppUseCase {
         actor: &User,
         ordered_ids: Vec<String>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.services
             .integrations
             .download_client_configs

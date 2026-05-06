@@ -12,7 +12,8 @@ impl AppUseCase {
         api_key: Option<&str>,
         config_json: Option<&str>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let base_url =
             crate::app_usecase_integration::resolve_indexer_base_url(base_url, config_json)?;
@@ -223,6 +224,19 @@ mod tests {
         )
     }
 
+    fn test_admin() -> User {
+        let mut user = User::new_admin("admin");
+        user.authorization = scryer_domain::UserAuthorization {
+            app: scryer_domain::AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageSystemSettings,
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            loaded: true,
+            ..Default::default()
+        };
+        user
+    }
+
     #[tokio::test]
     async fn create_indexer_config_derives_base_url_from_feed_url() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
@@ -230,7 +244,7 @@ mod tests {
 
         let created = app
             .create_indexer_config(
-                &User::new_admin("admin"),
+                &test_admin(),
                 NewIndexerConfig {
                     name: "RSS".to_string(),
                     provider_type: "torrent_rss".to_string(),
@@ -261,7 +275,7 @@ mod tests {
         );
 
         app.test_indexer_connection(
-            &User::new_admin("admin"),
+            &test_admin(),
             "torrent_rss",
             "",
             None,

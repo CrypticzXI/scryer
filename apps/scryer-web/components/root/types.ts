@@ -30,6 +30,8 @@ export type ContentSettingsSection =
 export type OverviewTitleTarget = {
   id: string;
   slug?: string | null;
+  libraryId?: string | null;
+  librarySlug?: string | null;
 };
 
 export type Translate = (
@@ -75,7 +77,6 @@ export type SystemHealth = {
   recentEvents: number;
   recentEventPreview: string[];
   dbMigrationVersion: string | null;
-  dbPendingMigrations: number;
   indexerStats: IndexerQueryStats[];
 };
 

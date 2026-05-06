@@ -12,11 +12,22 @@ import type {
   MoreLinkContentArg,
 } from "@fullcalendar/core";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import type { LibraryRecord } from "@/lib/types";
 
 export type CalendarEpisodeItem = {
   id: string;
   titleId: string;
+  libraryId: string;
+  libraryName?: string | null;
+  librarySlug?: string | null;
   titleName: string;
   titleSlug?: string | null;
   titleFacet: string;
@@ -30,6 +41,11 @@ export type CalendarEpisodeItem = {
 type CalendarViewProps = {
   episodes: CalendarEpisodeItem[];
   loading: boolean;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryId: string;
+  allLibrariesValue: string;
+  onSelectedLibraryChange: (value: string) => void;
   onDateRangeChange: (start: string, end: string) => void;
   onEpisodeClick?: (episode: CalendarEpisodeItem) => void;
 };
@@ -98,6 +114,7 @@ function formatTooltip(ep: CalendarEpisodeItem): string {
   if (ep.episodeTitle) {
     lines.push(ep.episodeTitle);
   }
+  lines.push(`Library: ${ep.libraryName ?? ep.libraryId}`);
   lines.push(`Type: ${FACET_LABELS[ep.titleFacet] ?? ep.titleFacet}`);
   if (!ep.monitored) {
     lines.push("(Not monitored)");
@@ -108,6 +125,11 @@ function formatTooltip(ep: CalendarEpisodeItem): string {
 export function CalendarView({
   episodes,
   loading,
+  libraries,
+  librariesLoading,
+  selectedLibraryId,
+  allLibrariesValue,
+  onSelectedLibraryChange,
   onDateRangeChange,
   onEpisodeClick,
 }: CalendarViewProps) {
@@ -176,6 +198,7 @@ export function CalendarView({
           <span className="fc-scryer-event-title">{ep.titleName}</span>
           {badge ? <span className="fc-scryer-event-badge">{badge}</span> : null}
         </div>
+        <div className="fc-scryer-event-subtitle">{ep.libraryName ?? ep.libraryId}</div>
         {subtitle ? <div className="fc-scryer-event-subtitle">{subtitle}</div> : null}
       </div>
     );
@@ -213,6 +236,23 @@ export function CalendarView({
     <Card>
       <CardContent className="pt-6">
         <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Select
+            value={selectedLibraryId}
+            onValueChange={onSelectedLibraryChange}
+            disabled={librariesLoading || libraries.length === 0}
+          >
+            <SelectTrigger className="h-8 w-[180px] text-xs">
+              <SelectValue placeholder="Library" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
+              {libraries.map((library) => (
+                <SelectItem key={library.id} value={library.id}>
+                  {library.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {Object.entries(FACET_LABELS).map(([facet, label]) => {
             const active = facetFilter.includes(facet);
             return (

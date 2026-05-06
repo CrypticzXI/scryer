@@ -33,7 +33,13 @@ impl AppUseCase {
         configs
     }
 
-    pub async fn run_housekeeping(&self) -> AppResult<HousekeepingReport> {
+    pub async fn run_housekeeping(&self, actor: &User) -> AppResult<HousekeepingReport> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.run_scheduled_housekeeping().await
+    }
+
+    pub(crate) async fn run_scheduled_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
         let general_settings = self.general_settings().await?;
         let history_retention_days = general_settings.history_retention_days as i64;
@@ -206,7 +212,8 @@ impl AppUseCase {
         &self,
         actor: &scryer_domain::User,
     ) -> AppResult<Vec<crate::recycle_bin::RecycleEntry>> {
-        require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let mut all_entries = Vec::new();
         for (media_root, config) in self.resolve_all_recycle_configs().await {
@@ -228,7 +235,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         entry_id: &str,
     ) -> AppResult<bool> {
-        require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         for (_media_root, config) in self.resolve_all_recycle_configs().await {
             if let Some((entry_dir, manifest)) =
@@ -262,7 +270,8 @@ impl AppUseCase {
         actor: &scryer_domain::User,
         entry_id: &str,
     ) -> AppResult<bool> {
-        require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         for (_media_root, config) in self.resolve_all_recycle_configs().await {
             if let Some((entry_dir, _manifest)) =
@@ -284,7 +293,8 @@ impl AppUseCase {
 
     /// Empty all recycle bins across all media roots.
     pub async fn empty_recycle_bin(&self, actor: &scryer_domain::User) -> AppResult<u32> {
-        require(actor, &scryer_domain::Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let mut total = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {

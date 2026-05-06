@@ -14,6 +14,26 @@ use tracing::{info, warn};
 const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 3600;
 const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
 
+fn is_background_library_refresh_job(job_key: JobKey) -> bool {
+    matches!(
+        job_key,
+        JobKey::BackgroundLibraryRefreshMovies
+            | JobKey::BackgroundLibraryRefreshSeries
+            | JobKey::BackgroundLibraryRefreshAnime
+    )
+}
+
+fn library_job_operation_type(job_key: JobKey, library_id: &str) -> String {
+    format!("{}:{library_id}", job_key.as_str())
+}
+
+fn job_run_library_id(run: &JobRunRecord) -> Option<&str> {
+    run.operation_type
+        .strip_prefix(run.job_key.as_str())
+        .and_then(|value| value.strip_prefix(':'))
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn background_library_refresh_enabled() -> bool {
     std::env::var("SCRYER_BACKGROUND_LIBRARY_REFRESH")
         .map(|value| {
@@ -159,13 +179,15 @@ impl AppUseCase {
     }
 
     pub async fn list_jobs(&self, actor: &User) -> AppResult<Vec<JobDefinition>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let next_runs = self.runtime.jobs.job_run_tracker.all_next_runs().await;
         Ok(crate::jobs::all_job_definitions(&next_runs))
     }
 
     pub async fn active_job_runs(&self, actor: &User) -> AppResult<Vec<JobRun>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let runs = self.runtime.jobs.job_run_tracker.list_active().await;
         if runs.is_empty() {
             self.load_active_job_run_projection().await
@@ -180,7 +202,8 @@ impl AppUseCase {
         job_key: JobKey,
         limit: usize,
     ) -> AppResult<Vec<JobRun>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let active_runs = {
             let runs = self.runtime.jobs.job_run_tracker.list_active().await;
             if runs.is_empty() {
@@ -213,7 +236,8 @@ impl AppUseCase {
     }
 
     pub async fn list_recent_job_runs(&self, actor: &User, limit: usize) -> AppResult<Vec<JobRun>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let active_runs = {
             let runs = self.runtime.jobs.job_run_tracker.list_active().await;
             if runs.is_empty() {
@@ -246,7 +270,14 @@ impl AppUseCase {
     }
 
     pub fn subscribe_job_run_events(&self, actor: &User) -> AppResult<broadcast::Receiver<JobRun>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        if !actor
+            .authorization
+            .has_app_permission(scryer_domain::AppPermission::ManageSystemSettings)
+        {
+            return Err(AppError::Unauthorized(
+                "You need permission to manage system settings.".to_string(),
+            ));
+        }
         let (tx, rx) = broadcast::channel(128);
         let app = self.clone();
         tokio::spawn(async move {
@@ -285,11 +316,17 @@ impl AppUseCase {
     }
 
     pub async fn trigger_job(&self, actor: &User, job_key: JobKey) -> AppResult<JobRun> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.ensure_job_can_start(job_key).await?;
 
         let run = self
-            .create_job_run_record(job_key, JobTriggerSource::Manual, Some(actor.id.clone()))
+            .create_job_run_record(
+                job_key,
+                JobTriggerSource::Manual,
+                Some(actor.id.clone()),
+                None,
+            )
             .await?;
         let run_payload = JobRun::from_record(&run, None);
         self.runtime
@@ -326,9 +363,15 @@ impl AppUseCase {
         job_key: JobKey,
         trigger_source: JobTriggerSource,
     ) -> AppResult<()> {
+        if is_background_library_refresh_job(job_key) {
+            return self
+                .run_scheduled_background_library_refresh_jobs_now(job_key, trigger_source)
+                .await;
+        }
+
         self.ensure_job_can_start(job_key).await?;
         let run = self
-            .create_job_run_record(job_key, trigger_source, None)
+            .create_job_run_record(job_key, trigger_source, None, None)
             .await?;
         let run_payload = JobRun::from_record(&run, None);
         self.runtime
@@ -349,6 +392,71 @@ impl AppUseCase {
             ))
             .await;
         self.run_job_run(run, None).await
+    }
+
+    async fn run_scheduled_background_library_refresh_jobs_now(
+        &self,
+        job_key: JobKey,
+        trigger_source: JobTriggerSource,
+    ) -> AppResult<()> {
+        let facet = job_key_library_facet(job_key).expect("background refresh facet");
+        let libraries = self.services.catalog.libraries.list(Some(facet)).await?;
+        if libraries.is_empty() {
+            return Err(AppError::Validation(format!(
+                "{} has no libraries to refresh",
+                job_key.display_name()
+            )));
+        }
+
+        let actor = self.find_or_create_default_user().await?;
+        let mut first_error = None;
+        for library in libraries {
+            if let Err(error) = self.ensure_job_can_start(job_key).await {
+                if first_error.is_none() {
+                    first_error = Some(error.to_string());
+                }
+                continue;
+            }
+
+            let run = self
+                .create_job_run_record(
+                    job_key,
+                    trigger_source,
+                    None,
+                    Some(library_job_operation_type(job_key, &library.id)),
+                )
+                .await?;
+            let run_payload = JobRun::from_record(&run, None);
+            self.runtime
+                .jobs
+                .job_run_tracker
+                .upsert_active_run(run_payload)
+                .await;
+            let _ = self
+                .append_domain_event(new_job_run_domain_event(
+                    None,
+                    run.id.clone(),
+                    DomainEventPayload::JobRunStarted(JobRunStartedEventData {
+                        run_id: run.id.clone(),
+                        job_key: run.job_key.as_str().to_string(),
+                        operation_type: run.operation_type.clone(),
+                        trigger_source: run.trigger_source.as_str().to_string(),
+                    }),
+                ))
+                .await;
+
+            if let Err(error) = self.run_job_run(run, Some(actor.clone())).await
+                && first_error.is_none()
+            {
+                first_error = Some(error.to_string());
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(AppError::Validation(error))
+        } else {
+            Ok(())
+        }
     }
 
     pub async fn set_job_next_run_at(&self, job_key: JobKey, next_run_at: chrono::DateTime<Utc>) {
@@ -427,6 +535,7 @@ impl AppUseCase {
         job_key: JobKey,
         trigger_source: JobTriggerSource,
         actor_user_id: Option<String>,
+        operation_type: Option<String>,
     ) -> AppResult<JobRunRecord> {
         let now = Utc::now();
         let initial_status = if job_key.uses_library_scan_progress() {
@@ -441,7 +550,7 @@ impl AppUseCase {
             .create_job_run(&JobRunRecord {
                 id: Id::new().0,
                 job_key,
-                operation_type: job_key.as_str().to_string(),
+                operation_type: operation_type.unwrap_or_else(|| job_key.as_str().to_string()),
                 status: initial_status,
                 trigger_source,
                 actor_user_id,
@@ -458,7 +567,7 @@ impl AppUseCase {
     }
 
     async fn run_job_run(&self, run: JobRunRecord, actor: Option<User>) -> AppResult<()> {
-        match self.execute_job_body(run.job_key, &run.id, actor).await {
+        match self.execute_job_body(&run, actor).await {
             Ok(outcome) => {
                 self.finish_job_run(
                     run,
@@ -477,10 +586,11 @@ impl AppUseCase {
 
     async fn execute_job_body(
         &self,
-        job_key: JobKey,
-        run_id: &str,
+        run: &JobRunRecord,
         actor: Option<User>,
     ) -> AppResult<JobExecutionOutcome> {
+        let job_key = run.job_key;
+        let run_id = run.id.as_str();
         match job_key {
             JobKey::LibraryScanMovies | JobKey::LibraryScanSeries | JobKey::LibraryScanAnime => {
                 let actor = match actor {
@@ -510,14 +620,18 @@ impl AppUseCase {
                     Some(actor) => actor,
                     None => self.find_or_create_default_user().await?,
                 };
-                let facet = job_key_library_facet(job_key).expect("background refresh facet");
-                let summary = self
-                    .background_library_refresh_with_tracking(&actor, facet, run_id)
-                    .await?;
+                let summary = if let Some(library_id) = job_run_library_id(run) {
+                    self.background_library_refresh_by_id_with_tracking(&actor, library_id, run_id)
+                        .await?
+                } else {
+                    let facet = job_key_library_facet(job_key).expect("background refresh facet");
+                    self.background_library_refresh_with_tracking(&actor, facet, run_id)
+                        .await?
+                };
                 Ok(JobExecutionOutcome::from_library_scan(&summary))
             }
             JobKey::RssSync => {
-                let report = self.run_rss_sync().await?;
+                let report = self.run_scheduled_rss_sync().await?;
                 Ok(JobExecutionOutcome::new(
                     Some(format!(
                         "Fetched {}, matched {}, grabbed {}",
@@ -551,7 +665,7 @@ impl AppUseCase {
                 ))
             }
             JobKey::Housekeeping => {
-                let report = self.run_housekeeping().await?;
+                let report = self.run_scheduled_housekeeping().await?;
                 Ok(JobExecutionOutcome::new(
                     Some(format!(
                         "Removed {} orphaned media files and {} stale release decisions",

@@ -37,11 +37,15 @@ impl TitleMutations {
     ) -> GqlResult<AddTitleResult> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let library_id = input.library_id.clone();
         let request = map_add_input(input)?;
-        let result = app
-            .add_title_with_outcome(&actor, request)
-            .await
-            .map_err(to_gql_error)?;
+        let result = if let Some(library_id) = library_id {
+            app.add_title_with_outcome_in_library(&actor, request, library_id)
+                .await
+        } else {
+            app.add_title_with_outcome(&actor, request).await
+        }
+        .map_err(to_gql_error)?;
 
         Ok(AddTitleResult {
             title: from_title(result.title),
@@ -65,19 +69,26 @@ impl TitleMutations {
         let source_hint = input.source_hint.clone();
         let source_kind = parse_download_source_kind(input.source_kind);
         let source_title = input.source_title.clone();
+        let library_id = input.library_id.clone();
         let request = map_add_input(input)?;
-        let result = app
-            .add_title_and_queue_download_with_outcome(
+        let queued_release = QueuedReleaseSelection {
+            source_hint,
+            source_kind,
+            source_title: source_title.clone(),
+        };
+        let result = if let Some(library_id) = library_id {
+            app.add_title_and_queue_download_with_outcome_in_library(
                 &actor,
                 request,
-                QueuedReleaseSelection {
-                    source_hint,
-                    source_kind,
-                    source_title: source_title.clone(),
-                },
+                library_id,
+                queued_release,
             )
             .await
-            .map_err(to_gql_error)?;
+        } else {
+            app.add_title_and_queue_download_with_outcome(&actor, request, queued_release)
+                .await
+        }
+        .map_err(to_gql_error)?;
         let queued_download = queued_download_payload(
             &result.title,
             result.download_job_id.clone(),

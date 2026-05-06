@@ -137,6 +137,9 @@ fn wanted_item_candidates_for_submission_scope(
                 title_name: None,
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: None,
                 collection_id: None,
                 season_number: None,
@@ -213,6 +216,9 @@ fn wanted_item_candidates_for_submission_scope(
                     title_name: None,
                     title_slug: None,
                     title_facet: None,
+                    library_id: None,
+                    library_name: None,
+                    library_slug: None,
                     episode_id: None,
                     collection_id: Some(collection_id.clone()),
                     season_number: None,
@@ -259,6 +265,9 @@ fn wanted_item_candidate_for_episode_id(
         title_name: None,
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: Some(episode_id.to_string()),
         collection_id,
         season_number,
@@ -684,10 +693,20 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
+        library_id: Option<String>,
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services.catalog.titles.list(facet, query).await
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        if let Some(requested_library_id) = library_id {
+            library_ids.retain(|id| id == &requested_library_id);
+        }
+        self.services
+            .catalog
+            .titles
+            .list_for_libraries(facet, &library_ids, query)
+            .await
     }
 
     pub async fn list_titles_by_external_ids(
@@ -696,8 +715,6 @@ impl AppUseCase {
         source: &str,
         values: &[String],
     ) -> AppResult<Vec<Title>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
         let normalized_source = source.trim();
         if normalized_source.is_empty() {
             return Ok(Vec::new());
@@ -719,21 +736,57 @@ impl AppUseCase {
             return Ok(Vec::new());
         }
 
-        self.services
+        let titles = self
+            .services
             .catalog
             .titles
             .list_by_external_ids(normalized_source, &normalized_values)
-            .await
+            .await?;
+        let library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        Ok(titles
+            .into_iter()
+            .filter(|title| library_ids.contains(&title.library_id))
+            .collect())
     }
 
     pub async fn list_cutoff_unmet_titles(
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
+        library_id: Option<String>,
     ) -> AppResult<Vec<CutoffUnmetItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
-        let titles = self.services.catalog.titles.list(facet, None).await?;
+        let authorized_libraries = self
+            .list_libraries_for_permission(
+                actor,
+                facet.clone(),
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        let library_name_by_id = authorized_libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let library_slug_by_id = authorized_libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.slug.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut library_ids = authorized_libraries
+            .iter()
+            .map(|library| library.id.clone())
+            .collect::<Vec<_>>();
+        if let Some(requested_library_id) = library_id {
+            library_ids.retain(|id| id == &requested_library_id);
+        }
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(facet, &library_ids, None)
+            .await?;
         let monitored_titles = titles
             .into_iter()
             .filter(|title| title.monitored)
@@ -778,6 +831,7 @@ impl AppUseCase {
 
             let resolved_profile_id = crate::resolve_profile_id_for_title(
                 title_profile_id,
+                None,
                 category_profile_id,
                 global_profile_id,
             );
@@ -866,6 +920,9 @@ impl AppUseCase {
                 title_name: title.name.clone(),
                 title_slug: title.slug.clone(),
                 title_facet: title.facet.clone(),
+                library_id: title.library_id.clone(),
+                library_name: library_name_by_id.get(&title.library_id).cloned(),
+                library_slug: library_slug_by_id.get(&title.library_id).cloned(),
                 episode_id: summary.episode_id,
                 season_number: summary.season_number,
                 episode_number: summary.episode_number,
@@ -915,7 +972,19 @@ impl AppUseCase {
         title_id: &str,
         limit: usize,
     ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         let bounded_limit = limit.clamp(1, 1_000);
         let submissions = self
             .services
@@ -970,7 +1039,22 @@ impl AppUseCase {
         actor: &User,
         id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let (entries, _) = self
+            .services
+            .workflow
+            .blocklist_repo
+            .list_all(500, 0)
+            .await?;
+        let entry = entries
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("blocklist entry {id}")))?;
+        self.require_title_permission(
+            actor,
+            &entry.title_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         self.services.workflow.blocklist_repo.remove(id).await
     }
 
@@ -1025,9 +1109,20 @@ impl AppUseCase {
         actor: &User,
         request: NewTitle,
     ) -> AppResult<AddTitleOutcome> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
+        self.add_title_with_outcome_in_library(actor, request, library_id)
+            .await
+    }
 
-        let created = self.create_title_without_hydration(actor, request).await?;
+    pub async fn add_title_with_outcome_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+    ) -> AppResult<AddTitleOutcome> {
+        let created = self
+            .create_title_without_hydration_in_library(actor, request, library_id)
+            .await?;
         self.notify_title_image_wakes(&created.title);
 
         let metadata_hydration_state = if created.title.metadata_fetched_at.is_some() {
@@ -1062,19 +1157,46 @@ impl AppUseCase {
         Ok(self.add_title_with_outcome(actor, request).await?.title)
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_title_without_hydration(
         &self,
         actor: &User,
         request: NewTitle,
     ) -> AppResult<CreateTitleOutcome> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
+        self.create_title_without_hydration_in_library(actor, request, library_id)
+            .await
+    }
 
+    pub(crate) async fn create_title_without_hydration_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+    ) -> AppResult<CreateTitleOutcome> {
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+        self.create_title_without_hydration_after_library_authorization(actor, request, library_id)
+            .await
+    }
+
+    pub(crate) async fn create_title_without_hydration_after_library_authorization(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+    ) -> AppResult<CreateTitleOutcome> {
         if request.name.trim().is_empty() {
             return Err(AppError::Validation("title name is required".into()));
         }
 
         let title = Title {
             id: Id::new().0,
+            library_id,
             name: request.name.trim().to_string(),
             facet: request.facet,
             monitored: request.monitored,
@@ -2661,7 +2783,26 @@ impl AppUseCase {
         request: NewTitle,
         queued_release: QueuedReleaseSelection,
     ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
-        let add_outcome = self.add_title_with_outcome(actor, request).await?;
+        let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
+        self.add_title_and_queue_download_with_outcome_in_library(
+            actor,
+            request,
+            library_id,
+            queued_release,
+        )
+        .await
+    }
+
+    pub async fn add_title_and_queue_download_with_outcome_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        queued_release: QueuedReleaseSelection,
+    ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
+        let add_outcome = self
+            .add_title_with_outcome_in_library(actor, request, library_id)
+            .await?;
         let title = add_outcome.title.clone();
         let queued = self
             .queue_manual_release_for_title(
@@ -2707,8 +2848,6 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -2716,6 +2855,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         self.queue_manual_release_for_title(actor, &title, queued_release, scope, conflict_policy)
             .await
     }
@@ -2757,8 +2902,6 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -2766,6 +2909,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let (search_title, subject) = match &scope {
             SubmissionScope::Title | SubmissionScope::Orphan => (
@@ -3471,7 +3620,19 @@ impl AppUseCase {
         id: &str,
         monitored: bool,
     ) -> AppResult<Title> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .title_library_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {id}")))?;
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         self.apply_title_monitoring_change(Some(actor.id.clone()), id, monitored)
             .await
@@ -3483,7 +3644,26 @@ impl AppUseCase {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<Collection> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let collection = self
+            .services
+            .catalog
+            .shows
+            .get_collection_by_id(collection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .title_library_id(&collection.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", collection.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let collection = self
             .apply_collection_monitoring_change(
@@ -3503,7 +3683,26 @@ impl AppUseCase {
         episode_id: &str,
         monitored: bool,
     ) -> AppResult<Episode> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let episode = self
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("episode {}", episode_id)))?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .title_library_id(&episode.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", episode.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let episode = self
             .apply_episode_monitoring_change(Some(actor.id.clone()), episode_id, monitored, true)
@@ -3518,8 +3717,6 @@ impl AppUseCase {
         delete_files_on_disk: bool,
         delete_confirmation: Option<DeleteExecutionConfirmation>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -3527,6 +3724,12 @@ impl AppUseCase {
             .get_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if delete_files_on_disk {
             let delete_confirmation = delete_confirmation.ok_or_else(|| {
@@ -3700,8 +3903,6 @@ impl AppUseCase {
         delete_from_disk: bool,
         delete_confirmation: Option<DeleteExecutionConfirmation>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let media_file = self
             .services
             .library
@@ -3709,6 +3910,19 @@ impl AppUseCase {
             .get_media_file_by_id(file_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .title_library_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", media_file.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if delete_from_disk {
             let delete_confirmation = delete_confirmation.ok_or_else(|| {
@@ -3767,7 +3981,7 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn apply_title_metadata_update(
+    pub(crate) async fn apply_title_metadata_update(
         &self,
         actor_user_id: Option<String>,
         id: &str,
@@ -3799,7 +4013,19 @@ impl AppUseCase {
                 "at least one title field must be provided".into(),
             ));
         }
-        require(actor, &Entitlement::ManageTitle)?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .title_library_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {id}")))?;
+        self.require_library_permission(
+            actor,
+            &library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         self.apply_title_metadata_update(Some(actor.id.clone()), id, name, facet, tags)
             .await
@@ -3811,8 +4037,6 @@ impl AppUseCase {
         title_id: &str,
         target_tvdb_id: &str,
     ) -> AppResult<FixTitleMatchResult> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let target_tvdb_id = target_tvdb_id.trim();
         if target_tvdb_id.is_empty() {
             return Err(AppError::Validation("tvdb id is required".into()));
@@ -3828,6 +4052,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &existing_title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let duplicate = self
             .services
@@ -4015,32 +4245,140 @@ impl AppUseCase {
     }
 
     pub async fn get_title(&self, actor: &User, id: &str) -> AppResult<Option<Title>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services.catalog.titles.get_by_id(id).await
+        let title = self.services.catalog.titles.get_by_id(id).await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(title)
     }
 
     pub async fn get_title_by_slug(
         &self,
         actor: &User,
         facet: MediaFacet,
+        library_id: Option<String>,
+        library_slug: Option<String>,
         slug: &str,
     ) -> AppResult<Option<Title>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services
+        let mut authorized_libraries = self
+            .list_libraries_for_permission(
+                actor,
+                Some(facet.clone()),
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        if let Some(requested_library_id) = library_id {
+            authorized_libraries.retain(|library| library.id == requested_library_id);
+        }
+        if let Some(requested_library_slug) = library_slug {
+            let normalized_slug = requested_library_slug.trim();
+            authorized_libraries
+                .retain(|library| library.slug.eq_ignore_ascii_case(normalized_slug));
+        }
+        let library_ids = authorized_libraries
+            .into_iter()
+            .map(|library| library.id)
+            .collect::<Vec<_>>();
+        let title = self
+            .services
             .catalog
             .titles
-            .get_by_facet_and_slug(facet, slug)
-            .await
+            .get_by_facet_libraries_and_slug(facet, &library_ids, slug)
+            .await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(title)
     }
 
-    async fn validate_title_exists(&self, title_id: &str) -> AppResult<()> {
-        self.services
+    async fn require_title_permission(
+        &self,
+        actor: &User,
+        title_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Title> {
+        let title = self
+            .services
             .catalog
             .titles
             .get_by_id(title_id)
             .await?
-            .map(|_| ())
-            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(actor, &title.library_id, permission)
+            .await?;
+        Ok(title)
+    }
+
+    async fn filter_title_ids_for_permission(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<String>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut visible = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            if let Some(title) = self.services.catalog.titles.get_by_id(title_id).await?
+                && allowed_library_ids.contains(&title.library_id)
+            {
+                visible.push(title.id);
+            }
+        }
+        Ok(visible)
+    }
+
+    async fn require_collection_permission(
+        &self,
+        actor: &User,
+        collection_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Collection> {
+        let collection = self
+            .services
+            .catalog
+            .shows
+            .get_collection_by_id(collection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
+        self.require_title_permission(actor, &collection.title_id, permission)
+            .await?;
+        Ok(collection)
+    }
+
+    async fn require_episode_permission(
+        &self,
+        actor: &User,
+        episode_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Episode> {
+        let episode = self
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("episode {episode_id}")))?;
+        self.require_title_permission(actor, &episode.title_id, permission)
+            .await?;
+        Ok(episode)
     }
 
     pub async fn list_primary_collection_summaries(
@@ -4048,11 +4386,17 @@ impl AppUseCase {
         actor: &User,
         title_ids: &[String],
     ) -> AppResult<Vec<PrimaryCollectionSummary>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
         self.services
             .catalog
             .shows
-            .list_primary_collection_summaries(title_ids)
+            .list_primary_collection_summaries(&title_ids)
             .await
     }
 
@@ -4061,11 +4405,17 @@ impl AppUseCase {
         actor: &User,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
         self.services
             .library
             .media_files
-            .list_title_media_size_summaries(title_ids)
+            .list_title_media_size_summaries(&title_ids)
             .await
     }
 
@@ -4074,11 +4424,17 @@ impl AppUseCase {
         actor: &User,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
         self.services
             .library
             .media_files
-            .list_title_quality_summaries(title_ids)
+            .list_title_quality_summaries(&title_ids)
             .await
     }
 
@@ -4087,11 +4443,17 @@ impl AppUseCase {
         actor: &User,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
         self.services
             .library
             .media_files
-            .list_title_episode_progress_summaries(title_ids)
+            .list_title_episode_progress_summaries(&title_ids)
             .await
     }
 
@@ -4100,8 +4462,8 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<Vec<Collection>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.validate_title_exists(title_id).await?;
+        self.require_title_permission(actor, title_id, scryer_domain::LibraryPermission::View)
+            .await?;
         self.services
             .catalog
             .shows
@@ -4114,12 +4476,21 @@ impl AppUseCase {
         actor: &User,
         collection_id: &str,
     ) -> AppResult<Option<Collection>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services
+        let collection = self
+            .services
             .catalog
             .shows
             .get_collection_by_id(collection_id)
-            .await
+            .await?;
+        if let Some(collection) = collection.as_ref() {
+            self.require_title_permission(
+                actor,
+                &collection.title_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(collection)
     }
 
     pub async fn create_collection(
@@ -4133,7 +4504,12 @@ impl AppUseCase {
         first_episode_number: Option<String>,
         last_episode_number: Option<String>,
     ) -> AppResult<Collection> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_title_permission(
+            actor,
+            &title_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if collection_type.trim().is_empty() {
             return Err(AppError::Validation("collection type is required".into()));
@@ -4145,9 +4521,6 @@ impl AppUseCase {
         if collection_index.trim().is_empty() {
             return Err(AppError::Validation("collection index is required".into()));
         }
-
-        self.validate_title_exists(&title_id).await?;
-
         let collection = Collection {
             id: Id::new().0,
             title_id,
@@ -4186,7 +4559,12 @@ impl AppUseCase {
         last_episode_number: Option<String>,
         monitored: Option<bool>,
     ) -> AppResult<Collection> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_collection_permission(
+            actor,
+            &collection_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if let Some(raw) = &collection_type
             && raw.trim().is_empty()
@@ -4278,7 +4656,12 @@ impl AppUseCase {
         has_multi_audio: bool,
         has_subtitle: bool,
     ) -> AppResult<Episode> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_title_permission(
+            actor,
+            &title_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if episode_type.trim().is_empty() {
             return Err(AppError::Validation("episode type is required".into()));
@@ -4289,9 +4672,6 @@ impl AppUseCase {
                 .ok_or_else(|| {
                     AppError::Validation(format!("unknown episode type: {}", episode_type))
                 })?;
-
-        self.validate_title_exists(&title_id).await?;
-
         let episode = Episode {
             id: Id::new().0,
             title_id,
@@ -4335,7 +4715,12 @@ impl AppUseCase {
         collection_id: Option<String>,
         overview: Option<String>,
     ) -> AppResult<Episode> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_episode_permission(
+            actor,
+            &episode_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if let Some(raw) = &episode_type
             && raw.trim().is_empty()
@@ -4408,7 +4793,12 @@ impl AppUseCase {
     }
 
     pub async fn delete_collection(&self, actor: &User, collection_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_collection_permission(
+            actor,
+            collection_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         self.services
             .catalog
@@ -4419,7 +4809,12 @@ impl AppUseCase {
     }
 
     pub async fn delete_episode(&self, actor: &User, episode_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_episode_permission(
+            actor,
+            episode_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         self.services
             .catalog
@@ -4434,7 +4829,12 @@ impl AppUseCase {
         actor: &User,
         collection_id: &str,
     ) -> AppResult<Vec<Episode>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_collection_permission(
+            actor,
+            collection_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .catalog
             .shows
@@ -4443,12 +4843,21 @@ impl AppUseCase {
     }
 
     pub async fn get_episode(&self, actor: &User, episode_id: &str) -> AppResult<Option<Episode>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services
+        let episode = self
+            .services
             .catalog
             .shows
             .get_episode_by_id(episode_id)
-            .await
+            .await?;
+        if let Some(episode) = episode.as_ref() {
+            self.require_title_permission(
+                actor,
+                &episode.title_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(episode)
     }
 
     pub async fn list_calendar_episodes(
@@ -4456,13 +4865,29 @@ impl AppUseCase {
         actor: &User,
         start_date: &str,
         end_date: &str,
+        library_id: Option<String>,
     ) -> AppResult<Vec<CalendarEpisode>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services
+        let authorized = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let requested = library_id.filter(|id| authorized.contains(id));
+        let episodes = self
+            .services
             .catalog
             .shows
             .list_episodes_in_date_range(start_date, end_date)
-            .await
+            .await?;
+        Ok(episodes
+            .into_iter()
+            .filter(|episode| {
+                requested.as_ref().map_or_else(
+                    || authorized.contains(&episode.library_id),
+                    |id| episode.library_id == *id,
+                )
+            })
+            .collect())
     }
 
     /// Re-fetch metadata from SMG for all monitored series/anime titles.
@@ -4520,7 +4945,8 @@ impl AppUseCase {
     }
 
     pub async fn rehydrate_all_metadata(&self, actor: &User, language: &str) -> AppResult<u64> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let language = language.trim().to_ascii_lowercase();
         if language.is_empty() {

@@ -6,11 +6,12 @@ use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
     AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
-    DownloadSubmission, DownloadSubmissionRepository, PendingReleaseRepository,
-    PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, TitleRepository,
-    WantedCompleteTransition, WantedItemRepository, WantedSearchTransition, WantedStatus,
+    DownloadSubmission, DownloadSubmissionRepository, LibraryRepository, LibraryRootDraft,
+    PendingReleaseRepository, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
+    TitleRepository, UserRepository, WantedCompleteTransition, WantedItemRepository,
+    WantedSearchTransition, WantedStatus,
 };
-use scryer_domain::{MediaFacet, Title};
+use scryer_domain::{Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -19,10 +20,20 @@ use sqlx::{Row, query};
 
 /// Create a title so FK constraints are satisfied.
 async fn seed_title(ctx: &TestContext, id: &str) {
+    seed_title_in_library(
+        ctx,
+        id,
+        &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+    )
+    .await;
+}
+
+async fn seed_title_in_library(ctx: &TestContext, id: &str, library_id: &str) {
     let title = Title {
         id: id.to_string(),
         name: "Test Title".to_string(),
         facet: MediaFacet::Movie,
+        library_id: library_id.to_string(),
         monitored: true,
         tags: vec![],
         external_ids: vec![],
@@ -55,7 +66,9 @@ async fn seed_title(ctx: &TestContext, id: &str) {
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title).await.expect("seed title");
+    TitleRepository::create(&ctx.catalog, title)
+        .await
+        .expect("seed title");
 }
 
 /// Insert a wanted item directly via the repo and return its ID.
@@ -70,6 +83,9 @@ async fn seed_wanted_item(
         title_name: Some("Test Title".to_string()),
         title_slug: None,
         title_facet: Some("movie".to_string()),
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -133,6 +149,77 @@ async fn seed_pending_release(
     pr
 }
 
+#[tokio::test]
+async fn direct_wanted_item_lookup_requires_access_to_item_library() {
+    let ctx = TestContext::new().await;
+    let adult_root = tempfile::tempdir().expect("adult library root");
+    let now = Utc::now();
+    LibraryRepository::create(
+        &ctx.catalog,
+        Library {
+            id: "movie_adult_library".to_string(),
+            facet: MediaFacet::Movie,
+            name: "Adult".to_string(),
+            slug: "adult".to_string(),
+            is_default: false,
+            roots: vec![],
+            created_at: now,
+            updated_at: now,
+        },
+        vec![LibraryRootDraft {
+            path: adult_root.path().to_string_lossy().to_string(),
+            is_default: true,
+        }],
+    )
+    .await
+    .expect("create adult library");
+
+    seed_title_in_library(&ctx, "adult-title", "movie_adult_library").await;
+    let mut wanted = seed_wanted_item(&ctx, "adult-title", WantedStatus::Wanted).await;
+    wanted.library_id = Some("movie_adult_library".to_string());
+    ctx.library_state
+        .upsert_wanted_item(&wanted)
+        .await
+        .expect("update wanted library id");
+
+    let user_id = Id::new().0;
+    let viewer = UserRepository::create(
+        &ctx.catalog,
+        User {
+            id: user_id.clone(),
+            username: "default-viewer".to_string(),
+            password_hash: None,
+            entitlements: vec![],
+            authorization: Default::default(),
+        },
+    )
+    .await
+    .expect("create viewer");
+    LibraryRepository::set_grants_for_user(
+        &ctx.catalog,
+        &user_id,
+        vec![LibraryGrant {
+            user_id: user_id.clone(),
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            permissions: LibraryPermissionMask::VIEW,
+        }],
+    )
+    .await
+    .expect("grant default library only");
+    let viewer = ctx
+        .app
+        .attach_user_authorization(viewer)
+        .await
+        .expect("attach authorization");
+
+    let error = ctx
+        .app
+        .get_wanted_item(&viewer, &wanted.id)
+        .await
+        .expect_err("viewer should not see another library wanted item");
+    assert!(matches!(error, AppError::Unauthorized(_)));
+}
+
 // ---------------------------------------------------------------------------
 // list_pending_releases
 // ---------------------------------------------------------------------------
@@ -172,7 +259,8 @@ async fn list_pending_releases_returns_only_waiting() {
     )
     .await;
 
-    let pending = app.list_pending_releases().await.expect("list");
+    let actor = scryer_domain::User::new_admin("admin");
+    let pending = app.list_pending_releases(&actor).await.expect("list");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].release_score, 500);
 }
@@ -611,11 +699,14 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
     seed_wanted_item(&ctx, "title-1", scryer_application::WantedStatus::Wanted).await;
 
     let (first_items, first_total) = app
-        .list_wanted_items(scryer_application::WantedItemsQuery {
-            limit: 50,
-            offset: 0,
-            ..scryer_application::WantedItemsQuery::default()
-        })
+        .list_wanted_items(
+            &scryer_domain::User::new_admin("admin"),
+            scryer_application::WantedItemsQuery {
+                limit: 50,
+                offset: 0,
+                ..scryer_application::WantedItemsQuery::default()
+            },
+        )
         .await
         .expect("first wanted list");
     assert_eq!(first_total, 1);
@@ -623,11 +714,14 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
     assert_eq!(first_items[0].title_id, "title-1");
 
     let (second_items, second_total) = app
-        .list_wanted_items(scryer_application::WantedItemsQuery {
-            limit: 50,
-            offset: 0,
-            ..scryer_application::WantedItemsQuery::default()
-        })
+        .list_wanted_items(
+            &scryer_domain::User::new_admin("admin"),
+            scryer_application::WantedItemsQuery {
+                limit: 50,
+                offset: 0,
+                ..scryer_application::WantedItemsQuery::default()
+            },
+        )
         .await
         .expect("second wanted list");
     assert_eq!(second_total, 1);
@@ -657,7 +751,7 @@ async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule
         .await
         .expect("schedule wanted item");
 
-    app.pause_wanted_item(&wanted.id)
+    app.pause_wanted_item(&scryer_domain::User::new_admin("admin"), &wanted.id)
         .await
         .expect("pause wanted item");
 
@@ -667,6 +761,9 @@ async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule
         title_name: Some("Test Title".to_string()),
         title_slug: None,
         title_facet: Some("movie".to_string()),
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -732,6 +829,9 @@ async fn ensure_wanted_item_seeded_preserves_existing_schedule_after_search_acti
         title_name: Some("Test Title".to_string()),
         title_slug: None,
         title_facet: Some("movie".to_string()),
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -801,6 +901,9 @@ async fn ensure_wanted_item_seeded_preserves_completed_status() {
         title_name: Some("Test Title".to_string()),
         title_slug: None,
         title_facet: Some("movie".to_string()),
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -858,7 +961,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
 
     ctx.app
         .clone()
-        .pause_wanted_item(&wanted.id)
+        .pause_wanted_item(&scryer_domain::User::new_admin("admin"), &wanted.id)
         .await
         .expect("pause wanted item");
 
@@ -869,6 +972,9 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
             title_name: Some("Test Title".to_string()),
             title_slug: None,
             title_facet: Some("movie".to_string()),
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -929,6 +1035,9 @@ async fn direct_upsert_wanted_item_preserves_existing_schedule_after_search_acti
             title_name: Some("Test Title".to_string()),
             title_slug: None,
             title_facet: Some("movie".to_string()),
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -986,11 +1095,15 @@ async fn dismiss_sets_status_to_dismissed() {
     )
     .await;
 
-    let result = app.dismiss_pending_release(&pr.id).await.expect("dismiss");
+    let actor = scryer_domain::User::new_admin("admin");
+    let result = app
+        .dismiss_pending_release(&actor, &pr.id)
+        .await
+        .expect("dismiss");
     assert!(result);
 
     // Should no longer appear in waiting list
-    let pending = app.list_pending_releases().await.unwrap();
+    let pending = app.list_pending_releases(&actor).await.unwrap();
     assert!(pending.is_empty());
 
     // Verify status in DB
@@ -1009,7 +1122,7 @@ async fn dismiss_nonexistent_returns_error() {
     let app = ctx.app.clone();
 
     let err = app
-        .dismiss_pending_release("nonexistent-id")
+        .dismiss_pending_release(&scryer_domain::User::new_admin("admin"), "nonexistent-id")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
@@ -1032,7 +1145,10 @@ async fn dismiss_non_waiting_returns_error() {
     )
     .await;
 
-    let err = app.dismiss_pending_release(&pr.id).await.unwrap_err();
+    let err = app
+        .dismiss_pending_release(&scryer_domain::User::new_admin("admin"), &pr.id)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
 }
 
@@ -1046,7 +1162,7 @@ async fn force_grab_nonexistent_returns_error() {
     let app = ctx.app.clone();
 
     let err = app
-        .force_grab_pending_release("nonexistent-id")
+        .force_grab_pending_release(&scryer_domain::User::new_admin("admin"), "nonexistent-id")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
@@ -1069,7 +1185,10 @@ async fn force_grab_non_waiting_returns_error() {
     )
     .await;
 
-    let err = app.force_grab_pending_release(&pr.id).await.unwrap_err();
+    let err = app
+        .force_grab_pending_release(&scryer_domain::User::new_admin("admin"), &pr.id)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
 }
 

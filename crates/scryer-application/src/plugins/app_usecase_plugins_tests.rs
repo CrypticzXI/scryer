@@ -492,7 +492,26 @@ impl IndexerPluginProvider for MockPluginProvider {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn admin() -> User {
-    User::new_admin("admin")
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        app: scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageUsers,
+            scryer_domain::AppPermission::ManagePermissions,
+            scryer_domain::AppPermission::ManageSystemSettings,
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]),
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageLibrary,
+            scryer_domain::LibraryPermission::Request,
+            scryer_domain::LibraryPermission::AutoApproveRequests,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
 }
 
 fn viewer() -> User {
@@ -501,6 +520,7 @@ fn viewer() -> User {
         username: "viewer".to_string(),
         password_hash: None,
         entitlements: vec![scryer_domain::Entitlement::ViewCatalog],
+        authorization: Default::default(),
     }
 }
 
@@ -513,6 +533,14 @@ fn config_admin() -> User {
             scryer_domain::Entitlement::ViewCatalog,
             scryer_domain::Entitlement::ManageConfig,
         ],
+        authorization: scryer_domain::UserAuthorization {
+            app: scryer_domain::AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageSystemSettings,
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            loaded: true,
+            ..Default::default()
+        },
     }
 }
 
@@ -2214,6 +2242,7 @@ async fn toggle_publishes_provider_catalog_change_for_subtitle_plugins() {
     let mut rx = h
         .app
         .subscribe_provider_catalog_changed(&config_admin())
+        .await
         .unwrap();
 
     h.app.toggle_plugin(&admin(), "jimaku", true).await.unwrap();
@@ -2249,6 +2278,7 @@ async fn uninstall_publishes_provider_catalog_change_for_notification_plugins() 
     let mut rx = h
         .app
         .subscribe_provider_catalog_changed(&config_admin())
+        .await
         .unwrap();
 
     h.app.uninstall_plugin(&admin(), "jellyfin").await.unwrap();

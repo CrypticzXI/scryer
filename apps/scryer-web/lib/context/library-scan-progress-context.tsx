@@ -4,7 +4,10 @@ import type { Facet, LibraryScanProgress } from "@/lib/types";
 
 export type LibraryScanProgressContextValue = {
   sessions: LibraryScanProgress[];
-  getActiveSession: (facet: Facet) => LibraryScanProgress | null;
+  getActiveSession: (
+    facet: Facet,
+    libraryId?: string | null,
+  ) => LibraryScanProgress | null;
   getSessionById: (sessionId: string) => LibraryScanProgress | null;
 };
 

@@ -8,7 +8,7 @@ import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
 import { buildRouteCommands } from "@/components/root/route-commands";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
-import { useAuth } from "@/lib/hooks/use-auth";
+import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
@@ -42,11 +42,19 @@ const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   system: MonitorCog,
 };
 
+const EMPTY_AUTH_USER: AuthUser = {
+  id: "",
+  username: "",
+  appPermissions: [],
+  libraryPermissions: [],
+};
+
 export function MovieOverviewShell() {
   const [searchParams] = useSearchParams();
   const titleId = searchParams.get("id") ?? "";
   const navigate = useNavigate();
   const { user } = useAuth();
+  const permissionUser = user ?? EMPTY_AUTH_USER;
 
   const { uiLanguage, t } = useLanguage(searchParams);
 
@@ -75,9 +83,10 @@ export function MovieOverviewShell() {
       }
 
       const normalizedSlug = overviewTarget.slug?.trim() || null;
-      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
+      const targetPath = buildOverviewDetailPath(targetView, normalizedLibrarySlug, normalizedSlug);
       const nextParams = new URLSearchParams();
-      if (!normalizedSlug) {
+      if (!normalizedSlug || !normalizedLibrarySlug) {
         nextParams.set("id", normalizedTitleId);
       }
 
@@ -113,11 +122,11 @@ export function MovieOverviewShell() {
     return buildRouteCommands({
       t,
       pendingImportCounts: null,
-      entitlements: user?.entitlements ?? [],
+      user: permissionUser,
       activityImportCount: 0,
       onNavigate: navigateTo,
     });
-  }, [navigateTo, t, user?.entitlements]);
+  }, [navigateTo, permissionUser, t]);
 
   const routeCommandPaletteConfig = useMemo(
     () => ({
@@ -151,7 +160,7 @@ export function MovieOverviewShell() {
                   systemSection="overview"
                   activitySection="activity"
                   wantedSection="wanted"
-                  entitlements={[]}
+                  user={permissionUser}
                   pendingImportCounts={null}
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}

@@ -889,6 +889,7 @@ mod tests {
             id: id.to_string(),
             name: "Live Query Test".to_string(),
             facet: MediaFacet::Series,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: true,
             tags: vec![],
             external_ids: vec![],

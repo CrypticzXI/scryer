@@ -422,19 +422,24 @@ async fn resolve_actor(
     remote_addr: Option<SocketAddr>,
 ) -> Option<scryer_domain::User> {
     let snapshot = state.auth_runtime.snapshot();
-    if !snapshot.effective_form_login_enabled {
-        return state.app.find_or_create_default_user().await.ok();
-    }
-
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
-    match authorization_token_from_headers(headers) {
-        Ok(Some(token)) => match state.app.authenticate_token(token).await {
-            Ok(user) => Some(user),
-            Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
-            Err(_) => None,
-        },
-        Ok(None) | Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
-        Ok(None) | Err(_) => None,
+    let actor = if !snapshot.effective_form_login_enabled {
+        state.app.find_or_create_default_user().await.ok()
+    } else {
+        match authorization_token_from_headers(headers) {
+            Ok(Some(token)) => match state.app.authenticate_token(token).await {
+                Ok(user) => Some(user),
+                Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+                Err(_) => None,
+            },
+            Ok(None) | Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+            Ok(None) | Err(_) => None,
+        }
+    };
+
+    match actor {
+        Some(user) => state.app.attach_user_authorization(user).await.ok(),
+        None => None,
     }
 }
 

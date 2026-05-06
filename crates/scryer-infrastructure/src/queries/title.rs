@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use super::common::{parse_utc_datetime, repository_error_from_sqlx};
 use crate::title_images::{normalized_base_path_from_env, prefix_local_title_image_path};
 
-const TITLE_COLUMNS: &str = "id, name, facet, monitored, tags, external_ids, created_by, created_at, \
+const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at, \
     year, overview, poster_url, poster_local_path, banner_url, banner_local_path, background_url, background_local_path, \
     sort_title, slug, imdb_id, runtime_minutes, genres, \
     content_status, language, first_aired, network, studio, country, aliases, \
@@ -35,6 +35,48 @@ pub(crate) async fn list_titles_query(
     query: Option<String>,
 ) -> AppResult<Vec<Title>> {
     list_titles_query_with_mode(pool, facet, query, TitleReadMode::Presentation).await
+}
+
+pub(crate) async fn list_titles_for_libraries_query(
+    pool: &SqlitePool,
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<String>,
+) -> AppResult<Vec<Title>> {
+    if library_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT {} FROM titles WHERE library_id IN (",
+        TITLE_COLUMNS
+    ));
+    for (index, library_id) in library_ids.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push_bind(library_id);
+    }
+    builder.push(")");
+    if let Some(facet) = facet {
+        builder.push(" AND facet = ");
+        builder.push_bind(facet.as_str());
+    }
+    if let Some(search) = query {
+        builder.push(" AND LOWER(name) LIKE ");
+        builder.push_bind(format!("%{}%", search.to_lowercase()));
+    }
+    builder.push(" ORDER BY LOWER(name) ASC, id ASC");
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    let base_path = normalized_base_path_from_env();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(row_to_title(&row, TitleReadMode::Presentation, &base_path)?);
+    }
+    Ok(out)
 }
 
 pub(crate) async fn list_titles_for_matching_query(
@@ -188,6 +230,53 @@ pub(crate) async fn get_title_by_facet_and_slug_query(
         _ => Err(AppError::Validation(format!(
             "multiple titles found for facet `{}` and slug `{normalized_slug}`",
             facet.as_str()
+        ))),
+    }
+}
+
+pub(crate) async fn get_title_by_facet_libraries_and_slug_query(
+    pool: &SqlitePool,
+    facet: MediaFacet,
+    library_ids: &[String],
+    slug: &str,
+) -> AppResult<Option<Title>> {
+    let normalized_slug = slug.trim().to_ascii_lowercase();
+    if normalized_slug.is_empty() || library_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT {} FROM titles
+         WHERE facet = ",
+        TITLE_COLUMNS,
+    ));
+    builder.push_bind(facet.as_str());
+    builder.push(" AND LOWER(TRIM(slug)) = ");
+    builder.push_bind(&normalized_slug);
+    builder.push(" AND library_id IN (");
+    for (index, library_id) in library_ids.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push_bind(library_id);
+    }
+    builder.push(") ORDER BY id ASC LIMIT 2");
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    match rows.as_slice() {
+        [] => Ok(None),
+        [row] => Ok(Some(row_to_title(
+            row,
+            TitleReadMode::Presentation,
+            &normalized_base_path_from_env(),
+        )?)),
+        _ => Err(AppError::Validation(format!(
+            "multiple titles found for slug `{normalized_slug}` in accessible libraries",
         ))),
     }
 }
@@ -387,7 +476,7 @@ fn row_to_scoped_external_id(row: &sqlx::sqlite::SqliteRow) -> AppResult<ScopedE
 
 async fn list_existing_title_ids_for_external_ids_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    facet: MediaFacet,
+    library_id: &str,
     external_ids: &[(String, String)],
 ) -> AppResult<Vec<String>> {
     if external_ids.is_empty() {
@@ -395,9 +484,9 @@ async fn list_existing_title_ids_for_external_ids_tx(
     }
 
     let mut builder = QueryBuilder::<Sqlite>::new(
-        "SELECT DISTINCT title_id FROM title_external_ids WHERE facet = ",
+        "SELECT DISTINCT title_id FROM title_external_ids WHERE library_id = ",
     );
-    builder.push_bind(facet.as_str());
+    builder.push_bind(library_id);
     builder.push(" AND (");
     for (index, (source, value)) in external_ids.iter().enumerate() {
         if index > 0 {
@@ -431,6 +520,7 @@ async fn list_existing_title_ids_for_external_ids_tx(
 async fn replace_title_external_ids_projection_tx(
     tx: &mut Transaction<'_, Sqlite>,
     title_id: &str,
+    library_id: &str,
     facet: MediaFacet,
     external_ids: &[ExternalId],
 ) -> AppResult<()> {
@@ -444,11 +534,12 @@ async fn replace_title_external_ids_projection_tx(
     for (source, value) in normalized_external_ids(external_ids) {
         sqlx::query(
             "INSERT INTO title_external_ids
-             (id, title_id, facet, source, external_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, title_id, library_id, facet, source, external_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(scryer_domain::Id::new().0)
         .bind(title_id)
+        .bind(library_id)
         .bind(facet.as_str())
         .bind(source)
         .bind(value)
@@ -497,6 +588,10 @@ fn row_to_title(
     let facet: String = row
         .try_get("facet")
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    let parsed_facet = parse_facet(&facet);
+    let library_id: String = row
+        .try_get("library_id")
+        .unwrap_or_else(|_| scryer_domain::default_library_id_for_facet(&parsed_facet));
     let monitored: i64 = row
         .try_get("monitored")
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -559,8 +654,9 @@ fn row_to_title(
 
     let mut title = Title {
         id,
+        library_id,
         name,
-        facet: parse_facet(&facet),
+        facet: parsed_facet,
         monitored: monitored != 0,
         tags,
         external_ids,
@@ -1757,11 +1853,13 @@ pub(crate) async fn list_episodes_in_date_range_query(
     end_date: &str,
 ) -> AppResult<Vec<CalendarEpisode>> {
     let rows = sqlx::query(
-        "SELECT e.id, e.title_id, t.name AS title_name, t.slug AS title_slug, t.facet AS title_facet,
+        "SELECT e.id, e.title_id, t.library_id, l.name AS library_name, l.slug AS library_slug,
+                t.name AS title_name, t.slug AS title_slug, t.facet AS title_facet,
                 e.season_number, e.episode_number, e.title AS episode_title,
                 e.air_date, e.monitored
          FROM episodes e
          JOIN titles t ON e.title_id = t.id
+         LEFT JOIN libraries l ON l.id = t.library_id
          WHERE e.air_date IS NOT NULL AND e.air_date != ''
            AND e.air_date >= ? AND e.air_date <= ?
          ORDER BY e.air_date ASC",
@@ -1777,6 +1875,9 @@ pub(crate) async fn list_episodes_in_date_range_query(
         out.push(CalendarEpisode {
             id: row.get("id"),
             title_id: row.get("title_id"),
+            library_id: row.get("library_id"),
+            library_name: row.get("library_name"),
+            library_slug: row.get("library_slug"),
             title_name: row.get("title_name"),
             title_slug: row.get("title_slug"),
             title_facet: row.get("title_facet"),
@@ -2049,16 +2150,17 @@ async fn insert_title_row_tx(tx: &mut Transaction<'_, Sqlite>, title: &Title) ->
 
     sqlx::query(
         "INSERT INTO titles (
-            id, name, facet, monitored, tags, external_ids, created_by, created_at,
+            id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
             year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id,
             runtime_minutes, genres, content_status, language, first_aired, network, studio,
             country, aliases, metadata_language, metadata_fetched_at, min_availability,
             digital_release_date, folder_path, tagged_aliases_json,
             metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&title.id)
+    .bind(&title.library_id)
     .bind(&title.name)
     .bind(title.facet.as_str())
     .bind(if title.monitored { 1_i64 } else { 0_i64 })
@@ -2106,7 +2208,7 @@ pub(crate) async fn create_or_get_existing_title_query(
     let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
 
     let existing_ids =
-        list_existing_title_ids_for_external_ids_tx(&mut tx, title.facet.clone(), &external_ids)
+        list_existing_title_ids_for_external_ids_tx(&mut tx, &title.library_id, &external_ids)
             .await?;
     if existing_ids.len() > 1 {
         return Err(AppError::Validation(
@@ -2130,6 +2232,7 @@ pub(crate) async fn create_or_get_existing_title_query(
     match replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
+        &title.library_id,
         title.facet.clone(),
         &title.external_ids,
     )
@@ -2149,7 +2252,7 @@ pub(crate) async fn create_or_get_existing_title_query(
                 let mut lookup_tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
                 let conflict_ids = list_existing_title_ids_for_external_ids_tx(
                     &mut lookup_tx,
-                    title.facet.clone(),
+                    &title.library_id,
                     &external_ids,
                 )
                 .await?;
@@ -2188,6 +2291,7 @@ pub(crate) async fn create_title_query(pool: &SqlitePool, title: &Title) -> AppR
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
+        &title.library_id,
         title.facet.clone(),
         &title.external_ids,
     )
@@ -2413,6 +2517,7 @@ pub(crate) async fn update_title_metadata_query(
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
+        &title.library_id,
         title.facet.clone(),
         &title.external_ids,
     )
@@ -2496,6 +2601,7 @@ pub(crate) async fn replace_title_match_state_query(
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
+        &title.library_id,
         title.facet.clone(),
         &title.external_ids,
     )
@@ -2658,6 +2764,7 @@ pub(crate) async fn update_title_hydrated_metadata_query(
     replace_title_external_ids_projection_tx(
         &mut tx,
         &title.id,
+        &title.library_id,
         title.facet.clone(),
         &title.external_ids,
     )

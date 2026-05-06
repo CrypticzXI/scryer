@@ -44,8 +44,9 @@ async fn create_script(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
+    let actor = User::new_admin("admin");
     ctx.app
-        .create_post_processing_script(script)
+        .create_post_processing_script(&actor, script)
         .await
         .expect("create script");
 }

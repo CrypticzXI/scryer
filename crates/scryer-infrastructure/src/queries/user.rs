@@ -92,6 +92,7 @@ pub(crate) async fn get_user_by_id_query(pool: &SqlitePool, id: &str) -> AppResu
                 username,
                 password_hash,
                 entitlements,
+                authorization: Default::default(),
             }))
         }
         None => Ok(None),
@@ -115,6 +116,7 @@ async fn get_user_by_id_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> AppRes
                 username,
                 password_hash,
                 entitlements,
+                authorization: Default::default(),
             }))
         }
         None => Ok(None),
@@ -148,6 +150,7 @@ pub(crate) async fn get_user_by_username_query(
                 username,
                 password_hash,
                 entitlements,
+                authorization: Default::default(),
             }))
         }
         None => Ok(None),
@@ -176,6 +179,7 @@ pub(crate) async fn list_users_query(pool: &SqlitePool) -> AppResult<Vec<User>> 
             username,
             password_hash,
             entitlements,
+            authorization: Default::default(),
         });
     }
 

@@ -99,11 +99,12 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
 
     async fn delete_library_scan_unmatched_item(
         &self,
+        library_id: &str,
         facet: MediaFacet,
         item_path: &str,
     ) -> AppResult<()> {
         self.db
-            .delete_library_scan_unmatched_item(facet, item_path)
+            .delete_library_scan_unmatched_item(library_id, facet, item_path)
             .await
     }
 

@@ -28,6 +28,7 @@ import type {
   MetadataCatalogMonitorType,
   RootFolderOption,
 } from "@/lib/hooks/use-global-search";
+import type { LibraryRecord } from "@/lib/types/titles";
 
 type AddToCatalogDialogProps = {
   open: boolean;
@@ -37,6 +38,7 @@ type AddToCatalogDialogProps = {
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
   defaultQualityProfileId: string;
   rootFolders: RootFolderOption[];
+  libraries: LibraryRecord[];
   onSubmit: (
     result: MetadataTvdbSearchItem,
     facet: Facet,
@@ -64,8 +66,10 @@ export const EMPTY_SEARCH_RESULT: MetadataTvdbSearchItem = {
 function buildDefaultDraft(
   facet: Facet,
   defaultQualityProfileId: string,
+  defaultLibraryId?: string,
 ): MetadataCatalogAddOptions {
   return {
+    libraryId: defaultLibraryId,
     qualityProfileId: defaultQualityProfileId,
     seasonFolder: facet !== "movie",
     monitorType: defaultMonitorTypeForFacet(facet),
@@ -87,38 +91,73 @@ export function AddToCatalogDialog({
   catalogQualityProfileOptions,
   defaultQualityProfileId,
   rootFolders,
+  libraries,
   onSubmit,
 }: AddToCatalogDialogProps) {
   const t = useTranslate();
   const [draft, setDraft] = React.useState<MetadataCatalogAddOptions>(() =>
-    buildDefaultDraft(facet, defaultQualityProfileId),
+    buildDefaultDraft(
+      facet,
+      defaultQualityProfileId,
+      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
+    ),
   );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   // Reset draft when dialog opens
   React.useEffect(() => {
     if (!open) return;
-    setDraft(buildDefaultDraft(facet, defaultQualityProfileId));
+    setDraft(buildDefaultDraft(
+      facet,
+      defaultQualityProfileId,
+      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
+    ));
     setIsSubmitting(false);
-  }, [open, facet, defaultQualityProfileId]);
+  }, [open, facet, defaultQualityProfileId, libraries]);
 
   const qualityProfileValue =
     draft.qualityProfileId || defaultQualityProfileId;
+  const selectedLibrary =
+    libraries.find((library) => library.id === draft.libraryId) ||
+    libraries.find((library) => library.isDefault) ||
+    libraries[0] ||
+    null;
+  const selectedRootFolders =
+    selectedLibrary?.roots.map((root) => ({
+      path: root.path,
+      isDefault: root.isDefault,
+    })) ?? rootFolders;
+  const libraryRequired = libraries.length > 0;
 
   const handleSubmit = React.useCallback(async () => {
     const qpId = (draft.qualityProfileId || defaultQualityProfileId).trim();
     if (!qpId) return;
+    const libraryId = selectedLibrary?.id?.trim();
+    if (libraryRequired && !libraryId) return;
 
     setIsSubmitting(true);
     try {
-      const titleId = await onSubmit(result, facet, { ...draft, qualityProfileId: qpId });
+      const titleId = await onSubmit(result, facet, {
+        ...draft,
+        libraryId,
+        qualityProfileId: qpId,
+      });
       if (titleId) {
         onOpenChange(false);
       }
     } finally {
       setIsSubmitting(false);
     }
-  }, [draft, defaultQualityProfileId, onSubmit, result, facet, onOpenChange]);
+  }, [
+    draft,
+    defaultQualityProfileId,
+    facet,
+    libraryRequired,
+    onOpenChange,
+    onSubmit,
+    result,
+    selectedLibrary,
+  ]);
 
   const update = React.useCallback(
     (patch: Partial<MetadataCatalogAddOptions>) => {
@@ -178,6 +217,30 @@ export function AddToCatalogDialog({
         </DialogHeader>
 
         <div className="grid gap-3 sm:grid-cols-2">
+          {libraries.length >= 1 ? (
+            <label className="space-y-1 sm:col-span-2">
+              <span className="block text-xs font-medium text-card-foreground">
+                {t("search.addConfigLibrary")}
+              </span>
+              <Select
+                value={selectedLibrary?.id || ""}
+                onValueChange={(v) => update({ libraryId: v, rootFolder: undefined })}
+                disabled={isSubmitting || libraries.length === 1}
+              >
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {libraries.map((library) => (
+                    <SelectItem key={library.id} value={library.id}>
+                      {library.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          ) : null}
+
           {/* Quality Profile — all facets */}
           <label className="space-y-1">
             <span className="block text-xs font-medium text-card-foreground">
@@ -208,7 +271,7 @@ export function AddToCatalogDialog({
           </label>
 
           {/* Root Folder */}
-          {rootFolders.length >= 1 ? (
+          {selectedRootFolders.length >= 1 ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigRootFolder")}
@@ -216,8 +279,8 @@ export function AddToCatalogDialog({
               <Select
                 value={
                   draft.rootFolder ||
-                  rootFolders.find((rf) => rf.isDefault)?.path ||
-                  rootFolders[0]?.path ||
+                  selectedRootFolders.find((rf) => rf.isDefault)?.path ||
+                  selectedRootFolders[0]?.path ||
                   ""
                 }
                 onValueChange={(v) => update({ rootFolder: v })}
@@ -227,7 +290,7 @@ export function AddToCatalogDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {rootFolders.map((rf) => (
+                  {selectedRootFolders.map((rf) => (
                     <SelectItem key={rf.path} value={rf.path}>
                       {rf.path}
                     </SelectItem>
@@ -313,7 +376,7 @@ export function AddToCatalogDialog({
           <Button
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={isSubmitting || !qualityProfileValue}
+            disabled={isSubmitting || !qualityProfileValue || (libraryRequired && !selectedLibrary)}
             className="bg-emerald-600 text-foreground hover:bg-emerald-500"
           >
             {isSubmitting ? t("search.adding") : t("title.addToCatalog")}

@@ -14,7 +14,8 @@ impl AppUseCase {
         facet: MediaFacet,
         payload: ExternalImportMonitorSnapshotPayload,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         if snapshot_payload_is_empty(&payload) {
             return self
@@ -41,7 +42,8 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         self.services
             .workflow

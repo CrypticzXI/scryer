@@ -97,6 +97,7 @@ export function normalizeLibraryScanProgress(
   return {
     sessionId: value.sessionId,
     facet: normalizeLibraryScanFacet(value.facet),
+    libraryId: typeof value.libraryId === "string" ? value.libraryId : null,
     mode: normalizeLibraryScanMode(value.mode),
     status: normalizeLibraryScanStatus(value.status),
     startedAt:

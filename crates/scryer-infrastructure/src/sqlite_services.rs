@@ -193,12 +193,14 @@ impl DbRuntime {
 
     pub async fn delete_library_scan_unmatched_item(
         &self,
+        library_id: &str,
         facet: scryer_domain::MediaFacet,
         item_path: &str,
     ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::DeleteLibraryScanUnmatchedItem {
+                library_id: library_id.to_string(),
                 facet,
                 item_path: item_path.to_string(),
                 reply: reply_tx,

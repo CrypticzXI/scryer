@@ -5,6 +5,13 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
@@ -12,6 +19,9 @@ import type {
   IndexerCategoryRoutingSettings,
   IndexerRecord,
   LibraryScanSummary,
+  LibraryRecord,
+  LibrarySettingsDraft,
+  LibrarySettingsRecord,
   NzbgetCategoryRoutingSettings,
   Release,
   TitleRecord,
@@ -113,9 +123,8 @@ export function MediaContentView({
     setMoviesPath: (value: string) => void;
     seriesPath: string;
     setSeriesPath: (value: string) => void;
-    rootFolders: import("@/lib/types/titles").RootFolderOption[];
-    saveRootFolders: (folders: import("@/lib/types/titles").RootFolderOption[]) => void;
     mediaSettingsLoading: boolean;
+    librarySettingsSaving: boolean;
     qualityProfiles: ParsedQualityProfile[];
     qualityProfileEntries: ParsedQualityProfileEntry[];
     qualityProfileParseError: string;
@@ -233,7 +242,16 @@ export function MediaContentView({
     libraryScanDisabled: boolean;
     libraryScanNotice: string | null;
     libraryScanSummary: LibraryScanSummary | null;
-    scanLibrary: () => Promise<void> | void;
+    libraries: LibraryRecord[];
+    librariesLoading: boolean;
+    selectedLibraryId: string;
+    allLibrariesValue: string;
+    setSelectedLibraryId: (value: string) => void;
+    loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
+    createLibrary: (input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
+    updateLibrary: (libraryId: string, input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
+    deleteEmptyLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
+    scanLibrary: (libraryId?: string) => Promise<void> | void;
     onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
@@ -256,9 +274,8 @@ export function MediaContentView({
     contentSettingsSection,
     canManageConfig,
     contentSettingsLabel,
-    rootFolders,
-    saveRootFolders,
     mediaSettingsLoading,
+    librarySettingsSaving,
     qualityProfiles,
     qualityProfileParseError,
     globalQualityProfileId,
@@ -342,6 +359,11 @@ export function MediaContentView({
     libraryScanDisabled,
     libraryScanNotice,
     libraryScanSummary,
+    libraries,
+    librariesLoading,
+    selectedLibraryId,
+    allLibrariesValue,
+    setSelectedLibraryId,
     scanLibrary,
     onOpenOverview,
     deleteCatalogTitle,
@@ -378,9 +400,11 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
-  const hasConfiguredRootFolders = mediaSettingsLoading
+  const hasConfiguredRootFolders = mediaSettingsLoading || librariesLoading
     ? null
-    : rootFolders.some((folder) => folder.path.trim().length > 0);
+    : libraries.some((library) =>
+        library.roots.some((folder) => folder.path.trim().length > 0),
+      );
   const showInitialScanAction =
     canManageConfig &&
     monitoredTitles.length === 0 &&
@@ -543,8 +567,8 @@ export function MediaContentView({
     void refreshTitles(nextQuery);
   }, [refreshTitles, setTitleFilter, titleFilter, titleFilterInputValue]);
 
-  const handleLibraryScan = React.useCallback(() => {
-    void scanLibrary();
+  const handleLibraryScan = React.useCallback((libraryId?: string) => {
+    void scanLibrary(libraryId);
   }, [scanLibrary]);
 
   const quickFilterView = view === "movies" ? "movies" : view === "series" ? "series" : "anime";
@@ -624,13 +648,20 @@ export function MediaContentView({
           {view === "movies" || view === "series" || view === "anime" ? (
             <MediaLibrarySettingsPanel
               settingsTitle={mediaLibrarySettingsTitle}
-              rootFolders={rootFolders}
-              onSaveRootFolders={saveRootFolders}
+              libraries={libraries}
+              librariesLoading={librariesLoading}
+              preferredLibraryId={selectedLibraryId}
+              allLibrariesValue={allLibrariesValue}
               loading={mediaSettingsLoading}
+              saving={librarySettingsSaving}
               scanLoading={libraryScanLoading}
-              scanDisabled={libraryScanDisabled}
               scanNotice={libraryScanNotice}
               scanSummary={libraryScanSummary}
+              qualityProfiles={qualityProfiles}
+              loadLibrarySettings={state.loadLibrarySettings}
+              onCreateLibrary={state.createLibrary}
+              onUpdateLibrary={state.updateLibrary}
+              onDeleteLibrary={state.deleteEmptyLibrary}
               onScan={handleLibraryScan}
             />
           ) : null}
@@ -667,6 +698,23 @@ export function MediaContentView({
                   onChange={handleTitleFilterChange}
                   className="w-full sm:flex-1"
                 />
+                <Select
+                  value={selectedLibraryId}
+                  onValueChange={setSelectedLibraryId}
+                  disabled={librariesLoading || libraries.length === 0}
+                >
+                  <SelectTrigger className="w-full sm:w-[180px]">
+                    <SelectValue placeholder="Library" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
+                    {libraries.map((library) => (
+                      <SelectItem key={library.id} value={library.id}>
+                        {library.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 {!isMobile ? (
                   <ToggleGroup
                     type="single"

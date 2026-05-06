@@ -1,14 +1,17 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
-    PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
-    TitleMetadataUpdate, TitleRepository, UserRepository,
+    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate, LibraryRepository,
+    LibraryRootDraft, PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId,
+    ShowRepository, TitleMetadataUpdate, TitleRepository, UserRepository,
 };
-use scryer_domain::{CalendarEpisode, Collection, Entitlement, Episode, MediaFacet, Title, User};
+use scryer_domain::{
+    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, Library, LibraryGrant,
+    MediaFacet, Title, User,
+};
 use std::collections::HashMap;
 
 use crate::SqliteServices;
-use crate::queries::{title, user};
+use crate::queries::{library, title, user};
 
 #[derive(Clone)]
 pub struct SqliteCatalogStore {
@@ -35,6 +38,15 @@ impl TitleRepository for SqliteCatalogStore {
         title::list_titles_query(&self.pool, facet, query).await
     }
 
+    async fn list_for_libraries(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        title::list_titles_for_libraries_query(&self.pool, facet, library_ids, query).await
+    }
+
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
         title::list_titles_by_external_ids_query(&self.pool, source, values).await
     }
@@ -57,6 +69,16 @@ impl TitleRepository for SqliteCatalogStore {
         slug: &str,
     ) -> AppResult<Option<Title>> {
         title::get_title_by_facet_and_slug_query(&self.pool, facet, slug).await
+    }
+
+    async fn get_by_facet_libraries_and_slug(
+        &self,
+        facet: MediaFacet,
+        library_ids: &[String],
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        title::get_title_by_facet_libraries_and_slug_query(&self.pool, facet, library_ids, slug)
+            .await
     }
 
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>> {
@@ -171,6 +193,64 @@ impl TitleRepository for SqliteCatalogStore {
 
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
         self.db.clear_metadata_language_for_all().await
+    }
+}
+
+#[async_trait]
+impl LibraryRepository for SqliteCatalogStore {
+    async fn list(&self, facet: Option<MediaFacet>) -> AppResult<Vec<Library>> {
+        library::list_libraries_query(&self.pool, facet).await
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Library>> {
+        library::get_library_by_id_query(&self.pool, id).await
+    }
+
+    async fn default_for_facet(&self, facet: MediaFacet) -> AppResult<Option<Library>> {
+        let expected_id = scryer_domain::default_library_id_for_facet(&facet);
+        library::get_library_by_id_query(&self.pool, &expected_id).await
+    }
+
+    async fn create(&self, library: Library, roots: Vec<LibraryRootDraft>) -> AppResult<Library> {
+        library::create_library_query(&self.pool, library, roots).await
+    }
+
+    async fn update(
+        &self,
+        library_id: &str,
+        name: String,
+        slug: String,
+        roots: Vec<LibraryRootDraft>,
+    ) -> AppResult<Library> {
+        library::update_library_query(&self.pool, library_id, name, slug, roots).await
+    }
+
+    async fn delete_empty(&self, library_id: &str) -> AppResult<bool> {
+        library::delete_empty_library_query(&self.pool, library_id).await
+    }
+
+    async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask> {
+        library::app_permission_mask_for_user_query(&self.pool, user_id).await
+    }
+
+    async fn set_app_permission_mask_for_user(
+        &self,
+        user_id: &str,
+        permissions: AppPermissionMask,
+    ) -> AppResult<()> {
+        library::set_app_permission_mask_for_user_query(&self.pool, user_id, permissions).await
+    }
+
+    async fn permission_masks_for_user(&self, user_id: &str) -> AppResult<Vec<LibraryGrant>> {
+        library::library_permission_masks_for_user_query(&self.pool, user_id).await
+    }
+
+    async fn set_grants_for_user(&self, user_id: &str, grants: Vec<LibraryGrant>) -> AppResult<()> {
+        library::set_library_grants_for_user_query(&self.pool, user_id, grants).await
+    }
+
+    async fn title_library_id(&self, title_id: &str) -> AppResult<Option<String>> {
+        library::title_library_id_query(&self.pool, title_id).await
     }
 }
 

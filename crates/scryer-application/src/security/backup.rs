@@ -58,7 +58,8 @@ impl BackupService for AppUseCase {
 
 impl AppUseCase {
     pub async fn create_backup(&self, actor: &User) -> AppResult<BackupInfo> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let dir = self.backup_dir();
         std::fs::create_dir_all(&dir)
@@ -100,7 +101,8 @@ impl AppUseCase {
     }
 
     pub async fn list_backups(&self, actor: &User) -> AppResult<Vec<BackupInfo>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let dir = self.backup_dir();
         let entries = list_backup_files(&dir);
@@ -115,7 +117,8 @@ impl AppUseCase {
     }
 
     pub async fn delete_backup(&self, actor: &User, filename: &str) -> AppResult<bool> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         // Sanitize filename — must match expected pattern
         if !filename.starts_with("scryer_backup_")

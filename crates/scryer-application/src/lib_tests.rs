@@ -1156,6 +1156,179 @@ impl DomainEventRepository for MockDomainEventRepo {
     }
 }
 
+struct MockLibraryRepo {
+    libraries: Arc<Mutex<Vec<Library>>>,
+    app_permissions: Arc<Mutex<HashMap<String, AppPermissionMask>>>,
+    grants: Arc<Mutex<HashMap<String, Vec<LibraryGrant>>>>,
+}
+
+impl Default for MockLibraryRepo {
+    fn default() -> Self {
+        Self {
+            libraries: Arc::new(Mutex::new(
+                [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                    .into_iter()
+                    .map(mock_default_library)
+                    .collect(),
+            )),
+            app_permissions: Arc::new(Mutex::new(HashMap::new())),
+            grants: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+fn mock_default_library(facet: MediaFacet) -> Library {
+    let now = Utc::now();
+    Library {
+        id: scryer_domain::default_library_id_for_facet(&facet),
+        facet: facet.clone(),
+        name: format!("Default {}", facet.as_str()),
+        slug: "default".to_string(),
+        is_default: true,
+        roots: Vec::new(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn mock_library_roots(
+    library_id: &str,
+    roots: Vec<LibraryRootDraft>,
+) -> Vec<scryer_domain::LibraryRoot> {
+    let now = Utc::now();
+    roots
+        .into_iter()
+        .map(|root| scryer_domain::LibraryRoot {
+            id: Id::new().0,
+            library_id: library_id.to_string(),
+            path: root.path,
+            is_default: root.is_default,
+            created_at: now,
+            updated_at: now,
+        })
+        .collect()
+}
+
+#[async_trait]
+impl LibraryRepository for MockLibraryRepo {
+    async fn list(&self, facet: Option<MediaFacet>) -> AppResult<Vec<Library>> {
+        Ok(self
+            .libraries
+            .lock()
+            .await
+            .iter()
+            .filter(|library| facet.as_ref().is_none_or(|facet| &library.facet == facet))
+            .cloned()
+            .collect())
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Library>> {
+        Ok(self
+            .libraries
+            .lock()
+            .await
+            .iter()
+            .find(|library| library.id == id)
+            .cloned())
+    }
+
+    async fn default_for_facet(&self, facet: MediaFacet) -> AppResult<Option<Library>> {
+        Ok(self
+            .libraries
+            .lock()
+            .await
+            .iter()
+            .find(|library| library.facet == facet && library.is_default)
+            .cloned())
+    }
+
+    async fn create(
+        &self,
+        mut library: Library,
+        roots: Vec<LibraryRootDraft>,
+    ) -> AppResult<Library> {
+        library.roots = mock_library_roots(&library.id, roots);
+        self.libraries.lock().await.push(library.clone());
+        Ok(library)
+    }
+
+    async fn update(
+        &self,
+        library_id: &str,
+        name: String,
+        slug: String,
+        roots: Vec<LibraryRootDraft>,
+    ) -> AppResult<Library> {
+        let mut libraries = self.libraries.lock().await;
+        let library = libraries
+            .iter_mut()
+            .find(|library| library.id == library_id)
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        library.name = name;
+        library.slug = slug;
+        library.roots = mock_library_roots(library_id, roots);
+        library.updated_at = Utc::now();
+        Ok(library.clone())
+    }
+
+    async fn delete_empty(&self, library_id: &str) -> AppResult<bool> {
+        let mut libraries = self.libraries.lock().await;
+        let before = libraries.len();
+        libraries.retain(|library| library.id != library_id || library.is_default);
+        Ok(libraries.len() != before)
+    }
+
+    async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask> {
+        Ok(self
+            .app_permissions
+            .lock()
+            .await
+            .get(user_id)
+            .copied()
+            .unwrap_or(AppPermissionMask::NONE))
+    }
+
+    async fn set_app_permission_mask_for_user(
+        &self,
+        user_id: &str,
+        permissions: AppPermissionMask,
+    ) -> AppResult<()> {
+        self.app_permissions
+            .lock()
+            .await
+            .insert(user_id.to_string(), permissions);
+        Ok(())
+    }
+
+    async fn permission_masks_for_user(&self, user_id: &str) -> AppResult<Vec<LibraryGrant>> {
+        Ok(self
+            .grants
+            .lock()
+            .await
+            .get(user_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn set_grants_for_user(
+        &self,
+        user_id: &str,
+        mut grants: Vec<LibraryGrant>,
+    ) -> AppResult<()> {
+        for grant in &mut grants {
+            grant.user_id = user_id.to_string();
+        }
+        self.grants.lock().await.insert(user_id.to_string(), grants);
+        Ok(())
+    }
+
+    async fn title_library_id(&self, _title_id: &str) -> AppResult<Option<String>> {
+        Ok(Some(scryer_domain::default_library_id_for_facet(
+            &MediaFacet::Movie,
+        )))
+    }
+}
+
 #[derive(Default)]
 struct MockShowRepo {
     collections: Arc<Mutex<Vec<Collection>>>,
@@ -1925,6 +2098,15 @@ impl SettingsRepository for MockSettingsRepo {
     ) -> AppResult<()> {
         Ok(())
     }
+
+    async fn delete_setting_value(
+        &self,
+        _scope: &str,
+        _key_name: &str,
+        _scope_id: Option<String>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default, Clone)]
@@ -2000,6 +2182,19 @@ impl SettingsRepository for StoredSettingsRepo {
             (scope.to_string(), key_name.to_string(), scope_id),
             value_json,
         );
+        Ok(())
+    }
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        self.values
+            .lock()
+            .await
+            .remove(&(scope.to_string(), key_name.to_string(), scope_id));
         Ok(())
     }
 }
@@ -2293,13 +2488,13 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
 
     async fn delete_library_scan_unmatched_item(
         &self,
+        library_id: &str,
         facet: MediaFacet,
         item_path: &str,
     ) -> AppResult<()> {
-        self.items
-            .lock()
-            .await
-            .retain(|item| !(item.facet == facet && item.item_path == item_path));
+        self.items.lock().await.retain(|item| {
+            !(item.library_id == library_id && item.facet == facet && item.item_path == item_path)
+        });
         Ok(())
     }
 
@@ -3037,6 +3232,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             latest_decision_code,
             limit,
             offset,
+            library_ids: _,
         } = query;
         let latest_decisions = self.release_decisions.lock().await.clone();
         let normalized_title_search = title_search.as_deref().map(str::to_lowercase);
@@ -3828,6 +4024,29 @@ pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
 }
 
+fn test_admin_user() -> User {
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        app: AppPermissionMask::from_permissions([
+            AppPermission::ManageUsers,
+            AppPermission::ManagePermissions,
+            AppPermission::ManageSystemSettings,
+            AppPermission::ManageCatalogSettings,
+        ]),
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageLibrary,
+            scryer_domain::LibraryPermission::Request,
+            scryer_domain::LibraryPermission::AutoApproveRequests,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
+}
+
 async fn title_updated_events(app: &AppUseCase, title_id: &str) -> Vec<DomainEvent> {
     app.services
         .events
@@ -3869,6 +4088,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
         String::new(),
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
@@ -3888,7 +4108,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"))
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_metadata_gateway_and_titles(
@@ -3920,6 +4140,7 @@ fn bootstrap_with_metadata_gateway_and_titles(
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_metadata_gateway(metadata_gateway)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -3940,13 +4161,14 @@ fn bootstrap_with_metadata_gateway_and_titles(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"), titles)
+    (app, test_admin_user(), titles)
 }
 
 fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64) -> Title {
     Title {
         id: id.to_string(),
         name: format!("Title {id}"),
+        library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         monitored: true,
         tags: vec![],
@@ -4053,6 +4275,7 @@ fn bootstrap_with_cleanup_tracking_and_tracked_handle(
     .with_pending_releases(pending_releases)
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_tracked_download_handle(tracked_download_handle)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4073,7 +4296,7 @@ fn bootstrap_with_cleanup_tracking_and_tracked_handle(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"))
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_cleanup_tracking_and_indexer(
@@ -4108,6 +4331,7 @@ fn bootstrap_with_cleanup_tracking_and_indexer(
     .with_download_submissions(download_submissions)
     .with_pending_releases(pending_releases)
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4128,7 +4352,7 @@ fn bootstrap_with_cleanup_tracking_and_indexer(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"))
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_search_settings_and_indexer(
@@ -4158,6 +4382,7 @@ fn bootstrap_with_search_settings_and_indexer(
         String::new(),
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4178,7 +4403,7 @@ fn bootstrap_with_search_settings_and_indexer(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"))
+    (app, test_admin_user())
 }
 
 #[tokio::test]
@@ -4657,6 +4882,7 @@ fn bootstrap_with_cutoff_projection_state(
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_media_files(media_files)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4677,7 +4903,7 @@ fn bootstrap_with_cutoff_projection_state(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"), titles)
+    (app, test_admin_user(), titles)
 }
 
 fn bootstrap_with_delete_queue(
@@ -4709,6 +4935,7 @@ fn bootstrap_with_delete_queue(
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_download_queue_commands(download_queue_commands)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4729,7 +4956,7 @@ fn bootstrap_with_delete_queue(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"))
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_acquisition_tracking(
@@ -4836,6 +5063,7 @@ fn bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
     .with_library_scanner(library_scanner)
     .with_media_files(media_files)
     .with_library_scan_unmatched_items(unmatched_items)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -4857,7 +5085,7 @@ fn bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
         Arc::new(registry),
     );
 
-    (app, User::new_admin("admin"), titles)
+    (app, test_admin_user(), titles)
 }
 
 struct FixedBatchSearchMetadataGateway {
@@ -4959,6 +5187,7 @@ fn build_test_unmatched_item(
     let timestamp = chrono::Utc::now().to_rfc3339();
     LibraryScanUnmatchedItem {
         id: id.to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         status: PendingImportStatus::Pending,
         title_id: None,
@@ -5260,7 +5489,7 @@ async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item()
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.unmatched, 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None)
+        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
             .await
             .expect("list titles")
             .is_empty()
@@ -5321,7 +5550,7 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.unmatched, 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None)
+        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
             .await
             .expect("list titles")
             .is_empty()
@@ -5718,6 +5947,18 @@ async fn additive_scan_keeps_title_match_total_unknown_until_completion() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
         metadata_gateway.clone(),
     );
+    app.update_library(
+        &user,
+        &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+        None,
+        Some(vec![LibraryRootDraft {
+            path: series_root.to_string_lossy().to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("store series library roots");
 
     let session_id = "series-additive-title-match-stays-unknown";
     let app_for_scan = app.clone();
@@ -5817,13 +6058,21 @@ async fn background_refresh_movies_scans_all_configured_roots() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
     );
 
-    app.update_media_settings(
+    app.update_library(
         &user,
-        MediaFacet::Movie,
-        empty_update_media_settings_with_roots(vec![
-            build_root_folder_entry(&root_one, true),
-            build_root_folder_entry(&root_two, false),
+        &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        None,
+        Some(vec![
+            LibraryRootDraft {
+                path: root_one.to_string_lossy().to_string(),
+                is_default: true,
+            },
+            LibraryRootDraft {
+                path: root_two.to_string_lossy().to_string(),
+                is_default: false,
+            },
         ]),
+        None,
     )
     .await
     .expect("store movie roots");
@@ -5950,6 +6199,18 @@ async fn cancel_library_scan_rejects_additive_sessions() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
         metadata_gateway.clone(),
     );
+    app.update_library(
+        &user,
+        &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+        None,
+        Some(vec![LibraryRootDraft {
+            path: series_root.to_string_lossy().to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("store series library roots");
 
     let session_id = "cancel-additive-library-scan";
     let app_for_scan = app.clone();
@@ -6092,6 +6353,7 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         .pending_imports(
             &user,
             MediaFacet::Movie,
+            None,
             PendingImportStatus::Pending,
             50,
             0,
@@ -6108,6 +6370,7 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         .pending_imports(
             &user,
             MediaFacet::Movie,
+            None,
             PendingImportStatus::Ignored,
             50,
             0,
@@ -6126,6 +6389,7 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         .pending_imports(
             &user,
             MediaFacet::Series,
+            None,
             PendingImportStatus::Pending,
             50,
             0,
@@ -6189,6 +6453,7 @@ async fn ignore_pending_import_moves_item_out_of_pending_counts() {
         .pending_imports(
             &user,
             MediaFacet::Movie,
+            None,
             PendingImportStatus::Pending,
             50,
             0,
@@ -6201,6 +6466,7 @@ async fn ignore_pending_import_moves_item_out_of_pending_counts() {
         .pending_imports(
             &user,
             MediaFacet::Movie,
+            None,
             PendingImportStatus::Ignored,
             50,
             0,
@@ -6788,7 +7054,7 @@ async fn resolve_pending_import_failure_keeps_pending_item() {
     assert!(!error.to_string().trim().is_empty());
     assert_eq!(unmatched_items.items().await.len(), 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None)
+        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
             .await
             .unwrap()
             .is_empty()
@@ -6879,7 +7145,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
     assert_eq!(hydrated.overview.as_deref(), Some("日本語概要"));
 
     let persisted = app
-        .list_titles(&user, Some(MediaFacet::Movie), None)
+        .list_titles(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list titles");
     assert_eq!(persisted[0].name, "デューン");
@@ -7201,7 +7467,7 @@ async fn add_title_with_outcome_returns_pending_and_reuses_existing_tvdb_title()
     assert!(second.reused_existing_title);
 
     let titles = app
-        .list_titles(&user, Some(MediaFacet::Movie), None)
+        .list_titles(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("titles should load");
     assert_eq!(titles.len(), 1);
@@ -7677,6 +7943,9 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         title_name: Some("Covered Title".to_string()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: Some("episode-a".to_string()),
         collection_id: Some("season-1".to_string()),
         season_number: Some("1".to_string()),
@@ -7877,7 +8146,7 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
     )];
 
     let outcome = app
-        .trigger_title_wanted_search(&title.id, SubmissionConflictPolicy::Abort)
+        .trigger_title_wanted_search(&user, &title.id, SubmissionConflictPolicy::Abort)
         .await
         .expect("wanted search should return conflict");
 
@@ -7986,7 +8255,7 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
     )];
 
     let outcome = app
-        .trigger_title_wanted_search(&title.id, SubmissionConflictPolicy::Abort)
+        .trigger_title_wanted_search(&user, &title.id, SubmissionConflictPolicy::Abort)
         .await
         .expect("wanted search should skip blocked episode");
 
@@ -8478,7 +8747,7 @@ async fn list_cutoff_unmet_titles_normalizes_lowercase_cutoff_tier() {
         .expect("insert media file");
 
     let items = app
-        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie))
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie), None)
         .await
         .expect("cutoff unmet query should succeed");
 
@@ -8573,7 +8842,7 @@ async fn list_cutoff_unmet_titles_returns_episode_scoped_rows_for_series() {
         .expect("link media file to episode");
 
     let items = app
-        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Series))
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Series), None)
         .await
         .expect("cutoff unmet query should succeed");
 
@@ -8633,7 +8902,7 @@ async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_i
         .expect("insert media file");
 
     let items = app
-        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie))
+        .list_cutoff_unmet_titles(&user, Some(MediaFacet::Movie), None)
         .await
         .expect("cutoff unmet query should succeed");
 
@@ -8677,7 +8946,7 @@ async fn search_titles_supports_facet_filter() {
     .expect("create series");
 
     let tvs = app
-        .list_titles(&user, Some(MediaFacet::Series), None)
+        .list_titles(&user, Some(MediaFacet::Series), None, None)
         .await
         .expect("list titles");
 
@@ -8772,17 +9041,18 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     .await
     .expect("create download client config");
 
-    let search_user = app
-        .create_user(
-            &user,
-            "title_search_user".to_string(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        )
-        .await
-        .expect("create search user");
+    let search_user = create_user_from_entitlements(
+        &app,
+        &user,
+        "title_search_user",
+        "password123",
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+    )
+    .await
+    .expect("create search user");
     let search_token = app
         .issue_access_token(&search_user)
+        .await
         .expect("issue search token");
     let authed_search_user = app
         .authenticate_token(&search_token)
@@ -8873,11 +9143,20 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         .await
         .expect("create title");
 
-    let ghost_actor = User {
+    let mut ghost_actor = User {
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        authorization: Default::default(),
+    };
+    ghost_actor.authorization = scryer_domain::UserAuthorization {
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+        ]),
+        loaded: true,
+        ..Default::default()
     };
 
     let results = app
@@ -8893,15 +9172,15 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
 async fn create_user_and_list_users() {
     let (app, user) = bootstrap();
 
-    let created = app
-        .create_user(
-            &user,
-            "editor".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &user,
+        "editor",
+        "password123",
+        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+    )
+    .await
+    .expect("create user");
 
     let users = app.list_users(&user).await.expect("list users");
     assert!(users.iter().any(|entry| entry.username == created.username));
@@ -8912,15 +9191,15 @@ async fn create_user_and_list_users() {
 async fn get_user_by_id_returns_created_user() {
     let (app, user) = bootstrap();
 
-    let created = app
-        .create_user(
-            &user,
-            "viewer".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &user,
+        "viewer",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
 
     let found = app.get_user(&user, &created.id).await.expect("get user");
 
@@ -8934,24 +9213,24 @@ async fn get_user_by_id_returns_created_user() {
 async fn create_user_rejects_duplicate_username() {
     let (app, user) = bootstrap();
 
-    let _created = app
-        .create_user(
-            &user,
-            "editor".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("first create");
+    let _created = create_user_from_entitlements(
+        &app,
+        &user,
+        "editor",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("first create");
 
-    let second = app
-        .create_user(
-            &user,
-            "editor".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await;
+    let second = create_user_from_entitlements(
+        &app,
+        &user,
+        "editor",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
 
     assert!(second.is_err());
 }
@@ -8982,7 +9261,7 @@ async fn delete_title_removes_title_from_catalog() {
         .expect("delete title");
 
     let titles = app
-        .list_titles(&user, Some(MediaFacet::Movie), None)
+        .list_titles(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list titles");
     assert!(titles.is_empty());
@@ -9331,6 +9610,13 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
     )
     .await
     .expect("create download client config");
+
+    app.services
+        .catalog
+        .titles
+        .create(make_due_hydration_title("title-1", MediaFacet::Series, 1))
+        .await
+        .expect("seed title");
 
     download_submissions
         .record_submission(DownloadSubmission {
@@ -10402,6 +10688,7 @@ async fn active_library_scans_and_subscription_use_runtime_tracker_state() {
 
     let mut receiver = app
         .subscribe_library_scan_progress(&user)
+        .await
         .expect("library scan subscription should start");
     let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
         .await
@@ -10610,6 +10897,9 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -10787,6 +11077,9 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -10983,6 +11276,9 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -11113,6 +11409,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
                     TitleHistoryEventType::Blocklisted,
                 ]),
                 title_ids: Some(vec![title.id.clone()]),
+                library_ids: None,
                 title_search: None,
                 download_id: Some("failed-duplicate".to_string()),
                 episode_id: None,
@@ -11421,6 +11718,9 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("7".to_string()),
@@ -11581,6 +11881,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
                     TitleHistoryEventType::Blocklisted,
                 ]),
                 title_ids: Some(vec![title.id.clone()]),
+                library_ids: None,
                 title_search: None,
                 download_id: Some("failed-season-pack".to_string()),
                 episode_id: None,
@@ -11680,6 +11981,9 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode_id.to_string()),
                 collection_id: None,
                 season_number: Some("1".to_string()),
@@ -11867,6 +12171,9 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
                 season_number: Some("1".to_string()),
@@ -12134,6 +12441,9 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: episode.season_number.clone(),
@@ -12333,6 +12643,9 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: Some(season_number.to_string()),
@@ -12618,6 +12931,9 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
                 season_number: Some("1".to_string()),
@@ -12777,6 +13093,9 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 title_name: Some(title.name.clone()),
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
                 season_number: Some("7".to_string()),
@@ -12916,6 +13235,9 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("5".to_string()),
@@ -13066,6 +13388,9 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -13180,6 +13505,9 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -13306,6 +13634,9 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
@@ -13436,6 +13767,9 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             title_name: Some(title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
@@ -13504,6 +13838,9 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -13634,6 +13971,9 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -13743,6 +14083,9 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -13767,6 +14110,9 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: Some("episode-2".to_string()),
         collection_id: None,
         season_number: Some("1".to_string()),
@@ -13849,7 +14195,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         .expect("seed non-mismatch decision");
 
     let queued = app
-        .trigger_title_mismatch_recovery_search(&title.id)
+        .trigger_title_mismatch_recovery_search(&user, &title.id)
         .await
         .expect("trigger mismatch recovery");
 
@@ -13911,6 +14257,9 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -13990,6 +14339,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             id: Id::new().0,
             name: "Interstitial Only".into(),
             facet: MediaFacet::Anime,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
             monitored: false,
             tags: vec!["scryer:monitor-type:none".into()],
             external_ids: vec![],
@@ -14159,6 +14509,9 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
                 title_name: None,
                 title_slug: None,
                 title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
                 episode_id: Some(episode_id.clone()),
                 collection_id: None,
                 season_number: Some("1".to_string()),
@@ -14203,44 +14556,50 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 }
 
 #[tokio::test]
-async fn update_user_entitlements_changes_permissions() {
+async fn update_user_library_permissions_changes_grants() {
     let (app, user) = bootstrap();
 
-    let created = app
-        .create_user(
-            &user,
-            "editor".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &user,
+        "editor",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
 
+    let grants = test_library_grants_from_entitlements(&[
+        Entitlement::ViewCatalog,
+        Entitlement::ManageTitle,
+    ]);
     let updated = app
-        .set_user_entitlements(
-            &user,
-            &created.id,
-            vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        )
+        .set_user_library_permissions(&user, &created.id, grants)
         .await
-        .expect("update entitlements");
+        .expect("update permissions");
 
-    assert!(updated.entitlements.contains(&Entitlement::ManageTitle));
+    let authorization = app
+        .load_user_authorization(&updated)
+        .await
+        .expect("load authorization");
+    assert!(
+        authorization.has_any_library_permission(scryer_domain::LibraryPermission::ManageTitles)
+    );
 }
 
 #[tokio::test]
 async fn update_user_password_is_hashed() {
     let (app, user) = bootstrap();
 
-    let created = app
-        .create_user(
-            &user,
-            "password-user".into(),
-            "before-pass".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &user,
+        "password-user",
+        "before-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
 
     let updated = app
         .set_user_password(&user, &created.id, "after-pass".to_string())
@@ -14259,15 +14618,15 @@ async fn update_user_password_is_hashed() {
 async fn self_password_change_is_hashed() {
     let (app, admin) = bootstrap();
 
-    let created = app
-        .create_user(
-            &admin,
-            "self-password-user".into(),
-            "before-pass".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &admin,
+        "self-password-user",
+        "before-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
 
     let updated = app
         .change_own_password(
@@ -14290,15 +14649,15 @@ async fn self_password_change_is_hashed() {
 async fn delete_other_user_removes_user() {
     let (app, user) = bootstrap();
 
-    let created = app
-        .create_user(
-            &user,
-            "removable".into(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
+    let created = create_user_from_entitlements(
+        &app,
+        &user,
+        "removable",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
 
     app.delete_user(&user, &created.id)
         .await
@@ -16405,8 +16764,10 @@ fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlem
         .collect::<Vec<_>>();
     entitlement_claims.sort();
     entitlement_claims.dedup();
-    let entitlement_fingerprint = sha256_hex(entitlement_claims.join("\n"));
-    let signing_material = format!("{password_hash}\n{entitlement_fingerprint}");
+    let legacy_claims = entitlement_claims.join("\n");
+    let authorization_fingerprint =
+        sha256_hex(format!("app\n\nlibrary\n\nlegacy\n{legacy_claims}"));
+    let signing_material = format!("{password_hash}\n{authorization_fingerprint}");
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, salt.as_bytes());
     hmac::sign(&hmac_key, signing_material.as_bytes())
         .as_ref()
@@ -16415,6 +16776,64 @@ fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlem
 
 const TEST_PASSWORD_HASH: &str = "v2$argon2id$v=19$m=19456,t=2,p=1$dGVzdHNhbHQ$dGVzdGhhc2g";
 
+fn test_app_permissions_from_entitlements(
+    entitlements: &[Entitlement],
+) -> scryer_domain::AppPermissionMask {
+    let mut permissions = scryer_domain::AppPermissionMask::NONE;
+    if entitlements.contains(&Entitlement::ManageUsers) {
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
+    }
+    if entitlements.contains(&Entitlement::ManageConfig) {
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
+    }
+    permissions
+}
+
+fn test_library_grants_from_entitlements(
+    entitlements: &[Entitlement],
+) -> Vec<scryer_domain::LibraryGrant> {
+    let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
+    if entitlements.contains(&Entitlement::ViewCatalog) {
+        permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
+    }
+    if entitlements.contains(&Entitlement::ManageTitle) {
+        permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
+        permissions.insert(scryer_domain::LibraryPermissionMask::MANAGE_TITLES);
+        permissions.insert(scryer_domain::LibraryPermissionMask::RESOLVE_IMPORTS);
+        permissions.insert(scryer_domain::LibraryPermissionMask::MANAGE_LIBRARY);
+    }
+    if permissions.is_empty() {
+        return Vec::new();
+    }
+    [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+        .into_iter()
+        .map(|facet| scryer_domain::LibraryGrant {
+            user_id: String::new(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
+            permissions,
+        })
+        .collect()
+}
+
+async fn create_user_from_entitlements(
+    app: &AppUseCase,
+    actor: &User,
+    username: &str,
+    password: &str,
+    entitlements: Vec<Entitlement>,
+) -> AppResult<User> {
+    app.create_user(
+        actor,
+        username.to_string(),
+        password.to_string(),
+        test_app_permissions_from_entitlements(&entitlements),
+        test_library_grants_from_entitlements(&entitlements),
+    )
+    .await
+}
+
 async fn create_authenticated_user(
     app: &AppUseCase,
     admin: &User,
@@ -16422,16 +16841,10 @@ async fn create_authenticated_user(
     password: &str,
     entitlements: Vec<Entitlement>,
 ) -> (User, User) {
-    let created = app
-        .create_user(
-            admin,
-            username.to_string(),
-            password.to_string(),
-            entitlements,
-        )
+    let created = create_user_from_entitlements(app, admin, username, password, entitlements)
         .await
         .expect("create user");
-    let token = app.issue_access_token(&created).expect("issue token");
+    let token = app.issue_access_token(&created).await.expect("issue token");
     let authenticated = app
         .authenticate_token(&token)
         .await
@@ -16448,6 +16861,7 @@ async fn issue_and_authenticate_token_round_trips() {
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -16455,7 +16869,7 @@ async fn issue_and_authenticate_token_round_trips() {
         .create(user.clone())
         .await
         .unwrap();
-    let token = app.issue_access_token(&user).expect("issue token");
+    let token = app.issue_access_token(&user).await.expect("issue token");
     let decoded = app
         .authenticate_token(&token)
         .await
@@ -16472,6 +16886,7 @@ async fn entitlements_survive_token_round_trip() {
         username: "ent_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -16479,7 +16894,7 @@ async fn entitlements_survive_token_round_trip() {
         .create(user.clone())
         .await
         .unwrap();
-    let token = app.issue_access_token(&user).expect("issue token");
+    let token = app.issue_access_token(&user).await.expect("issue token");
     let decoded = app
         .authenticate_token(&token)
         .await
@@ -16724,12 +17139,12 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
 }
 
 #[tokio::test]
-async fn release_candidate_token_is_invalidated_by_entitlement_change() {
+async fn release_candidate_token_is_invalidated_by_permission_change() {
     let (app, admin) = bootstrap();
     let (created, authenticated_user) = create_authenticated_user(
         &app,
         &admin,
-        "candidate_ent_rotate",
+        "candidate_permission_rotate",
         "same-pass",
         vec![Entitlement::ViewCatalog],
     )
@@ -16742,32 +17157,32 @@ async fn release_candidate_token_is_invalidated_by_entitlement_change() {
     let token = app
         .issue_release_candidate_token(
             &authenticated_user,
-            "title-entitlement-rotate",
+            "title-permission-rotate",
             &SubmissionScope::Title,
             &selection,
         )
         .await
         .expect("candidate token should issue");
 
-    app.set_user_entitlements(
-        &admin,
-        &created.id,
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-    )
-    .await
-    .expect("update entitlements");
+    let grants = test_library_grants_from_entitlements(&[
+        Entitlement::ViewCatalog,
+        Entitlement::ManageTitle,
+    ]);
+    app.set_user_library_permissions(&admin, &created.id, grants)
+        .await
+        .expect("update permissions");
 
     let result = app
         .verify_release_candidate_token(
             &authenticated_user,
-            "title-entitlement-rotate",
+            "title-permission-rotate",
             &SubmissionScope::Title,
             &token,
         )
         .await;
     assert!(
         result.is_err(),
-        "candidate token should be rejected after entitlement change"
+        "candidate token should be rejected after permission change"
     );
 }
 
@@ -16779,6 +17194,7 @@ async fn expired_token_returns_unauthorized() {
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -16794,6 +17210,8 @@ async fn expired_token_returns_unauthorized() {
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
         entitlements: vec![],
+        app_permissions: vec![],
+        library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -16811,6 +17229,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -16825,6 +17244,8 @@ async fn wrong_issuer_token_returns_unauthorized() {
         iss: "wrong-issuer".to_string(),
         username: user.username.clone(),
         entitlements: vec!["view_catalog".to_string()],
+        app_permissions: vec![],
+        library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(
@@ -16842,7 +17263,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
 }
 
 #[tokio::test]
-async fn authenticate_token_warms_cache_without_get_by_id_round_trip() {
+async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
     let users = Arc::new(MockUserRepo::default());
     let (app, _) = bootstrap_with_user_repo(users.clone());
     let user = User {
@@ -16850,6 +17271,7 @@ async fn authenticate_token_warms_cache_without_get_by_id_round_trip() {
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -16858,7 +17280,7 @@ async fn authenticate_token_warms_cache_without_get_by_id_round_trip() {
         .await
         .unwrap();
 
-    let token = app.issue_access_token(&user).expect("issue token");
+    let token = app.issue_access_token(&user).await.expect("issue token");
     app.authenticate_token(&token)
         .await
         .expect("authenticate token");
@@ -16866,23 +17288,23 @@ async fn authenticate_token_warms_cache_without_get_by_id_round_trip() {
         .await
         .expect("authenticate token from warm cache");
 
-    assert_eq!(users.get_by_id_call_count(), 0);
+    assert_eq!(users.get_by_id_call_count(), 2);
     assert_eq!(users.list_all_call_count(), 1);
 }
 
 #[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = app
-        .create_user(
-            &admin,
-            "pw_rotate".to_string(),
-            "before-pass".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
-    let token = app.issue_access_token(&created).expect("issue token");
+    let created = create_user_from_entitlements(
+        &app,
+        &admin,
+        "pw_rotate",
+        "before-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
+    let token = app.issue_access_token(&created).await.expect("issue token");
 
     app.set_user_password(&admin, &created.id, "after-pass".to_string())
         .await
@@ -16896,40 +17318,41 @@ async fn password_change_invalidates_existing_token_immediately() {
 }
 
 #[tokio::test]
-async fn entitlement_change_invalidates_existing_token_and_relogin_works() {
+async fn permission_change_invalidates_existing_token_and_relogin_works() {
     let (app, admin) = bootstrap();
-    let created = app
-        .create_user(
-            &admin,
-            "ent_rotate".to_string(),
-            "same-pass".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
-    let old_token = app.issue_access_token(&created).expect("issue token");
+    let created = create_user_from_entitlements(
+        &app,
+        &admin,
+        "permission_rotate",
+        "same-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
+    let old_token = app.issue_access_token(&created).await.expect("issue token");
 
+    let grants = test_library_grants_from_entitlements(&[
+        Entitlement::ViewCatalog,
+        Entitlement::ManageTitle,
+    ]);
     let updated = app
-        .set_user_entitlements(
-            &admin,
-            &created.id,
-            vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        )
+        .set_user_library_permissions(&admin, &created.id, grants)
         .await
-        .expect("update entitlements");
+        .expect("update permissions");
 
     let old_result = app.authenticate_token(&old_token).await;
     assert!(
         old_result.is_err(),
-        "old token should be rejected after entitlement change"
+        "old token should be rejected after permission change"
     );
 
     let relogged = app
-        .authenticate_credentials("ent_rotate", "same-pass")
+        .authenticate_credentials("permission_rotate", "same-pass")
         .await
-        .expect("re-login after entitlement change");
+        .expect("re-login after permission change");
     let new_token = app
         .issue_access_token(&relogged)
+        .await
         .expect("issue refreshed token");
     let decoded = app
         .authenticate_token(&new_token)
@@ -16937,22 +17360,28 @@ async fn entitlement_change_invalidates_existing_token_and_relogin_works() {
         .expect("authenticate refreshed token");
 
     assert_eq!(decoded.id, updated.id);
-    assert!(decoded.entitlements.contains(&Entitlement::ManageTitle));
+    let authorization = app
+        .load_user_authorization(&decoded)
+        .await
+        .expect("load authorization");
+    assert!(
+        authorization.has_any_library_permission(scryer_domain::LibraryPermission::ManageTitles)
+    );
 }
 
 #[tokio::test]
 async fn deleting_user_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = app
-        .create_user(
-            &admin,
-            "gone_user".to_string(),
-            "password123".to_string(),
-            vec![Entitlement::ViewCatalog],
-        )
-        .await
-        .expect("create user");
-    let token = app.issue_access_token(&created).expect("issue token");
+    let created = create_user_from_entitlements(
+        &app,
+        &admin,
+        "gone_user",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await
+    .expect("create user");
+    let token = app.issue_access_token(&created).await.expect("issue token");
 
     app.delete_user(&admin, &created.id)
         .await
@@ -16965,11 +17394,13 @@ async fn deleting_user_invalidates_existing_token_immediately() {
 #[test]
 fn jwt_key_derivation_is_stable_across_entitlement_order() {
     let (app, _) = bootstrap();
-    let key_a = app.derive_jwt_key(
+    let key_a = test_derive_jwt_key(
+        &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
         &[Entitlement::ManageTitle, Entitlement::ViewCatalog],
     );
-    let key_b = app.derive_jwt_key(
+    let key_b = test_derive_jwt_key(
+        &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
         &[Entitlement::ViewCatalog, Entitlement::ManageTitle],
     );
@@ -16978,13 +17409,14 @@ fn jwt_key_derivation_is_stable_across_entitlement_order() {
 }
 
 #[tokio::test]
-async fn malformed_entitlement_claims_are_rejected() {
+async fn token_permission_claims_do_not_override_database_authorization() {
     let (app, _) = bootstrap();
     let user = User {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
         entitlements: vec![Entitlement::ViewCatalog],
+        authorization: Default::default(),
     };
     app.services
         .identity
@@ -17003,6 +17435,8 @@ async fn malformed_entitlement_claims_are_rejected() {
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
         entitlements: vec!["definitely_not_real".to_string()],
+        app_permissions: vec!["manageSystemSettings".to_string()],
+        library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(
@@ -17013,9 +17447,9 @@ async fn malformed_entitlement_claims_are_rejected() {
     let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
     let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode");
 
-    let result = app.authenticate_token(&token).await;
-    assert!(
-        result.is_err(),
-        "malformed entitlement claims should be rejected"
-    );
+    let authenticated = app
+        .authenticate_token(&token)
+        .await
+        .expect("token identity should authenticate from DB permissions");
+    assert_eq!(authenticated.id, user.id);
 }

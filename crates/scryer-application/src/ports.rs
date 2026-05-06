@@ -9,6 +9,22 @@ pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_for_libraries(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let titles = self.list(facet, query).await?;
+        Ok(titles
+            .into_iter()
+            .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
+            .collect())
+    }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
         &self,
@@ -21,6 +37,36 @@ pub trait TitleRepository: Send + Sync {
         facet: MediaFacet,
         slug: &str,
     ) -> AppResult<Option<Title>>;
+    async fn get_by_facet_libraries_and_slug(
+        &self,
+        facet: MediaFacet,
+        library_ids: &[String],
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        let normalized_slug = slug.trim();
+        if normalized_slug.is_empty() || library_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let matches =
+            self.list_for_libraries(Some(facet), library_ids, None)
+                .await?
+                .into_iter()
+                .filter(|title| {
+                    title.slug.as_deref().is_some_and(|candidate| {
+                        candidate.trim().eq_ignore_ascii_case(normalized_slug)
+                    })
+                })
+                .collect::<Vec<_>>();
+
+        match matches.as_slice() {
+            [] => Ok(None),
+            [title] => Ok(Some(title.clone())),
+            _ => Err(AppError::Validation(
+                "multiple titles found for slug lookup".into(),
+            )),
+        }
+    }
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>>;
     async fn find_by_external_id_in_facet(
         &self,
@@ -70,6 +116,31 @@ pub trait TitleRepository: Send + Sync {
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()>;
     async fn clear_folder_path(&self, id: &str) -> AppResult<()>;
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64>;
+}
+
+#[async_trait]
+pub trait LibraryRepository: Send + Sync {
+    async fn list(&self, facet: Option<MediaFacet>) -> AppResult<Vec<Library>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Library>>;
+    async fn default_for_facet(&self, facet: MediaFacet) -> AppResult<Option<Library>>;
+    async fn create(&self, library: Library, roots: Vec<LibraryRootDraft>) -> AppResult<Library>;
+    async fn update(
+        &self,
+        library_id: &str,
+        name: String,
+        slug: String,
+        roots: Vec<LibraryRootDraft>,
+    ) -> AppResult<Library>;
+    async fn delete_empty(&self, library_id: &str) -> AppResult<bool>;
+    async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask>;
+    async fn set_app_permission_mask_for_user(
+        &self,
+        user_id: &str,
+        permissions: AppPermissionMask,
+    ) -> AppResult<()>;
+    async fn permission_masks_for_user(&self, user_id: &str) -> AppResult<Vec<LibraryGrant>>;
+    async fn set_grants_for_user(&self, user_id: &str, grants: Vec<LibraryGrant>) -> AppResult<()>;
+    async fn title_library_id(&self, title_id: &str) -> AppResult<Option<String>>;
 }
 
 #[async_trait]
@@ -284,12 +355,18 @@ pub trait SettingsRepository: Send + Sync {
         source: &str,
         updated_by_user_id: Option<String>,
     ) -> AppResult<()>;
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]
 pub trait SystemInfoProvider: Send + Sync {
     async fn current_migration_version(&self) -> AppResult<Option<String>>;
-    async fn pending_migration_count(&self) -> AppResult<usize>;
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()>;
 }
 
@@ -483,6 +560,7 @@ pub trait LibraryScanUnmatchedItemRepository: Send + Sync {
 
     async fn delete_library_scan_unmatched_item(
         &self,
+        library_id: &str,
         facet: MediaFacet,
         item_path: &str,
     ) -> AppResult<()>;

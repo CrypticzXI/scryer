@@ -4,7 +4,6 @@ use scryer_application::AppError;
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::from_user;
 use crate::types::*;
-use crate::utils::parse_entitlements;
 
 #[derive(Default)]
 pub(crate) struct UserMutations;
@@ -18,9 +17,41 @@ impl UserMutations {
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let entitlements = parse_entitlements(&input.entitlements)?;
+        let app_permissions = scryer_domain::AppPermissionMask::from_permissions(
+            input
+                .app_permissions
+                .into_iter()
+                .map(|permission| permission.into_domain()),
+        );
+        let library_grants = input
+            .library_permissions
+            .into_iter()
+            .map(|grant| {
+                let permissions = scryer_domain::LibraryPermissionMask::from_permissions(
+                    grant
+                        .permissions
+                        .into_iter()
+                        .map(|permission| permission.into_domain()),
+                );
+                scryer_domain::LibraryGrant {
+                    user_id: String::new(),
+                    library_id: grant.library_id,
+                    permissions,
+                }
+            })
+            .collect();
         let user = app
-            .create_user(&actor, input.username, input.password, entitlements)
+            .create_user(
+                &actor,
+                input.username,
+                input.password,
+                app_permissions,
+                library_grants,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
         Ok(from_user(user))
@@ -48,16 +79,60 @@ impl UserMutations {
         Ok(from_user(user))
     }
 
-    async fn set_user_entitlements(
+    async fn set_user_app_permissions(
         &self,
         ctx: &Context<'_>,
-        input: SetUserEntitlementsInput,
+        input: SetUserAppPermissionsInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let entitlements = parse_entitlements(&input.entitlements)?;
+        let permissions = scryer_domain::AppPermissionMask::from_permissions(
+            input
+                .permissions
+                .into_iter()
+                .map(|permission| permission.into_domain()),
+        );
         let user = app
-            .set_user_entitlements(&actor, &input.user_id, entitlements)
+            .set_user_app_permissions(&actor, &input.user_id, permissions)
+            .await
+            .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_user(user))
+    }
+
+    async fn set_user_library_permissions(
+        &self,
+        ctx: &Context<'_>,
+        input: SetUserLibraryPermissionsInput,
+    ) -> GqlResult<UserPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let grants = input
+            .grants
+            .into_iter()
+            .map(|grant| {
+                let permissions = scryer_domain::LibraryPermissionMask::from_permissions(
+                    grant
+                        .permissions
+                        .into_iter()
+                        .map(|permission| permission.into_domain()),
+                );
+                scryer_domain::LibraryGrant {
+                    user_id: input.user_id.clone(),
+                    library_id: grant.library_id,
+                    permissions,
+                }
+            })
+            .collect();
+        let user = app
+            .set_user_library_permissions(&actor, &input.user_id, grants)
+            .await
+            .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
         Ok(from_user(user))

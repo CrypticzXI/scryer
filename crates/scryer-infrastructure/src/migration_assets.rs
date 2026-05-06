@@ -7,8 +7,6 @@ use sha2::{Digest as _, Sha384};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const BUNDLE_MAGIC: &[u8; 8] = b"SCRYMIG1";
-const BUNDLE_VERSION: u32 = 1;
 const DEFAULT_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,63 +330,14 @@ pub fn compile_source_bundle(db_root: &Path) -> Result<CompiledMigrationBundle, 
     })
 }
 
-pub fn encode_bundle(bundle: &CompiledMigrationBundle) -> Result<Vec<u8>, String> {
-    let manifest_bytes = serde_json::to_vec(&bundle.catalog)
-        .map_err(|error| format!("failed to serialize migration catalog: {error}"))?;
-
-    let mut out = Vec::with_capacity(
-        BUNDLE_MAGIC.len() + 4 + 8 + manifest_bytes.len() + bundle.payload_bytes.len(),
-    );
-    out.extend_from_slice(BUNDLE_MAGIC);
-    out.extend_from_slice(&BUNDLE_VERSION.to_le_bytes());
-    out.extend_from_slice(&(manifest_bytes.len() as u64).to_le_bytes());
-    out.extend_from_slice(&manifest_bytes);
-    out.extend_from_slice(&bundle.payload_bytes);
-    Ok(out)
+pub fn encode_catalog(catalog: &CompiledMigrationCatalog) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(catalog)
+        .map_err(|error| format!("failed to serialize migration catalog: {error}"))
 }
 
-pub fn decode_bundle(bytes: &[u8]) -> Result<CompiledMigrationBundle, String> {
-    if bytes.len() < BUNDLE_MAGIC.len() + 4 + 8 {
-        return Err("migration bundle is truncated".to_string());
-    }
-    if &bytes[..BUNDLE_MAGIC.len()] != BUNDLE_MAGIC {
-        return Err("migration bundle has invalid magic".to_string());
-    }
-
-    let version_offset = BUNDLE_MAGIC.len();
-    let manifest_len_offset = version_offset + 4;
-
-    let version = u32::from_le_bytes(
-        bytes[version_offset..manifest_len_offset]
-            .try_into()
-            .map_err(|_| "migration bundle version header is truncated")?,
-    );
-    if version != BUNDLE_VERSION {
-        return Err(format!("unsupported migration bundle version {version}"));
-    }
-
-    let manifest_len = u64::from_le_bytes(
-        bytes[manifest_len_offset..manifest_len_offset + 8]
-            .try_into()
-            .map_err(|_| "migration bundle manifest length header is truncated")?,
-    ) as usize;
-    let manifest_start = manifest_len_offset + 8;
-    let manifest_end = manifest_start
-        .checked_add(manifest_len)
-        .ok_or_else(|| "migration bundle manifest length overflow".to_string())?;
-    if manifest_end > bytes.len() {
-        return Err("migration bundle manifest is truncated".to_string());
-    }
-
-    let catalog: CompiledMigrationCatalog =
-        serde_json::from_slice(&bytes[manifest_start..manifest_end])
-            .map_err(|error| format!("failed to decode migration catalog: {error}"))?;
-    let payload_bytes = bytes[manifest_end..].to_vec();
-
-    Ok(CompiledMigrationBundle {
-        catalog,
-        payload_bytes,
-    })
+pub fn decode_catalog(bytes: &[u8]) -> Result<CompiledMigrationCatalog, String> {
+    serde_json::from_slice(bytes)
+        .map_err(|error| format!("failed to decode migration catalog: {error}"))
 }
 
 pub fn checksum_hex(bytes: &[u8]) -> String {

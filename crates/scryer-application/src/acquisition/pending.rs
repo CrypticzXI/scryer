@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::delay_profile::DelayProfile;
 use crate::types::{PendingRelease, PendingReleaseStatus};
+use std::collections::HashSet;
 
 impl AppUseCase {
     /// Load delay profiles from settings.
@@ -258,12 +259,38 @@ impl AppUseCase {
     }
 
     /// List all pending releases that are waiting to be grabbed.
-    pub async fn list_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
-        self.services
+    pub async fn list_pending_releases(&self, actor: &User) -> AppResult<Vec<PendingRelease>> {
+        let authorized_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if authorized_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let releases = self
+            .services
             .workflow
             .pending_releases
             .list_waiting_pending_releases()
-            .await
+            .await?;
+        let mut allowed = Vec::with_capacity(releases.len());
+        for release in releases {
+            let Some(title) = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&release.title_id)
+                .await?
+            else {
+                continue;
+            };
+            if authorized_library_ids.contains(&title.library_id) {
+                allowed.push(release);
+            }
+        }
+        Ok(allowed)
     }
 
     pub async fn get_pending_release(
@@ -271,12 +298,28 @@ impl AppUseCase {
         actor: &User,
         id: &str,
     ) -> AppResult<Option<PendingRelease>> {
-        require(actor, &Entitlement::ManageConfig)?;
-        self.services
+        let release = self
+            .services
             .workflow
             .pending_releases
             .get_pending_release(id)
-            .await
+            .await?;
+        if let Some(release) = release.as_ref() {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&release.title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {}", release.title_id)))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(release)
     }
 
     pub async fn list_pending_releases_for_wanted_item(
@@ -284,7 +327,26 @@ impl AppUseCase {
         actor: &User,
         wanted_item_id: &str,
     ) -> AppResult<Vec<PendingRelease>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        let wanted = self
+            .services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(wanted_item_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("wanted item {wanted_item_id}")))?;
+        let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
+            library_id.to_string()
+        } else {
+            self.services
+                .catalog
+                .titles
+                .get_by_id(&wanted.title_id)
+                .await?
+                .map(|title| title.library_id)
+                .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))?
+        };
+        self.require_library_permission(actor, &library_id, scryer_domain::LibraryPermission::View)
+            .await?;
         self.services
             .workflow
             .pending_releases
@@ -293,7 +355,7 @@ impl AppUseCase {
     }
 
     /// Force-grab a pending release immediately, ignoring the delay.
-    pub async fn force_grab_pending_release(&self, id: &str) -> AppResult<bool> {
+    pub async fn force_grab_pending_release(&self, actor: &User, id: &str) -> AppResult<bool> {
         let pr = self
             .services
             .workflow
@@ -310,6 +372,19 @@ impl AppUseCase {
                 "pending release {id} is not in waiting status"
             )));
         }
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&pr.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", pr.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let now = Utc::now();
         let wanted = self
             .services
@@ -324,7 +399,7 @@ impl AppUseCase {
     }
 
     /// Dismiss a pending release (set status to dismissed).
-    pub async fn dismiss_pending_release(&self, id: &str) -> AppResult<bool> {
+    pub async fn dismiss_pending_release(&self, actor: &User, id: &str) -> AppResult<bool> {
         let pr = self
             .services
             .workflow
@@ -341,6 +416,19 @@ impl AppUseCase {
                 "pending release {id} is not in waiting status"
             )));
         }
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&pr.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", pr.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         self.services
             .workflow
             .pending_releases

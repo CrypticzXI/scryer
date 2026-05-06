@@ -35,6 +35,7 @@ import { CutoffUnmetView } from "@/components/views/cutoff-unmet-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import type {
   PendingReleaseItem,
+  LibraryRecord,
   Release,
   ReleaseDecisionItem,
   TitleRecord,
@@ -50,6 +51,11 @@ type CutoffUnmetViewState = {
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryId: string;
+  allLibrariesValue: string;
+  setSelectedLibraryId: (value: string) => void;
   autoSearchingId: string | null;
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
@@ -75,6 +81,11 @@ type WantedViewState = {
   setLatestDecisionCodeFilter: (v: string | undefined) => void;
   selectedTitle: TitleRecord | null;
   setSelectedTitle: (title: TitleRecord | null) => void;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryId: string;
+  allLibrariesValue: string;
+  setSelectedLibraryId: (value: string) => void;
   offset: number;
   setOffset: (v: number) => void;
   limit: number;
@@ -190,6 +201,8 @@ function wantedItemOverviewTarget(item: WantedItem): OverviewTitleTarget | null 
   return {
     id: normalizedTitleId,
     slug: normalizedSlug,
+    libraryId: item.libraryId,
+    librarySlug: item.librarySlug,
   };
 }
 
@@ -383,6 +396,11 @@ function WantedItemsCard({
     setLatestDecisionCodeFilter,
     selectedTitle,
     setSelectedTitle,
+    libraries,
+    librariesLoading,
+    selectedLibraryId,
+    allLibrariesValue,
+    setSelectedLibraryId,
     offset,
     setOffset,
     limit,
@@ -460,6 +478,27 @@ function WantedItemsCard({
             selectedTitleId={selectedTitle?.id ?? null}
             onSelectedTitleChange={setSelectedTitle}
           />
+
+          <Select
+            value={selectedLibraryId}
+            onValueChange={(v) => {
+              setSelectedLibraryId(v);
+              setOffset(0);
+            }}
+            disabled={librariesLoading || libraries.length === 0}
+          >
+            <SelectTrigger className="w-full sm:w-[180px]">
+              <SelectValue placeholder="Library" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
+              {libraries.map((library) => (
+                <SelectItem key={library.id} value={library.id}>
+                  {library.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
           <Select
             value={statusFilter ?? "__all__"}
@@ -545,6 +584,9 @@ function WantedItemsCard({
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {wantedItemSubtitle(item, t)}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {item.libraryName ?? item.libraryId ?? "Library"}
                         </p>
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
@@ -698,6 +740,7 @@ function WantedItemsCard({
                 <TableRow>
                   <TableHead className="w-8" />
                   <TableHead>{t("wanted.colTitle")}</TableHead>
+                  <TableHead>Library</TableHead>
                   <TableHead>{t("wanted.colType")}</TableHead>
                   <TableHead>{t("wanted.colStatus")}</TableHead>
                   <TableHead>{t("wanted.colPhase")}</TableHead>
@@ -737,6 +780,11 @@ function WantedItemsCard({
                             {wantedItemSubtitle(item, t)}
                           </div>
                         </button>
+                      </TableCell>
+                      <TableCell className="max-w-[160px] text-xs text-muted-foreground">
+                        <span className="block truncate">
+                          {item.libraryName ?? item.libraryId ?? "Library"}
+                        </span>
                       </TableCell>
                       <TableCell>{formatWantedMediaType(item.mediaType, t)}</TableCell>
                       <TableCell>{statusBadge(item.status, t)}</TableCell>
@@ -815,7 +863,7 @@ function WantedItemsCard({
                     </TableRow>
                     {expandedItemId === item.id && (
                       <TableRow>
-                        <TableCell colSpan={10} className="bg-muted/30 p-4">
+                        <TableCell colSpan={11} className="bg-muted/30 p-4">
                           {decisionsLoading ? (
                             <p className="text-sm text-muted-foreground">
                               {t("wanted.loadingDecisions")}

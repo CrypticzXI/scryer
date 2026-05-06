@@ -1,5 +1,5 @@
-use async_graphql::{Error, Result as GqlResult};
-use scryer_domain::{Entitlement, ExternalId, NewTitle};
+use async_graphql::Result as GqlResult;
+use scryer_domain::{ExternalId, NewTitle};
 
 use crate::types::{AddTitleInput, DownloadSourceKindValue, TitleOptionsInput};
 
@@ -113,6 +113,7 @@ pub(crate) fn map_add_input(input: AddTitleInput) -> GqlResult<NewTitle> {
     let AddTitleInput {
         name,
         facet,
+        library_id: _,
         monitored,
         mut tags,
         options,
@@ -168,58 +169,10 @@ pub(crate) fn parse_download_source_kind(
     raw.map(DownloadSourceKindValue::into_application)
 }
 
-pub(crate) fn parse_entitlements(raw_entitlements: &[String]) -> GqlResult<Vec<Entitlement>> {
-    let mut seen = std::collections::HashSet::new();
-    let mut entitlements = Vec::with_capacity(raw_entitlements.len());
-
-    for raw in raw_entitlements {
-        let normalized = raw.trim().to_lowercase().replace('-', "_");
-        let entitlement = match normalized.as_str() {
-            "viewcatalog" | "view_catalog" => Entitlement::ViewCatalog,
-            "managetitle" | "manage_title" => Entitlement::ManageTitle,
-            "manageusers" | "manage_users" => Entitlement::ManageUsers,
-            "manageconfig" | "manage_config" => Entitlement::ManageConfig,
-            other => {
-                return Err(Error::new(format!("unknown entitlement: {other}")));
-            }
-        };
-
-        if seen.insert(entitlement.clone()) {
-            entitlements.push(entitlement);
-        }
-    }
-
-    Ok(entitlements)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::types::MediaFacetValue;
-    use scryer_domain::{Entitlement, MediaFacet};
-
-    #[test]
-    fn parse_entitlements_accepts_known_values() {
-        let parsed = parse_entitlements(&[
-            "View_Catalog".into(),
-            "manage_title".into(),
-            "manage_users".into(),
-        ])
-        .expect("entitlements should parse");
-
-        assert_eq!(parsed.len(), 3);
-        assert!(parsed.contains(&Entitlement::ViewCatalog));
-        assert!(parsed.contains(&Entitlement::ManageTitle));
-        assert!(parsed.contains(&Entitlement::ManageUsers));
-    }
-
-    #[test]
-    fn parse_entitlements_rejects_unknown_value() {
-        let err = parse_entitlements(&["not_a_permission".into()])
-            .expect_err("unknown entitlements should fail");
-        assert!(format!("{:?}", err).contains("unknown entitlement"));
-    }
+    use scryer_domain::MediaFacet;
 
     #[test]
     fn media_facet_value_maps_series_to_series_domain() {

@@ -52,6 +52,7 @@ struct TrackedTitleFolder {
 
 #[derive(Clone, Debug)]
 struct MediaFileDeleteContext {
+    title_id: String,
     file_id: String,
     file_path: String,
     subtitle_paths: Vec<String>,
@@ -59,6 +60,7 @@ struct MediaFileDeleteContext {
 
 #[derive(Clone, Debug)]
 struct SubtitleDeleteContext {
+    title_id: String,
     subtitle_download_id: String,
     file_path: String,
 }
@@ -157,8 +159,9 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<DeletePreview> {
-        require(actor, &Entitlement::ManageTitle)?;
         let context = self.resolve_title_delete_context(title_id).await?;
+        self.require_delete_context_permission(actor, &context)
+            .await?;
         let manifest = self.build_delete_manifest(context).await?;
         Ok(manifest.to_preview())
     }
@@ -168,8 +171,9 @@ impl AppUseCase {
         actor: &User,
         file_id: &str,
     ) -> AppResult<DeletePreview> {
-        require(actor, &Entitlement::ManageTitle)?;
         let context = self.resolve_media_file_delete_context(file_id).await?;
+        self.require_delete_context_permission(actor, &context)
+            .await?;
         let manifest = self.build_delete_manifest(context).await?;
         Ok(manifest.to_preview())
     }
@@ -179,9 +183,10 @@ impl AppUseCase {
         actor: &User,
         external_subtitle_id: &str,
     ) -> AppResult<DeletePreview> {
-        require(actor, &Entitlement::ManageTitle)?;
         let context = self
             .resolve_subtitle_delete_context(external_subtitle_id)
+            .await?;
+        self.require_delete_context_permission(actor, &context)
             .await?;
         let manifest = self.build_delete_manifest(context).await?;
         Ok(manifest.to_preview())
@@ -216,7 +221,11 @@ impl AppUseCase {
         preview_fingerprint: &str,
         typed_confirmation: Option<&str>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let context = self
+            .resolve_subtitle_delete_context(external_subtitle_id)
+            .await?;
+        self.require_delete_context_permission(actor, &context)
+            .await?;
         self.remove_external_subtitle(
             external_subtitle_id,
             ExternalSubtitleRemovalMode::DeleteOnly,
@@ -234,7 +243,11 @@ impl AppUseCase {
         preview_fingerprint: &str,
         typed_confirmation: Option<&str>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let context = self
+            .resolve_subtitle_delete_context(external_subtitle_id)
+            .await?;
+        self.require_delete_context_permission(actor, &context)
+            .await?;
         self.remove_external_subtitle(
             external_subtitle_id,
             ExternalSubtitleRemovalMode::DeleteAndBlocklist {
@@ -275,6 +288,7 @@ impl AppUseCase {
 
         self.execute_delete_context(
             UserDeleteContext::Subtitle(SubtitleDeleteContext {
+                title_id: subtitle.title_id.clone(),
                 subtitle_download_id: subtitle.id.clone(),
                 file_path: subtitle.file_path.clone(),
             }),
@@ -360,6 +374,31 @@ impl AppUseCase {
         Ok(())
     }
 
+    async fn require_delete_context_permission(
+        &self,
+        actor: &User,
+        context: &UserDeleteContext,
+    ) -> AppResult<()> {
+        let title_id = match context {
+            UserDeleteContext::Title(context) => &context.title_id,
+            UserDeleteContext::MediaFile(context) => &context.title_id,
+            UserDeleteContext::Subtitle(context) => &context.title_id,
+        };
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
+    }
+
     async fn resolve_title_delete_context(&self, title_id: &str) -> AppResult<UserDeleteContext> {
         let title = self
             .services
@@ -409,6 +448,7 @@ impl AppUseCase {
             .await?;
 
         Ok(UserDeleteContext::MediaFile(MediaFileDeleteContext {
+            title_id: media_file.title_id,
             file_id: media_file.id,
             file_path: media_file.file_path,
             subtitle_paths: subtitles
@@ -433,6 +473,7 @@ impl AppUseCase {
             })?;
 
         Ok(UserDeleteContext::Subtitle(SubtitleDeleteContext {
+            title_id: subtitle.title_id,
             subtitle_download_id: subtitle.id,
             file_path: subtitle.file_path,
         }))

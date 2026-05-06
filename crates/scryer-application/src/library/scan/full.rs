@@ -39,6 +39,7 @@ async fn process_ready_movie_candidate_batches(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -66,6 +67,7 @@ async fn process_ready_movie_candidate_batches(
                 app,
                 actor,
                 facet,
+                library_id,
                 library_path,
                 session_id,
                 coordinator,
@@ -93,6 +95,7 @@ async fn process_series_candidate_batch(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -124,6 +127,7 @@ async fn process_series_candidate_batch(
             app,
             actor,
             facet,
+            library_id,
             library_path,
             session_id,
             coordinator,
@@ -166,6 +170,7 @@ async fn process_series_candidate_batch(
                 app,
                 actor,
                 facet,
+                library_id,
                 library_path,
                 session_id,
                 coordinator,
@@ -192,6 +197,7 @@ pub(super) async fn scan_library_movies(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     mark_discovery_complete_on_drain: bool,
@@ -211,11 +217,12 @@ pub(super) async fn scan_library_movies(
         cancel_token.clone(),
     );
 
+    let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
         .catalog
         .titles
-        .list(Some(facet.clone()), None)
+        .list_for_libraries(Some(facet.clone()), &library_ids, None)
         .await?;
     let (
         mut existing_titles_by_name,
@@ -272,6 +279,7 @@ pub(super) async fn scan_library_movies(
                         app,
                         actor,
                         facet,
+                        library_id,
                         library_path,
                         session_id,
                         &coordinator,
@@ -293,7 +301,7 @@ pub(super) async fn scan_library_movies(
                 PreparedMovieLibraryScanEntry::Skipped { item_path } => {
                     summary.scanned += 1;
                     summary.skipped += 1;
-                    clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+                    clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
                     coordinator.mark_title_match_completed(1).await;
                 }
             }
@@ -307,6 +315,7 @@ pub(super) async fn scan_library_movies(
             app,
             actor,
             facet,
+            library_id,
             library_path,
             session_id,
             &coordinator,
@@ -334,6 +343,7 @@ pub(super) async fn scan_library_movies(
             app,
             actor,
             facet,
+            library_id,
             library_path,
             session_id,
             &coordinator,
@@ -400,6 +410,7 @@ pub(super) async fn scan_library_series(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     mark_discovery_complete_on_drain: bool,
@@ -419,11 +430,12 @@ pub(super) async fn scan_library_series(
         cancel_token.clone(),
     );
 
+    let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
         .catalog
         .titles
-        .list(Some(facet.clone()), None)
+        .list_for_libraries(Some(facet.clone()), &library_ids, None)
         .await?;
     let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
         build_series_title_indexes(&existing_titles);
@@ -452,6 +464,7 @@ pub(super) async fn scan_library_series(
             app,
             actor,
             facet,
+            library_id,
             library_path,
             session_id,
             &coordinator,
@@ -481,6 +494,7 @@ pub(super) async fn scan_library_series(
                 app,
                 actor,
                 facet,
+                library_id,
                 library_path,
                 session_id,
                 &coordinator,

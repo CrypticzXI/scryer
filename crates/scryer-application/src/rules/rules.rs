@@ -4,12 +4,14 @@ use scryer_rules::validation::{ValidationResult, validate_user_rule};
 
 impl AppUseCase {
     pub async fn list_rule_sets(&self, actor: &User) -> AppResult<Vec<RuleSet>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services.customization.rule_sets.list_rule_sets().await
     }
 
     pub async fn get_rule_set(&self, actor: &User, id: &str) -> AppResult<Option<RuleSet>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.services.customization.rule_sets.get_rule_set(id).await
     }
 
@@ -22,7 +24,8 @@ impl AppUseCase {
         applied_facets: Vec<MediaFacet>,
         priority: i32,
     ) -> AppResult<RuleSet> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let id = Id::new_rego_safe().0;
 
@@ -91,7 +94,8 @@ impl AppUseCase {
                 "at least one rule set field must be provided".into(),
             ));
         }
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let mut rule_set = self
             .services
@@ -152,7 +156,8 @@ impl AppUseCase {
     }
 
     pub async fn delete_rule_set(&self, actor: &User, id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         if let Some(rule_set) = self
             .services
@@ -188,7 +193,8 @@ impl AppUseCase {
         id: &str,
         enabled: bool,
     ) -> AppResult<RuleSet> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let mut rule_set = self
             .services
@@ -223,7 +229,8 @@ impl AppUseCase {
         rego_source: &str,
         rule_set_id: &str,
     ) -> AppResult<ValidationResult> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         // Rewrite the package declaration so validation works regardless of
         // what the user typed.

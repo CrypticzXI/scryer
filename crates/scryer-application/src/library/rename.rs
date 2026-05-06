@@ -18,8 +18,8 @@ use crate::domain_events::{
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, Entitlement, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata, require,
+    AppError, AppResult, AppUseCase, CollectionUpdate, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -225,8 +225,6 @@ impl AppUseCase {
         title_id: &str,
         facet: MediaFacet,
     ) -> AppResult<RenamePlan> {
-        require(actor, &Entitlement::ManageTitle)?;
-
         let title = self
             .services
             .catalog
@@ -234,6 +232,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if title.facet != facet {
             return Err(AppError::Validation(
@@ -258,7 +262,8 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<RenamePlan> {
-        require(actor, &Entitlement::ManageTitle)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))
@@ -308,7 +313,24 @@ impl AppUseCase {
         idempotency_key: Option<&str>,
         result: &RenameApplyResult,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        if let Some(title_id) = title_id {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        } else {
+            self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+                .await?;
+        }
 
         let now = chrono::Utc::now().to_rfc3339();
         let plan_fingerprint = result.plan_fingerprint.clone();

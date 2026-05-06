@@ -55,11 +55,15 @@ import type {
 } from "@/lib/title-overview-loader";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { useAuth } from "@/lib/hooks/use-auth";
+import { LIBRARY_PERMISSIONS, hasLibraryPermission } from "@/lib/utils/permissions";
 
 export type TitleDetail = {
   id: string;
   name: string;
   facet: string;
+  libraryId: string;
+  libraryName?: string | null;
+  librarySlug?: string | null;
   monitored: boolean;
   tags: string[];
   externalIds: { source: string; value: string }[];
@@ -254,10 +258,14 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const t = useTranslate();
   const client = useClient();
   const auth = useAuth();
-  const canManageTitle = auth.user?.entitlements.includes("manage_title") === true;
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
   const [title, setTitle] = React.useState<TitleDetail | null>(null);
+  const canManageTitle = hasLibraryPermission(
+    auth.user,
+    title?.libraryId,
+    LIBRARY_PERMISSIONS.manageTitles,
+  );
   const [collections, setCollections] = React.useState<TitleCollection[]>([]);
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
   const [releaseBlocklistEntries, setReleaseBlocklistEntries] = React.useState<
@@ -371,7 +379,12 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextMediaFiles = nextTitle?.mediaFiles ?? [];
       setTitle(nextTitle);
       if (nextTitle) {
-        onTitleResolved?.({ id: nextTitle.id, slug: nextTitle.slug });
+        onTitleResolved?.({
+          id: nextTitle.id,
+          slug: nextTitle.slug,
+          libraryId: nextTitle.libraryId,
+          librarySlug: nextTitle.librarySlug,
+        });
       }
       setCollections(nextCollections);
       setEpisodesByCollection(

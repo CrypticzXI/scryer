@@ -312,9 +312,15 @@ enum MovieMetadataResolution {
 async fn create_title_without_hydration_for_library_scan(
     app: &AppUseCase,
     actor: &User,
+    library_id: &str,
     request: NewTitle,
 ) -> AppResult<CreateTitleOutcome> {
-    app.create_title_without_hydration(actor, request).await
+    app.create_title_without_hydration_after_library_authorization(
+        actor,
+        request,
+        library_id.to_string(),
+    )
+    .await
 }
 
 pub(super) fn movie_title_work(
@@ -480,6 +486,7 @@ async fn resolve_movie_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
@@ -501,7 +508,9 @@ async fn resolve_movie_scan_candidate(
     }
 
     if let Some(new_title) = build_new_movie_title_from_nfo(&candidate, facet) {
-        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, library_id, new_title)
+            .await
+        {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 let created_title = created.title;
@@ -542,6 +551,7 @@ async fn resolve_movie_metadata_match(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     candidate: &PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
     existing_titles: &mut Vec<Title>,
@@ -569,6 +579,7 @@ async fn resolve_movie_metadata_match(
     match create_title_without_hydration_for_library_scan(
         app,
         actor,
+        library_id,
         build_new_title_from_metadata_match(facet, &selected),
     )
     .await
@@ -601,6 +612,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -623,6 +635,7 @@ pub(super) async fn process_movie_full_scan_candidate(
         app,
         actor,
         facet,
+        library_id,
         candidate,
         existing_titles,
         existing_titles_by_name,
@@ -644,7 +657,7 @@ pub(super) async fn process_movie_full_scan_candidate(
                 LibraryScanTitleWalkMode::Full,
                 false,
             );
-            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
@@ -661,7 +674,7 @@ pub(super) async fn process_movie_full_scan_candidate(
                 LibraryScanTitleWalkMode::Full,
                 true,
             );
-            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
@@ -679,6 +692,7 @@ pub(super) async fn process_movie_full_scan_candidate(
             );
             let unmatched_item = build_movie_unmatched_scan_item(
                 facet,
+                library_id,
                 session_id,
                 library_path,
                 &candidate,
@@ -694,7 +708,7 @@ pub(super) async fn process_movie_full_scan_candidate(
         }
         MovieCandidateResolution::Skipped => {
             summary.skipped += 1;
-            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
@@ -706,6 +720,7 @@ pub(super) async fn process_series_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -722,7 +737,7 @@ pub(super) async fn process_series_full_scan_candidate(
         Some(name) => name.to_string(),
         None => {
             summary.skipped += 1;
-            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             return Ok(None);
         }
@@ -757,13 +772,15 @@ pub(super) async fn process_series_full_scan_candidate(
             .await;
         }
         summary.matched += 1;
-        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
 
     if let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet) {
-        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, library_id, new_title)
+            .await
+        {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 append_series_title_and_merge_work(
@@ -782,7 +799,7 @@ pub(super) async fn process_series_full_scan_candidate(
                     summary.imported += 1;
                 }
                 summary.matched += 1;
-                clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+                clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             }
             Err(error) => {
                 let tvdb_id = candidate
@@ -798,6 +815,7 @@ pub(super) async fn process_series_full_scan_candidate(
                 );
                 let unmatched_item = build_series_unmatched_scan_item(
                     facet,
+                    library_id,
                     session_id,
                     library_path,
                     &candidate,
@@ -816,7 +834,7 @@ pub(super) async fn process_series_full_scan_candidate(
 
     if candidate.query.trim().is_empty() {
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -828,6 +846,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -848,6 +867,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
         app,
         actor,
         facet,
+        library_id,
         &candidate,
         batch_search_results,
         existing_titles,
@@ -870,7 +890,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 LibraryScanTitleWalkMode::Full,
                 false,
             );
-            clear_library_scan_unmatched_item(app, facet, &candidate.file.path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(())
         }
@@ -887,7 +907,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 LibraryScanTitleWalkMode::Full,
                 true,
             );
-            clear_library_scan_unmatched_item(app, facet, &candidate.file.path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(())
         }
@@ -900,6 +920,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             );
             let unmatched_item = build_movie_unmatched_scan_item(
                 facet,
+                library_id,
                 session_id,
                 library_path,
                 &candidate,
@@ -916,6 +937,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
         MovieMetadataResolution::Unmatched => {
             let unmatched_item = build_movie_unmatched_scan_item(
                 facet,
+                library_id,
                 session_id,
                 library_path,
                 &candidate,
@@ -936,6 +958,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
     coordinator: &LibraryScanCoordinator,
@@ -951,7 +974,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     let item_path = candidate.item_path().trim().to_string();
     let Some(folder_name) = candidate.folder_name.as_deref() else {
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     };
@@ -966,6 +989,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
         );
         let unmatched_item = build_series_unmatched_scan_item(
             facet,
+            library_id,
             session_id,
             library_path,
             &candidate,
@@ -1008,7 +1032,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
             .await;
         }
         summary.matched += 1;
-        clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     }
@@ -1016,6 +1040,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     if candidate.source_file.is_some() {
         let unmatched_item = build_series_unmatched_scan_item(
             facet,
+            library_id,
             session_id,
             library_path,
             &candidate,
@@ -1033,6 +1058,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     match create_title_without_hydration_for_library_scan(
         app,
         actor,
+        library_id,
         build_new_title_from_metadata_match(facet, &selected),
     )
     .await
@@ -1055,7 +1081,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
                 summary.imported += 1;
             }
             summary.matched += 1;
-            clear_library_scan_unmatched_item(app, facet, &item_path).await?;
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
         }
         Err(error) => {
@@ -1067,6 +1093,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
             );
             let unmatched_item = build_series_unmatched_scan_item(
                 facet,
+                library_id,
                 session_id,
                 library_path,
                 &candidate,
@@ -1109,6 +1136,7 @@ pub(super) async fn process_series_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     candidate: PreparedSeriesLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     existing_titles: &mut Vec<Title>,
@@ -1145,7 +1173,9 @@ pub(super) async fn process_series_refresh_candidate(
     }
 
     if let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet) {
-        match create_title_without_hydration_for_library_scan(app, actor, new_title).await {
+        match create_title_without_hydration_for_library_scan(app, actor, library_id, new_title)
+            .await
+        {
             Ok(created) => {
                 let was_created = !created.reused_existing;
                 let index = append_series_title_and_merge_work(
@@ -1197,6 +1227,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     candidate: PreparedSeriesLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
@@ -1239,6 +1270,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     match create_title_without_hydration_for_library_scan(
         app,
         actor,
+        library_id,
         build_new_title_from_metadata_match(facet, &selected),
     )
     .await
@@ -1281,6 +1313,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
 pub(super) async fn process_movie_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
+    library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     existing_titles: &mut Vec<Title>,
@@ -1299,6 +1332,7 @@ pub(super) async fn process_movie_refresh_candidate(
         app,
         actor,
         &MediaFacet::Movie,
+        library_id,
         candidate,
         existing_titles,
         existing_titles_by_name,
@@ -1374,6 +1408,7 @@ pub(super) async fn process_movie_refresh_candidate(
 pub(super) async fn process_resolved_movie_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
+    library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
@@ -1392,6 +1427,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
         app,
         actor,
         &MediaFacet::Movie,
+        library_id,
         &candidate,
         batch_search_results,
         existing_titles,

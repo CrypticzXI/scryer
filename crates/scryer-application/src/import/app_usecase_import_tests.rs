@@ -23,6 +23,7 @@ fn test_title(facet: MediaFacet) -> Title {
     Title {
         id: "t1".to_string(),
         name: "Test Movie".to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         monitored: true,
         tags: vec![],

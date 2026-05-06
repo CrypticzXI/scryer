@@ -66,6 +66,7 @@ export const RootHeader = React.memo(function RootHeader({
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
     rootFoldersByFacet,
+    librariesByFacet,
     catalogSearchResults,
     catalogSearchLoading,
     metadataSearchResults,
@@ -106,15 +107,22 @@ export const RootHeader = React.memo(function RootHeader({
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
       const titleId = await addMetadataSearchResultToCatalog(result, facet, options);
       if (titleId) {
+        const selectedLibrary = librariesByFacet[facet].find((library) => library.id === options.libraryId);
         resetGlobalSearch();
         globalSearchInputRef.current?.blur();
-        onOpenOverview?.(viewFromFacet(facet), { id: titleId, slug: result.slug ?? null });
+        onOpenOverview?.(viewFromFacet(facet), {
+          id: titleId,
+          slug: result.slug ?? null,
+          libraryId: selectedLibrary?.id ?? options.libraryId ?? null,
+          librarySlug: selectedLibrary?.slug ?? null,
+        });
       }
       return titleId;
     },
     [
       addMetadataSearchResultToCatalog,
       globalSearchInputRef,
+      librariesByFacet,
       onOpenOverview,
       resetGlobalSearch,
     ],
@@ -182,7 +190,12 @@ export const RootHeader = React.memo(function RootHeader({
             onClick={() => {
               resetGlobalSearch();
               globalSearchInputRef.current?.blur();
-              onOpenOverview?.(targetView, { id: title.id, slug: title.slug ?? null });
+              onOpenOverview?.(targetView, {
+                id: title.id,
+                slug: title.slug ?? null,
+                libraryId: title.libraryId,
+                librarySlug: title.librarySlug ?? null,
+              });
             }}
             className="block w-full rounded-lg border border-border bg-card/60 p-3 text-left hover:bg-accent/80"
             aria-label={title.name}
@@ -533,6 +546,7 @@ export const RootHeader = React.memo(function RootHeader({
         catalogQualityProfileOptions={catalogQualityProfileOptions}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
         rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
+        libraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
         onSubmit={handleAddDialogSubmit}
       />
     </>

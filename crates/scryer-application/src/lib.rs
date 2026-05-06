@@ -1,6 +1,7 @@
 #![allow(clippy::module_inception, clippy::too_many_arguments)]
 
 mod acquisition;
+mod authorization;
 mod catalog;
 mod contracts;
 mod events;
@@ -100,13 +101,14 @@ pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
 use chrono::{DateTime, Duration, Utc};
 use ring::digest as ring_digest;
 use scryer_domain::{
-    BlocklistEntry, CalendarEpisode, Collection, CollectionType, CompletedDownload, DomainEvent,
-    DomainEventFilter, DomainEventType, DownloadClientConfig, DownloadQueueItem,
-    DownloadQueueState, Entitlement, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
-    ImportRecord, ImportResult, ImportStatus, IndexerConfig, MediaFacet, NewDomainEvent,
-    NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginCatalogSource,
-    PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput, RuleSet,
-    SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord, User,
+    AppPermission, AppPermissionMask, BlocklistEntry, CalendarEpisode, Collection, CollectionType,
+    CompletedDownload, DomainEvent, DomainEventFilter, DomainEventType, DownloadClientConfig,
+    DownloadQueueItem, DownloadQueueState, Entitlement, Episode, ExternalId, HistoryEvent, Id,
+    ImportFileResult, ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library,
+    LibraryGrant, MediaFacet, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
+    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput,
+    RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord,
+    User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -194,10 +196,10 @@ pub use security::backup::BackupService;
 pub use settings::settings::{
     AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,
     FacetScoringPersonaSelection, GeneralSettings, IndexerRoutingSettingsEntry,
-    LibraryPathsSettings, MediaSettings, QualityProfileSelection, QualityProfileSettings,
-    SaveQualityProfileSettings, SecuritySettings, ServiceSettings, SubtitleSettings,
-    UpdateFacetScoringPersonaSelection, UpdateGeneralSettings, UpdateLibraryPaths,
-    UpdateMediaSettings, UpdateQualityProfileSelection, UpdateSecuritySettings,
+    LibraryPathsSettings, LibrarySettings, LibrarySettingsOverrideDraft, MediaSettings,
+    QualityProfileSelection, QualityProfileSettings, SaveQualityProfileSettings, SecuritySettings,
+    ServiceSettings, SubtitleSettings, UpdateFacetScoringPersonaSelection, UpdateGeneralSettings,
+    UpdateLibraryPaths, UpdateMediaSettings, UpdateQualityProfileSelection, UpdateSecuritySettings,
     UpdateServiceSettings, UpdateSubtitleSettings,
 };
 pub use subtitles::orchestration::{
@@ -217,7 +219,7 @@ pub(crate) use helpers::{
     await_cancellable, await_cancellable_app_result, normalize_release_attempt_hint,
     normalize_release_attempt_title, normalize_release_password,
     normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
-    parsed_episode_lookup_season, require, require_any, sanitize_ids, sha256_hex, to_hex,
+    parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread};
 pub use jobs::definitions::{
@@ -243,12 +245,12 @@ pub use null_repositories::{
     NullDownloadQueueCommandRepository, NullDownloadSubmissionRepository,
     NullExternalImportMonitorSnapshotRepository, NullFileImporter, NullHousekeepingRepository,
     NullImportRepository, NullIndexerStatsTracker, NullJobRunRepository,
-    NullLibraryProbeRepository, NullLibraryScanUnmatchedItemRepository, NullMediaFileRepository,
-    NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
-    NullPendingReleaseRepository, NullPluginInstallationRepository,
-    NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
-    NullStagedNzbStore, NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
-    NullWantedItemRepository, NullWorkflowOperationRepository,
+    NullLibraryProbeRepository, NullLibraryRepository, NullLibraryScanUnmatchedItemRepository,
+    NullMediaFileRepository, NullNotificationChannelRepository,
+    NullNotificationSubscriptionRepository, NullPendingReleaseRepository,
+    NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
+    NullSettingsRepository, NullStagedNzbStore, NullSystemInfoProvider, NullTitleImageProcessor,
+    NullTitleImageRepository, NullWantedItemRepository, NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, DomainEventRepository, DownloadClient,
@@ -256,12 +258,13 @@ pub use ports::{
     DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
     FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
     IndexerClient, IndexerConfigRepository, IndexerPluginProvider, IndexerStatsTracker,
-    JobRunRepository, LibraryProbeRepository, LibraryScanUnmatchedItemRepository, MediaAnalyzer,
-    MediaFileRepository, NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationActorPayload,
-    NotificationAppPayload, NotificationApplicationUpdatePayload, NotificationChannelRepository,
-    NotificationClient, NotificationDownloadPayload, NotificationEpisodePayload,
-    NotificationExternalIdsPayload, NotificationFilePayload, NotificationHealthPayload,
-    NotificationImportPayload, NotificationManualInteractionPayload, NotificationMediaFilePayload,
+    JobRunRepository, LibraryProbeRepository, LibraryRepository,
+    LibraryScanUnmatchedItemRepository, MediaAnalyzer, MediaFileRepository,
+    NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationActorPayload, NotificationAppPayload,
+    NotificationApplicationUpdatePayload, NotificationChannelRepository, NotificationClient,
+    NotificationDownloadPayload, NotificationEpisodePayload, NotificationExternalIdsPayload,
+    NotificationFilePayload, NotificationHealthPayload, NotificationImportPayload,
+    NotificationManualInteractionPayload, NotificationMediaFilePayload,
     NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
     NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
     NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
@@ -329,7 +332,7 @@ pub use types::{
     DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord,
     DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
     HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
-    JwtAuthConfig, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    JwtAuthConfig, LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
     PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
     PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
     PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,

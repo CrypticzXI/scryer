@@ -1590,11 +1590,30 @@ mod tests {
     }
 
     fn trigger_user() -> User {
+        let mut libraries = HashMap::new();
+        let permissions = scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageLibrary,
+        ]);
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            libraries.insert(
+                scryer_domain::default_library_id_for_facet(&facet),
+                permissions,
+            );
+        }
         User {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
             entitlements: vec![Entitlement::ManageTitle],
+            authorization: scryer_domain::UserAuthorization {
+                app: scryer_domain::AppPermissionMask::NONE,
+                libraries,
+                default_library: permissions,
+                loaded: true,
+            },
         }
     }
 
@@ -1655,6 +1674,7 @@ mod tests {
         Title {
             id: Id::new().0,
             name: name.to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],
@@ -2371,16 +2391,25 @@ mod tests {
             recent_activity: Arc::new(Mutex::new(vec![failed_item])),
             ..Default::default()
         });
+        let mut title = build_title("Manual Import", MediaFacet::Movie, &[]);
+        title.id = "title-1".to_string();
         let app = build_app_with_title_repo_and_download_client(
-            Arc::new(NullTitleRepository),
+            Arc::new(TestTitleRepo {
+                titles: vec![title],
+            }),
             download_client,
             Arc::new(TestDownloadSubmissionRepo::default()),
             Arc::new(TestImportRepo::default()),
         );
 
-        let result =
-            crate::preview_manual_import(&app, Some("client-1"), "job-failed-preview", "title-1")
-                .await;
+        let result = crate::preview_manual_import(
+            &app,
+            &trigger_user(),
+            Some("client-1"),
+            "job-failed-preview",
+            "title-1",
+        )
+        .await;
 
         assert!(matches!(
             result,

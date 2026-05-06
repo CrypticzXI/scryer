@@ -5,8 +5,9 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_cancel_library_scan_result, from_ignore_pending_import_result, from_library_scan_session,
-    from_library_scan_summary, from_media_rename_apply, from_resolve_pending_import_result,
+    from_cancel_library_scan_result, from_ignore_pending_import_result, from_library,
+    from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
+    from_resolve_pending_import_result,
 };
 use crate::types::*;
 
@@ -34,21 +35,129 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 
     Ok(Some(composite))
 }
+
+fn library_settings_draft(
+    input: LibrarySettingsInput,
+) -> scryer_application::LibrarySettingsOverrideDraft {
+    scryer_application::LibrarySettingsOverrideDraft {
+        required_audio_languages: input.required_audio_languages,
+        quality_profile_id: input.quality_profile_id,
+        scoring_persona: input
+            .scoring_persona
+            .map(ScoringPersonaValue::into_application),
+        indexer_routing: input.indexer_routing.map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| scryer_application::IndexerRoutingSettingsEntry {
+                    indexer_id: entry.indexer_id,
+                    enabled: entry.enabled,
+                    categories: entry.categories,
+                    priority: entry.priority,
+                })
+                .collect()
+        }),
+        download_client_routing: input.download_client_routing.map(|entries| {
+            entries
+                .into_iter()
+                .map(
+                    |entry| scryer_application::DownloadClientRoutingSettingsEntry {
+                        client_id: entry.client_id,
+                        enabled: entry.enabled,
+                        category: entry.category,
+                        recent_queue_priority: entry.recent_queue_priority,
+                        older_queue_priority: entry.older_queue_priority,
+                        remove_completed: entry.remove_completed,
+                        remove_failed: entry.remove_failed,
+                    },
+                )
+                .collect()
+        }),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct LibraryMutations;
 
 #[Object]
 impl LibraryMutations {
+    async fn create_library(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateLibraryInput,
+    ) -> GqlResult<LibraryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let roots = input
+            .roots
+            .into_iter()
+            .map(|root| scryer_application::LibraryRootDraft {
+                path: root.path,
+                is_default: root.is_default,
+            })
+            .collect();
+        let library = app
+            .create_library(
+                &actor,
+                input.facet.into_domain(),
+                input.name,
+                roots,
+                input.settings.map(library_settings_draft),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_library(library))
+    }
+
+    async fn update_library(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateLibraryInput,
+    ) -> GqlResult<LibraryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let roots = input.roots.map(|roots| {
+            roots
+                .into_iter()
+                .map(|root| scryer_application::LibraryRootDraft {
+                    path: root.path,
+                    is_default: root.is_default,
+                })
+                .collect()
+        });
+        let library = app
+            .update_library(
+                &actor,
+                &input.library_id,
+                input.name,
+                roots,
+                input.settings.map(library_settings_draft),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_library(library))
+    }
+
+    async fn delete_empty_library(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteLibraryInput,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.delete_empty_library(&actor, &input.library_id)
+            .await
+            .map_err(to_gql_error)
+    }
+
     async fn scan_library(
         &self,
         ctx: &Context<'_>,
-        facet: MediaFacetValue,
+        library_id: String,
     ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let facet = facet.into_domain();
         let session = app
-            .trigger_library_scan(&actor, facet)
+            .trigger_library_scan_by_id(&actor, &library_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_session(session))

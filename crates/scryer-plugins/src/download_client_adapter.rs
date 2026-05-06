@@ -794,6 +794,9 @@ mod tests {
                 id: "title-1".to_string(),
                 name: "Example".to_string(),
                 facet: scryer_domain::MediaFacet::Series,
+                library_id: scryer_domain::default_library_id_for_facet(
+                    &scryer_domain::MediaFacet::Series,
+                ),
                 monitored: true,
                 tags: Vec::new(),
                 external_ids: Vec::new(),

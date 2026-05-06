@@ -22,7 +22,7 @@ import { Link } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
-import type { Facet, Release } from "@/lib/types";
+import type { Facet, LibraryRecord, Release } from "@/lib/types";
 import type { ViewId } from "@/components/root/types";
 
 export type CutoffUnmetItem = {
@@ -30,6 +30,9 @@ export type CutoffUnmetItem = {
   titleName: string;
   titleSlug?: string | null;
   titleFacet: Facet;
+  libraryId: string;
+  libraryName?: string | null;
+  librarySlug?: string | null;
   episodeId?: string | null;
   seasonNumber?: string | null;
   episodeNumber?: string | null;
@@ -42,6 +45,11 @@ type CutoffUnmetViewState = {
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryId: string;
+  allLibrariesValue: string;
+  setSelectedLibraryId: (value: string) => void;
   autoSearchingId: string | null;
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
@@ -88,9 +96,13 @@ function cutoffOverviewHref(item: CutoffUnmetItem, includeEpisode: boolean): str
   }
 
   const normalizedSlug = item.titleSlug?.trim() || null;
-  const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+  const targetPath = buildOverviewDetailPath(
+    targetView,
+    item.librarySlug ?? null,
+    normalizedSlug,
+  );
   const params = new URLSearchParams();
-  if (!normalizedSlug) {
+  if (!normalizedSlug || !item.librarySlug?.trim()) {
     params.set("id", item.titleId);
   }
   if (includeEpisode && item.episodeId) {
@@ -207,6 +219,11 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     loading,
     facetFilter,
     setFacetFilter,
+    libraries,
+    librariesLoading,
+    selectedLibraryId,
+    allLibrariesValue,
+    setSelectedLibraryId,
     autoSearchingId,
     interactiveSearchingId,
     activeInteractiveItemId,
@@ -264,6 +281,24 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
       <CardContent>
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <Select
+            value={selectedLibraryId}
+            onValueChange={setSelectedLibraryId}
+            disabled={librariesLoading}
+          >
+            <SelectTrigger className="w-full sm:w-[210px]">
+              <SelectValue placeholder="Library" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={allLibrariesValue}>All Libraries</SelectItem>
+              {libraries.map((library) => (
+                <SelectItem key={library.id} value={library.id}>
+                  {library.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select
             value={facetFilter ?? "__all__"}
             onValueChange={(value) =>
               setFacetFilter(value === "__all__" ? undefined : value)
@@ -302,6 +337,9 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                   >
                     <div className="space-y-3">
                       <TitleCell item={item} />
+                      <span className="text-xs text-muted-foreground">
+                        {item.libraryName ?? item.libraryId}
+                      </span>
                       <div className="flex flex-wrap gap-2">
                         {qualityBadge(item.currentTier, "current")}
                         {qualityBadge(item.targetTier, "target")}
@@ -333,6 +371,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("cutoff.colTitleEpisode")}</TableHead>
+                  <TableHead>Library</TableHead>
                   <TableHead>{t("cutoff.colCurrentQuality")}</TableHead>
                   <TableHead>{t("cutoff.colTargetQuality")}</TableHead>
                   <TableHead>{t("label.actions")}</TableHead>
@@ -349,6 +388,9 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                       <TableRow>
                         <TableCell className="min-w-[320px] align-top">
                           <TitleCell item={item} />
+                        </TableCell>
+                        <TableCell className="align-top text-sm text-muted-foreground">
+                          {item.libraryName ?? item.libraryId}
                         </TableCell>
                         <TableCell className="align-top">
                           {qualityBadge(item.currentTier, "current")}
@@ -369,7 +411,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                       </TableRow>
                       {showResults ? (
                         <TableRow>
-                          <TableCell colSpan={4} className="bg-background/20">
+                          <TableCell colSpan={5} className="bg-background/20">
                             <SearchResultBuckets
                               results={searchResults}
                               onQueue={(release) => queueRelease(item, release)}
@@ -383,7 +425,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                 })}
                 {filtered.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
                       {t("cutoff.noItems")}
                     </TableCell>
                   </TableRow>

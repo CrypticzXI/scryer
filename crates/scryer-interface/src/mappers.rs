@@ -2,7 +2,7 @@ use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
     IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
+    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
@@ -13,8 +13,8 @@ use scryer_application::{
 };
 use scryer_domain::{
     CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
-    IndexerConfig, MediaFacet, PluginInstallation, PluginSupportTier, PolicyOutput, RuleSet,
-    SubtitleProviderConfig, Title, TitleHistoryRecord, User,
+    IndexerConfig, Library, MediaFacet, PluginInstallation, PluginSupportTier, PolicyOutput,
+    RuleSet, SubtitleProviderConfig, Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -197,6 +197,33 @@ pub(crate) fn from_indexer_routing_entry(
         enabled: entry.enabled,
         categories: entry.categories,
         priority: entry.priority,
+    }
+}
+
+pub(crate) fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayload {
+    LibrarySettingsPayload {
+        required_audio_languages_override: settings.required_audio_languages_override,
+        required_audio_languages: settings.required_audio_languages,
+        quality_profile_id_override: settings.quality_profile_id_override,
+        quality_profile_id: settings.quality_profile_id,
+        scoring_persona_override: settings
+            .scoring_persona_override
+            .map(ScoringPersonaValue::from_application),
+        scoring_persona: ScoringPersonaValue::from_application(settings.scoring_persona),
+        indexer_routing_override: settings.indexer_routing_override.map(|entries| {
+            entries
+                .into_iter()
+                .map(from_indexer_routing_entry)
+                .collect()
+        }),
+        download_client_routing_override: settings.download_client_routing_override.map(
+            |entries| {
+                entries
+                    .into_iter()
+                    .map(from_download_client_routing_entry)
+                    .collect()
+            },
+        ),
     }
 }
 
@@ -738,6 +765,9 @@ pub(crate) fn from_title(title: Title) -> TitlePayload {
 
     TitlePayload {
         id: title.id,
+        library_id: title.library_id,
+        library_name: None,
+        library_slug: None,
         name: title.name,
         facet: MediaFacetValue::from_domain(title.facet),
         monitored: title.monitored,
@@ -793,6 +823,25 @@ pub(crate) fn from_title(title: Title) -> TitlePayload {
     }
 }
 
+pub(crate) fn from_library(library: Library) -> LibraryPayload {
+    LibraryPayload {
+        id: library.id,
+        facet: MediaFacetValue::from_domain(library.facet),
+        name: library.name,
+        slug: library.slug,
+        is_default: library.is_default,
+        roots: library
+            .roots
+            .into_iter()
+            .map(|root| LibraryRootPayload {
+                id: root.id,
+                path: root.path,
+                is_default: root.is_default,
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryScanSummaryPayload {
     LibraryScanSummaryPayload {
         scanned: summary.scanned as i32,
@@ -827,6 +876,8 @@ fn from_pending_import_search_attempt(
 pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPayload {
     PendingImportItemPayload {
         id: item.id,
+        library_id: item.library_id,
+        library_slug: item.library_slug,
         facet: MediaFacetValue::from_domain(item.facet),
         status: PendingImportStatusValue::from_application(item.status),
         title_id: item.title_id,
@@ -903,6 +954,7 @@ pub(crate) fn from_library_scan_session(
     LibraryScanProgressPayload {
         session_id: session.session_id,
         facet: MediaFacetValue::from_domain(session.facet),
+        library_id: session.library_id,
         mode: LibraryScanModeValue::from_application(session.mode),
         status: LibraryScanStatusValue::from_application(session.status),
         started_at: session.started_at.to_rfc3339(),
@@ -1123,6 +1175,9 @@ pub(crate) fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePaylo
     CalendarEpisodePayload {
         id: ep.id,
         title_id: ep.title_id,
+        library_id: ep.library_id,
+        library_name: ep.library_name,
+        library_slug: ep.library_slug,
         title_name: ep.title_name,
         title_slug: ep.title_slug,
         title_facet: ep.title_facet,
@@ -1206,15 +1261,40 @@ pub(crate) fn from_title_media_file(
 }
 
 pub(crate) fn from_user(user: User) -> UserPayload {
+    let User {
+        id,
+        username,
+        authorization,
+        ..
+    } = user;
+
+    let app_permissions = authorization
+        .app
+        .to_permissions()
+        .into_iter()
+        .map(AppPermissionValue::from_domain)
+        .collect();
+    let mut library_permissions = authorization
+        .libraries
+        .into_iter()
+        .map(
+            |(library_id, permissions)| UserLibraryPermissionGrantPayload {
+                library_id,
+                permissions: permissions
+                    .to_permissions()
+                    .into_iter()
+                    .map(LibraryPermissionValue::from_domain)
+                    .collect(),
+            },
+        )
+        .collect::<Vec<_>>();
+    library_permissions.sort_by(|left, right| left.library_id.cmp(&right.library_id));
+
     UserPayload {
-        id: user.id,
-        username: user.username,
-        entitlements: user
-            .entitlements
-            .iter()
-            .filter_map(|e| serde_json::to_value(e).ok())
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect(),
+        id,
+        username,
+        app_permissions,
+        library_permissions,
     }
 }
 
@@ -1355,6 +1435,9 @@ pub(crate) fn from_wanted_item(item: scryer_application::WantedItem) -> WantedIt
         title_name: item.title_name,
         title_slug: item.title_slug,
         title_facet: item.title_facet,
+        library_id: item.library_id,
+        library_name: item.library_name,
+        library_slug: item.library_slug,
         episode_id: item.episode_id,
         collection_id: item.collection_id,
         season_number: item.season_number,
@@ -1481,7 +1564,6 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
         recent_events: health.recent_events as i32,
         recent_event_preview: health.recent_event_preview,
         db_migration_version: health.db_migration_version,
-        db_pending_migrations: health.db_pending_migrations as i32,
         indexer_stats: health
             .indexer_stats
             .into_iter()

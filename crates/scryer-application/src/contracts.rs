@@ -424,6 +424,7 @@ pub struct WantedItemsQuery {
     pub status: Option<String>,
     pub media_type: Option<String>,
     pub title_id: Option<String>,
+    pub library_ids: Vec<String>,
     pub title_search: Option<String>,
     pub latest_decision_code: Option<String>,
     pub limit: i64,
@@ -520,6 +521,7 @@ pub struct InsertMediaFileInput {
 pub struct TitleHistoryFilter {
     pub event_types: Option<Vec<TitleHistoryEventType>>,
     pub title_ids: Option<Vec<String>>,
+    pub library_ids: Option<Vec<String>>,
     pub title_search: Option<String>,
     pub download_id: Option<String>,
     pub episode_id: Option<String>,

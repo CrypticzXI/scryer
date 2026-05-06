@@ -2,43 +2,46 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsUsersSection } from "@/components/views/settings/settings-users-section";
-import { ALL_ENTITLEMENTS } from "@/lib/constants/entitlements";
 import {
   createUserMutation,
   deleteUserMutation,
-  setUserEntitlementsMutation,
+  setUserAppPermissionsMutation,
+  setUserLibraryPermissionsMutation,
   setUserPasswordMutation,
 } from "@/lib/graphql/mutations";
-import { usersQuery } from "@/lib/graphql/queries";
+import { librariesQuery, usersQuery } from "@/lib/graphql/queries";
 import { useAuth } from "@/lib/hooks/use-auth";
-import { humanizeEntitlement } from "@/lib/utils/formatting";
 import { useClient } from "urql";
-import type { UserRecord } from "@/lib/types";
+import type { LibraryRecord, UserRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { APP_PERMISSIONS, LIBRARY_PERMISSIONS } from "@/lib/utils/permissions";
 
-function normalizeEntitlementValue(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/[-\s]/g, "_");
-  const compact = normalized.replace(/_/g, "");
-  switch (compact) {
-    case "viewcatalog":
-      return "view_catalog";
-    case "monitortitle":
-    case "managetitle":
-    case "triggeractions":
-    case "viewhistory":
-      return "manage_title";
-    case "manageusers":
-      return "manage_users";
-    case "manageconfig":
-      return "manage_config";
-    default:
-      return normalized;
-  }
+type LibraryGrantDrafts = Record<string, string[]>;
+
+function normalizePermissions(values: string[] | null | undefined): string[] {
+  return Array.from(new Set((values ?? []).map((value) => value.trim()).filter(Boolean)));
 }
 
-function normalizeEntitlements(values: string[]): string[] {
-  return Array.from(new Set(values.map(normalizeEntitlementValue).filter((value) => value.length > 0)));
+function grantsToDrafts(
+  grants: UserRecord["libraryPermissions"] | null | undefined,
+): LibraryGrantDrafts {
+  return Object.fromEntries(
+    (grants ?? []).map((grant) => [
+      grant.libraryId,
+      normalizePermissions(grant.permissions),
+    ]),
+  );
+}
+
+function togglePermission(current: string[], value: string): string[] {
+  const existing = new Set(current);
+  if (existing.has(value)) {
+    existing.delete(value);
+  } else {
+    existing.add(value);
+  }
+  return Array.from(existing);
 }
 
 export function SettingsUsersContainer() {
@@ -47,51 +50,83 @@ export function SettingsUsersContainer() {
   const client = useClient();
   const { user: currentUser } = useAuth();
   const [settingsUsers, setSettingsUsers] = useState<UserRecord[]>([]);
+  const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [newEntitlements, setNewEntitlements] = useState<string[]>([]);
+  const [newAppPermissions, setNewAppPermissions] = useState<string[]>([]);
+  const [newLibraryPermissionDrafts, setNewLibraryPermissionDrafts] = useState<LibraryGrantDrafts>({});
   const [userPasswordDrafts, setUserPasswordDrafts] = useState<Record<string, string>>({});
-  const [userEntitlementDrafts, setUserEntitlementDrafts] = useState<Record<string, string[]>>({});
+  const [userAppPermissionDrafts, setUserAppPermissionDrafts] = useState<Record<string, string[]>>({});
+  const [userLibraryPermissionDrafts, setUserLibraryPermissionDrafts] = useState<Record<string, LibraryGrantDrafts>>({});
   const [mutatingUserId, setMutatingUserId] = useState<string | null>(null);
   const [pendingDeleteUser, setPendingDeleteUser] = useState<UserRecord | null>(null);
-
-  const toggleEntitlement = useCallback((current: string[], value: string) => {
-    const existing = new Set(current);
-    if (existing.has(value)) {
-      existing.delete(value);
-    } else {
-      existing.add(value);
-    }
-    return Array.from(existing);
-  }, []);
 
   const updateUserPasswordDraft = useCallback((userId: string, value: string) => {
     setUserPasswordDrafts((previous) => ({ ...previous, [userId]: value }));
   }, []);
 
-  const toggleNewEntitlement = useCallback((value: string) => {
-    setNewEntitlements((previous) => toggleEntitlement(previous, value));
-  }, [toggleEntitlement]);
+  const toggleNewAppPermission = useCallback((value: string) => {
+    setNewAppPermissions((previous) => togglePermission(previous, value));
+  }, []);
 
-  const toggleUserEntitlement = useCallback((userId: string, value: string) => {
-    setUserEntitlementDrafts((previous) => ({
+  const toggleNewLibraryPermission = useCallback((libraryId: string, value: string) => {
+    setNewLibraryPermissionDrafts((previous) => ({
       ...previous,
-      [userId]: toggleEntitlement(previous[userId] ?? [], value),
+      [libraryId]: togglePermission(previous[libraryId] ?? [], value),
     }));
-  }, [toggleEntitlement]);
+  }, []);
+
+  const toggleUserAppPermission = useCallback((userId: string, value: string) => {
+    setUserAppPermissionDrafts((previous) => ({
+      ...previous,
+      [userId]: togglePermission(previous[userId] ?? [], value),
+    }));
+  }, []);
+
+  const toggleUserLibraryPermission = useCallback((userId: string, libraryId: string, value: string) => {
+    setUserLibraryPermissionDrafts((previous) => {
+      const grants = previous[userId] ?? {};
+      return {
+        ...previous,
+        [userId]: {
+          ...grants,
+          [libraryId]: togglePermission(grants[libraryId] ?? [], value),
+        },
+      };
+    });
+  }, []);
 
   const refreshUsers = useCallback(async () => {
     try {
       const { data, error } = await client.query(usersQuery, {}).toPromise();
       if (error) throw error;
-      const users = (data.users || []).map((user: { id: string; username: string; entitlements: string[] }) => ({
+      const users = (data.users || []).map((user: UserRecord) => ({
         ...user,
-        entitlements: normalizeEntitlements(user.entitlements ?? []),
+        appPermissions: normalizePermissions(user.appPermissions),
+        libraryPermissions: (user.libraryPermissions ?? []).map((grant) => ({
+          libraryId: grant.libraryId,
+          permissions: normalizePermissions(grant.permissions),
+        })),
       }));
       setSettingsUsers(users);
-      setUserEntitlementDrafts(
-        Object.fromEntries(users.map((user: { id: string; username: string; entitlements: string[] }) => [user.id, [...user.entitlements]])),
+      setUserAppPermissionDrafts(
+        Object.fromEntries(users.map((user: UserRecord) => [user.id, [...user.appPermissions]])),
       );
+      setUserLibraryPermissionDrafts(
+        Object.fromEntries(users.map((user: UserRecord) => [user.id, grantsToDrafts(user.libraryPermissions)])),
+      );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    }
+  }, [client, setGlobalStatus, t]);
+
+  const refreshLibraries = useCallback(async () => {
+    try {
+      const { data, error } = await client
+        .query(librariesQuery, { facet: null, permission: "view" })
+        .toPromise();
+      if (error) throw error;
+      setLibraries((data?.libraries ?? []) as LibraryRecord[]);
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     }
@@ -99,7 +134,8 @@ export function SettingsUsersContainer() {
 
   useEffect(() => {
     void refreshUsers();
-  }, [refreshUsers]);
+    void refreshLibraries();
+  }, [refreshLibraries, refreshUsers]);
 
   const createUser = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -112,13 +148,17 @@ export function SettingsUsersContainer() {
         input: {
           username: newUsername.trim(),
           password: newPassword,
-          entitlements: newEntitlements,
+          appPermissions: newAppPermissions,
+          libraryPermissions: Object.entries(newLibraryPermissionDrafts)
+            .filter(([, permissions]) => permissions.length > 0)
+            .map(([libraryId, permissions]) => ({ libraryId, permissions })),
         },
       }).toPromise();
       if (error) throw error;
       setNewUsername("");
       setNewPassword("");
-      setNewEntitlements([]);
+      setNewAppPermissions([]);
+      setNewLibraryPermissionDrafts({});
       setGlobalStatus(t("user.created"));
       await refreshUsers();
     } catch (error) {
@@ -154,20 +194,52 @@ export function SettingsUsersContainer() {
     }
   };
 
-  const setUserEntitlements = async (userId: string, entitlements?: string[]) => {
-    const resolvedEntitlements = entitlements ?? userEntitlementDrafts[userId] ?? [];
+  const setUserAppPermissions = async (userId: string, permissions?: string[]) => {
+    const resolvedPermissions = normalizePermissions(permissions ?? userAppPermissionDrafts[userId]);
     const updatedUserName =
       settingsUsers.find((candidate) => candidate.id === userId)?.username ?? userId;
     setMutatingUserId(userId);
     try {
-      const { error } = await client.mutation(setUserEntitlementsMutation, {
+      const { error } = await client.mutation(setUserAppPermissionsMutation, {
         input: {
           userId,
-          entitlements: resolvedEntitlements,
+          permissions: resolvedPermissions,
         },
       }).toPromise();
       if (error) throw error;
-      setGlobalStatus(t("user.entitlementsUpdated", { name: updatedUserName }));
+      setGlobalStatus(t("user.permissionsUpdated", { name: updatedUserName }));
+      await refreshUsers();
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setMutatingUserId(null);
+    }
+  };
+
+  const setUserLibraryPermissions = async (
+    userId: string,
+    libraryId: string,
+    permissions?: string[],
+  ) => {
+    const user = settingsUsers.find((candidate) => candidate.id === userId);
+    const currentDrafts = userLibraryPermissionDrafts[userId] ?? {};
+    const nextDrafts = {
+      ...currentDrafts,
+      [libraryId]: normalizePermissions(permissions ?? currentDrafts[libraryId]),
+    };
+    const grants = Object.entries(nextDrafts)
+      .filter(([, grantPermissions]) => grantPermissions.length > 0)
+      .map(([grantLibraryId, grantPermissions]) => ({
+        libraryId: grantLibraryId,
+        permissions: grantPermissions,
+      }));
+    setMutatingUserId(userId);
+    try {
+      const { error } = await client.mutation(setUserLibraryPermissionsMutation, {
+        input: { userId, grants },
+      }).toPromise();
+      if (error) throw error;
+      setGlobalStatus(t("user.permissionsUpdated", { name: user?.username ?? userId }));
       await refreshUsers();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
@@ -198,7 +270,12 @@ export function SettingsUsersContainer() {
         delete next[user.id];
         return next;
       });
-      setUserEntitlementDrafts((previous) => {
+      setUserAppPermissionDrafts((previous) => {
+        const next = { ...previous };
+        delete next[user.id];
+        return next;
+      });
+      setUserLibraryPermissionDrafts((previous) => {
         const next = { ...previous };
         delete next[user.id];
         return next;
@@ -215,24 +292,30 @@ export function SettingsUsersContainer() {
     <>
       <SettingsUsersSection
         settingsUsers={settingsUsers}
+        libraries={libraries}
         newUsername={newUsername}
         setNewUsername={setNewUsername}
         newPassword={newPassword}
         setNewPassword={setNewPassword}
-        newEntitlements={newEntitlements}
-        toggleNewEntitlement={toggleNewEntitlement}
+        appPermissions={Object.values(APP_PERMISSIONS)}
+        libraryPermissions={Object.values(LIBRARY_PERMISSIONS)}
+        newAppPermissions={newAppPermissions}
+        newLibraryPermissionDrafts={newLibraryPermissionDrafts}
+        toggleNewAppPermission={toggleNewAppPermission}
+        toggleNewLibraryPermission={toggleNewLibraryPermission}
         createUser={createUser}
         userPasswordDrafts={userPasswordDrafts}
-        userEntitlementDrafts={userEntitlementDrafts}
+        userAppPermissionDrafts={userAppPermissionDrafts}
+        userLibraryPermissionDrafts={userLibraryPermissionDrafts}
         updateUserPasswordDraft={updateUserPasswordDraft}
-        toggleUserEntitlement={toggleUserEntitlement}
+        toggleUserAppPermission={toggleUserAppPermission}
+        toggleUserLibraryPermission={toggleUserLibraryPermission}
         mutatingUserId={mutatingUserId}
         setUserPassword={setUserPassword}
-        setUserEntitlements={setUserEntitlements}
+        setUserAppPermissions={setUserAppPermissions}
+        setUserLibraryPermissions={setUserLibraryPermissions}
         deleteUser={deleteUser}
         currentUserId={currentUser?.id ?? null}
-        ALL_ENTITLEMENTS={[...ALL_ENTITLEMENTS]}
-        humanizeEntitlement={humanizeEntitlement}
       />
       <ConfirmDialog
         open={pendingDeleteUser !== null}

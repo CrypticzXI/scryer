@@ -299,6 +299,9 @@ impl AppUseCase {
             title_name: None,
             title_slug: None,
             title_facet: None,
+            library_id: Some(title.library_id.clone()),
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -414,6 +417,9 @@ impl AppUseCase {
                     title_name: None,
                     title_slug: None,
                     title_facet: None,
+                    library_id: Some(title.library_id.clone()),
+                    library_name: None,
+                    library_slug: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
                     season_number: episode.season_number.clone(),
@@ -525,6 +531,9 @@ impl AppUseCase {
                     title_name: None,
                     title_slug: None,
                     title_facet: None,
+                    library_id: Some(title.library_id.clone()),
+                    library_name: None,
+                    library_slug: None,
                     episode_id: None,
                     collection_id: Some(collection.id.clone()),
                     season_number: Some("0".to_string()),
@@ -3294,22 +3303,62 @@ async fn persist_standby_candidates(
 
 impl AppUseCase {
     pub async fn get_wanted_item(&self, actor: &User, id: &str) -> AppResult<Option<WantedItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-        self.services
+        let Some(item) = self
+            .services
             .workflow
             .wanted_items
             .get_wanted_item_by_id(id)
-            .await
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let library_id = match item.library_id.clone() {
+            Some(library_id) => library_id,
+            None => self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&item.title_id)
+                .await?
+                .map(|title| title.library_id)
+                .ok_or_else(|| AppError::NotFound(format!("title {}", item.title_id)))?,
+        };
+        self.require_library_permission(actor, &library_id, scryer_domain::LibraryPermission::View)
+            .await?;
+        Ok(Some(item))
     }
 
     pub async fn list_wanted_items(
         &self,
+        actor: &User,
         query: WantedItemsQuery,
+    ) -> AppResult<(Vec<WantedItem>, i64)> {
+        let requested_library_ids = query.library_ids.clone();
+        let mut library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if !requested_library_ids.is_empty() {
+            let authorized = library_ids.into_iter().collect::<HashSet<_>>();
+            library_ids = requested_library_ids
+                .into_iter()
+                .filter(|library_id| authorized.contains(library_id))
+                .collect();
+        }
+        self.list_wanted_items_for_libraries(query, library_ids)
+            .await
+    }
+
+    async fn list_wanted_items_for_libraries(
+        &self,
+        query: WantedItemsQuery,
+        library_ids: Vec<String>,
     ) -> AppResult<(Vec<WantedItem>, i64)> {
         let WantedItemsQuery {
             status,
             media_type,
             title_id,
+            library_ids: _,
             title_search,
             latest_decision_code,
             limit,
@@ -3319,6 +3368,9 @@ impl AppUseCase {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         });
+        if library_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
         let items = self
             .services
             .workflow
@@ -3327,6 +3379,7 @@ impl AppUseCase {
                 status: status.clone(),
                 media_type: media_type.clone(),
                 title_id: title_id.clone(),
+                library_ids: library_ids.clone(),
                 title_search: title_search.clone(),
                 latest_decision_code: latest_decision_code.clone(),
                 limit,
@@ -3341,6 +3394,7 @@ impl AppUseCase {
                 status,
                 media_type,
                 title_id,
+                library_ids,
                 title_search,
                 latest_decision_code,
                 ..WantedItemsQuery::default()
@@ -3351,9 +3405,34 @@ impl AppUseCase {
 
     pub async fn list_release_decisions(
         &self,
+        actor: &User,
         query: ReleaseDecisionsQuery,
     ) -> AppResult<Vec<ReleaseDecision>> {
         if let Some(wid) = query.wanted_item_id.as_deref() {
+            let wanted = self
+                .services
+                .workflow
+                .wanted_items
+                .get_wanted_item_by_id(wid)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("wanted item {wid}")))?;
+            let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
+                library_id.to_string()
+            } else {
+                self.services
+                    .catalog
+                    .titles
+                    .get_by_id(&wanted.title_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))?
+                    .library_id
+            };
+            self.require_library_permission(
+                actor,
+                &library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
             return self
                 .services
                 .workflow
@@ -3362,6 +3441,19 @@ impl AppUseCase {
                 .await;
         }
         if let Some(tid) = query.title_id.as_deref() {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(tid)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {tid}")))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
             return self
                 .services
                 .workflow
@@ -3374,6 +3466,7 @@ impl AppUseCase {
 
     pub async fn trigger_title_wanted_search(
         &self,
+        actor: &User,
         title_id: &str,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<WantedSearchOutcome> {
@@ -3384,6 +3477,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let now = Utc::now();
         let outcome = if let Some(handler) = self.facet_registry.get(&title.facet) {
@@ -3442,8 +3541,23 @@ impl AppUseCase {
 
     pub async fn title_acquisition_diagnostics(
         &self,
+        actor: &User,
         title_id: &str,
     ) -> AppResult<TitleAcquisitionDiagnostics> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
+
         let recent_decisions = self
             .services
             .workflow
@@ -3532,7 +3646,24 @@ impl AppUseCase {
         })
     }
 
-    pub async fn trigger_title_mismatch_recovery_search(&self, title_id: &str) -> AppResult<usize> {
+    pub async fn trigger_title_mismatch_recovery_search(
+        &self,
+        actor: &User,
+        title_id: &str,
+    ) -> AppResult<usize> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let items = self
             .services
             .workflow
@@ -3579,6 +3710,7 @@ impl AppUseCase {
 
     pub async fn trigger_season_wanted_search(
         &self,
+        actor: &User,
         title_id: &str,
         season_number: u32,
     ) -> AppResult<WantedSearchOutcome> {
@@ -3589,6 +3721,12 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
         let season_str = season_number.to_string();
         let items = self
             .services
@@ -3628,6 +3766,7 @@ impl AppUseCase {
 
     pub async fn trigger_wanted_item_search(
         &self,
+        actor: &User,
         wanted_item_id: &str,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<WantedSearchOutcome> {
@@ -3645,6 +3784,12 @@ impl AppUseCase {
             .get_by_id(&item.title_id)
             .await?
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         if let Some(outcome) = self
             .handle_wanted_item_conflict(&title, &item, conflict_policy)
@@ -3674,7 +3819,7 @@ impl AppUseCase {
         })
     }
 
-    pub async fn pause_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
+    pub async fn pause_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
             .workflow
@@ -3682,6 +3827,19 @@ impl AppUseCase {
             .get_wanted_item_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&item.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", item.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         self.services
             .workflow
@@ -3696,7 +3854,7 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn resume_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
+    pub async fn resume_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
             .workflow
@@ -3704,6 +3862,19 @@ impl AppUseCase {
             .get_wanted_item_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&item.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", item.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let now = Utc::now();
         let schedule = compute_search_schedule(
@@ -3727,7 +3898,7 @@ impl AppUseCase {
             .await
     }
 
-    pub async fn reset_wanted_item(&self, wanted_item_id: &str) -> AppResult<()> {
+    pub async fn reset_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .services
             .workflow
@@ -3735,6 +3906,19 @@ impl AppUseCase {
             .get_wanted_item_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound("wanted item not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&item.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", item.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let now = Utc::now();
         let schedule = compute_search_schedule(
@@ -4046,6 +4230,9 @@ impl AppUseCase {
             title_name: None,
             title_slug: None,
             title_facet: None,
+            library_id: Some(title.library_id.clone()),
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -4143,6 +4330,9 @@ impl AppUseCase {
                     title_name: None,
                     title_slug: None,
                     title_facet: None,
+                    library_id: Some(title.library_id.clone()),
+                    library_name: None,
+                    library_slug: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
                     season_number: episode.season_number.clone(),

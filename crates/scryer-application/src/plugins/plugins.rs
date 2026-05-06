@@ -1752,7 +1752,8 @@ impl AppUseCase {
         client_type: &str,
         config_json: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let provider = self
             .services
@@ -2064,13 +2065,15 @@ impl AppUseCase {
 
     /// List available plugins by merging cached registry with local installations.
     pub async fn list_available_plugins(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         self.build_available_plugins(Some(actor)).await
     }
 
     pub async fn plugin_update_count(&self, actor: &User) -> AppResult<i64> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         Ok(self
             .build_available_plugins(None)
@@ -2199,7 +2202,8 @@ impl AppUseCase {
     }
 
     pub async fn plugin_catalog_status(&self, actor: &User) -> AppResult<PluginCatalogStatus> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let now = Utc::now();
         let status = match fetch_plugin_bytes(
@@ -2266,7 +2270,8 @@ impl AppUseCase {
     }
 
     pub async fn refresh_plugin_catalog(&self, actor: &User) -> AppResult<Vec<RegistryPlugin>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.refresh_plugin_catalog_internal().await?;
         self.list_available_plugins(actor).await
     }
@@ -2866,7 +2871,8 @@ impl AppUseCase {
         actor: &User,
         github_repo_url: &str,
     ) -> AppResult<ManualPluginPreview> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let (resolved, _) = self.resolve_manual_plugin_repo(github_repo_url).await?;
         let plugin_type = resolved.child.plugin_type.clone();
         Ok(ManualPluginPreview {
@@ -2914,7 +2920,8 @@ impl AppUseCase {
         actor: &User,
         github_repo_url: &str,
     ) -> AppResult<PluginInstallation> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let (resolved, child_json) = self.resolve_manual_plugin_repo(github_repo_url).await?;
         let _operation_guard = self
             .runtime
@@ -3073,7 +3080,8 @@ impl AppUseCase {
         actor: &User,
         plugin_id: &str,
     ) -> AppResult<PluginInstallProgressSnapshot> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.validate_catalog_install_request(plugin_id).await?;
         let snapshot = self
             .runtime
@@ -3108,7 +3116,8 @@ impl AppUseCase {
         actor: &User,
         plugin_id: &str,
     ) -> AppResult<PluginInstallProgressSnapshot> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.validate_catalog_upgrade_request(plugin_id).await?;
         let snapshot = self
             .runtime
@@ -3144,7 +3153,8 @@ impl AppUseCase {
         actor: &User,
         plugin_id: &str,
     ) -> AppResult<PluginInstallation> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.validate_catalog_install_request(plugin_id).await?;
         self.runtime
             .plugins
@@ -3163,7 +3173,8 @@ impl AppUseCase {
 
     /// Uninstall a non-builtin plugin or revert a downloaded builtin override.
     pub async fn uninstall_plugin(&self, actor: &User, plugin_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let installation = self
             .services
@@ -3267,7 +3278,8 @@ impl AppUseCase {
         plugin_id: &str,
         enabled: bool,
     ) -> AppResult<PluginInstallation> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let mut installation = self
             .services
@@ -3308,7 +3320,8 @@ impl AppUseCase {
         actor: &User,
         plugin_id: &str,
     ) -> AppResult<PluginInstallation> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.validate_catalog_upgrade_request(plugin_id).await?;
         self.runtime
             .plugins
@@ -3330,7 +3343,8 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<RulePackRegistryEntry>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         let manifest = self.load_rule_pack_registry_manifest().await?;
 
         // Filter by min_scryer_version compatibility
@@ -3353,7 +3367,8 @@ impl AppUseCase {
         actor: &User,
         pack_id: &str,
     ) -> AppResult<Vec<RulePackTemplate>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         // Find the pack URL from registry
         let packs = self.list_rule_pack_registry(actor).await?;

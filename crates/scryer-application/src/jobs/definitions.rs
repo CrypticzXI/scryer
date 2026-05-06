@@ -747,6 +747,7 @@ mod tests {
             .merge_library_scan_progress(LibraryScanSession {
                 session_id: run.id.clone(),
                 facet: MediaFacet::Series,
+                library_id: None,
                 mode: LibraryScanMode::Additive,
                 status: LibraryScanStatus::Completed,
                 started_at: now,

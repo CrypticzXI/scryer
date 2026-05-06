@@ -1,10 +1,11 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
-    DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus, ImportType,
-    MediaFacet, NewDomainEvent, TitleHistoryEventType,
+    AppPermissionMask, DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus,
+    ImportType, Library, LibraryGrant, MediaFacet, NewDomainEvent, TitleHistoryEventType,
 };
 
 use scryer_domain::RuleSet;
@@ -23,15 +24,16 @@ use crate::{
     DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository,
     FileImporter, HousekeepingRepository, ImportArtifact, ImportArtifactRepository,
     ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord,
-    JobRunRepository, LibraryProbeRepository, LibraryProbeSignature, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileRepository, NewBlocklistEntry,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
-    PendingReleaseRepository, PendingStagedNzb, PluginInstallationRepository,
-    PostProcessingScriptRepository, ReleaseDecision, RuleSetRepository, SettingsRepository,
-    StagedNzbRef, StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
-    TitleImageKind, TitleImageProcessor, TitleImageReplacement, TitleImageRepository,
-    TitleImageSyncTask, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, WantedItem,
-    WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    JobRunRepository, LibraryProbeRepository, LibraryProbeSignature, LibraryRepository,
+    LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    MediaFileRepository, NewBlocklistEntry, NotificationChannelRepository,
+    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
+    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
+    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
+    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository,
 };
 
 #[derive(Default)]
@@ -677,9 +679,6 @@ impl SystemInfoProvider for NullSystemInfoProvider {
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
-    async fn pending_migration_count(&self) -> AppResult<usize> {
-        Ok(0)
-    }
     async fn vacuum_into(&self, _dest_path: &str) -> AppResult<()> {
         Ok(())
     }
@@ -1089,6 +1088,10 @@ impl SettingsRepository for NullSettingsRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+
+    async fn delete_setting_value(&self, _: &str, _: &str, _: Option<String>) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -1260,6 +1263,7 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
 
     async fn delete_library_scan_unmatched_item(
         &self,
+        _library_id: &str,
         _facet: scryer_domain::MediaFacet,
         _item_path: &str,
     ) -> AppResult<()> {
@@ -1284,6 +1288,95 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
         _status: Option<PendingImportStatus>,
     ) -> AppResult<i64> {
         Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullLibraryRepository;
+
+fn null_default_library(facet: MediaFacet) -> Library {
+    let now = Utc::now();
+    Library {
+        id: scryer_domain::default_library_id_for_facet(&facet),
+        facet: facet.clone(),
+        name: format!("Default {}", facet.as_str()),
+        slug: "default".to_string(),
+        is_default: true,
+        roots: Vec::new(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[async_trait]
+impl LibraryRepository for NullLibraryRepository {
+    async fn list(&self, facet: Option<MediaFacet>) -> AppResult<Vec<Library>> {
+        Ok(match facet {
+            Some(facet) => vec![null_default_library(facet)],
+            None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                .into_iter()
+                .map(null_default_library)
+                .collect(),
+        })
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Library>> {
+        Ok([MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+            .into_iter()
+            .map(null_default_library)
+            .find(|library| library.id == id))
+    }
+
+    async fn default_for_facet(&self, facet: MediaFacet) -> AppResult<Option<Library>> {
+        Ok(Some(null_default_library(facet)))
+    }
+
+    async fn create(&self, library: Library, _roots: Vec<LibraryRootDraft>) -> AppResult<Library> {
+        Ok(library)
+    }
+
+    async fn update(
+        &self,
+        _library_id: &str,
+        _name: String,
+        _slug: String,
+        _roots: Vec<LibraryRootDraft>,
+    ) -> AppResult<Library> {
+        Err(AppError::Repository(
+            "library repository not configured".into(),
+        ))
+    }
+
+    async fn delete_empty(&self, _library_id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn app_permission_mask_for_user(&self, _user_id: &str) -> AppResult<AppPermissionMask> {
+        Ok(AppPermissionMask::NONE)
+    }
+
+    async fn set_app_permission_mask_for_user(
+        &self,
+        _user_id: &str,
+        _permissions: AppPermissionMask,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn permission_masks_for_user(&self, _user_id: &str) -> AppResult<Vec<LibraryGrant>> {
+        Ok(vec![])
+    }
+
+    async fn set_grants_for_user(
+        &self,
+        _user_id: &str,
+        _grants: Vec<LibraryGrant>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn title_library_id(&self, _title_id: &str) -> AppResult<Option<String>> {
+        Ok(None)
     }
 }
 
@@ -1312,6 +1405,14 @@ pub mod test_nulls {
         async fn list(&self, _: Option<MediaFacet>, _: Option<String>) -> AppResult<Vec<Title>> {
             Ok(vec![])
         }
+        async fn list_for_libraries(
+            &self,
+            _: Option<MediaFacet>,
+            _: &[String],
+            _: Option<String>,
+        ) -> AppResult<Vec<Title>> {
+            Ok(vec![])
+        }
         async fn list_by_external_ids(&self, _: &str, _: &[String]) -> AppResult<Vec<Title>> {
             Ok(vec![])
         }
@@ -1326,6 +1427,14 @@ pub mod test_nulls {
             Ok(None)
         }
         async fn get_by_facet_and_slug(&self, _: MediaFacet, _: &str) -> AppResult<Option<Title>> {
+            Ok(None)
+        }
+        async fn get_by_facet_libraries_and_slug(
+            &self,
+            _: MediaFacet,
+            _: &[String],
+            _: &str,
+        ) -> AppResult<Option<Title>> {
             Ok(None)
         }
         async fn find_by_external_id(&self, _: &str, _: &str) -> AppResult<Option<Title>> {

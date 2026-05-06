@@ -152,6 +152,7 @@ impl TestContext {
             ":memory:".to_string(),
         )
         .with_library_state_store(Arc::new(library_state_store.clone()))
+        .with_libraries(Arc::new(catalog_store.clone()))
         .with_customization_store(Arc::new(customization_store.clone()))
         .with_acquisition_state(workflow_store.clone())
         .with_domain_events(workflow_store.clone())

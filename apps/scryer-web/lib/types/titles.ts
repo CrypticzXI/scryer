@@ -9,6 +9,9 @@ export type TitleRecord = {
   id: string;
   name: string;
   facet: Facet;
+  libraryId: string;
+  libraryName?: string | null;
+  librarySlug?: string | null;
   monitored: boolean;
   tags: string[];
   createdAt?: string | null;
@@ -55,6 +58,40 @@ export type TitleRecord = {
 export type RootFolderOption = {
   path: string;
   isDefault: boolean;
+};
+
+export type LibraryRootRecord = {
+  id: string;
+  path: string;
+  isDefault: boolean;
+};
+
+export type LibraryRecord = {
+  id: string;
+  facet: Facet;
+  name: string;
+  slug: string;
+  isDefault: boolean;
+  roots: LibraryRootRecord[];
+};
+
+export type LibrarySettingsRecord = {
+  requiredAudioLanguagesOverride: string[] | null;
+  requiredAudioLanguages: string[];
+  qualityProfileIdOverride: string | null;
+  qualityProfileId: string;
+  scoringPersonaOverride: string | null;
+  scoringPersona: string;
+  indexerRoutingOverride: unknown[] | null;
+  downloadClientRoutingOverride: unknown[] | null;
+};
+
+export type LibrarySettingsDraft = {
+  requiredAudioLanguages: string[] | null;
+  qualityProfileId: string | null;
+  scoringPersona: string | null;
+  indexerRouting?: unknown[] | null;
+  downloadClientRouting?: unknown[] | null;
 };
 
 export type LibraryScanSummary = {

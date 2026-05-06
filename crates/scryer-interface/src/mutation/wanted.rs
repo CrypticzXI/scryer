@@ -1,6 +1,5 @@
-use async_graphql::{Context, Error, Object, Result as GqlResult};
+use async_graphql::{Context, Object, Result as GqlResult};
 use scryer_application::{SubmissionConflictPolicy, WantedSearchOutcome};
-use scryer_domain::Entitlement;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::types::*;
@@ -27,11 +26,9 @@ impl WantedMutations {
     ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let queued = app
             .trigger_title_wanted_search(
+                &actor,
                 &input.title_id,
                 SubmissionConflictPolicy::from_replace_flag(
                     input.replace_in_progress.unwrap_or(false),
@@ -49,11 +46,8 @@ impl WantedMutations {
     ) -> GqlResult<i32> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let queued = app
-            .trigger_title_mismatch_recovery_search(&input.title_id)
+            .trigger_title_mismatch_recovery_search(&actor, &input.title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(queued as i32)
@@ -66,11 +60,8 @@ impl WantedMutations {
     ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let queued = app
-            .trigger_season_wanted_search(&input.title_id, input.season_number as u32)
+            .trigger_season_wanted_search(&actor, &input.title_id, input.season_number as u32)
             .await
             .map_err(to_gql_error)?;
         Ok(wanted_search_payload(queued))
@@ -83,11 +74,9 @@ impl WantedMutations {
     ) -> GqlResult<WantedSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let outcome = app
             .trigger_wanted_item_search(
+                &actor,
                 &input.wanted_item_id,
                 SubmissionConflictPolicy::from_replace_flag(
                     input.replace_in_progress.unwrap_or(false),
@@ -105,10 +94,7 @@ impl WantedMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        app.pause_wanted_item(&input.wanted_item_id)
+        app.pause_wanted_item(&actor, &input.wanted_item_id)
             .await
             .map_err(to_gql_error)?;
         Ok(true)
@@ -121,10 +107,7 @@ impl WantedMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        app.resume_wanted_item(&input.wanted_item_id)
+        app.resume_wanted_item(&actor, &input.wanted_item_id)
             .await
             .map_err(to_gql_error)?;
         Ok(true)
@@ -137,10 +120,7 @@ impl WantedMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        app.reset_wanted_item(&input.wanted_item_id)
+        app.reset_wanted_item(&actor, &input.wanted_item_id)
             .await
             .map_err(to_gql_error)?;
         Ok(true)
@@ -153,10 +133,7 @@ impl WantedMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        app.force_grab_pending_release(&input.id)
+        app.force_grab_pending_release(&actor, &input.id)
             .await
             .map_err(to_gql_error)
     }
@@ -168,10 +145,7 @@ impl WantedMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        app.dismiss_pending_release(&input.id)
+        app.dismiss_pending_release(&actor, &input.id)
             .await
             .map_err(to_gql_error)
     }

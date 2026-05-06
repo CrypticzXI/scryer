@@ -948,6 +948,7 @@ mod tests {
             id: "title-1".to_string(),
             name: "Bastard!!".to_string(),
             facet: MediaFacet::Anime,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
             monitored: true,
             tags: vec![],
             external_ids: vec![],

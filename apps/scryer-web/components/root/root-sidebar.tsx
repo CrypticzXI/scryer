@@ -38,6 +38,9 @@ import { getNextTheme, getThemeLabel } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { PendingImportCounts } from "@/lib/types";
 import { hasImportItemsForView, pendingImportCountForView } from "@/lib/types";
+import type { AuthUser } from "@/lib/hooks/use-auth";
+import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
+import type { AppPermission } from "@/lib/utils/permissions";
 
 type NavItem = {
   id: ViewId;
@@ -53,7 +56,7 @@ type RootSidebarProps = {
   systemSection: SystemSection;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
-  entitlements: string[];
+  user: AuthUser;
   pendingImportCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
   pluginUpdateCount: number;
@@ -72,7 +75,7 @@ type RootSidebarProps = {
 const settingsEntries: Array<{
   id: SettingsSection;
   label: (t: Translate) => string;
-  requiredEntitlement?: string;
+  requiredAnyAppPermission?: AppPermission[];
 }> = [
   {
     id: "profile",
@@ -81,67 +84,67 @@ const settingsEntries: Array<{
   {
     id: "general",
     label: (t) => t("settings.general"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "security",
     label: (t) => t("settings.security"),
-    requiredEntitlement: "manage_users",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers],
   },
   {
     id: "users",
     label: (t) => t("settings.users"),
-    requiredEntitlement: "manage_users",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers, APP_PERMISSIONS.managePermissions],
   },
   {
     id: "qualityProfiles",
     label: (t) => t("settings.qualityProfiles"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "delayProfiles",
     label: (t) => t("settings.delayProfiles"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "downloadClients",
     label: (t) => t("settings.downloadClients"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "indexers",
     label: (t) => t("settings.indexers"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "rules",
     label: (t) => t("settings.rules"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "plugins",
     label: (t) => t("settings.plugins"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "notifications",
     label: (t) => t("settings.notifications"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "post-processing",
     label: (t) => t("settings.postProcessing"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "subtitles",
     label: (t) => t("settings.subtitles"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "recycleBin",
     label: (t) => t("settings.recycleBin"),
-    requiredEntitlement: "manage_config",
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
 ];
 
@@ -214,7 +217,7 @@ function RootSidebarContent({
   systemSection,
   activitySection,
   wantedSection,
-  entitlements,
+  user,
   pendingImportCounts,
   manualImportRequiredCount,
   pluginUpdateCount,
@@ -231,23 +234,30 @@ function RootSidebarContent({
   const cycleTheme = React.useCallback(() => {
     setTheme(getNextTheme(theme));
   }, [theme, setTheme]);
-  const canManageConfig = entitlements.includes("manage_config");
-  const canManageTitle = entitlements.includes("manage_title");
-  const canAccessFacetImport = canManageTitle;
-  const canAccessMediaSettings = canManageConfig;
+  const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
+  const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
+  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
+  const canAccessFacetImport = canResolveImports;
+  const canAccessMediaSettings = canManageCatalogSettings;
 
   const visibleSettingsEntries = React.useMemo(
-    () => settingsEntries.filter((e) => !e.requiredEntitlement || entitlements.includes(e.requiredEntitlement)),
-    [entitlements],
+    () =>
+      settingsEntries.filter(
+        (entry) =>
+          !entry.requiredAnyAppPermission ||
+          hasAnyAppPermission(user, entry.requiredAnyAppPermission),
+      ),
+    [user],
   );
   const visibleTopNav = React.useMemo(
     () =>
       topNav.filter(
         (item) =>
-          (item.id !== "system" || canManageConfig) &&
-          (item.id !== "activity" || canManageTitle),
+          (item.id !== "system" || canManageSystemSettings) &&
+          (item.id !== "activity" || canResolveImports || canManageTitle),
       ),
-    [canManageConfig, canManageTitle, topNav],
+    [canManageSystemSettings, canManageTitle, canResolveImports, topNav],
   );
 
   const hasImportsForView = React.useCallback(

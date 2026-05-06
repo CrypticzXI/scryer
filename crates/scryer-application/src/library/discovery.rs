@@ -810,6 +810,7 @@ mod tests {
             id: "title-1".into(),
             name: "Existing Movie".into(),
             facet: MediaFacet::Movie,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
             monitored: true,
             tags: vec![],
             external_ids: vec![],

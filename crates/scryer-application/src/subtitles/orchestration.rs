@@ -5,7 +5,6 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{debug, info, warn};
 
-use crate::helpers::require;
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::normalize::normalize_imdb_id;
 use crate::subtitles::provider::{
@@ -20,7 +19,7 @@ use crate::{
     SubtitleSettings as AppSubtitleSettings, parse_release_metadata,
 };
 use scryer_domain::{
-    Entitlement, ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
+    ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
 };
 
 #[derive(Clone)]
@@ -358,8 +357,22 @@ fn subtitle_provider_search_concurrency_limit() -> usize {
 impl AppUseCase {
     pub async fn list_external_subtitles_for_title(
         &self,
+        actor: &User,
         title_id: &str,
     ) -> AppResult<Vec<SubtitleDownload>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .workflow
             .subtitle_downloads
@@ -369,8 +382,29 @@ impl AppUseCase {
 
     pub async fn list_external_subtitle_blocklist_for_media_file(
         &self,
+        actor: &User,
         media_file_id: &str,
     ) -> AppResult<Vec<SubtitleBlocklistEntry>> {
+        let media_file = self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(media_file_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("media file not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", media_file.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .workflow
             .subtitle_downloads
@@ -384,8 +418,6 @@ impl AppUseCase {
         media_file_id: &str,
         language: &str,
     ) -> AppResult<Vec<crate::subtitles::SubtitleMatch>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
         let media_file = self
             .services
             .library
@@ -393,6 +425,19 @@ impl AppUseCase {
             .get_media_file_by_id(media_file_id)
             .await?
             .ok_or_else(|| AppError::NotFound("media file not found".to_string()))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", media_file.title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         let title = self
             .services
             .catalog
@@ -457,7 +502,8 @@ impl AppUseCase {
         ai_translated: bool,
         machine_translated: bool,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let media_file = self
             .services
@@ -1639,6 +1685,7 @@ mod tests {
         Title {
             id: "title-1".into(),
             name: "Canonical Title".into(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],

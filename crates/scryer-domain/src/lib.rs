@@ -53,11 +53,309 @@ impl MediaFacet {
     }
 }
 
+pub fn default_library_id_for_facet(facet: &MediaFacet) -> String {
+    format!("{}_default_library", facet.as_str())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RootFolderEntry {
     pub path: String,
     #[serde(rename = "isDefault")]
     pub is_default: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryRoot {
+    pub id: String,
+    pub library_id: String,
+    pub path: String,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Library {
+    pub id: String,
+    pub facet: MediaFacet,
+    pub name: String,
+    pub slug: String,
+    pub is_default: bool,
+    pub roots: Vec<LibraryRoot>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AppPermission {
+    ManageUsers,
+    ManagePermissions,
+    ManageSystemSettings,
+    ManageCatalogSettings,
+}
+
+impl AppPermission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManageUsers => "manage_users",
+            Self::ManagePermissions => "manage_permissions",
+            Self::ManageSystemSettings => "manage_system_settings",
+            Self::ManageCatalogSettings => "manage_catalog_settings",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "manage_users" => Some(Self::ManageUsers),
+            "manage_permissions" => Some(Self::ManagePermissions),
+            "manage_system_settings" => Some(Self::ManageSystemSettings),
+            "manage_catalog_settings" => Some(Self::ManageCatalogSettings),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryPermission {
+    View,
+    ManageTitles,
+    ResolveImports,
+    ManageLibrary,
+    Request,
+    AutoApproveRequests,
+}
+
+impl LibraryPermission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::ManageTitles => "manage_titles",
+            Self::ResolveImports => "resolve_imports",
+            Self::ManageLibrary => "manage_library",
+            Self::Request => "request",
+            Self::AutoApproveRequests => "auto_approve_requests",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "view" => Some(Self::View),
+            "manage_titles" | "manage_title" => Some(Self::ManageTitles),
+            "scan" | "scan_library" => Some(Self::ManageLibrary),
+            "resolve_imports" | "resolve_import" => Some(Self::ResolveImports),
+            "manage_library" => Some(Self::ManageLibrary),
+            "request" | "request_title" => Some(Self::Request),
+            "auto_approve_requests" | "auto_approve_request" => Some(Self::AutoApproveRequests),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct AppPermissionMask(u64);
+
+impl AppPermissionMask {
+    pub const NONE: Self = Self(0);
+    pub const MANAGE_USERS: Self = Self(1 << 0);
+    pub const MANAGE_PERMISSIONS: Self = Self(1 << 1);
+    pub const MANAGE_SYSTEM_SETTINGS: Self = Self(1 << 2);
+    pub const MANAGE_CATALOG_SETTINGS: Self = Self(1 << 3);
+
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub fn from_bits_retain(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub fn from_permission(permission: AppPermission) -> Self {
+        match permission {
+            AppPermission::ManageUsers => Self::MANAGE_USERS,
+            AppPermission::ManagePermissions => Self::MANAGE_PERMISSIONS,
+            AppPermission::ManageSystemSettings => Self::MANAGE_SYSTEM_SETTINGS,
+            AppPermission::ManageCatalogSettings => Self::MANAGE_CATALOG_SETTINGS,
+        }
+    }
+
+    pub fn from_permissions(permissions: impl IntoIterator<Item = AppPermission>) -> Self {
+        permissions
+            .into_iter()
+            .fold(Self::NONE, |mut mask, permission| {
+                mask.insert(Self::from_permission(permission));
+                mask
+            })
+    }
+
+    pub fn to_permissions(self) -> Vec<AppPermission> {
+        [
+            (Self::MANAGE_USERS, AppPermission::ManageUsers),
+            (Self::MANAGE_PERMISSIONS, AppPermission::ManagePermissions),
+            (
+                Self::MANAGE_SYSTEM_SETTINGS,
+                AppPermission::ManageSystemSettings,
+            ),
+            (
+                Self::MANAGE_CATALOG_SETTINGS,
+                AppPermission::ManageCatalogSettings,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(mask, permission)| self.contains(mask).then_some(permission))
+        .collect()
+    }
+
+    pub fn contains(self, required: Self) -> bool {
+        (self.0 & required.0) == required.0
+    }
+
+    pub fn intersects(self, required: Self) -> bool {
+        (self.0 & required.0) != 0
+    }
+
+    pub fn insert(&mut self, permission: Self) {
+        self.0 |= permission.0;
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct LibraryPermissionMask(u64);
+
+impl LibraryPermissionMask {
+    pub const NONE: Self = Self(0);
+    pub const VIEW: Self = Self(1 << 0);
+    pub const MANAGE_TITLES: Self = Self(1 << 1);
+    pub const RESOLVE_IMPORTS: Self = Self(1 << 2);
+    pub const MANAGE_LIBRARY: Self = Self(1 << 3);
+    pub const REQUEST: Self = Self(1 << 4);
+    pub const AUTO_APPROVE_REQUESTS: Self = Self(1 << 5);
+
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub fn from_bits_retain(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub fn from_permission(permission: LibraryPermission) -> Self {
+        match permission {
+            LibraryPermission::View => Self::VIEW,
+            LibraryPermission::ManageTitles => Self::MANAGE_TITLES,
+            LibraryPermission::ResolveImports => Self::RESOLVE_IMPORTS,
+            LibraryPermission::ManageLibrary => Self::MANAGE_LIBRARY,
+            LibraryPermission::Request => Self::REQUEST,
+            LibraryPermission::AutoApproveRequests => Self::AUTO_APPROVE_REQUESTS,
+        }
+    }
+
+    pub fn from_permissions(permissions: impl IntoIterator<Item = LibraryPermission>) -> Self {
+        permissions
+            .into_iter()
+            .fold(Self::NONE, |mut mask, permission| {
+                mask.insert(Self::from_permission(permission));
+                mask
+            })
+    }
+
+    pub fn to_permissions(self) -> Vec<LibraryPermission> {
+        [
+            (Self::VIEW, LibraryPermission::View),
+            (Self::MANAGE_TITLES, LibraryPermission::ManageTitles),
+            (Self::RESOLVE_IMPORTS, LibraryPermission::ResolveImports),
+            (Self::MANAGE_LIBRARY, LibraryPermission::ManageLibrary),
+            (Self::REQUEST, LibraryPermission::Request),
+            (
+                Self::AUTO_APPROVE_REQUESTS,
+                LibraryPermission::AutoApproveRequests,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(mask, permission)| self.contains(mask).then_some(permission))
+        .collect()
+    }
+
+    pub fn contains(self, required: Self) -> bool {
+        (self.0 & required.0) == required.0
+    }
+
+    pub fn intersects(self, required: Self) -> bool {
+        (self.0 & required.0) != 0
+    }
+
+    pub fn insert(&mut self, permission: Self) {
+        self.0 |= permission.0;
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryGrant {
+    pub user_id: String,
+    pub library_id: String,
+    pub permissions: LibraryPermissionMask,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserAuthorization {
+    pub app: AppPermissionMask,
+    pub libraries: std::collections::HashMap<String, LibraryPermissionMask>,
+    pub default_library: LibraryPermissionMask,
+    pub loaded: bool,
+}
+
+impl Default for UserAuthorization {
+    fn default() -> Self {
+        Self {
+            app: AppPermissionMask::NONE,
+            libraries: std::collections::HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: false,
+        }
+    }
+}
+
+impl UserAuthorization {
+    pub fn library_permissions(&self, library_id: &str) -> LibraryPermissionMask {
+        self.libraries
+            .get(library_id)
+            .copied()
+            .unwrap_or(self.default_library)
+    }
+
+    pub fn has_app_permission(&self, permission: AppPermission) -> bool {
+        self.app
+            .contains(AppPermissionMask::from_permission(permission))
+    }
+
+    pub fn has_any_app_permission(&self, permissions: AppPermissionMask) -> bool {
+        self.app.intersects(permissions)
+    }
+
+    pub fn has_library_permission(&self, library_id: &str, permission: LibraryPermission) -> bool {
+        self.library_permissions(library_id)
+            .contains(LibraryPermissionMask::from_permission(permission))
+    }
+
+    pub fn has_any_library_permission(&self, permission: LibraryPermission) -> bool {
+        let required = LibraryPermissionMask::from_permission(permission);
+        self.default_library.contains(required)
+            || self
+                .libraries
+                .values()
+                .any(|permissions| permissions.contains(required))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,6 +373,7 @@ pub struct TaggedAlias {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Title {
     pub id: String,
+    pub library_id: String,
     pub name: String,
     pub facet: MediaFacet,
     pub monitored: bool,
@@ -270,6 +569,9 @@ pub struct Episode {
 pub struct CalendarEpisode {
     pub id: String,
     pub title_id: String,
+    pub library_id: String,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub title_name: String,
     pub title_slug: Option<String>,
     pub title_facet: String,
@@ -1668,6 +1970,8 @@ pub struct SubtitleSearchFailedEventData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryScanStartedEventData {
     pub session_id: String,
+    #[serde(default)]
+    pub library_id: Option<String>,
     pub mode: String,
 }
 
@@ -2152,6 +2456,8 @@ pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     pub entitlements: Vec<Entitlement>,
+    #[serde(default)]
+    pub authorization: UserAuthorization,
 }
 
 impl User {
@@ -2161,6 +2467,7 @@ impl User {
             username: username.into(),
             password_hash: None,
             entitlements: Self::all_entitlements(),
+            authorization: UserAuthorization::default(),
         }
     }
 
@@ -2182,17 +2489,49 @@ impl User {
             username: username.into(),
             password_hash: Some(password_hash.into()),
             entitlements: Self::all_entitlements(),
+            authorization: UserAuthorization::default(),
         }
     }
 
     pub fn has_entitlement(&self, required: &Entitlement) -> bool {
-        self.entitlements.contains(required)
+        if !self.authorization.loaded {
+            return self.entitlements.contains(required);
+        }
+
+        match required {
+            Entitlement::ViewCatalog => {
+                self.authorization
+                    .default_library
+                    .contains(LibraryPermissionMask::VIEW)
+                    || self
+                        .authorization
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.contains(LibraryPermissionMask::VIEW))
+            }
+            Entitlement::ManageTitle => {
+                self.authorization
+                    .default_library
+                    .contains(LibraryPermissionMask::MANAGE_TITLES)
+                    || self.authorization.libraries.values().any(|permissions| {
+                        permissions.contains(LibraryPermissionMask::MANAGE_TITLES)
+                    })
+            }
+            Entitlement::ManageUsers => self
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_USERS),
+            Entitlement::ManageConfig => self
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS),
+        }
     }
 
     pub fn has_all_entitlements(&self) -> bool {
         let all = Self::all_entitlements();
         all.iter()
-            .all(|entitlement| self.entitlements.contains(entitlement))
+            .all(|entitlement| self.has_entitlement(entitlement))
     }
 }
 

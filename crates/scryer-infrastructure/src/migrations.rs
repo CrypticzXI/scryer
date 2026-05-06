@@ -9,12 +9,12 @@ use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::Instant;
 
-const EMBEDDED_MIGRATION_BUNDLE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/migration_bundle.bin.zst"));
-static EMBEDDED_MIGRATIONS: OnceLock<Result<CompiledMigrationBundle, String>> = OnceLock::new();
+const EMBEDDED_MIGRATION_CATALOG: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/migration_catalog.json.zst"));
+const EMBEDDED_MIGRATION_PAYLOAD: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/migration_payload.bin.zst"));
 
 #[derive(Debug, Clone)]
 struct MigrationLedgerRow {
@@ -27,9 +27,8 @@ struct MigrationLedgerRow {
 }
 
 pub fn list_embedded_migrations() -> AppResult<Vec<EmbeddedMigrationDescriptor>> {
-    let bundle = embedded_bundle()?;
-    Ok(bundle
-        .catalog
+    let catalog = embedded_catalog()?;
+    Ok(catalog
         .migrations
         .iter()
         .map(|migration| EmbeddedMigrationDescriptor {
@@ -42,10 +41,9 @@ pub fn list_embedded_migrations() -> AppResult<Vec<EmbeddedMigrationDescriptor>>
 }
 
 pub fn list_embedded_migration_keys() -> Vec<String> {
-    embedded_bundle()
-        .map(|bundle| {
-            bundle
-                .catalog
+    embedded_catalog()
+        .map(|catalog| {
+            catalog
                 .migrations
                 .iter()
                 .map(|migration| migration.key.clone())
@@ -116,14 +114,14 @@ pub async fn replay_catalog_into_fresh_db(
 }
 
 pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> AppResult<()> {
-    let bundle = embedded_bundle()?;
+    let catalog = embedded_catalog()?;
     if !matches!(mode, MigrationMode::ValidateOnly) {
         ensure_migration_ledger_shape(pool).await?;
     }
 
     let applied = load_applied_migrations(pool).await?;
-    validate_known_migrations(&applied, &bundle.catalog)?;
-    let pending = list_pending_migrations_from_applied(&applied, &bundle.catalog);
+    validate_known_migrations(&applied, &catalog)?;
+    let pending = list_pending_migrations_from_applied(&applied, &catalog);
     if pending.is_empty() {
         return Ok(());
     }
@@ -135,20 +133,20 @@ pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> Ap
         )));
     }
 
+    let payload_bytes = embedded_payload_bytes()?;
     let install_kind = detect_install_kind(pool, &applied).await?;
     match install_kind {
         MigrationInstallKind::FreshInstall => {
-            replay_catalog_into_fresh_db(pool, &bundle.catalog, &bundle.payload_bytes, None, true)
-                .await?;
+            replay_catalog_into_fresh_db(pool, &catalog, &payload_bytes, None, true).await?;
         }
         MigrationInstallKind::Upgrade => {
             apply_version_range(
                 pool,
-                &bundle.catalog,
-                &bundle.payload_bytes,
+                &catalog,
+                &payload_bytes,
                 MigrationInstallKind::Upgrade,
                 1,
-                bundle.catalog.max_version(),
+                catalog.max_version(),
             )
             .await?;
         }
@@ -161,16 +159,18 @@ fn source_db_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
 }
 
-fn embedded_bundle() -> AppResult<&'static CompiledMigrationBundle> {
-    let result = EMBEDDED_MIGRATIONS.get_or_init(|| {
-        let decompressed = zstd::stream::decode_all(EMBEDDED_MIGRATION_BUNDLE)
-            .map_err(|error| format!("failed to decompress embedded migration bundle: {error}"))?;
-        migration_assets::decode_bundle(&decompressed)
-    });
+fn embedded_catalog() -> AppResult<CompiledMigrationCatalog> {
+    let bytes = zstd::stream::decode_all(EMBEDDED_MIGRATION_CATALOG).map_err(|error| {
+        AppError::Repository(format!("failed to decompress migration catalog: {error}"))
+    })?;
 
-    result
-        .as_ref()
-        .map_err(|error| AppError::Repository(error.clone()))
+    migration_assets::decode_catalog(&bytes).map_err(AppError::Repository)
+}
+
+fn embedded_payload_bytes() -> AppResult<Vec<u8>> {
+    zstd::stream::decode_all(EMBEDDED_MIGRATION_PAYLOAD).map_err(|error| {
+        AppError::Repository(format!("failed to decompress migration payload: {error}"))
+    })
 }
 
 fn checksum_algo_from_str(value: &str) -> Option<ChecksumAlgorithm> {

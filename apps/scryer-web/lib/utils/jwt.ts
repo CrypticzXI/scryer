@@ -4,7 +4,11 @@ export type JwtPayload = {
   iat: number;
   iss: string;
   username: string;
-  entitlements: string[];
+  appPermissions?: string[];
+  libraryPermissions?: {
+    libraryId: string;
+    permissions: string[];
+  }[];
 };
 
 /** Decode a JWT payload without signature verification. Returns null if malformed. */

@@ -262,7 +262,202 @@ async fn flush_title_scan_progress_batch(
     coordinator.publish_progress().await;
 }
 
+fn slug_from_library_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash && !slug.is_empty() {
+            slug.push('-');
+            previous_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "library".to_string()
+    } else {
+        slug
+    }
+}
+
+fn normalize_library_root_drafts(
+    mut roots: Vec<LibraryRootDraft>,
+) -> AppResult<Vec<LibraryRootDraft>> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    let mut saw_default = false;
+    for mut root in roots.drain(..) {
+        root.path = root.path.trim().trim_end_matches('/').to_string();
+        if root.path.is_empty() {
+            continue;
+        }
+        let key = root.path.to_ascii_lowercase();
+        if !seen.insert(key) {
+            return Err(AppError::Validation(
+                "library roots must be unique within a library".into(),
+            ));
+        }
+        if root.is_default {
+            if saw_default {
+                root.is_default = false;
+            } else {
+                saw_default = true;
+            }
+        }
+        normalized.push(root);
+    }
+    if !saw_default && let Some(first) = normalized.first_mut() {
+        first.is_default = true;
+    }
+    Ok(normalized)
+}
+
 impl AppUseCase {
+    pub(crate) async fn require_library_management_permission(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<()> {
+        if self
+            .require_library_permission(
+                actor,
+                library_id,
+                scryer_domain::LibraryPermission::ManageLibrary,
+            )
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+            .await
+    }
+
+    pub async fn create_library(
+        &self,
+        actor: &User,
+        facet: MediaFacet,
+        name: String,
+        roots: Vec<LibraryRootDraft>,
+        settings: Option<LibrarySettingsOverrideDraft>,
+    ) -> AppResult<Library> {
+        self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+            .await?;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(AppError::Validation("library name is required".into()));
+        }
+        let roots = normalize_library_root_drafts(roots)?;
+        let now = Utc::now();
+        let library = Library {
+            id: Id::new().0,
+            facet,
+            slug: slug_from_library_name(&name),
+            name,
+            is_default: false,
+            roots: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .create(library, roots)
+            .await?;
+        if let Some(settings) = settings {
+            self.update_library_settings(actor, &library.id, settings)
+                .await?;
+        }
+        self.services
+            .catalog
+            .libraries
+            .get_by_id(&library.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {}", library.id)))
+    }
+
+    pub async fn update_library(
+        &self,
+        actor: &User,
+        library_id: &str,
+        name: Option<String>,
+        roots: Option<Vec<LibraryRootDraft>>,
+        settings: Option<LibrarySettingsOverrideDraft>,
+    ) -> AppResult<Library> {
+        let existing = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_library_management_permission(actor, &existing.id)
+            .await?;
+        let name = name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| existing.name.clone());
+        let roots = match roots {
+            Some(roots) => normalize_library_root_drafts(roots)?,
+            None => existing
+                .roots
+                .iter()
+                .map(|root| LibraryRootDraft {
+                    path: root.path.clone(),
+                    is_default: root.is_default,
+                })
+                .collect(),
+        };
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .update(
+                &existing.id,
+                name.clone(),
+                slug_from_library_name(&name),
+                roots,
+            )
+            .await?;
+        if let Some(settings) = settings {
+            self.update_library_settings(actor, &library.id, settings)
+                .await?;
+        }
+        self.services
+            .catalog
+            .libraries
+            .get_by_id(&library.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {}", library.id)))
+    }
+
+    pub async fn delete_empty_library(&self, actor: &User, library_id: &str) -> AppResult<bool> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_library_management_permission(actor, &library.id)
+            .await?;
+        if library.is_default {
+            return Err(AppError::Validation(
+                "default libraries cannot be deleted".into(),
+            ));
+        }
+        self.services
+            .catalog
+            .libraries
+            .delete_empty(&library.id)
+            .await
+    }
+
     pub(crate) async fn ensure_library_scan_cancellation_token(
         &self,
         session_id: &str,
@@ -311,8 +506,6 @@ impl AppUseCase {
         actor: &User,
         session_id: &str,
     ) -> AppResult<CancelLibraryScanResult> {
-        require(actor, &Entitlement::ManageConfig)?;
-
         let session = self
             .runtime
             .library
@@ -320,6 +513,13 @@ impl AppUseCase {
             .get_session(session_id)
             .await
             .ok_or_else(|| AppError::NotFound(format!("library scan session {session_id}")))?;
+        if let Some(library_id) = session.library_id.as_deref() {
+            self.require_library_management_permission(actor, library_id)
+                .await?;
+        } else {
+            self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+                .await?;
+        }
 
         if session.mode != LibraryScanMode::Full {
             return Err(AppError::Validation(
@@ -353,7 +553,8 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<LibraryScanSession> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let (_coordinator, session) =
             LibraryScanCoordinator::start(self.clone(), facet.clone(), LibraryScanMode::Full, None)
@@ -392,6 +593,85 @@ impl AppUseCase {
         Ok(session)
     }
 
+    pub async fn trigger_library_scan_by_id(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<LibraryScanSession> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_library_management_permission(actor, &library.id)
+            .await?;
+        let library_paths = library
+            .roots
+            .iter()
+            .map(|root| root.path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .collect::<Vec<_>>();
+        if library_paths.is_empty() {
+            return Err(AppError::Validation(
+                "library roots are not configured".into(),
+            ));
+        }
+
+        let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
+            self.clone(),
+            library.facet.clone(),
+            Some(library.id.clone()),
+            LibraryScanMode::Full,
+            None,
+        )
+        .await?;
+        self.ensure_library_scan_cancellation_token(&session.session_id, LibraryScanMode::Full)
+            .await;
+        let mut session_guard =
+            LibraryScanSessionDropGuard::new(self.clone(), session.session_id.clone());
+
+        let app = self.clone();
+        let actor = actor.clone();
+        let session_id = session.session_id.clone();
+        let facet = library.facet.clone();
+        let scanned_library_id = library.id.clone();
+        tokio::spawn(async move {
+            let cancel_token = app.library_scan_cancellation_token(&session_id).await;
+            let result = app
+                .execute_started_library_scan_session(
+                    &actor,
+                    &facet,
+                    &scanned_library_id,
+                    &library_paths,
+                    &session_id,
+                    LibraryScanMode::Full,
+                    cancel_token.clone(),
+                )
+                .await;
+            match result {
+                Ok(summary) if library_scan_cancel_requested(cancel_token.as_ref()) => {
+                    app.cancel_started_library_scan_session(&session_id, &summary)
+                        .await;
+                }
+                Ok(summary) => {
+                    app.finalize_started_library_scan_session(&session_id, &summary)
+                        .await;
+                }
+                Err(error) => {
+                    warn!(error = %error, session_id = %session_id, "library scan task failed");
+                    LibraryScanCoordinator::new(app.clone(), session_id.clone())
+                        .fail()
+                        .await;
+                }
+            }
+        });
+
+        session_guard.disarm();
+        Ok(session)
+    }
+
     pub(crate) async fn scan_library_with_tracking(
         &self,
         actor: &User,
@@ -399,11 +679,20 @@ impl AppUseCase {
         session_id_override: Option<String>,
         mode: LibraryScanMode,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageConfig)?;
-
-        let (_coordinator, session) = LibraryScanCoordinator::start(
+        let session_library_id = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+            .map(|library| library.id)
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
+        self.require_library_management_permission(actor, &session_library_id)
+            .await?;
+        let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
             self.clone(),
             facet.clone(),
+            Some(session_library_id),
             mode.clone(),
             session_id_override,
         )
@@ -449,12 +738,21 @@ impl AppUseCase {
         mode: LibraryScanMode,
     ) -> AppResult<StartedLibraryScanOutcome> {
         let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+            .map(|library| library.id)
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
         let cancel_token = self.library_scan_cancellation_token(session_id).await;
         let should_apply_import_monitor_snapshot = mode == LibraryScanMode::Full;
         let summary = self
             .execute_started_library_scan_session(
                 actor,
                 &facet,
+                &library_id,
                 &library_paths,
                 session_id,
                 mode,
@@ -522,6 +820,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         facet: &MediaFacet,
+        library_id: &str,
         library_paths: &[String],
         session_id: &str,
         mode: LibraryScanMode,
@@ -599,6 +898,7 @@ impl AppUseCase {
                         self,
                         actor,
                         facet,
+                        library_id,
                         library_path,
                         session_id,
                         finalize_discovery_on_drain,
@@ -611,6 +911,7 @@ impl AppUseCase {
                         self,
                         actor,
                         facet,
+                        library_id,
                         library_path,
                         session_id,
                         finalize_discovery_on_drain,
@@ -619,10 +920,19 @@ impl AppUseCase {
                     .await?
                 }
                 (LibraryScanMode::Additive, MediaFacet::Movie) => {
-                    background_refresh_movies(self, actor, library_path, session_id).await?
+                    background_refresh_movies(self, actor, library_id, library_path, session_id)
+                        .await?
                 }
                 (LibraryScanMode::Additive, MediaFacet::Series | MediaFacet::Anime) => {
-                    background_refresh_series(self, actor, facet, library_path, session_id).await?
+                    background_refresh_series(
+                        self,
+                        actor,
+                        facet,
+                        library_id,
+                        library_path,
+                        session_id,
+                    )
+                    .await?
                 }
             };
             summary.absorb(&root_summary);
@@ -664,34 +974,88 @@ impl AppUseCase {
         facet: MediaFacet,
         session_id: &str,
     ) -> AppResult<LibraryScanSummary> {
-        require(actor, &Entitlement::ManageConfig)?;
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("default {} library", facet.as_str())))?;
+        self.background_library_refresh_single_library_with_tracking(actor, &library, session_id)
+            .await
+    }
 
-        let (_coordinator, session) = LibraryScanCoordinator::start(
+    pub(crate) async fn background_library_refresh_by_id_with_tracking(
+        &self,
+        actor: &User,
+        library_id: &str,
+        session_id: &str,
+    ) -> AppResult<LibraryScanSummary> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.background_library_refresh_single_library_with_tracking(actor, &library, session_id)
+            .await
+    }
+
+    async fn background_library_refresh_single_library_with_tracking(
+        &self,
+        actor: &User,
+        library: &Library,
+        session_id: &str,
+    ) -> AppResult<LibraryScanSummary> {
+        self.require_library_management_permission(actor, &library.id)
+            .await?;
+        let library_paths = library
+            .roots
+            .iter()
+            .map(|root| root.path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .collect::<Vec<_>>();
+        if library_paths.is_empty() {
+            return Err(AppError::Validation(format!(
+                "{} library roots are not configured",
+                library.name
+            )));
+        }
+
+        let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
             self.clone(),
-            facet.clone(),
+            library.facet.clone(),
+            Some(library.id.clone()),
             LibraryScanMode::Additive,
             Some(session_id.to_string()),
         )
         .await?;
 
         let result = self
-            .run_started_library_scan_session(
+            .execute_started_library_scan_session(
                 actor,
-                facet,
+                &library.facet,
+                &library.id,
+                &library_paths,
                 &session.session_id,
                 LibraryScanMode::Additive,
+                None,
             )
             .await;
 
-        if result.is_err() {
-            LibraryScanCoordinator::new(self.clone(), session.session_id.clone())
-                .fail()
-                .await;
+        match result {
+            Ok(summary) => {
+                self.finalize_started_library_scan_session(&session.session_id, &summary)
+                    .await;
+                Ok(summary)
+            }
+            Err(error) => {
+                LibraryScanCoordinator::new(self.clone(), session.session_id.clone())
+                    .fail()
+                    .await;
+                Err(error)
+            }
         }
-
-        result.map(|outcome| match outcome {
-            StartedLibraryScanOutcome::Completed(summary)
-            | StartedLibraryScanOutcome::Canceled(summary) => summary,
-        })
     }
 }

@@ -5,7 +5,7 @@ use async_graphql::{
         stream::{self, BoxStream, unfold},
     },
 };
-use scryer_domain::{DomainEvent, DownloadQueueItem, Entitlement};
+use scryer_domain::{AppPermission, DomainEvent, DownloadQueueItem};
 use std::collections::{HashSet, VecDeque};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -174,7 +174,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+        let receiver = match app.subscribe_domain_event_sequences(&actor).await {
             Ok(receiver) => receiver,
             Err(e) => {
                 tracing::warn!("activity_events: subscribe failed: {e}");
@@ -262,7 +262,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_domain_event_sequences(&actor) {
+        let receiver = match app.subscribe_domain_event_sequences(&actor).await {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("domain_event_feed: subscribe failed: {error}");
@@ -352,16 +352,6 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
-            || actor.has_entitlement(&Entitlement::ManageTitle);
-        let can_view_global_queue = actor.has_entitlement(&Entitlement::ManageTitle);
-        if (title_id.is_some() && !can_view_title_progress)
-            || (title_id.is_none() && !can_view_global_queue)
-        {
-            tracing::warn!("download_queue sub: insufficient entitlements");
-            return empty_box_stream();
-        }
-
         tracing::debug!(
             "download_queue sub: subscription started for user {}",
             actor.id
@@ -412,16 +402,6 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
-            || actor.has_entitlement(&Entitlement::ManageTitle);
-        let can_view_global_queue = actor.has_entitlement(&Entitlement::ManageTitle);
-        if (title_id.is_some() && !can_view_title_progress)
-            || (title_id.is_none() && !can_view_global_queue)
-        {
-            tracing::warn!("download_queue_state sub: insufficient entitlements");
-            return empty_box_stream();
-        }
-
         let receiver = match app.subscribe_download_queue_state(&actor) {
             Ok(receiver) => receiver,
             Err(error) => {
@@ -462,17 +442,12 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            tracing::warn!("library_scan_progress: insufficient entitlements");
-            return empty_box_stream();
-        }
-
         tracing::debug!(
             "library_scan_progress: subscription started for user {}",
             actor.id
         );
 
-        let receiver = match app.subscribe_library_scan_progress(&actor) {
+        let receiver = match app.subscribe_library_scan_progress(&actor).await {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("library_scan_progress: subscription setup failed: {error}");
@@ -502,12 +477,7 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            tracing::warn!("library_scan_state: insufficient entitlements");
-            return empty_box_stream();
-        }
-
-        let receiver = match app.subscribe_library_scan_progress(&actor) {
+        let receiver = match app.subscribe_library_scan_progress(&actor).await {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("library_scan_state: subscription setup failed: {error}");
@@ -534,11 +504,6 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            tracing::warn!("job_run_events: insufficient entitlements");
-            return empty_box_stream();
-        }
-
         let initial_runs = match app.active_job_runs(&actor).await {
             Ok(runs) => runs,
             Err(error) => {
@@ -577,11 +542,6 @@ impl SubscriptionRoot {
                 return empty_box_stream();
             }
         };
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            tracing::warn!("job_run_state: insufficient entitlements");
-            return empty_box_stream();
-        }
-
         let initial_runs = match app.active_job_runs(&actor).await {
             Ok(runs) => runs,
             Err(error) => {
@@ -613,8 +573,11 @@ impl SubscriptionRoot {
             }
         };
 
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            tracing::warn!("service_log_lines: insufficient entitlements");
+        if !actor
+            .authorization
+            .has_app_permission(AppPermission::ManageSystemSettings)
+        {
+            tracing::warn!("service_log_lines: insufficient permissions");
             return empty_box_stream();
         }
 
@@ -667,7 +630,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_import_history(&actor) {
+        let receiver = match app.subscribe_import_history(&actor).await {
             Ok(receiver) => receiver,
             Err(e) => {
                 tracing::warn!("import_history_changed: subscribe failed: {e}");
@@ -718,7 +681,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_provider_catalog_changed(&actor) {
+        let receiver = match app.subscribe_provider_catalog_changed(&actor).await {
             Ok(receiver) => receiver,
             Err(e) => {
                 tracing::warn!("provider_catalog_changed: subscribe failed: {e}");
@@ -826,7 +789,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let receiver = match app.subscribe_settings_changed(&actor) {
+        let receiver = match app.subscribe_settings_changed(&actor).await {
             Ok(receiver) => receiver,
             Err(e) => {
                 tracing::warn!("settings_changed: subscribe failed: {e}");

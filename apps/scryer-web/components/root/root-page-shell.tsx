@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ActivitySquare, AlertOctagon, AlertTriangle, CalendarDays, Download, ListChecks, Loader2, MonitorCog, Settings, WifiOff, X } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useAuth } from "@/lib/hooks/use-auth";
+import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
+import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyLibraryPermission, hasAppPermission } from "@/lib/utils/permissions";
 
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
@@ -47,7 +48,7 @@ import {
   buildViewPath,
   parseActivitySectionFromPath,
   parseContentSectionFromPath,
-  parseOverviewSlugFromPath,
+  parseOverviewTargetFromPath,
   parseSettingsSectionFromPath,
   parseSystemSectionFromPath,
   parseViewFromPath,
@@ -281,6 +282,8 @@ type OverviewNavigationState = {
     view?: unknown;
     id?: unknown;
     slug?: unknown;
+    libraryId?: unknown;
+    librarySlug?: unknown;
   };
 };
 
@@ -288,8 +291,9 @@ function readOverviewTargetFromLocationState(
   state: unknown,
   view: ViewId,
   parsedOverviewSlug: string | null,
+  parsedOverviewLibrarySlug: string | null,
 ): OverviewTitleTarget | null {
-  if (!parsedOverviewSlug || state == null || typeof state !== "object") {
+  if (!parsedOverviewSlug || !parsedOverviewLibrarySlug || state == null || typeof state !== "object") {
     return null;
   }
 
@@ -301,11 +305,13 @@ function readOverviewTargetFromLocationState(
 
   const id = typeof target.id === "string" ? target.id.trim() : "";
   const slug = typeof target.slug === "string" ? target.slug.trim() : "";
-  if (!id || !slug || slug !== parsedOverviewSlug) {
+  const libraryId = typeof target.libraryId === "string" ? target.libraryId.trim() : "";
+  const librarySlug = typeof target.librarySlug === "string" ? target.librarySlug.trim() : "";
+  if (!id || !slug || !librarySlug || slug !== parsedOverviewSlug || librarySlug !== parsedOverviewLibrarySlug) {
     return null;
   }
 
-  return { id, slug };
+  return { id, slug, libraryId: libraryId || null, librarySlug };
 }
 
 /**
@@ -331,6 +337,7 @@ function MainContent({
   wantedSection,
   handleOpenOverview,
   handleImportRouteEmpty,
+  canAccessActivity,
   canManageTitle,
   canManageUsers,
   canManageConfig,
@@ -358,12 +365,13 @@ function MainContent({
     episodeId?: string,
   ) => void;
   handleImportRouteEmpty: () => void;
+  canAccessActivity: boolean;
   canManageTitle: boolean;
   canManageUsers: boolean;
   canManageConfig: boolean;
 }) {
   if (view === "activity") {
-    if (!canManageTitle) {
+    if (!canAccessActivity) {
       return <ViewLoadingFallback />;
     }
     return <ActivityContainer key="activity" activitySection={activitySection} />;
@@ -535,7 +543,7 @@ function AuthenticatedHomePage({
   serviceRestarting,
   setServiceRestarting,
 }: {
-  authenticatedUser: { id: string; username: string; entitlements: string[] };
+  authenticatedUser: AuthUser;
   serviceRestarting: boolean;
   setServiceRestarting: (value: boolean) => void;
 }) {
@@ -554,6 +562,7 @@ function AuthenticatedHomePage({
     parsedSystemSection: systemSection,
     parsedActivitySection: activitySection,
     parsedWantedSection: wantedSection,
+    parsedOverviewLibrarySlug,
     parsedOverviewSlug,
   } =
     useMemo(() => {
@@ -576,9 +585,9 @@ function AuthenticatedHomePage({
       const parsedWantedSection: WantedSection = parsedView === "wanted"
         ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
         : "wanted";
-      const parsedOverviewSlug = isMediaView(parsedView) && parsedContentSection === "overview"
-        ? parseOverviewSlugFromPath(segments[1] ?? null, segments[2] ?? null)
-        : null;
+      const parsedOverviewTarget = isMediaView(parsedView) && parsedContentSection === "overview"
+        ? parseOverviewTargetFromPath(segments[1] ?? null, segments[2] ?? null)
+        : { librarySlug: null, titleSlug: null };
       return {
         parsedView,
         parsedSettingsSection,
@@ -586,7 +595,8 @@ function AuthenticatedHomePage({
         parsedSystemSection,
         parsedActivitySection,
         parsedWantedSection,
-        parsedOverviewSlug,
+        parsedOverviewLibrarySlug: parsedOverviewTarget.librarySlug,
+        parsedOverviewSlug: parsedOverviewTarget.titleSlug,
       };
     }, [pathname]);
 
@@ -611,8 +621,13 @@ function AuthenticatedHomePage({
   }, [navigate, pathname, searchParams, view]);
 
   const navigationOverviewTarget = useMemo(
-    () => readOverviewTargetFromLocationState(location.state, view, parsedOverviewSlug),
-    [location.state, parsedOverviewSlug, view],
+    () => readOverviewTargetFromLocationState(
+      location.state,
+      view,
+      parsedOverviewSlug,
+      parsedOverviewLibrarySlug,
+    ),
+    [location.state, parsedOverviewLibrarySlug, parsedOverviewSlug, view],
   );
 
   const overviewEpisodeId = useMemo(() =>
@@ -882,14 +897,17 @@ function AuthenticatedHomePage({
       }
 
       const normalizedSlug = overviewTarget.slug?.trim() || null;
-      const targetPath = buildOverviewDetailPath(targetView, normalizedSlug);
+      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
+      const normalizedLibraryId = overviewTarget.libraryId?.trim() || null;
+      const hasSlugRoute = Boolean(normalizedSlug && normalizedLibrarySlug);
+      const targetPath = buildOverviewDetailPath(targetView, normalizedLibrarySlug, normalizedSlug);
       const nextParams = new URLSearchParams(searchParams.toString());
       nextParams.delete(URL_PARAM_VIEW_DEPRECATED);
       nextParams.delete(URL_PARAM_SETTINGS_SECTION_DEPRECATED);
       nextParams.delete(URL_PARAM_CONTENT_SECTION_DEPRECATED);
       nextParams.delete(URL_PARAM_LANGUAGE);
       nextParams.delete("tab");
-      if (!normalizedSlug) {
+      if (!hasSlugRoute) {
         nextParams.set("id", normalizedTitleId);
       } else {
         nextParams.delete("id");
@@ -903,12 +921,14 @@ function AuthenticatedHomePage({
       const nextQuery = nextParams.toString();
       const nextPathWithQuery = `${targetPath}${nextQuery ? `?${nextQuery}` : ""}`;
       const currentPathWithQuery = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
-      const state = normalizedSlug
+      const state = hasSlugRoute
         ? {
             scryerOverviewTarget: {
               view: targetView,
               id: normalizedTitleId,
               slug: normalizedSlug,
+              libraryId: normalizedLibraryId,
+              librarySlug: normalizedLibrarySlug,
             },
           }
         : undefined;
@@ -931,7 +951,12 @@ function AuthenticatedHomePage({
       };
     }
 
-    if (!isMediaView(view) || contentSettingsSection !== "overview" || !parsedOverviewSlug) {
+    if (
+      !isMediaView(view) ||
+      contentSettingsSection !== "overview" ||
+      !parsedOverviewLibrarySlug ||
+      !parsedOverviewSlug
+    ) {
       setResolvedOverviewTarget(null);
       setOverviewSlugLoading(false);
       return () => {
@@ -951,7 +976,12 @@ function AuthenticatedHomePage({
     setResolvedOverviewTarget(null);
     setOverviewSlugLoading(true);
 
-    void resolveTitleOverviewTargetBySlug(backendClient, facet, parsedOverviewSlug)
+    void resolveTitleOverviewTargetBySlug(
+      backendClient,
+      facet,
+      parsedOverviewLibrarySlug,
+      parsedOverviewSlug,
+    )
       .then((target) => {
         if (cancelled) {
           return;
@@ -963,7 +993,11 @@ function AuthenticatedHomePage({
           return;
         }
 
-        if (target.slug && target.slug !== parsedOverviewSlug) {
+        if (
+          target.slug &&
+          target.librarySlug &&
+          (target.slug !== parsedOverviewSlug || target.librarySlug !== parsedOverviewLibrarySlug)
+        ) {
           navigateToOverview(view, target, overviewEpisodeId, true);
         }
       })
@@ -991,6 +1025,7 @@ function AuthenticatedHomePage({
     navigateToOverview,
     navigationOverviewTarget,
     overviewEpisodeId,
+    parsedOverviewLibrarySlug,
     parsedOverviewSlug,
     setGlobalStatus,
     t,
@@ -1023,12 +1058,16 @@ function AuthenticatedHomePage({
       }
 
       const normalizedSlug = overviewTarget.slug?.trim() || null;
-      if (!normalizedSlug) {
+      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
+      if (!normalizedSlug || !normalizedLibrarySlug) {
         return;
       }
 
-      if (parsedOverviewSlug) {
-        if (normalizedSlug !== parsedOverviewSlug) {
+      if (parsedOverviewSlug && parsedOverviewLibrarySlug) {
+        if (
+          normalizedSlug !== parsedOverviewSlug ||
+          normalizedLibrarySlug !== parsedOverviewLibrarySlug
+        ) {
           navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
         }
         return;
@@ -1041,9 +1080,10 @@ function AuthenticatedHomePage({
     [
       contentSettingsSection,
       legacyOverviewTitleId,
-      navigateToOverview,
-      overviewEpisodeId,
-      parsedOverviewSlug,
+    navigateToOverview,
+    overviewEpisodeId,
+    parsedOverviewLibrarySlug,
+    parsedOverviewSlug,
       view,
     ],
   );
@@ -1059,24 +1099,26 @@ function AuthenticatedHomePage({
     ],
     [t],
   );
-  const entitlements = useMemo(
-    () => authenticatedUser.entitlements ?? [],
-    [authenticatedUser.entitlements],
-  );
-  const canViewCatalog = entitlements.includes("view_catalog");
-  const canManageTitle = entitlements.includes("manage_title");
-  const canManageUsers = entitlements.includes("manage_users");
-  const canManageConfig = entitlements.includes("manage_config");
+  const canViewCatalog = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.view);
+  const canManageTitle = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageTitles);
+  const canResolveImports = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.resolveImports);
+  const canAccessActivity = canResolveImports || canManageTitle;
+  const canManageUserAccounts = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageUsers);
+  const canManagePermissions = hasAppPermission(authenticatedUser, APP_PERMISSIONS.managePermissions);
+  const canManageSystemSettings = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageSystemSettings);
+  const canManageCatalogSettings = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageCatalogSettings);
+  const canManageUsers = canManageUserAccounts || canManagePermissions;
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
 
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
       t,
       pendingImportCounts,
-      entitlements,
+      user: authenticatedUser,
       activityImportCount: manualImportRequiredCount,
       onNavigate: navigateTo,
     }),
-    [entitlements, manualImportRequiredCount, navigateTo, pendingImportCounts, t],
+    [authenticatedUser, manualImportRequiredCount, navigateTo, pendingImportCounts, t],
   );
 
   const routeCommandPaletteConfig = useMemo(
@@ -1115,12 +1157,12 @@ function AuthenticatedHomePage({
   }, [canManageConfig, canManageUsers, canViewCatalog, navigateTo]);
 
   useEffect(() => {
-    if (view !== "activity" || canManageTitle) {
+    if (view !== "activity" || canAccessActivity) {
       return;
     }
 
     navigateToAccessibleDefault();
-  }, [canManageTitle, navigateToAccessibleDefault, view]);
+  }, [canAccessActivity, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
     if (view !== "system" || canManageConfig) {
@@ -1279,7 +1321,7 @@ function AuthenticatedHomePage({
                     systemSection={systemSection}
                     activitySection={activitySection}
                     wantedSection={wantedSection}
-                    entitlements={entitlements}
+                    user={authenticatedUser}
                     pendingImportCounts={pendingImportCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
                     pluginUpdateCount={pluginUpdateCount}
@@ -1308,6 +1350,7 @@ function AuthenticatedHomePage({
                           wantedSection={wantedSection}
                           handleOpenOverview={handleOpenOverview}
                           handleImportRouteEmpty={handleBackToList}
+                          canAccessActivity={canAccessActivity}
                           canManageTitle={canManageTitle}
                           canManageUsers={canManageUsers}
                           canManageConfig={canManageConfig}

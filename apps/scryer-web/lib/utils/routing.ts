@@ -96,12 +96,30 @@ export function buildViewPath(
   return base;
 }
 
-export function buildOverviewDetailPath(view: ViewId, slug?: string | null) {
-  const normalizedSlug = slug?.trim();
-  if (!normalizedSlug) {
+export type OverviewPathTarget = {
+  librarySlug: string | null;
+  titleSlug: string | null;
+};
+
+function decodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function buildOverviewDetailPath(
+  view: ViewId,
+  librarySlug: string | null | undefined,
+  titleSlug: string | null | undefined,
+) {
+  const normalizedLibrarySlug = librarySlug?.trim();
+  const normalizedTitleSlug = titleSlug?.trim();
+  if (!normalizedLibrarySlug || !normalizedTitleSlug) {
     return `/${view}/overview`;
   }
-  return `/${view}/${encodeURIComponent(normalizedSlug)}`;
+  return `/${view}/${encodeURIComponent(normalizedLibrarySlug)}/${encodeURIComponent(normalizedTitleSlug)}`;
 }
 
 export function isLocaleSupported(code: string): code is LocaleCode {
@@ -137,21 +155,24 @@ export function parseContentSectionFromPath(value: string | null, subValue?: str
   return CONTENT_SECTION_PATH_TO_ID[value] ?? "overview";
 }
 
-export function parseOverviewSlugFromPath(value: string | null, subValue?: string | null): string | null {
-  const normalizedValue = value?.trim();
-  if (!normalizedValue || subValue) {
-    return null;
+export function parseOverviewTargetFromPath(
+  value: string | null,
+  subValue?: string | null,
+): OverviewPathTarget {
+  const normalizedLibrarySlug = value?.trim();
+  const normalizedTitleSlug = subValue?.trim();
+  if (!normalizedLibrarySlug || !normalizedTitleSlug) {
+    return { librarySlug: null, titleSlug: null };
   }
 
-  if (MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedValue.toLowerCase())) {
-    return null;
+  if (MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedLibrarySlug.toLowerCase())) {
+    return { librarySlug: null, titleSlug: null };
   }
 
-  try {
-    return decodeURIComponent(normalizedValue);
-  } catch {
-    return normalizedValue;
-  }
+  return {
+    librarySlug: decodePathSegment(normalizedLibrarySlug),
+    titleSlug: decodePathSegment(normalizedTitleSlug),
+  };
 }
 
 export function parseSystemSectionFromPath(value: string | null): SystemSection {

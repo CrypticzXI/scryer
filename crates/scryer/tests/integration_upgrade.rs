@@ -31,6 +31,7 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         id: id.to_string(),
         name: "Test Movie".to_string(),
         facet: MediaFacet::Movie,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
         external_ids: vec![],

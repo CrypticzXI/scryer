@@ -4,9 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::{
-    AppError, AppResult, AppUseCase, Entitlement, Id, SubtitleProviderClient,
-    SubtitleProviderConfig, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, User,
-    require,
+    AppError, AppResult, AppUseCase, Id, SubtitleProviderClient, SubtitleProviderConfig,
+    SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, User,
 };
 use scryer_domain::PluginHostBindingId;
 
@@ -21,7 +20,8 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<SubtitleProviderConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.subtitle_provider_configs_repo()?.list(None).await
     }
 
@@ -30,7 +30,8 @@ impl AppUseCase {
         actor: &User,
         id: &str,
     ) -> AppResult<Option<SubtitleProviderConfig>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.subtitle_provider_configs_repo()?.get_by_id(id).await
     }
 
@@ -43,7 +44,8 @@ impl AppUseCase {
         enabled_facets: Option<Vec<String>>,
         is_enabled: bool,
     ) -> AppResult<SubtitleProviderConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let name = name.trim().to_string();
         if name.is_empty() {
@@ -87,7 +89,8 @@ impl AppUseCase {
         actor: &User,
         mut update: SubtitleProviderConfigUpdate,
     ) -> AppResult<SubtitleProviderConfig> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         if !update.has_changes() {
             return Err(AppError::Validation(
                 "at least one subtitle provider config field must be provided".to_string(),
@@ -120,7 +123,8 @@ impl AppUseCase {
     }
 
     pub async fn delete_subtitle_provider_config(&self, actor: &User, id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.subtitle_provider_configs_repo()?.delete(id).await
     }
 
@@ -181,7 +185,8 @@ impl AppUseCase {
         provider_type: String,
         config_json: String,
     ) -> AppResult<SubtitleProviderValidationResult> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let normalized_provider_type = provider_type.trim().to_ascii_lowercase();
         let config = if let Some(id) = id {

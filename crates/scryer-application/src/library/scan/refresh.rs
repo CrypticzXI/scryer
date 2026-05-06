@@ -205,6 +205,7 @@ pub(super) async fn background_refresh_series(
     app: &AppUseCase,
     actor: &User,
     facet: &MediaFacet,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
 ) -> AppResult<LibraryScanSummary> {
@@ -223,11 +224,12 @@ pub(super) async fn background_refresh_series(
     let mut workset = HashMap::new();
     let metadata_language = app.metadata_language().await;
 
+    let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
         .catalog
         .titles
-        .list(Some(facet.clone()), None)
+        .list_for_libraries(Some(facet.clone()), &library_ids, None)
         .await?;
     let (mut existing_titles_by_name, mut existing_titles_by_tvdb_id) =
         build_series_title_indexes(&existing_titles);
@@ -262,6 +264,7 @@ pub(super) async fn background_refresh_series(
                 app,
                 actor,
                 facet,
+                library_id,
                 candidate,
                 &mut workset,
                 &mut existing_titles,
@@ -297,6 +300,7 @@ pub(super) async fn background_refresh_series(
                     app,
                     actor,
                     facet,
+                    library_id,
                     candidate,
                     &batch_search_results,
                     &mut workset,
@@ -341,6 +345,7 @@ pub(super) async fn background_refresh_series(
 pub(super) async fn background_refresh_movies(
     app: &AppUseCase,
     actor: &User,
+    library_id: &str,
     library_path: &str,
     session_id: &str,
 ) -> AppResult<LibraryScanSummary> {
@@ -357,11 +362,12 @@ pub(super) async fn background_refresh_movies(
     let mut summary = LibraryScanSummary::default();
     let mut metadata_lookup_stats = MetadataLookupBatchStats::default();
     let mut workset = HashMap::new();
+    let library_ids = vec![library_id.to_string()];
     let mut existing_titles = app
         .services
         .catalog
         .titles
-        .list(Some(MediaFacet::Movie), None)
+        .list_for_libraries(Some(MediaFacet::Movie), &library_ids, None)
         .await?;
     let (
         mut existing_titles_by_name,
@@ -425,6 +431,7 @@ pub(super) async fn background_refresh_movies(
                     let candidate = process_movie_refresh_candidate(
                         app,
                         actor,
+                        library_id,
                         *candidate,
                         &mut workset,
                         &mut existing_titles,
@@ -468,6 +475,7 @@ pub(super) async fn background_refresh_movies(
                 process_resolved_movie_refresh_candidate(
                     app,
                     actor,
+                    library_id,
                     candidate,
                     &batch_search_results,
                     &mut workset,

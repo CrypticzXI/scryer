@@ -172,6 +172,27 @@ pub struct IndexerRoutingSettingsEntry {
     pub priority: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LibrarySettingsOverrideDraft {
+    pub required_audio_languages: Option<Vec<String>>,
+    pub quality_profile_id: Option<String>,
+    pub scoring_persona: Option<ScoringPersona>,
+    pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
+    pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarySettings {
+    pub required_audio_languages_override: Option<Vec<String>>,
+    pub required_audio_languages: Vec<String>,
+    pub quality_profile_id_override: Option<String>,
+    pub quality_profile_id: String,
+    pub scoring_persona_override: Option<ScoringPersona>,
+    pub scoring_persona: ScoringPersona,
+    pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
+    pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaSettings {
     pub library_path: String,
@@ -259,6 +280,64 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn download_client_routing_payload(
+    entries: Vec<DownloadClientRoutingSettingsEntry>,
+) -> AppResult<serde_json::Map<String, serde_json::Value>> {
+    let mut payload = serde_json::Map::new();
+    for entry in entries {
+        let client_id = entry.client_id.trim();
+        if client_id.is_empty() {
+            return Err(AppError::Validation(
+                "download client routing entry requires client_id".to_string(),
+            ));
+        }
+
+        payload.insert(
+            client_id.to_string(),
+            serde_json::json!({
+                "enabled": entry.enabled,
+                "category": normalize_optional_string(entry.category),
+                "recentQueuePriority": normalize_optional_string(entry.recent_queue_priority),
+                "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
+                "removeCompleted": entry.remove_completed,
+                "removeFailed": entry.remove_failed,
+            }),
+        );
+    }
+    Ok(payload)
+}
+
+fn indexer_routing_payload(
+    entries: Vec<IndexerRoutingSettingsEntry>,
+) -> AppResult<serde_json::Map<String, serde_json::Value>> {
+    let mut payload = serde_json::Map::new();
+    for entry in entries {
+        let indexer_id = entry.indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Err(AppError::Validation(
+                "indexer routing entry requires indexer_id".to_string(),
+            ));
+        }
+
+        let categories = entry
+            .categories
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+
+        payload.insert(
+            indexer_id.to_string(),
+            serde_json::json!({
+                "enabled": entry.enabled,
+                "categories": categories,
+                "priority": entry.priority,
+            }),
+        );
+    }
+    Ok(payload)
 }
 
 fn parse_json_object(raw_json: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -716,7 +795,11 @@ impl AppUseCase {
                 self.services
                     .library
                     .library_scan_unmatched_items
-                    .delete_library_scan_unmatched_item(item.facet.clone(), &item.item_path)
+                    .delete_library_scan_unmatched_item(
+                        &item.library_id,
+                        item.facet.clone(),
+                        &item.item_path,
+                    )
                     .await?;
             }
         }
@@ -826,6 +909,37 @@ impl AppUseCase {
             .await
     }
 
+    async fn upsert_scoped_system_setting_json<T: Serialize>(
+        &self,
+        key_name: &str,
+        scope_id: &str,
+        value: &T,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let value_json = serde_json::to_string(value)
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                key_name,
+                Some(scope_id.to_string()),
+                value_json,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                updated_by_user_id,
+            )
+            .await
+    }
+
+    async fn delete_scoped_system_setting(&self, key_name: &str, scope_id: &str) -> AppResult<()> {
+        self.services
+            .config
+            .settings
+            .delete_setting_value(SETTINGS_SCOPE_SYSTEM, key_name, Some(scope_id.to_string()))
+            .await
+    }
+
     pub async fn load_facet_required_audio_languages(
         &self,
         scope_id: &str,
@@ -871,12 +985,20 @@ impl AppUseCase {
     pub(crate) async fn resolve_required_audio_languages(
         &self,
         title_id: Option<&str>,
+        library_id: Option<&str>,
         scope_id: Option<&str>,
     ) -> AppResult<Vec<String>> {
         if let Some(title_id) = title_id
             && let Some(languages) = self.load_title_required_audio_override(title_id).await?
         {
             return Ok(languages);
+        }
+
+        if let Some(library_id) = library_id {
+            let languages = self.load_facet_required_audio_languages(library_id).await?;
+            if !languages.is_empty() {
+                return Ok(languages);
+            }
         }
 
         if let Some(scope_id) = scope_id {
@@ -891,8 +1013,18 @@ impl AppUseCase {
 
     pub(crate) async fn resolve_scoring_persona(
         &self,
+        library_id: Option<&str>,
         scope_id: Option<&str>,
     ) -> AppResult<ScoringPersona> {
+        if let Some(library_id) = library_id
+            && let Some(persona) = parse_scoring_persona_setting(
+                self.read_setting_string_value(SCORING_PERSONA_KEY, Some(library_id))
+                    .await?,
+            )
+        {
+            return Ok(persona);
+        }
+
         if let Some(scope_id) = scope_id
             && let Some(persona) = parse_scoring_persona_setting(
                 self.read_setting_string_value(SCORING_PERSONA_KEY, Some(scope_id))
@@ -912,13 +1044,278 @@ impl AppUseCase {
         Ok(ScoringPersona::default())
     }
 
+    async fn resolve_quality_profile_id(
+        &self,
+        library_id: Option<&str>,
+        scope_id: Option<&str>,
+    ) -> AppResult<String> {
+        if let Some(library_id) = library_id
+            && let Some(profile_id) = self
+                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(library_id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        {
+            return Ok(profile_id);
+        }
+        if let Some(scope_id) = scope_id
+            && let Some(profile_id) = self
+                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(scope_id))
+                .await?
+                .and_then(|value| normalize_optional_string(Some(value)))
+        {
+            return Ok(profile_id);
+        }
+        if let Some(profile_id) = self
+            .read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
+            .await?
+            .and_then(|value| normalize_optional_string(Some(value)))
+        {
+            return Ok(profile_id);
+        }
+        Ok(crate::default_quality_profile_for_search().id)
+    }
+
+    async fn load_download_client_routing_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<Vec<DownloadClientRoutingSettingsEntry>>> {
+        let Some(raw_json) = self
+            .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(library_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
+        else {
+            return Ok(Some(Vec::new()));
+        };
+        let mut routing = entries
+            .into_iter()
+            .map(|(client_id, config)| {
+                let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
+                DownloadClientRoutingSettingsEntry {
+                    client_id,
+                    enabled: entry.enabled,
+                    category: entry.category,
+                    recent_queue_priority: entry.recent_queue_priority,
+                    older_queue_priority: entry.older_queue_priority,
+                    remove_completed: entry.remove_completed,
+                    remove_failed: entry.remove_failed,
+                }
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        Ok(Some(routing))
+    }
+
+    async fn load_indexer_routing_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<Vec<IndexerRoutingSettingsEntry>>> {
+        let Some(raw_json) = self
+            .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(library_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(plan) = self.parse_indexer_routing_plan(library_id, &raw_json) else {
+            return Ok(Some(Vec::new()));
+        };
+        let mut routing = plan
+            .entries
+            .into_iter()
+            .map(|(indexer_id, entry)| IndexerRoutingSettingsEntry {
+                indexer_id,
+                enabled: entry.enabled,
+                categories: entry.categories,
+                priority: entry.priority as i32,
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by_key(|entry| (entry.priority, entry.indexer_id.clone()));
+        Ok(Some(routing))
+    }
+
+    pub async fn get_library_settings(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<LibrarySettings> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_library_management_permission(actor, &library.id)
+            .await?;
+
+        let scope_id = library.facet.as_str();
+        let required_audio_languages_override = self
+            .load_facet_required_audio_languages(&library.id)
+            .await?;
+        let required_audio_languages_override = (!required_audio_languages_override.is_empty())
+            .then_some(required_audio_languages_override);
+        let required_audio_languages = self
+            .resolve_required_audio_languages(None, Some(&library.id), Some(scope_id))
+            .await?;
+        let quality_profile_id_override = self
+            .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(&library.id))
+            .await?
+            .and_then(|value| normalize_optional_string(Some(value)));
+        let quality_profile_id = self
+            .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
+            .await?;
+        let scoring_persona_override = parse_scoring_persona_setting(
+            self.read_setting_string_value(SCORING_PERSONA_KEY, Some(&library.id))
+                .await?,
+        );
+        let scoring_persona = self
+            .resolve_scoring_persona(Some(&library.id), Some(scope_id))
+            .await?;
+        let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
+        let download_client_routing_override = self
+            .load_download_client_routing_override(&library.id)
+            .await?;
+
+        Ok(LibrarySettings {
+            required_audio_languages_override,
+            required_audio_languages,
+            quality_profile_id_override,
+            quality_profile_id,
+            scoring_persona_override,
+            scoring_persona,
+            indexer_routing_override,
+            download_client_routing_override,
+        })
+    }
+
+    pub async fn update_library_settings(
+        &self,
+        actor: &User,
+        library_id: &str,
+        settings: LibrarySettingsOverrideDraft,
+    ) -> AppResult<LibrarySettings> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_library_management_permission(actor, &library.id)
+            .await?;
+
+        if let Some(languages) = settings.required_audio_languages {
+            let languages = normalize_required_audio_languages(languages);
+            if languages.is_empty() {
+                self.delete_scoped_system_setting(REQUIRED_AUDIO_LANGUAGES_KEY, &library.id)
+                    .await?;
+            } else {
+                self.upsert_scoped_system_setting_json(
+                    REQUIRED_AUDIO_LANGUAGES_KEY,
+                    &library.id,
+                    &languages,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            }
+        } else {
+            self.delete_scoped_system_setting(REQUIRED_AUDIO_LANGUAGES_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(profile_id) = normalize_optional_string(settings.quality_profile_id) {
+            self.upsert_scoped_system_setting_json(
+                QUALITY_PROFILE_ID_KEY,
+                &library.id,
+                &profile_id,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(QUALITY_PROFILE_ID_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(persona) = settings.scoring_persona {
+            let persona = global_persona_as_setting(&persona).to_string();
+            self.upsert_scoped_system_setting_json(
+                SCORING_PERSONA_KEY,
+                &library.id,
+                &persona,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(SCORING_PERSONA_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(entries) = settings.indexer_routing {
+            let payload = indexer_routing_payload(entries)?;
+            self.upsert_scoped_system_setting_json(
+                INDEXER_ROUTING_SETTINGS_KEY,
+                &library.id,
+                &serde_json::Value::Object(payload),
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(INDEXER_ROUTING_SETTINGS_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(entries) = settings.download_client_routing {
+            let payload = download_client_routing_payload(entries)?;
+            self.upsert_scoped_system_setting_json(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                &library.id,
+                &serde_json::Value::Object(payload),
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, &library.id)
+                .await?;
+        }
+
+        self.emit_settings_saved(
+            actor,
+            "library_settings",
+            Some(library.id.clone()),
+            vec![
+                REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
+                QUALITY_PROFILE_ID_KEY.to_string(),
+                SCORING_PERSONA_KEY.to_string(),
+                INDEXER_ROUTING_SETTINGS_KEY.to_string(),
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string(),
+            ],
+        )
+        .await;
+
+        self.get_library_settings(actor, &library.id).await
+    }
+
     pub async fn set_title_required_audio_override(
         &self,
         actor: &User,
         title_id: &str,
         languages: Option<Vec<String>>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageTitle)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
 
         let payload = languages.map(normalize_required_audio_languages);
         self.services
@@ -942,7 +1339,8 @@ impl AppUseCase {
         scope_id: &str,
         languages: Vec<String>,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let normalized = normalize_required_audio_languages(languages);
         self.services
@@ -1408,22 +1806,26 @@ impl AppUseCase {
     }
 
     pub async fn get_subtitle_settings(&self, actor: &User) -> AppResult<SubtitleSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.load_subtitle_settings().await
     }
 
     pub async fn get_acquisition_settings(&self, actor: &User) -> AppResult<AcquisitionSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.load_acquisition_settings().await
     }
 
     pub async fn get_general_settings(&self, actor: &User) -> AppResult<GeneralSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         self.load_general_settings().await
     }
 
     pub async fn get_security_settings(&self, actor: &User) -> AppResult<SecuritySettings> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
         self.load_security_settings().await
     }
 
@@ -1435,7 +1837,8 @@ impl AppUseCase {
     }
 
     pub async fn complete_setup(&self, actor: &User) -> AppResult<bool> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         self.services
             .config
@@ -1459,7 +1862,8 @@ impl AppUseCase {
         limit: i64,
         source: &str,
     ) -> AppResult<WorkflowOperationInfo> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         if limit <= 0 {
             return Err(AppError::Validation(
@@ -1494,7 +1898,8 @@ impl AppUseCase {
     }
 
     pub async fn get_delay_profiles(&self, actor: &User) -> AppResult<Vec<crate::DelayProfile>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.delay_profiles().await
     }
 
@@ -1562,7 +1967,8 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<QualityProfileSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         self.load_quality_profile_settings().await
     }
 
@@ -1571,7 +1977,8 @@ impl AppUseCase {
         actor: &User,
         input: SaveQualityProfileSettings,
     ) -> AppResult<QualityProfileSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let profiles = if input.replace_existing {
             input.profiles
@@ -1733,7 +2140,8 @@ impl AppUseCase {
         actor: &User,
         profile_id: &str,
     ) -> AppResult<QualityProfileSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let profile_id = profile_id.trim();
         if profile_id.is_empty() {
@@ -1794,7 +2202,8 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<MediaSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let library_path = self
             .read_setting_string_value_for_scope(
@@ -1919,7 +2328,8 @@ impl AppUseCase {
         facet: MediaFacet,
         input: UpdateMediaSettings,
     ) -> AppResult<MediaSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         let previous_roots = self.effective_scan_roots_for_facet(&facet).await?;
 
         let mut changed_keys = Vec::new();
@@ -2191,7 +2601,8 @@ impl AppUseCase {
     }
 
     pub async fn get_library_paths(&self, actor: &User) -> AppResult<LibraryPathsSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         Ok(LibraryPathsSettings {
             movie_path: self
@@ -2214,7 +2625,8 @@ impl AppUseCase {
         actor: &User,
         input: UpdateLibraryPaths,
     ) -> AppResult<LibraryPathsSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
         let previous_roots = [
             (
                 MediaFacet::Movie,
@@ -2302,7 +2714,8 @@ impl AppUseCase {
         actor: &User,
         selection: ExternalImportLibraryPathsSelection,
     ) -> AppResult<bool> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let mut saved_any = false;
         for (facet, paths) in [
@@ -2345,7 +2758,8 @@ impl AppUseCase {
     }
 
     pub async fn get_service_settings(&self, actor: &User) -> AppResult<ServiceSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         Ok(ServiceSettings {
             tls_cert_path: self
@@ -2364,7 +2778,8 @@ impl AppUseCase {
         actor: &User,
         input: UpdateGeneralSettings,
     ) -> AppResult<GeneralSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let current = self.load_general_settings().await?;
         let history_retention_days =
@@ -2415,7 +2830,8 @@ impl AppUseCase {
         actor: &User,
         input: UpdateSecuritySettings,
     ) -> AppResult<SecuritySettings> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
 
         self.upsert_system_setting_json(
             FORM_LOGIN_ENABLED_KEY,
@@ -2452,7 +2868,8 @@ impl AppUseCase {
         actor: &User,
         input: UpdateServiceSettings,
     ) -> AppResult<ServiceSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let tls_cert_path = input.tls_cert_path.trim().to_string();
         let tls_key_path = input.tls_key_path.trim().to_string();
@@ -2498,7 +2915,8 @@ impl AppUseCase {
         actor: &User,
         scope_id: &str,
     ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let raw_json = self.load_download_client_routing_json(scope_id).await?;
         let Some(raw_json) = raw_json else {
@@ -2534,7 +2952,8 @@ impl AppUseCase {
         scope_id: &str,
         entries: Vec<DownloadClientRoutingSettingsEntry>,
     ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let mut payload = serde_json::Map::new();
         for entry in entries {
@@ -2587,7 +3006,8 @@ impl AppUseCase {
         actor: &User,
         client_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         for scope_id in ["movie", "series", "anime"] {
             let current = self.load_download_client_routing_json(scope_id).await?;
@@ -2628,7 +3048,8 @@ impl AppUseCase {
         actor: &User,
         indexer_id: &str,
     ) -> AppResult<()> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         self.ensure_indexer_routing_entry_for_indexer_internal(
             indexer_id,
@@ -2710,9 +3131,10 @@ impl AppUseCase {
         actor: &User,
         scope_id: &str,
     ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
-        let Some(plan) = self.resolve_indexer_routing(Some(scope_id)).await else {
+        let Some(plan) = self.resolve_indexer_routing(None, Some(scope_id)).await else {
             return Ok(Vec::new());
         };
 
@@ -2736,7 +3158,8 @@ impl AppUseCase {
         scope_id: &str,
         entries: Vec<IndexerRoutingSettingsEntry>,
     ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let mut payload = serde_json::Map::new();
         for entry in entries {
@@ -2876,7 +3299,8 @@ impl AppUseCase {
         actor: &User,
         input: UpdateSubtitleSettings,
     ) -> AppResult<SubtitleSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         if input.search_interval_hours < 1 {
             return Err(AppError::Validation(
@@ -3006,7 +3430,8 @@ impl AppUseCase {
         actor: &User,
         settings: AcquisitionSettings,
     ) -> AppResult<AcquisitionSettings> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         if settings.upgrade_cooldown_hours < 0
             || settings.same_tier_min_delta < 0
@@ -3104,7 +3529,8 @@ impl AppUseCase {
         actor: &User,
         profile: crate::DelayProfile,
     ) -> AppResult<crate::DelayProfile> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let profile = normalize_delay_profile(profile);
         if profile.id.is_empty() {
@@ -3147,7 +3573,8 @@ impl AppUseCase {
     }
 
     pub async fn delete_delay_profile(&self, actor: &User, profile_id: &str) -> AppResult<String> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
 
         let profile_id = profile_id.trim().to_string();
         if profile_id.is_empty() {

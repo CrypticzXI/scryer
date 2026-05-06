@@ -93,6 +93,23 @@ fn domain_event_type_all_includes_title_rematched() {
     assert!(DomainEventType::variants().any(|value| value == DomainEventType::TitleRematched));
 }
 
+#[test]
+fn loaded_catalog_settings_permission_does_not_satisfy_legacy_manage_config() {
+    let mut user = User {
+        id: Id::new().0,
+        username: "catalog-settings".to_string(),
+        password_hash: None,
+        entitlements: vec![],
+        authorization: UserAuthorization::default(),
+    };
+    user.authorization.loaded = true;
+    user.authorization
+        .app
+        .insert(AppPermissionMask::MANAGE_CATALOG_SETTINGS);
+
+    assert!(!user.has_entitlement(&Entitlement::ManageConfig));
+}
+
 // ── match_fuzzy ───────────────────────────────────────────────────────────
 
 #[test]
@@ -223,6 +240,7 @@ fn user_with_limited_entitlements() {
         username: "viewer".to_string(),
         password_hash: None,
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        authorization: Default::default(),
     };
     assert!(user.has_entitlement(&Entitlement::ViewCatalog));
     assert!(user.has_entitlement(&Entitlement::ManageTitle));
@@ -238,6 +256,7 @@ fn user_with_no_entitlements() {
         username: "empty".to_string(),
         password_hash: None,
         entitlements: vec![],
+        authorization: Default::default(),
     };
     assert!(!user.has_entitlement(&Entitlement::ViewCatalog));
     assert!(!user.has_all_entitlements());

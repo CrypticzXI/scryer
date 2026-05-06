@@ -23,6 +23,7 @@ export type LibraryScanPhaseProgress = {
 export type LibraryScanProgress = {
   sessionId: string;
   facet: Facet;
+  libraryId?: string | null;
   mode: LibraryScanMode;
   status: LibraryScanStatus;
   startedAt: string;

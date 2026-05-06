@@ -12,9 +12,9 @@ use scryer_application::{
     WantedStatus as AppWantedStatus,
 };
 use scryer_domain::{
-    DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason,
-    ImportStatus, ImportType, MediaFacet, TitleMatchType, TrackedDownloadState,
-    TrackedDownloadStatus,
+    AppPermission, DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode,
+    ImportSkipReason, ImportStatus, ImportType, LibraryPermission, MediaFacet, TitleMatchType,
+    TrackedDownloadState, TrackedDownloadStatus,
 };
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -23,6 +23,70 @@ pub enum MediaFacetValue {
     Movie,
     Series,
     Anime,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "camelCase")]
+pub enum LibraryPermissionValue {
+    View,
+    ManageTitles,
+    ResolveImports,
+    ManageLibrary,
+    Request,
+    AutoApproveRequests,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "camelCase")]
+pub enum AppPermissionValue {
+    ManageUsers,
+    ManagePermissions,
+    ManageSystemSettings,
+    ManageCatalogSettings,
+}
+
+impl AppPermissionValue {
+    pub fn into_domain(self) -> AppPermission {
+        match self {
+            Self::ManageUsers => AppPermission::ManageUsers,
+            Self::ManagePermissions => AppPermission::ManagePermissions,
+            Self::ManageSystemSettings => AppPermission::ManageSystemSettings,
+            Self::ManageCatalogSettings => AppPermission::ManageCatalogSettings,
+        }
+    }
+
+    pub fn from_domain(permission: AppPermission) -> Self {
+        match permission {
+            AppPermission::ManageUsers => Self::ManageUsers,
+            AppPermission::ManagePermissions => Self::ManagePermissions,
+            AppPermission::ManageSystemSettings => Self::ManageSystemSettings,
+            AppPermission::ManageCatalogSettings => Self::ManageCatalogSettings,
+        }
+    }
+}
+
+impl LibraryPermissionValue {
+    pub fn into_domain(self) -> LibraryPermission {
+        match self {
+            Self::View => LibraryPermission::View,
+            Self::ManageTitles => LibraryPermission::ManageTitles,
+            Self::ResolveImports => LibraryPermission::ResolveImports,
+            Self::ManageLibrary => LibraryPermission::ManageLibrary,
+            Self::Request => LibraryPermission::Request,
+            Self::AutoApproveRequests => LibraryPermission::AutoApproveRequests,
+        }
+    }
+
+    pub fn from_domain(permission: LibraryPermission) -> Self {
+        match permission {
+            LibraryPermission::View => Self::View,
+            LibraryPermission::ManageTitles => Self::ManageTitles,
+            LibraryPermission::ResolveImports => Self::ResolveImports,
+            LibraryPermission::ManageLibrary => Self::ManageLibrary,
+            LibraryPermission::Request => Self::Request,
+            LibraryPermission::AutoApproveRequests => Self::AutoApproveRequests,
+        }
+    }
 }
 
 impl MediaFacetValue {
@@ -979,6 +1043,9 @@ pub struct ExternalIdPayload {
 #[graphql(complex)]
 pub struct TitlePayload {
     pub id: String,
+    pub library_id: String,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub name: String,
     pub facet: MediaFacetValue,
     pub monitored: bool,
@@ -1201,7 +1268,6 @@ pub struct SystemHealthPayload {
     pub recent_events: i32,
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
-    pub db_pending_migrations: i32,
     pub indexer_stats: Vec<IndexerQueryStatsPayload>,
 }
 
@@ -1232,7 +1298,14 @@ pub struct IndexerQueryStatsPayload {
 pub struct UserPayload {
     pub id: String,
     pub username: String,
-    pub entitlements: Vec<String>,
+    pub app_permissions: Vec<AppPermissionValue>,
+    pub library_permissions: Vec<UserLibraryPermissionGrantPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UserLibraryPermissionGrantPayload {
+    pub library_id: String,
+    pub permissions: Vec<LibraryPermissionValue>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1494,6 +1567,7 @@ pub struct LibraryScanPhaseProgressPayload {
 pub struct LibraryScanProgressPayload {
     pub session_id: String,
     pub facet: MediaFacetValue,
+    pub library_id: Option<String>,
     pub mode: LibraryScanModeValue,
     pub status: LibraryScanStatusValue,
     pub started_at: String,
@@ -1675,6 +1749,36 @@ pub struct IndexerConfigPayload {
 pub struct RootFolderPayload {
     pub path: String,
     pub is_default: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct LibraryRootPayload {
+    pub id: String,
+    pub path: String,
+    pub is_default: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(complex)]
+pub struct LibraryPayload {
+    pub id: String,
+    pub facet: MediaFacetValue,
+    pub name: String,
+    pub slug: String,
+    pub is_default: bool,
+    pub roots: Vec<LibraryRootPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct LibrarySettingsPayload {
+    pub required_audio_languages_override: Option<Vec<String>>,
+    pub required_audio_languages: Vec<String>,
+    pub quality_profile_id_override: Option<String>,
+    pub quality_profile_id: String,
+    pub scoring_persona_override: Option<ScoringPersonaValue>,
+    pub scoring_persona: ScoringPersonaValue,
+    pub indexer_routing_override: Option<Vec<IndexerRoutingEntryPayload>>,
+    pub download_client_routing_override: Option<Vec<DownloadClientRoutingEntryPayload>>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1928,6 +2032,8 @@ pub struct PendingImportSearchAttemptPayload {
 #[derive(SimpleObject, Clone)]
 pub struct PendingImportItemPayload {
     pub id: String,
+    pub library_id: String,
+    pub library_slug: Option<String>,
     pub facet: MediaFacetValue,
     pub status: PendingImportStatusValue,
     pub title_id: Option<String>,
@@ -2300,6 +2406,7 @@ pub struct TitleOptionsInput {
 pub struct AddTitleInput {
     pub name: String,
     pub facet: MediaFacetValue,
+    pub library_id: Option<String>,
     pub monitored: bool,
     pub tags: Vec<String>,
     pub options: Option<TitleOptionsInput>,
@@ -2817,7 +2924,8 @@ pub struct DeleteTitlePreviewInput {
 pub struct CreateUserInput {
     pub username: String,
     pub password: String,
-    pub entitlements: Vec<String>,
+    pub app_permissions: Vec<AppPermissionValue>,
+    pub library_permissions: Vec<LibraryPermissionGrantInput>,
 }
 
 #[derive(InputObject)]
@@ -2916,14 +3024,62 @@ pub struct SetEpisodeMonitoredInput {
 }
 
 #[derive(InputObject)]
-pub struct SetUserEntitlementsInput {
+pub struct SetUserAppPermissionsInput {
     pub user_id: String,
-    pub entitlements: Vec<String>,
+    pub permissions: Vec<AppPermissionValue>,
 }
 
 #[derive(InputObject)]
 pub struct DeleteUserInput {
     pub user_id: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LibraryPermissionGrantInput {
+    pub library_id: String,
+    pub permissions: Vec<LibraryPermissionValue>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct SetUserLibraryPermissionsInput {
+    pub user_id: String,
+    pub grants: Vec<LibraryPermissionGrantInput>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LibraryRootInput {
+    pub path: String,
+    pub is_default: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct CreateLibraryInput {
+    pub facet: MediaFacetValue,
+    pub name: String,
+    pub roots: Vec<LibraryRootInput>,
+    pub settings: Option<LibrarySettingsInput>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateLibraryInput {
+    pub library_id: String,
+    pub name: Option<String>,
+    pub roots: Option<Vec<LibraryRootInput>>,
+    pub settings: Option<LibrarySettingsInput>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LibrarySettingsInput {
+    pub required_audio_languages: Option<Vec<String>>,
+    pub quality_profile_id: Option<String>,
+    pub scoring_persona: Option<ScoringPersonaValue>,
+    pub indexer_routing: Option<Vec<IndexerRoutingEntryInput>>,
+    pub download_client_routing: Option<Vec<DownloadClientRoutingEntryInput>>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct DeleteLibraryInput {
+    pub library_id: String,
 }
 
 #[derive(InputObject)]
@@ -3011,6 +3167,9 @@ pub struct WantedItemPayload {
     pub title_name: Option<String>,
     pub title_slug: Option<String>,
     pub title_facet: Option<String>,
+    pub library_id: Option<String>,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub episode_id: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,
@@ -3071,6 +3230,9 @@ pub struct CutoffUnmetItemPayload {
     pub title_name: String,
     pub title_slug: Option<String>,
     pub title_facet: MediaFacetValue,
+    pub library_id: String,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub episode_id: Option<String>,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
@@ -3270,6 +3432,9 @@ pub struct MetadataEpisodePayload {
 pub struct CalendarEpisodePayload {
     pub id: String,
     pub title_id: String,
+    pub library_id: String,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub title_name: String,
     pub title_slug: Option<String>,
     pub title_facet: String,

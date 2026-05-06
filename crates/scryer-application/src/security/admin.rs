@@ -7,9 +7,66 @@ fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
+fn app_permission_mask_from_entitlements(
+    entitlements: &[Entitlement],
+) -> scryer_domain::AppPermissionMask {
+    let mut permissions = scryer_domain::AppPermissionMask::NONE;
+    if entitlements.contains(&Entitlement::ManageUsers) {
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
+    }
+    if entitlements.contains(&Entitlement::ManageConfig) {
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
+        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
+    }
+    permissions
+}
+
 impl AppUseCase {
+    async fn ensure_user_admin_permission_masks(&self, user: &User) -> AppResult<()> {
+        self.services
+            .catalog
+            .libraries
+            .set_app_permission_mask_for_user(
+                &user.id,
+                scryer_domain::AppPermissionMask::from_permissions([
+                    scryer_domain::AppPermission::ManageUsers,
+                    scryer_domain::AppPermission::ManagePermissions,
+                    scryer_domain::AppPermission::ManageSystemSettings,
+                    scryer_domain::AppPermission::ManageCatalogSettings,
+                ]),
+            )
+            .await?;
+        let grants = self
+            .services
+            .catalog
+            .libraries
+            .list(None)
+            .await?
+            .into_iter()
+            .map(|library| scryer_domain::LibraryGrant {
+                user_id: user.id.clone(),
+                library_id: library.id,
+                permissions: scryer_domain::LibraryPermissionMask::from_permissions([
+                    scryer_domain::LibraryPermission::View,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                    scryer_domain::LibraryPermission::ResolveImports,
+                    scryer_domain::LibraryPermission::ManageLibrary,
+                    scryer_domain::LibraryPermission::Request,
+                    scryer_domain::LibraryPermission::AutoApproveRequests,
+                ]),
+            })
+            .collect();
+        self.services
+            .catalog
+            .libraries
+            .set_grants_for_user(&user.id, grants)
+            .await
+    }
+
     pub async fn system_health(&self, actor: &User) -> AppResult<SystemHealth> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
 
         let titles = self.services.catalog.titles.list(None, None).await?;
         let users = self.services.identity.users.list_all().await?;
@@ -46,13 +103,6 @@ impl AppUseCase {
             .await
             .ok()
             .flatten();
-        let db_pending_migrations = self
-            .services
-            .config
-            .system_info
-            .pending_migration_count()
-            .await
-            .unwrap_or(0);
         let indexer_stats = self.services.integrations.indexer_stats.all_stats();
 
         Ok(SystemHealth {
@@ -68,56 +118,48 @@ impl AppUseCase {
             recent_events: recent_activity.len(),
             recent_event_preview,
             db_migration_version,
-            db_pending_migrations,
             indexer_stats,
         })
     }
 
     pub async fn disk_space(&self, actor: &User) -> AppResult<Vec<DiskSpaceInfo>> {
-        require(actor, &Entitlement::ViewCatalog)?;
-
-        // Collect unique root folder paths from all facet handlers
-        let path_keys = [
-            ("series.path", "/data/series", "Series"),
-            ("anime.path", "/data/anime", "Anime"),
-            ("movies.path", "/data/movies", "Movies"),
-        ];
+        let libraries = self
+            .list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
 
         let mut seen_paths = std::collections::HashSet::new();
         let mut results = Vec::new();
 
-        for (key, default, label) in &path_keys {
-            let path = self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, key, None)
-                .await?
-                .unwrap_or_else(|| default.to_string());
+        for library in libraries {
+            for root in library.roots {
+                let path = root.path;
+                if !seen_paths.insert(path.clone()) {
+                    continue;
+                }
 
-            if !seen_paths.insert(path.clone()) {
-                continue; // skip duplicate mount points
-            }
-
-            #[cfg(unix)]
-            if let Some(stat) = statvfs_path(&path) {
-                let total = to_u64(stat.f_blocks) * to_u64(stat.f_frsize);
-                let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
-                let used = total.saturating_sub(free);
-                results.push(DiskSpaceInfo {
-                    path,
-                    label: label.to_string(),
-                    total_bytes: total,
-                    free_bytes: free,
-                    used_bytes: used,
-                });
-            } else {
-                tracing::warn!(path = path.as_str(), "failed to query disk space");
-            }
-            #[cfg(not(unix))]
-            {
-                tracing::debug!(
-                    path = path.as_str(),
-                    "disk space reporting not available on this platform"
-                );
-                let _ = (&path, &label);
+                #[cfg(unix)]
+                if let Some(stat) = statvfs_path(&path) {
+                    let total = to_u64(stat.f_blocks) * to_u64(stat.f_frsize);
+                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                    let used = total.saturating_sub(free);
+                    results.push(DiskSpaceInfo {
+                        path,
+                        label: library.name.clone(),
+                        total_bytes: total,
+                        free_bytes: free,
+                        used_bytes: used,
+                    });
+                } else {
+                    tracing::warn!(path = path.as_str(), "failed to query disk space");
+                }
+                #[cfg(not(unix))]
+                {
+                    tracing::debug!(
+                        path = path.as_str(),
+                        "disk space reporting not available on this platform"
+                    );
+                    let _ = path;
+                }
             }
         }
 
@@ -198,6 +240,7 @@ impl AppUseCase {
                     .update_entitlements(&found.id, desired_entitlements)
                     .await?;
             }
+            self.ensure_user_admin_permission_masks(&found).await?;
             // Migration-seeded admin may lack a password hash — set one.
             if found.password_hash.is_none() {
                 found = self
@@ -216,9 +259,11 @@ impl AppUseCase {
             username: username.to_string(),
             password_hash: Some(self.hash_password(password)?),
             entitlements: desired_entitlements,
+            authorization: Default::default(),
         };
 
         let user = self.services.identity.users.create(user).await?;
+        self.ensure_user_admin_permission_masks(&user).await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             None,
@@ -247,10 +292,16 @@ impl AppUseCase {
 
             let mut entitlements = user.entitlements.clone();
             entitlements.push(Entitlement::ManageUsers);
+            let app_permissions = app_permission_mask_from_entitlements(&entitlements);
             self.services
                 .identity
                 .users
                 .update_entitlements(&user.id, entitlements)
+                .await?;
+            self.services
+                .catalog
+                .libraries
+                .set_app_permission_mask_for_user(&user.id, app_permissions)
                 .await?;
             migrated += 1;
         }
@@ -259,12 +310,16 @@ impl AppUseCase {
     }
 
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
+            .await?;
         self.services.identity.users.list_all().await
     }
 
     pub async fn get_user(&self, actor: &User, user_id: &str) -> AppResult<Option<User>> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
         self.services.identity.users.get_by_id(user_id).await
     }
 
@@ -273,9 +328,11 @@ impl AppUseCase {
         actor: &User,
         username: String,
         password: String,
-        entitlements: Vec<Entitlement>,
+        app_permissions: scryer_domain::AppPermissionMask,
+        library_grants: Vec<scryer_domain::LibraryGrant>,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
 
         let username = username.trim().to_string();
         if username.is_empty() {
@@ -301,10 +358,28 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.clone(),
             password_hash: Some(password_hash),
-            entitlements,
+            entitlements: Vec::new(),
+            authorization: Default::default(),
         };
 
         let user = self.services.identity.users.create(user).await?;
+        self.services
+            .catalog
+            .libraries
+            .set_app_permission_mask_for_user(&user.id, app_permissions)
+            .await?;
+        let grants = library_grants
+            .into_iter()
+            .map(|mut grant| {
+                grant.user_id = user.id.clone();
+                grant
+            })
+            .collect();
+        self.services
+            .catalog
+            .libraries
+            .set_grants_for_user(&user.id, grants)
+            .await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
@@ -367,7 +442,8 @@ impl AppUseCase {
         user_id: &str,
         password: String,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
 
         if user_id == actor.id {
             return Err(AppError::Validation(
@@ -408,21 +484,18 @@ impl AppUseCase {
         Ok(user)
     }
 
-    pub async fn set_user_entitlements(
+    pub async fn set_user_app_permissions(
         &self,
         actor: &User,
         user_id: &str,
-        entitlements: Vec<Entitlement>,
+        permissions: scryer_domain::AppPermissionMask,
     ) -> AppResult<User> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
+            .await?;
 
-        if entitlements.is_empty() {
-            return Err(AppError::Validation(
-                "at least one entitlement is required".into(),
-            ));
-        }
-
-        let existing = self
+        let user = self
             .services
             .identity
             .users
@@ -430,23 +503,20 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
 
-        if existing.id == actor.id {
-            return Err(AppError::Validation(
-                "cannot modify own entitlements".into(),
-            ));
+        if user.id == actor.id {
+            return Err(AppError::Validation("cannot modify own permissions".into()));
         }
 
-        let user = self
-            .services
-            .identity
-            .users
-            .update_entitlements(user_id, entitlements)
+        self.services
+            .catalog
+            .libraries
+            .set_app_permission_mask_for_user(user_id, permissions)
             .await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             Some(actor.id.clone()),
-            "user_entitlements",
+            "user_permissions",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
         )
@@ -455,8 +525,43 @@ impl AppUseCase {
         Ok(user)
     }
 
+    pub async fn set_user_library_permissions(
+        &self,
+        actor: &User,
+        user_id: &str,
+        grants: Vec<scryer_domain::LibraryGrant>,
+    ) -> AppResult<User> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
+            .await?;
+        let user = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
+        self.services
+            .catalog
+            .libraries
+            .set_grants_for_user(user_id, grants)
+            .await?;
+        self.evict_cached_jwt_signing_key(user_id).await;
+        self.refresh_cached_jwt_signing_key(&user).await?;
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "user_permissions",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(user)
+    }
+
     pub async fn delete_user(&self, actor: &User, user_id: &str) -> AppResult<()> {
-        require(actor, &Entitlement::ManageUsers)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
 
         let user = self
             .services

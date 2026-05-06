@@ -4,7 +4,7 @@ export const CONTENT_VIEW_MODE_STORAGE_KEY = "scryer:content-view-mode";
 
 export function readStoredContentViewMode(): ContentViewMode {
   if (typeof window === "undefined") {
-    return "poster-table";
+    return "poster";
   }
 
   try {
@@ -18,10 +18,10 @@ export function readStoredContentViewMode(): ContentViewMode {
       case "table":
         return "poster-table";
       default:
-        return "poster-table";
+        return "poster";
     }
   } catch {
-    return "poster-table";
+    return "poster";
   }
 }
 

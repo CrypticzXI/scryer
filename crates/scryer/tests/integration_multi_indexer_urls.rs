@@ -262,6 +262,7 @@ async fn setup() -> (
         username: "tester".into(),
         password_hash: None,
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        authorization: Default::default(),
     };
 
     (app, user, tosho_server, nzbgeek_server, torznab_server)

@@ -266,6 +266,7 @@ fn test_movie_title(name: &str) -> Title {
         id: "title-1".to_string(),
         name: name.to_string(),
         facet: MediaFacet::Movie,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
         external_ids: vec![],

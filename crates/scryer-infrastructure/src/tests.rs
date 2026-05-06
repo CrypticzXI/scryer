@@ -1242,6 +1242,7 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         id: id.to_string(),
         name: "Poster Test".to_string(),
         facet: MediaFacet::Movie,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
         external_ids: vec![],
@@ -3971,6 +3972,9 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             title_name: Some(movie_title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: None,
             season_number: None,
@@ -3995,6 +3999,9 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             title_name: Some(series_title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: Some(series_episode.id.clone()),
             collection_id: None,
             season_number: Some("1".to_string()),
@@ -4019,6 +4026,9 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             title_name: Some(anime_title.name.clone()),
             title_slug: None,
             title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
             episode_id: None,
             collection_id: Some(anime_collection.id.clone()),
             season_number: Some("0".to_string()),
@@ -4081,6 +4091,9 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         title_name: Some(title.name.clone()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -4417,6 +4430,9 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         title_name: Some("Schoolhouse Rock! Earth".to_string()),
         title_slug: None,
         title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
         episode_id: None,
         collection_id: None,
         season_number: None,
@@ -5206,6 +5222,7 @@ async fn user_crud_queries_work() {
             username: "editor".to_string(),
             entitlements: vec![Entitlement::ViewCatalog],
             password_hash: None,
+            authorization: Default::default(),
         },
     )
     .await
@@ -5250,6 +5267,7 @@ async fn sqlite_show_queries_roundtrip() {
         id: "title-show-1".into(),
         name: "Sample Show".into(),
         facet: MediaFacet::Series,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
         tags: vec![],
         external_ids: vec![],
@@ -5517,6 +5535,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     let updated_at = "2026-04-07T00:00:00Z".to_string();
     let item = LibraryScanUnmatchedItem {
         id: "library_scan_unmatched:test".to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         facet: MediaFacet::Movie,
         status: PendingImportStatus::Pending,
         title_id: None,
@@ -5609,7 +5628,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
 
     library_state
-        .delete_library_scan_unmatched_item(MediaFacet::Movie, &item.item_path)
+        .delete_library_scan_unmatched_item(&item.library_id, MediaFacet::Movie, &item.item_path)
         .await
         .expect("delete unmatched item");
 
@@ -5639,6 +5658,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
 
     let ignored_item = LibraryScanUnmatchedItem {
         id: "library_scan_unmatched:ignored".to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         facet: MediaFacet::Movie,
         status: PendingImportStatus::Ignored,
         title_id: None,

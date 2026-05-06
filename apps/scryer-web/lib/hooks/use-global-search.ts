@@ -50,9 +50,10 @@ export type MetadataCatalogMonitorType =
   | "none";
 
 export type { RootFolderOption } from "@/lib/types/titles";
-import type { RootFolderOption } from "@/lib/types/titles";
+import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
 
 export type MetadataCatalogAddOptions = {
+  libraryId?: string;
   qualityProfileId: string;
   seasonFolder: boolean;
   monitorType: MetadataCatalogMonitorType;
@@ -229,6 +230,7 @@ export interface UseGlobalSearchResult {
     result: MetadataTvdbSearchItem,
   ) => boolean;
   rootFoldersByFacet: Record<Facet, RootFolderOption[]>;
+  librariesByFacet: Record<Facet, LibraryRecord[]>;
   queueFacet: Facet;
   setQueueFacet: (value: Facet) => void;
   catalogChangeSignal: number;
@@ -320,6 +322,9 @@ export function useGlobalSearch({
   );
   const [isGlobalSearchPanelOpen, setIsGlobalSearchPanelOpen] = useState(false);
   const [rootFoldersByFacet, setRootFoldersByFacet] = useState<Record<Facet, RootFolderOption[]>>(
+    () => ({ movie: [], series: [], anime: [] }),
+  );
+  const [librariesByFacet, setLibrariesByFacet] = useState<Record<Facet, LibraryRecord[]>>(
     () => ({ movie: [], series: [], anime: [] }),
   );
   const forcedOpenRef = useRef(false);
@@ -437,6 +442,25 @@ export function useGlobalSearch({
           return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
         });
         return same ? previous : nextRootFolders;
+      });
+
+      const nextLibrariesByFacet = (data.manageableLibraries ?? []).reduce(
+        (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
+          acc[library.facet]?.push(library);
+          return acc;
+        },
+        { movie: [], series: [], anime: [] },
+      );
+      setLibrariesByFacet((previous) => {
+        const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+          const prev = previous[f];
+          const next = nextLibrariesByFacet[f];
+          return prev.length === next.length && prev.every((entry, index) => {
+            const candidate = next[index];
+            return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
+          });
+        });
+        return same ? previous : nextLibrariesByFacet;
       });
     } catch {
       // ignore settings fetch failures here; search remains functional
@@ -923,6 +947,7 @@ export function useGlobalSearch({
           input: {
             name,
             facet,
+            libraryId: options.libraryId || undefined,
             monitored,
             tags: [],
             options: {
@@ -1010,6 +1035,7 @@ export function useGlobalSearch({
     addMetadataSearchResultToCatalog,
     isMetadataSearchResultInCatalog,
     rootFoldersByFacet,
+    librariesByFacet,
     queueFacet,
     setQueueFacet,
     catalogChangeSignal,

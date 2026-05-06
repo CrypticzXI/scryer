@@ -1528,6 +1528,15 @@ mod tests {
         ) -> AppResult<()> {
             Ok(())
         }
+
+        async fn delete_setting_value(
+            &self,
+            _scope: &str,
+            _key_name: &str,
+            _scope_id: Option<String>,
+        ) -> AppResult<()> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -1641,6 +1650,7 @@ mod tests {
         scryer_domain::Title {
             id: "title-1".to_string(),
             name: "Test Title".to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],

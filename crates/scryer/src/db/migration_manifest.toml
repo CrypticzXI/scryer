@@ -14,7 +14,16 @@ kind = "sql"
 file = "migrations/0103_custom_migrator_runtime_cutover.sql"
 scope = "all"
 
+[[migration]]
+version = 104
+description = "first class libraries and bitflag permissions"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0104_first_class_libraries_and_permissions.sql"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"
-

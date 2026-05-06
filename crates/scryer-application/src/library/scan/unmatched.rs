@@ -32,13 +32,18 @@ pub(crate) fn normalize_library_scan_item_path(path: &str) -> String {
     path.trim().to_string()
 }
 
-fn build_library_scan_unmatched_item_id(facet: &MediaFacet, item_path: &str) -> String {
-    let fingerprint = sha256_hex(format!("{}:{item_path}", facet.as_str()));
+fn build_library_scan_unmatched_item_id(
+    facet: &MediaFacet,
+    library_id: &str,
+    item_path: &str,
+) -> String {
+    let fingerprint = sha256_hex(format!("{}:{library_id}:{item_path}", facet.as_str()));
     format!("library_scan_unmatched:{}", &fingerprint[..24])
 }
 
 fn build_library_scan_unmatched_item(
     facet: &MediaFacet,
+    library_id: &str,
     title_id: Option<&str>,
     session_id: &str,
     library_path: &str,
@@ -54,7 +59,8 @@ fn build_library_scan_unmatched_item(
     let timestamp = Utc::now().to_rfc3339();
 
     LibraryScanUnmatchedItem {
-        id: build_library_scan_unmatched_item_id(facet, &item_path),
+        id: build_library_scan_unmatched_item_id(facet, library_id, &item_path),
+        library_id: library_id.to_string(),
         facet: facet.clone(),
         status: PendingImportStatus::Pending,
         title_id: title_id.map(str::to_string),
@@ -117,6 +123,7 @@ fn build_movie_unmatched_scan_record(
 
 pub(crate) fn build_movie_unmatched_scan_item(
     facet: &MediaFacet,
+    library_id: &str,
     session_id: &str,
     library_path: &str,
     candidate: &PreparedMovieLibraryScanCandidate,
@@ -127,6 +134,7 @@ pub(crate) fn build_movie_unmatched_scan_item(
     let record = build_movie_unmatched_scan_record(candidate, batch_search_results);
     build_library_scan_unmatched_item(
         facet,
+        library_id,
         None,
         session_id,
         library_path,
@@ -142,6 +150,7 @@ pub(crate) fn build_movie_unmatched_scan_item(
 
 pub(crate) fn build_series_unmatched_scan_item(
     facet: &MediaFacet,
+    library_id: &str,
     session_id: &str,
     library_path: &str,
     candidate: &PreparedSeriesLibraryScanCandidate,
@@ -160,6 +169,7 @@ pub(crate) fn build_series_unmatched_scan_item(
 
     build_library_scan_unmatched_item(
         facet,
+        library_id,
         None,
         session_id,
         library_path,
@@ -175,6 +185,7 @@ pub(crate) fn build_series_unmatched_scan_item(
 
 pub(crate) fn build_title_bound_unmatched_scan_item(
     facet: &MediaFacet,
+    library_id: &str,
     title_id: &str,
     session_id: Option<&str>,
     title_scan_root: &str,
@@ -186,6 +197,7 @@ pub(crate) fn build_title_bound_unmatched_scan_item(
 ) -> LibraryScanUnmatchedItem {
     build_library_scan_unmatched_item(
         facet,
+        library_id,
         Some(title_id),
         session_id.unwrap_or_default(),
         title_scan_root,
@@ -231,6 +243,7 @@ pub(crate) async fn persist_library_scan_unmatched_item(
 pub(crate) async fn clear_library_scan_unmatched_item(
     app: &AppUseCase,
     facet: &MediaFacet,
+    library_id: &str,
     item_path: &str,
 ) -> AppResult<()> {
     let item_path = normalize_library_scan_item_path(item_path);
@@ -241,7 +254,7 @@ pub(crate) async fn clear_library_scan_unmatched_item(
     app.services
         .library
         .library_scan_unmatched_items
-        .delete_library_scan_unmatched_item(facet.clone(), &item_path)
+        .delete_library_scan_unmatched_item(library_id, facet.clone(), &item_path)
         .await
 }
 
@@ -274,7 +287,11 @@ pub(crate) async fn reconcile_library_scan_unmatched_items(
             app.services
                 .library
                 .library_scan_unmatched_items
-                .delete_library_scan_unmatched_item(facet.clone(), &item.item_path)
+                .delete_library_scan_unmatched_item(
+                    &item.library_id,
+                    facet.clone(),
+                    &item.item_path,
+                )
                 .await?;
         }
     }

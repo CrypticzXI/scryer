@@ -6,19 +6,21 @@ use scryer_application::{
     TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
     supported_title_history_event_types,
 };
-use scryer_domain::{Entitlement, PolicyInput, TitleHistoryEventType};
+use scryer_domain::{AppPermission, LibraryPermission, PolicyInput, TitleHistoryEventType};
 
 use crate::context::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, current_user_from_ctx, to_gql_error,
+    actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
+    auth_runtime_from_ctx, current_user_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
     from_download_client_routing_entry, from_download_queue_item, from_episode,
     from_health_check_result, from_indexer_config, from_indexer_routing_entry, from_job_definition,
-    from_job_run, from_library_paths_settings, from_library_scan_session, from_media_rename_plan,
-    from_media_settings, from_pending_import_connection, from_pending_import_counts,
-    from_pending_release, from_provider_type, from_quality_profile_settings, from_release_decision,
+    from_job_run, from_library, from_library_paths_settings, from_library_scan_session,
+    from_library_settings, from_media_rename_plan, from_media_settings,
+    from_pending_import_connection, from_pending_import_counts, from_pending_release,
+    from_provider_type, from_quality_profile_settings, from_release_decision,
     from_service_settings, from_smg_version_compatibility_notice, from_submission_scope,
     from_subtitle_provider_config, from_system_health, from_title,
     from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
@@ -224,6 +226,9 @@ fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUn
         title_name: item.title_name,
         title_slug: item.title_slug,
         title_facet: MediaFacetValue::from_domain(item.title_facet),
+        library_id: item.library_id,
+        library_name: item.library_name,
+        library_slug: item.library_slug,
         episode_id: item.episode_id,
         season_number: item.season_number,
         episode_number: item.episode_number,
@@ -237,7 +242,19 @@ async fn title_payloads_from_titles(
     actor: &scryer_domain::User,
     titles: Vec<scryer_domain::Title>,
 ) -> GqlResult<Vec<TitlePayload>> {
+    if titles.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
+    let libraries = app
+        .list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+        .await
+        .map_err(to_gql_error)?;
+    let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
+        .iter()
+        .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
+        .collect();
     let summaries = app
         .list_primary_collection_summaries(actor, &title_ids)
         .await
@@ -273,7 +290,12 @@ async fn title_payloads_from_titles(
         .into_iter()
         .map(|t| {
             let id = t.id.clone();
+            let library_id = t.library_id.clone();
             let mut payload = from_title(t);
+            if let Some((library_name, library_slug)) = library_map.get(library_id.as_str()) {
+                payload.library_name = Some((*library_name).clone());
+                payload.library_slug = Some((*library_slug).clone());
+            }
             if let Some(s) = summary_map.get(id.as_str()) {
                 payload.quality_tier = s.label.clone();
             }
@@ -304,17 +326,53 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
+        library_id: Option<String>,
         query: Option<String>,
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let parsed_facet = facet.map(MediaFacetValue::into_domain);
         let titles = app
-            .list_titles(&actor, parsed_facet, query)
+            .list_titles(&actor, parsed_facet, library_id, query)
             .await
             .map_err(to_gql_error)?;
 
         title_payloads_from_titles(&app, &actor, titles).await
+    }
+
+    async fn libraries(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        permission: Option<LibraryPermissionValue>,
+    ) -> GqlResult<Vec<LibraryPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let libraries = app
+            .list_libraries_for_permission(
+                &actor,
+                facet.map(MediaFacetValue::into_domain),
+                permission
+                    .map(LibraryPermissionValue::into_domain)
+                    .unwrap_or(scryer_domain::LibraryPermission::View),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(libraries.into_iter().map(from_library).collect())
+    }
+
+    async fn library_settings(
+        &self,
+        ctx: &Context<'_>,
+        library_id: String,
+    ) -> GqlResult<LibrarySettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_library_settings(&actor, &library_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_library_settings(settings))
     }
 
     async fn titles_by_external_ids(
@@ -347,12 +405,14 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
+        library_id: Option<String>,
+        library_slug: Option<String>,
         slug: String,
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let Some(title) = app
-            .get_title_by_slug(&actor, facet.into_domain(), &slug)
+            .get_title_by_slug(&actor, facet.into_domain(), library_id, library_slug, &slug)
             .await
             .map_err(to_gql_error)?
         else {
@@ -580,6 +640,7 @@ impl QueryRoot {
             let filter = TitleHistoryFilter {
                 event_types: parsed_types,
                 title_ids: None,
+                library_ids: None,
                 title_search: None,
                 download_id: None,
                 episode_id: None,
@@ -612,6 +673,7 @@ impl QueryRoot {
         let f = TitleHistoryFilter {
             event_types: parsed_types,
             title_ids: filter.title_ids,
+            library_ids: None,
             title_search: filter.title_search,
             download_id: filter.download_id,
             episode_id: filter.episode_id,
@@ -750,15 +812,20 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
 
+        let can_resolve_imports =
+            actor_has_any_library_permission(ctx, LibraryPermission::ResolveImports).await?;
+        let can_manage_system_settings =
+            actor_has_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+
         let pending_import_counts = async {
-            if actor.has_entitlement(&Entitlement::ManageTitle) {
+            if can_resolve_imports {
                 app.pending_import_counts(&actor).await
             } else {
                 Ok(PendingImportCounts::default())
             }
         };
         let activity_import_count = async {
-            if actor.has_entitlement(&Entitlement::ManageTitle) {
+            if can_resolve_imports {
                 app.count_download_import_items(&actor, DownloadImportFilter::All)
                     .await
             } else {
@@ -766,7 +833,7 @@ impl QueryRoot {
             }
         };
         let plugin_update_count = async {
-            if actor.has_entitlement(&Entitlement::ManageConfig) {
+            if can_manage_system_settings {
                 app.plugin_update_count(&actor).await
             } else {
                 Ok(0)
@@ -791,6 +858,7 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
+        library_id: Option<String>,
         status: PendingImportStatusValue,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
@@ -801,6 +869,7 @@ impl QueryRoot {
             .pending_imports(
                 &actor,
                 facet.into_domain(),
+                library_id,
                 status.into_application(),
                 limit,
                 offset,
@@ -908,15 +977,6 @@ impl QueryRoot {
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let can_view_title_progress = actor.has_entitlement(&Entitlement::ViewCatalog)
-            || actor.has_entitlement(&Entitlement::ManageTitle);
-        if title_id.is_some() {
-            if !can_view_title_progress {
-                return Err(Error::new("insufficient entitlements"));
-            }
-        } else if !actor.has_entitlement(&Entitlement::ManageTitle) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let items = match title_id {
             Some(title_id) => {
                 app.list_download_queue_for_title(
@@ -1078,9 +1138,6 @@ impl QueryRoot {
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_media_settings(&actor, scope.into_media_facet())
             .await
             .map(|settings| from_media_settings(scope, settings))
@@ -1090,9 +1147,6 @@ impl QueryRoot {
     async fn library_paths(&self, ctx: &Context<'_>) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_library_paths(&actor)
             .await
             .map(from_library_paths_settings)
@@ -1102,9 +1156,6 @@ impl QueryRoot {
     async fn service_settings(&self, ctx: &Context<'_>) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_service_settings(&actor)
             .await
             .map(from_service_settings)
@@ -1117,9 +1168,6 @@ impl QueryRoot {
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_quality_profile_settings(&actor)
             .await
             .map(from_quality_profile_settings)
@@ -1133,9 +1181,6 @@ impl QueryRoot {
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_download_client_routing(&actor, scope.as_scope_id())
             .await
             .map(|entries| {
@@ -1154,9 +1199,6 @@ impl QueryRoot {
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         app.get_indexer_routing(&actor, scope.as_scope_id())
             .await
             .map(|entries| {
@@ -1179,7 +1221,10 @@ impl QueryRoot {
             .list_indexer_configs(&actor, provider_type)
             .await
             .map_err(to_gql_error)?;
-        let stats = app.indexer_query_stats(&actor).map_err(to_gql_error)?;
+        let stats = app
+            .indexer_query_stats(&actor)
+            .await
+            .map_err(to_gql_error)?;
         let mut payloads: Vec<IndexerConfigPayload> =
             configs.into_iter().map(from_indexer_config).collect();
         for payload in &mut payloads {
@@ -1203,7 +1248,10 @@ impl QueryRoot {
             .map_err(to_gql_error)?
             .map(from_indexer_config);
         if let Some(ref mut p) = payload {
-            let stats = app.indexer_query_stats(&actor).map_err(to_gql_error)?;
+            let stats = app
+                .indexer_query_stats(&actor)
+                .await
+                .map_err(to_gql_error)?;
             if let Some(s) = stats.iter().find(|s| s.indexer_id == p.id) {
                 p.last_query_at = s.last_query_at.clone();
             }
@@ -1292,7 +1340,15 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let users = app.list_users(&actor).await.map_err(to_gql_error)?;
-        Ok(users.into_iter().map(from_user).collect())
+        let mut payloads = Vec::with_capacity(users.len());
+        for user in users {
+            let user = app
+                .attach_user_authorization(user)
+                .await
+                .map_err(to_gql_error)?;
+            payloads.push(from_user(user));
+        }
+        Ok(payloads)
     }
 
     async fn user(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<UserPayload>> {
@@ -1369,9 +1425,6 @@ impl QueryRoot {
     async fn health_checks(&self, ctx: &Context<'_>) -> GqlResult<Vec<HealthCheckPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let results = app
             .cached_health_check_results(&actor)
             .await
@@ -1400,10 +1453,10 @@ impl QueryRoot {
     async fn pending_releases(&self, ctx: &Context<'_>) -> GqlResult<Vec<PendingReleasePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        let releases = app.list_pending_releases().await.map_err(to_gql_error)?;
+        let releases = app
+            .list_pending_releases(&actor)
+            .await
+            .map_err(to_gql_error)?;
         Ok(releases.into_iter().map(from_pending_release).collect())
     }
 
@@ -1429,9 +1482,6 @@ impl QueryRoot {
     ) -> GqlResult<Vec<ImportRecordPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageTitle) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let records = app
             .list_import_history(&actor, limit)
@@ -1452,12 +1502,10 @@ impl QueryRoot {
     ) -> GqlResult<ManualImportPreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageTitle) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
 
         let preview = scryer_application::preview_manual_import(
             &app,
+            &actor,
             client_id.as_deref(),
             &download_client_item_id,
             &title_id,
@@ -1501,6 +1549,7 @@ impl QueryRoot {
         status: Option<WantedStatusValue>,
         media_type: Option<WantedMediaTypeValue>,
         title_id: Option<String>,
+        library_id: Option<String>,
         title_search: Option<String>,
         latest_decision_code: Option<String>,
         #[graphql(default = 50)] limit: i64,
@@ -1508,19 +1557,21 @@ impl QueryRoot {
     ) -> GqlResult<WantedItemsListPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
+        let library_ids = library_id.into_iter().collect::<Vec<_>>();
         let (items, total) = app
-            .list_wanted_items(WantedItemsQuery {
-                status: status.map(|value| value.as_str().to_string()),
-                media_type: media_type.map(|value| value.as_str().to_string()),
-                title_id,
-                title_search,
-                latest_decision_code,
-                limit,
-                offset,
-            })
+            .list_wanted_items(
+                &actor,
+                WantedItemsQuery {
+                    status: status.map(|value| value.as_str().to_string()),
+                    media_type: media_type.map(|value| value.as_str().to_string()),
+                    title_id,
+                    library_ids,
+                    title_search,
+                    latest_decision_code,
+                    limit,
+                    offset,
+                },
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(WantedItemsListPayload {
@@ -1533,11 +1584,12 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
+        library_id: Option<String>,
     ) -> GqlResult<Vec<CutoffUnmetItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let items = app
-            .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain))
+            .list_cutoff_unmet_titles(&actor, facet.map(MediaFacetValue::into_domain), library_id)
             .await
             .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
@@ -1552,15 +1604,15 @@ impl QueryRoot {
     ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let decisions = app
-            .list_release_decisions(ReleaseDecisionsQuery {
-                wanted_item_id,
-                title_id,
-                limit,
-            })
+            .list_release_decisions(
+                &actor,
+                ReleaseDecisionsQuery {
+                    wanted_item_id,
+                    title_id,
+                    limit,
+                },
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -1573,11 +1625,8 @@ impl QueryRoot {
     ) -> GqlResult<TitleAcquisitionDiagnosticsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let diagnostics = app
-            .title_acquisition_diagnostics(&title_id)
+            .title_acquisition_diagnostics(&actor, &title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_title_acquisition_diagnostics(diagnostics))
@@ -1612,12 +1661,9 @@ impl QueryRoot {
     ) -> GqlResult<Vec<PostProcessingScriptPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
 
         let scripts = app
-            .list_post_processing_scripts()
+            .list_post_processing_scripts(&actor)
             .await
             .map_err(to_gql_error)?;
         Ok(scripts
@@ -1634,13 +1680,10 @@ impl QueryRoot {
     ) -> GqlResult<Vec<PostProcessingScriptRunPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
 
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let runs = app
-            .list_post_processing_script_runs(&script_id, limit)
+            .list_post_processing_script_runs(&actor, &script_id, limit)
             .await
             .map_err(to_gql_error)?;
         Ok(runs
@@ -1732,10 +1775,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<ProviderTypePayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let provider_types = app.available_indexer_provider_types();
         Ok(provider_types
             .into_iter()
@@ -1750,10 +1790,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<ProviderTypePayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let provider_types = app.available_download_client_provider_types();
         Ok(provider_types
             .into_iter()
@@ -1768,10 +1805,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<ProviderTypePayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let available_host_bindings = app
             .subtitle_host_bindings()
             .await
@@ -1813,9 +1847,6 @@ impl QueryRoot {
     ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let limit = limit.clamp(1, 100);
         let results = app
             .search_metadata(&actor, &query, &type_hint, limit, &language, year)
@@ -1833,9 +1864,6 @@ impl QueryRoot {
     ) -> GqlResult<MetadataSearchMultiPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let limit = limit.clamp(1, 100);
         let result = app
             .search_metadata_multi(&actor, &query, limit, &language)
@@ -1868,9 +1896,6 @@ impl QueryRoot {
     ) -> GqlResult<MetadataMoviePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let movie = app
             .get_metadata_movie(&actor, tvdb_id as i64, &language)
             .await
@@ -1902,9 +1927,6 @@ impl QueryRoot {
     ) -> GqlResult<MetadataSeriesPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let tvdb_id: i64 = id.parse().map_err(|_| Error::new("invalid tvdb id"))?;
         let series = app
             .get_metadata_series(&actor, tvdb_id, &language)
@@ -1962,11 +1984,12 @@ impl QueryRoot {
         ctx: &Context<'_>,
         start_date: String,
         end_date: String,
+        library_id: Option<String>,
     ) -> GqlResult<Vec<CalendarEpisodePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let episodes = app
-            .list_calendar_episodes(&actor, &start_date, &end_date)
+            .list_calendar_episodes(&actor, &start_date, &end_date, library_id)
             .await
             .map_err(to_gql_error)?;
         Ok(episodes.into_iter().map(from_calendar_episode).collect())
@@ -2011,10 +2034,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<ProviderTypePayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let provider_types = app.available_notification_provider_types();
         Ok(provider_types
             .into_iter()
@@ -2030,10 +2050,7 @@ impl QueryRoot {
 
     async fn notification_event_types(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         Ok(app
             .subscribable_notification_event_types()
             .iter()
@@ -2072,10 +2089,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default_with = "String::from(\"/\")")] path: String,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let target = std::path::Path::new(&path);
         if !target.is_absolute() {
             return Err(Error::new("path must be absolute"));
@@ -2110,10 +2124,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 250)] limit: i32,
     ) -> GqlResult<ServiceLogsPayload> {
-        let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let safe_limit = (limit.clamp(1, 2000)) as usize;
         let lines = match ctx.data_opt::<crate::context::LogBuffer>() {
             Some(buf) => buf.snapshot(safe_limit),
@@ -2134,12 +2145,9 @@ impl QueryRoot {
         title_id: String,
     ) -> GqlResult<Vec<ExternalSubtitlePayload>> {
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let app = app_from_ctx(ctx)?;
         let downloads = app
-            .list_external_subtitles_for_title(&title_id)
+            .list_external_subtitles_for_title(&actor, &title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(downloads
@@ -2174,12 +2182,9 @@ impl QueryRoot {
         media_file_id: String,
     ) -> GqlResult<Vec<ExternalSubtitleBlocklistEntryPayload>> {
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ViewCatalog) {
-            return Err(Error::new("insufficient entitlements"));
-        }
         let app = app_from_ctx(ctx)?;
         let entries = app
-            .list_external_subtitle_blocklist_for_media_file(&media_file_id)
+            .list_external_subtitle_blocklist_for_media_file(&actor, &media_file_id)
             .await
             .map_err(to_gql_error)?;
         Ok(entries
@@ -2194,6 +2199,19 @@ impl QueryRoot {
                 created_at: entry.created_at,
             })
             .collect())
+    }
+}
+
+#[ComplexObject]
+impl LibraryPayload {
+    async fn settings(&self, ctx: &Context<'_>) -> GqlResult<LibrarySettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_library_settings(&actor, &self.id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_library_settings(settings))
     }
 }
 
@@ -2247,9 +2265,6 @@ impl TitlePayload {
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let files = app
             .list_title_media_files(&actor, &self.id)
             .await
@@ -2264,19 +2279,20 @@ impl TitlePayload {
     ) -> GqlResult<Vec<WantedItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let (items, _) = app
-            .list_wanted_items(WantedItemsQuery {
-                status,
-                media_type: None,
-                title_id: Some(self.id.clone()),
-                title_search: None,
-                latest_decision_code: None,
-                limit: 500,
-                offset: 0,
-            })
+            .list_wanted_items(
+                &actor,
+                WantedItemsQuery {
+                    status,
+                    media_type: None,
+                    title_id: Some(self.id.clone()),
+                    library_ids: Vec::new(),
+                    title_search: None,
+                    latest_decision_code: None,
+                    limit: 500,
+                    offset: 0,
+                },
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(items.into_iter().map(from_wanted_item).collect())
@@ -2289,15 +2305,15 @@ impl TitlePayload {
     ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let decisions = app
-            .list_release_decisions(ReleaseDecisionsQuery {
-                wanted_item_id: None,
-                title_id: Some(self.id.clone()),
-                limit,
-            })
+            .list_release_decisions(
+                &actor,
+                ReleaseDecisionsQuery {
+                    wanted_item_id: None,
+                    title_id: Some(self.id.clone()),
+                    limit,
+                },
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -2384,9 +2400,6 @@ impl EpisodePayload {
     async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let wanted_item = app
             .get_title_wanted_item(&actor, &self.title_id, Some(&self.id))
             .await
@@ -2398,9 +2411,6 @@ impl EpisodePayload {
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let files = app
             .list_title_media_files(&actor, &self.title_id)
             .await
@@ -2489,15 +2499,15 @@ impl WantedItemPayload {
     ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ViewCatalog) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let decisions = app
-            .list_release_decisions(ReleaseDecisionsQuery {
-                wanted_item_id: Some(self.id.clone()),
-                title_id: None,
-                limit,
-            })
+            .list_release_decisions(
+                &actor,
+                ReleaseDecisionsQuery {
+                    wanted_item_id: Some(self.id.clone()),
+                    title_id: None,
+                    limit,
+                },
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(decisions.into_iter().map(from_release_decision).collect())
@@ -2587,9 +2597,6 @@ impl DownloadQueueItemPayload {
         };
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let title = app
             .get_title_for_management(&actor, title_id)
             .await
@@ -2604,9 +2611,6 @@ impl PendingReleasePayload {
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let title = app
             .get_title_for_management(&actor, &self.title_id)
             .await
@@ -2618,9 +2622,6 @@ impl PendingReleasePayload {
     async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&scryer_domain::Entitlement::ManageConfig) {
-            return Err(async_graphql::Error::new("insufficient entitlements"));
-        }
         let wanted_item = app
             .get_wanted_item_for_management(&actor, &self.wanted_item_id)
             .await

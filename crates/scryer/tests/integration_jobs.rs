@@ -8,9 +8,13 @@ use tokio::time::{Duration, timeout};
 
 use common::TestContext;
 use scryer_application::{
-    JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, MediaFileRepository, TitleRepository,
+    JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository, LibraryRootDraft,
+    MediaFileRepository, TitleRepository, UserRepository,
 };
-use scryer_domain::{ExternalId, Id, MediaFacet, Title, User};
+use scryer_domain::{
+    ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
+    Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User,
+};
 use scryer_infrastructure::{SettingDefinitionSeed, SqliteWorkflowStore};
 
 async fn seed_media_path_settings(ctx: &TestContext) {
@@ -60,6 +64,25 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         )
         .await
         .expect("upsert setting");
+
+    let (library_id, name, slug) = match key_name {
+        "movies.path" => ("movie_default_library", "Movies", "movies"),
+        "series.path" => ("series_default_library", "Series", "series"),
+        "anime.path" => ("anime_default_library", "Anime", "anime"),
+        _ => return,
+    };
+    ctx.catalog
+        .update(
+            library_id,
+            name.to_string(),
+            slug.to_string(),
+            vec![LibraryRootDraft {
+                path: value.to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("update default library root");
 }
 
 #[tokio::test]
@@ -67,12 +90,13 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
 
-    let title = ctx
-        .catalog
-        .create(Title {
+    let title = TitleRepository::create(
+        &ctx.catalog,
+        Title {
             id: Id::new().0,
             name: "Pending Series".to_string(),
             facet: MediaFacet::Series,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: false,
             tags: vec![],
             external_ids: vec![ExternalId {
@@ -107,9 +131,10 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
             min_availability: None,
             digital_release_date: None,
             folder_path: None,
-        })
-        .await
-        .expect("create pending title");
+        },
+    )
+    .await
+    .expect("create pending title");
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Pending Series [WEB-DL]");
@@ -151,9 +176,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         "terminal background job should no longer be active",
     );
 
-    let refreshed_title = ctx
-        .catalog
-        .get_by_id(&title.id)
+    let refreshed_title = TitleRepository::get_by_id(&ctx.catalog, &title.id)
         .await
         .expect("load title")
         .expect("title exists");
@@ -186,6 +209,144 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     assert_eq!(summary["matched"], 0);
     assert_eq!(summary["skipped"], 1);
     assert_eq!(summary["unmatched"], 0);
+}
+
+#[tokio::test]
+async fn scheduled_background_refresh_creates_one_job_run_per_library() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let default_root = tempfile::tempdir().expect("default movie root");
+    set_media_path(
+        &ctx,
+        "movies.path",
+        default_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let second_root = tempfile::tempdir().expect("second movie root");
+    let now = Utc::now();
+    LibraryRepository::create(
+        &ctx.catalog,
+        Library {
+            id: "movie_kids_library".to_string(),
+            facet: MediaFacet::Movie,
+            name: "Kids".to_string(),
+            slug: "kids".to_string(),
+            is_default: false,
+            roots: vec![],
+            created_at: now,
+            updated_at: now,
+        },
+        vec![LibraryRootDraft {
+            path: second_root.path().to_string_lossy().to_string(),
+            is_default: true,
+        }],
+    )
+    .await
+    .expect("create second movie library");
+
+    ctx.app
+        .run_scheduled_job_now(
+            JobKey::BackgroundLibraryRefreshMovies,
+            JobTriggerSource::ScheduledInterval,
+        )
+        .await
+        .expect("scheduled refresh should run each library job");
+
+    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+        &workflow_store,
+        Some(JobKey::BackgroundLibraryRefreshMovies),
+        5,
+    )
+    .await
+    .expect("list job runs");
+    let operation_types = runs
+        .iter()
+        .map(|run| run.operation_type.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    assert!(operation_types.contains("background_library_refresh_movies:movie_default_library"));
+    assert!(operation_types.contains("background_library_refresh_movies:movie_kids_library"));
+    assert_eq!(
+        runs.iter()
+            .filter(|run| run.job_key == JobKey::BackgroundLibraryRefreshMovies)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
+    let ctx = TestContext::new().await;
+    let user_id = Id::new().0;
+    let viewer = UserRepository::create(
+        &ctx.catalog,
+        User {
+            id: user_id.clone(),
+            username: "movie-viewer".to_string(),
+            password_hash: None,
+            entitlements: vec![],
+            authorization: Default::default(),
+        },
+    )
+    .await
+    .expect("create viewer");
+    LibraryRepository::set_grants_for_user(
+        &ctx.catalog,
+        &user_id,
+        vec![LibraryGrant {
+            user_id: user_id.clone(),
+            library_id: "movie_default_library".to_string(),
+            permissions: LibraryPermissionMask::VIEW,
+        }],
+    )
+    .await
+    .expect("grant library view");
+    let viewer = ctx
+        .app
+        .attach_user_authorization(viewer)
+        .await
+        .expect("attach authorization");
+
+    ctx.app
+        .emit_configuration_changed_event(
+            None,
+            "system",
+            Some("system.secret".to_string()),
+            ConfigurationChangeAction::Saved,
+        )
+        .await;
+    ctx.app
+        .emit_configuration_changed_event(
+            None,
+            "library",
+            Some("movie_default_library".to_string()),
+            ConfigurationChangeAction::Saved,
+        )
+        .await;
+
+    let events = ctx
+        .app
+        .list_domain_events(
+            &viewer,
+            &DomainEventFilter {
+                event_types: Some(vec![DomainEventType::ConfigurationChanged]),
+                limit: 10,
+                ..DomainEventFilter::default()
+            },
+        )
+        .await
+        .expect("list domain events");
+
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0].payload,
+        DomainEventPayload::ConfigurationChanged(data)
+            if data.resource_type == "library"
+                && data.resource_id.as_deref() == Some("movie_default_library")
+    ));
 }
 
 #[tokio::test]

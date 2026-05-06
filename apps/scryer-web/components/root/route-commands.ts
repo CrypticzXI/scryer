@@ -25,6 +25,8 @@ import type {
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
+import type { AuthUser } from "@/lib/hooks/use-auth";
+import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
 
 export type RouteCommand = {
   id: string;
@@ -38,7 +40,7 @@ export type RouteCommand = {
 type BuildRouteCommandsArgs = {
   t: Translate;
   pendingImportCounts: PendingImportCounts | null;
-  entitlements: string[];
+  user: AuthUser;
   activityImportCount?: number;
   onNavigate: (
     nextView: ViewId,
@@ -67,14 +69,20 @@ function buildNavigate(
 export function buildRouteCommands({
   t,
   pendingImportCounts,
-  entitlements,
+  user,
   activityImportCount = 0,
   onNavigate,
 }: BuildRouteCommandsArgs): RouteCommand[] {
-  const canManageConfig = entitlements.includes("manage_config");
-  const canManageTitle = entitlements.includes("manage_title");
-  const canManageUsers = entitlements.includes("manage_users");
-  const mediaCommands = FACET_REGISTRY.flatMap((f) => {
+  const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
+  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
+  const canManageUsers = hasAnyAppPermission(user, [
+    APP_PERMISSIONS.manageUsers,
+    APP_PERMISSIONS.managePermissions,
+  ]);
+  const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
+  const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
+  const mediaCommands = canViewCatalog ? FACET_REGISTRY.flatMap((f) => {
     const commands: RouteCommand[] = [
       {
         id: `${f.viewId}-overview`,
@@ -86,7 +94,7 @@ export function buildRouteCommands({
       },
     ];
 
-    if (canManageTitle && hasImportItemsForView(pendingImportCounts, f.viewId)) {
+    if (canResolveImports && hasImportItemsForView(pendingImportCounts, f.viewId)) {
       commands.push({
         id: `${f.viewId}-import`,
         label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
@@ -97,7 +105,7 @@ export function buildRouteCommands({
       });
     }
 
-    if (canManageConfig) {
+    if (canManageCatalogSettings) {
       commands.push({
         id: `${f.viewId}-settings`,
         label: t(f.settingsLabelKey),
@@ -141,7 +149,7 @@ export function buildRouteCommands({
     }
 
     return commands;
-  });
+  }) : [];
 
   return [
     ...mediaCommands,
@@ -169,7 +177,7 @@ export function buildRouteCommands({
       icon: ActivitySquare,
       onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
     },
-    ...(canManageTitle
+    ...(canViewCatalog
       ? [{
           id: "wanted-history",
           label: `${t("nav.wanted")} / ${t("history.title")}`,
@@ -179,7 +187,7 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "history"),
         } satisfies RouteCommand]
       : []),
-    ...(canManageTitle
+    ...(canResolveImports || canManageTitle
       ? [{
           id: "activity-overview",
           label: `${t("nav.activity")} / ${t("activity.activity")}`,
@@ -189,7 +197,7 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "activity"),
         } satisfies RouteCommand]
       : []),
-    ...(canManageTitle && activityImportCount > 0
+    ...(canResolveImports && activityImportCount > 0
       ? [{
           id: "activity-import",
           label: `${t("nav.activity")} / ${t("activity.import")}`,
@@ -199,7 +207,7 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "import"),
         } satisfies RouteCommand]
       : []),
-    ...(canManageTitle
+    ...(canResolveImports || canManageTitle
       ? [{
           id: "activity-history",
           label: `${t("nav.activity")} / ${t("activity.history")}`,
@@ -217,7 +225,7 @@ export function buildRouteCommands({
       icon: CalendarDays,
       onSelect: buildNavigate(onNavigate, "calendar"),
     },
-    ...(canManageConfig
+    ...(canManageSystemSettings
       ? [{
           id: "settings-general",
           label: `${t("nav.settings")} / ${t("settings.general")}`,
@@ -252,7 +260,7 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "settings", "users"),
         } satisfies RouteCommand]
       : []),
-    ...(canManageConfig
+    ...(canManageCatalogSettings
       ? [{
           id: "settings-quality-profiles",
           label: t("settings.qualityProfiles"),
@@ -267,20 +275,6 @@ export function buildRouteCommands({
           keywords: ["settings", "delay", "profiles", "pending", "wait"],
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "delayProfiles"),
-        } satisfies RouteCommand, {
-          id: "settings-download-clients",
-          label: t("settings.downloadClients"),
-          description: t("settings.downloadClients"),
-          keywords: ["settings", "download", "clients", "indexers"],
-          icon: Settings,
-          onSelect: buildNavigate(onNavigate, "settings", "downloadClients"),
-        } satisfies RouteCommand, {
-          id: "settings-indexers",
-          label: t("settings.indexers"),
-          description: t("settings.indexers"),
-          keywords: ["settings", "indexers", "feeds", "search", "sources"],
-          icon: Settings,
-          onSelect: buildNavigate(onNavigate, "settings", "indexers"),
         } satisfies RouteCommand, {
           id: "settings-rules",
           label: t("settings.rules"),
@@ -309,6 +303,23 @@ export function buildRouteCommands({
           keywords: ["settings", "subtitles", "captions", "srt", "opensubtitles"],
           icon: Captions,
           onSelect: buildNavigate(onNavigate, "settings", "subtitles"),
+        } satisfies RouteCommand]
+      : []),
+    ...(canManageSystemSettings
+      ? [{
+          id: "settings-download-clients",
+          label: t("settings.downloadClients"),
+          description: t("settings.downloadClients"),
+          keywords: ["settings", "download", "clients", "indexers"],
+          icon: Settings,
+          onSelect: buildNavigate(onNavigate, "settings", "downloadClients"),
+        } satisfies RouteCommand, {
+          id: "settings-indexers",
+          label: t("settings.indexers"),
+          description: t("settings.indexers"),
+          keywords: ["settings", "indexers", "feeds", "search", "sources"],
+          icon: Settings,
+          onSelect: buildNavigate(onNavigate, "settings", "indexers"),
         } satisfies RouteCommand, {
           id: "settings-notifications",
           label: t("settings.notifications"),

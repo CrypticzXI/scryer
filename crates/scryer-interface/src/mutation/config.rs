@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
 };
-use scryer_domain::{Entitlement, NewDownloadClientConfig, NewIndexerConfig};
+use scryer_domain::{NewDownloadClientConfig, NewIndexerConfig};
 use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -199,9 +199,6 @@ impl ConfigMutations {
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
 
         let client_type = input.client_type.trim().to_lowercase();
 
@@ -412,20 +409,14 @@ impl ConfigMutations {
     async fn run_housekeeping(&self, ctx: &Context<'_>) -> GqlResult<HousekeepingReportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        let report = app.run_housekeeping().await.map_err(to_gql_error)?;
+        let report = app.run_housekeeping(&actor).await.map_err(to_gql_error)?;
         Ok(from_housekeeping_report(report))
     }
 
     async fn trigger_rss_sync(&self, ctx: &Context<'_>) -> GqlResult<RssSyncReportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        if !actor.has_entitlement(&Entitlement::ManageConfig) {
-            return Err(Error::new("insufficient entitlements"));
-        }
-        let report = app.run_rss_sync().await.map_err(to_gql_error)?;
+        let report = app.run_rss_sync(&actor).await.map_err(to_gql_error)?;
         Ok(from_rss_sync_report(report))
     }
 }

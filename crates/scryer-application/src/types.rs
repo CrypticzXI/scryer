@@ -10,6 +10,12 @@ use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
 use crate::release_parser::ParsedReleaseMetadata;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryRootDraft {
+    pub path: String,
+    pub is_default: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
     pub name: Option<String>,
@@ -85,6 +91,9 @@ pub struct CutoffUnmetItem {
     pub title_name: String,
     pub title_slug: Option<String>,
     pub title_facet: scryer_domain::MediaFacet,
+    pub library_id: String,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub episode_id: Option<String>,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
@@ -455,6 +464,8 @@ pub struct PendingImportSearchAttempt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingImportItem {
     pub id: String,
+    pub library_id: String,
+    pub library_slug: Option<String>,
     pub facet: scryer_domain::MediaFacet,
     pub status: PendingImportStatus,
     pub title_id: Option<String>,
@@ -590,6 +601,7 @@ pub struct LibraryScanUnmatchedSearchAttempt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryScanUnmatchedItem {
     pub id: String,
+    pub library_id: String,
     pub facet: scryer_domain::MediaFacet,
     pub status: PendingImportStatus,
     pub title_id: Option<String>,
@@ -613,6 +625,9 @@ pub struct WantedItem {
     pub title_name: Option<String>,
     pub title_slug: Option<String>,
     pub title_facet: Option<String>,
+    pub library_id: Option<String>,
+    pub library_name: Option<String>,
+    pub library_slug: Option<String>,
     pub episode_id: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,
@@ -1016,6 +1031,17 @@ pub(crate) struct JwtClaims {
     pub username: String,
     #[serde(default)]
     pub entitlements: Vec<String>,
+    #[serde(default, rename = "appPermissions")]
+    pub app_permissions: Vec<String>,
+    #[serde(default, rename = "libraryPermissions")]
+    pub library_permissions: Vec<JwtLibraryPermissionClaim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct JwtLibraryPermissionClaim {
+    #[serde(rename = "libraryId")]
+    pub library_id: String,
+    pub permissions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1101,7 +1127,6 @@ pub struct SystemHealth {
     pub recent_events: usize,
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
-    pub db_pending_migrations: usize,
     pub indexer_stats: Vec<IndexerQueryStats>,
 }
 

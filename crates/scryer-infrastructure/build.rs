@@ -83,16 +83,24 @@ fn compile_migration_bundle(manifest_dir: &Path) {
 
     let bundle = migration_assets::compile_source_bundle(&db_root)
         .unwrap_or_else(|error| panic!("failed to compile migration bundle: {error}"));
-    let bundle_bytes = migration_assets::encode_bundle(&bundle)
-        .unwrap_or_else(|error| panic!("failed to encode migration bundle: {error}"));
-    let compressed =
-        zstd::stream::encode_all(bundle_bytes.as_slice(), zstd::zstd_safe::max_c_level())
-            .unwrap_or_else(|error| panic!("failed to compress migration bundle: {error}"));
+    let catalog_bytes = migration_assets::encode_catalog(&bundle.catalog)
+        .unwrap_or_else(|error| panic!("failed to encode migration catalog: {error}"));
+    let compressed_payload = zstd::stream::encode_all(
+        bundle.payload_bytes.as_slice(),
+        zstd::zstd_safe::max_c_level(),
+    )
+    .unwrap_or_else(|error| panic!("failed to compress migration payload: {error}"));
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
-    let out_path = out_dir.join("migration_bundle.bin.zst");
-    fs::write(&out_path, compressed)
-        .unwrap_or_else(|error| panic!("failed to write {}: {error}", out_path.display()));
+    let compressed_catalog =
+        zstd::stream::encode_all(catalog_bytes.as_slice(), zstd::zstd_safe::max_c_level())
+            .unwrap_or_else(|error| panic!("failed to compress migration catalog: {error}"));
+    let catalog_path = out_dir.join("migration_catalog.json.zst");
+    fs::write(&catalog_path, compressed_catalog)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", catalog_path.display()));
+    let payload_path = out_dir.join("migration_payload.bin.zst");
+    fs::write(&payload_path, compressed_payload)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", payload_path.display()));
 }
 
 fn watch_tree(root: &Path) {

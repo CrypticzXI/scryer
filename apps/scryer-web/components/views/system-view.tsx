@@ -48,7 +48,6 @@ type SystemHealth = {
   recentEvents: number;
   recentEventPreview: string[];
   dbMigrationVersion: string | null;
-  dbPendingMigrations: number;
   indexerStats: IndexerQueryStats[];
 };
 
@@ -582,9 +581,6 @@ export function SystemView({
                 <code className="rounded bg-muted px-1 py-0.5 text-xs">
                   {systemHealth.dbMigrationVersion ?? "unknown"}
                 </code>
-                {systemHealth.dbPendingMigrations > 0 && (
-                  <span className="ml-2 text-yellow-400">({systemHealth.dbPendingMigrations} pending)</span>
-                )}
               </p>
               <p className="text-sm">
                 <span className="text-muted-foreground">{t("system.totalTitlesLabel")}:</span> {systemHealth.totalTitles}

@@ -91,11 +91,12 @@ export function TitleTable({
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const columnCount = isMovieView ? 5 : 6;
+  const columnCount = isMovieView ? 6 : 7;
   const titleTableColGroup = (
     <colgroup>
       <col style={{ width: "6.5rem" }} />
       <col />
+      <col style={{ width: "9rem" }} />
       <col style={{ width: "6rem" }} />
       {!isMovieView ? <col style={{ width: "11rem" }} /> : null}
       <col style={{ width: "8.5rem" }} />
@@ -352,6 +353,11 @@ export function TitleTable({
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
+          <TableCell className="align-middle">
+            <span className="inline-flex max-w-full rounded border border-border bg-muted/60 px-2 py-1 text-xs font-medium text-muted-foreground">
+              <span className="truncate">{item.libraryName ?? item.libraryId}</span>
+            </span>
+          </TableCell>
           <TableCell className="text-center align-middle">
             <span
               className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
@@ -500,6 +506,7 @@ export function TitleTable({
       <TableRow className="sticky top-0 z-10 bg-background">
         <TableHead className="w-14" />
         {renderSortableHeader("name", t("label.name"))}
+        <TableHead className="whitespace-nowrap">Library</TableHead>
         {renderSortableHeader(
           "monitored",
           t("title.table.monitored"),

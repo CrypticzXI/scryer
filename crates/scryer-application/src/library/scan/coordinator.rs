@@ -35,12 +35,22 @@ impl LibraryScanCoordinator {
         mode: LibraryScanMode,
         session_id_override: Option<String>,
     ) -> AppResult<(Self, LibraryScanSession)> {
+        Self::start_for_library(app, facet, None, mode, session_id_override).await
+    }
+
+    pub(crate) async fn start_for_library(
+        app: AppUseCase,
+        facet: MediaFacet,
+        library_id: Option<String>,
+        mode: LibraryScanMode,
+        session_id_override: Option<String>,
+    ) -> AppResult<(Self, LibraryScanSession)> {
         let session_id = session_id_override.unwrap_or_else(|| Id::new().0);
         let session = app
             .runtime
             .library
             .library_scan_tracker
-            .start_session_with_id(session_id, facet.clone(), mode)
+            .start_session_with_id_for_library(session_id, facet.clone(), library_id, mode)
             .await?;
         let coordinator = Self::with_facet(app, session.session_id.clone(), facet);
         coordinator.publish_started(&session).await;
@@ -80,6 +90,7 @@ impl LibraryScanCoordinator {
                 session.facet.clone(),
                 DomainEventPayload::LibraryScanStarted(LibraryScanStartedEventData {
                     session_id: session.session_id.clone(),
+                    library_id: session.library_id.clone(),
                     mode: session.mode.as_str().to_string(),
                 }),
             ))

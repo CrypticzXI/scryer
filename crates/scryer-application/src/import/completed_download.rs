@@ -1775,6 +1775,7 @@ mod tests {
         Title {
             id: id.to_string(),
             name: name.to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],
@@ -2498,7 +2499,17 @@ mod tests {
             recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
         });
         let app = build_app_with_download_client(vec![], vec![], vec![], vec![], download_client);
-        let actor = User::new_admin("admin");
+        let mut actor = User::new_admin("admin");
+        actor.authorization = scryer_domain::UserAuthorization {
+            app: scryer_domain::AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageSystemSettings,
+            ]),
+            default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+                scryer_domain::LibraryPermission::View,
+            ]),
+            loaded: true,
+            ..Default::default()
+        };
         let mut td = TrackedDownload {
             id: "nzbget:unmatched".to_string(),
             client_id: "client-1".to_string(),

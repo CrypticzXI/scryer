@@ -4,10 +4,16 @@ import { decodeJwtPayload, isTokenExpired } from "@/lib/utils/jwt";
 import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
 import { loginMutation } from "@/lib/graphql/mutations";
 import type { AuthRuntimeState } from "@/lib/types/settings";
+import type { AppPermission, LibraryPermissionGrant } from "@/lib/utils/permissions";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
 
-type AuthUser = { id: string; username: string; entitlements: string[] };
+export type AuthUser = {
+  id: string;
+  username: string;
+  appPermissions: AppPermission[];
+  libraryPermissions: LibraryPermissionGrant[];
+};
 type AuthLoginOptions = { persistSession?: boolean };
 type AuthLoginResult = { token: string; user: AuthUser | null };
 
@@ -64,7 +70,8 @@ function userFromToken(token: string): AuthUser | null {
   return {
     id: payload.sub,
     username: payload.username,
-    entitlements: payload.entitlements,
+    appPermissions: (payload.appPermissions ?? []) as AppPermission[],
+    libraryPermissions: (payload.libraryPermissions ?? []) as LibraryPermissionGrant[],
   };
 }
 

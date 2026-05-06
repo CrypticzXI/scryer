@@ -544,6 +544,7 @@ pub struct AppAssembly {
 pub struct AppCatalogServices {
     pub(crate) titles: Arc<dyn TitleRepository>,
     pub(crate) shows: Arc<dyn ShowRepository>,
+    pub(crate) libraries: Arc<dyn LibraryRepository>,
 }
 
 #[derive(Clone)]
@@ -762,7 +763,11 @@ impl AppServices {
         db_path: String,
     ) -> Self {
         Self {
-            catalog: AppCatalogServices { titles, shows },
+            catalog: AppCatalogServices {
+                titles,
+                shows,
+                libraries: Arc::new(NullLibraryRepository),
+            },
             identity: AppIdentityServices { users },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
@@ -970,6 +975,11 @@ impl AppServicesBuildConfiguration {
 
 impl AppServicesBuilder {
     app_services_builder_setter!(with_shows, catalog.shows, Arc<dyn ShowRepository>);
+    app_services_builder_setter!(
+        with_libraries,
+        catalog.libraries,
+        Arc<dyn LibraryRepository>
+    );
     pub fn with_library_state_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: BlocklistRepository
@@ -1569,8 +1579,9 @@ impl AppUseCase {
             .send(families);
     }
 
-    pub fn indexer_query_stats(&self, actor: &User) -> AppResult<Vec<IndexerQueryStats>> {
-        require(actor, &Entitlement::ManageConfig)?;
+    pub async fn indexer_query_stats(&self, actor: &User) -> AppResult<Vec<IndexerQueryStats>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         Ok(self.services.integrations.indexer_stats.all_stats())
     }
 
@@ -1578,7 +1589,8 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<HealthCheckResult>> {
-        require(actor, &Entitlement::ManageConfig)?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
         Ok(self.runtime.health.results.read().await.clone())
     }
 
@@ -1587,8 +1599,98 @@ impl AppUseCase {
         actor: &User,
         limit: usize,
     ) -> AppResult<Vec<ImportRecord>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.services.workflow.imports.list_imports(limit).await
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let records = self.services.workflow.imports.list_imports(limit).await?;
+        let mut title_library_cache = std::collections::HashMap::<String, Option<String>>::new();
+        let mut visible = Vec::new();
+        for record in records {
+            let title_id = record
+                .result_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<scryer_domain::ImportResult>(json).ok())
+                .and_then(|result| result.title_id)
+                .or_else(|| {
+                    serde_json::from_str::<crate::ManualImportRequestPayload>(&record.payload_json)
+                        .ok()
+                        .and_then(|payload| payload.title_id)
+                });
+            let allowed = if let Some(title_id) = title_id {
+                let library_id = if let Some(cached) = title_library_cache.get(&title_id) {
+                    cached.clone()
+                } else {
+                    let library_id = self
+                        .services
+                        .catalog
+                        .titles
+                        .get_by_id(&title_id)
+                        .await?
+                        .map(|title| title.library_id);
+                    title_library_cache.insert(title_id.clone(), library_id.clone());
+                    library_id
+                };
+                library_id
+                    .as_ref()
+                    .is_some_and(|library_id| allowed_library_ids.contains(library_id))
+            } else {
+                false
+            };
+            if allowed {
+                visible.push(record);
+            }
+        }
+        Ok(visible)
+    }
+
+    async fn require_library_permission_for_title(
+        &self,
+        actor: &User,
+        title_id: &str,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<()> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(actor, &title.library_id, permission)
+            .await
+    }
+
+    async fn require_any_library_permission_for_service(
+        &self,
+        actor: &User,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<()> {
+        if self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .is_empty()
+        {
+            Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn derive_wanted_item_library_id(&self, wanted: &WantedItem) -> AppResult<String> {
+        if let Some(library_id) = wanted.library_id.as_deref() {
+            return Ok(library_id.to_string());
+        }
+        self.services
+            .catalog
+            .titles
+            .get_by_id(&wanted.title_id)
+            .await?
+            .map(|title| title.library_id)
+            .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))
     }
 
     pub async fn find_download_submission_by_client_item_id(
@@ -1598,8 +1700,8 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
-        require(actor, &Entitlement::ManageConfig)?;
-        self.services
+        let submission = self
+            .services
             .workflow
             .download_submissions
             .find_by_client_item_id(&DownloadSourceIdentity::new(
@@ -1607,7 +1709,16 @@ impl AppUseCase {
                 client_type,
                 download_client_item_id,
             ))
-            .await
+            .await?;
+        if let Some(submission) = submission.as_ref() {
+            self.require_library_permission_for_title(
+                actor,
+                &submission.title_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(submission)
     }
 
     pub async fn search_metadata(
@@ -1619,7 +1730,11 @@ impl AppUseCase {
         language: &str,
         year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1634,7 +1749,11 @@ impl AppUseCase {
         type_hint: &str,
         year: Option<i32>,
     ) -> AppResult<Vec<MetadataSearchItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1648,7 +1767,11 @@ impl AppUseCase {
         queries: &[MetadataSearchQuery],
         language: &str,
     ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1663,7 +1786,11 @@ impl AppUseCase {
         limit: i32,
         language: &str,
     ) -> AppResult<MultiMetadataSearchResult> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1677,7 +1804,11 @@ impl AppUseCase {
         tvdb_id: i64,
         language: &str,
     ) -> AppResult<MovieMetadata> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1691,7 +1822,11 @@ impl AppUseCase {
         tvdb_id: i64,
         language: &str,
     ) -> AppResult<SeriesMetadata> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .metadata_gateway
@@ -1704,7 +1839,19 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<Vec<TitleMediaFile>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .library
             .media_files
@@ -1718,7 +1865,19 @@ impl AppUseCase {
         title_id: &str,
         episode_id: Option<&str>,
     ) -> AppResult<Option<WantedItem>> {
-        require(actor, &Entitlement::ViewCatalog)?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
         self.services
             .workflow
             .wanted_items
@@ -1731,8 +1890,16 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<Option<Title>> {
-        require(actor, &Entitlement::ManageConfig)?;
-        self.services.catalog.titles.get_by_id(title_id).await
+        let title = self.services.catalog.titles.get_by_id(title_id).await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        }
+        Ok(title)
     }
 
     pub async fn get_wanted_item_for_management(
@@ -1740,12 +1907,22 @@ impl AppUseCase {
         actor: &User,
         wanted_item_id: &str,
     ) -> AppResult<Option<WantedItem>> {
-        require(actor, &Entitlement::ManageConfig)?;
-        self.services
+        let wanted = self
+            .services
             .workflow
             .wanted_items
             .get_wanted_item_by_id(wanted_item_id)
-            .await
+            .await?;
+        if let Some(wanted) = wanted.as_ref() {
+            let library_id = self.derive_wanted_item_library_id(wanted).await?;
+            self.require_library_permission(
+                actor,
+                &library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        }
+        Ok(wanted)
     }
 
     pub async fn get_title_for_download_actions(
@@ -1753,8 +1930,16 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<Option<Title>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.services.catalog.titles.get_by_id(title_id).await
+        let title = self.services.catalog.titles.get_by_id(title_id).await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        }
+        Ok(title)
     }
 
     pub async fn get_title_tags_for_update(
@@ -1762,14 +1947,20 @@ impl AppUseCase {
         actor: &User,
         title_id: &str,
     ) -> AppResult<Vec<String>> {
-        require(actor, &Entitlement::ManageTitle)?;
-        self.services
+        let title = self
+            .services
             .catalog
             .titles
             .get_by_id(title_id)
             .await?
-            .map(|title| title.tags)
-            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+        Ok(title.tags)
     }
 
     pub async fn get_completed_download(
@@ -1777,7 +1968,19 @@ impl AppUseCase {
         actor: &User,
         download_client_item_id: &str,
     ) -> AppResult<CompletedDownload> {
-        require(actor, &Entitlement::ManageTitle)?;
+        if self
+            .authorized_library_ids(
+                actor,
+                None,
+                scryer_domain::LibraryPermission::ResolveImports,
+            )
+            .await?
+            .is_empty()
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
         let download_client_item_id = download_client_item_id.trim();
         if download_client_item_id.is_empty() {
             return Err(AppError::Validation(

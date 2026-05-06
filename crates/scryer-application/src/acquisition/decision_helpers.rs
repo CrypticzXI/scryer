@@ -104,6 +104,7 @@ impl AppUseCase {
         let profile = self
             .resolve_quality_profile(QualityProfileLookup {
                 title_tags: &title.tags,
+                library_id: Some(title.library_id.as_str()),
                 imdb_id: title.imdb_id.as_deref(),
                 tvdb_id: tvdb_id_from_external_ids(&title.external_ids).as_deref(),
                 category_hint: Some(category),
@@ -118,7 +119,7 @@ impl AppUseCase {
         );
 
         let persona = self
-            .resolve_scoring_persona(Some(category))
+            .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category))
             .await
             .unwrap_or_default();
         let thresholds = self.acquisition_thresholds(&persona).await;
@@ -140,6 +141,7 @@ mod tests {
         Title {
             id: "title-1".to_string(),
             name: "Example".to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],

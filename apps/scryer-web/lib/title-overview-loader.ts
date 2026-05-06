@@ -32,6 +32,8 @@ export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSub
 export type ResolvedTitleOverviewTarget = {
   id: string;
   slug: string | null;
+  libraryId: string | null;
+  librarySlug: string | null;
 };
 
 function graphQlErrorAlias(
@@ -141,17 +143,19 @@ export async function fetchTitleOverviewDownloadFeedbackSnapshot(
 export async function resolveTitleOverviewTargetBySlug(
   client: Client,
   facet: Facet,
+  librarySlug: string,
   slug: string,
 ): Promise<ResolvedTitleOverviewTarget | null> {
+  const normalizedLibrarySlug = librarySlug.trim();
   const normalizedSlug = slug.trim();
-  if (!normalizedSlug) {
+  if (!normalizedLibrarySlug || !normalizedSlug) {
     return null;
   }
 
   const { data, error } = await client
     .query(
       titleBySlugQuery,
-      { facet, slug: normalizedSlug },
+      { facet, librarySlug: normalizedLibrarySlug, slug: normalizedSlug },
       { requestPolicy: "network-only" },
     )
     .toPromise();
@@ -169,6 +173,12 @@ export async function resolveTitleOverviewTargetBySlug(
     id: String(title.id),
     slug: typeof title.slug === "string" && title.slug.trim().length > 0
       ? title.slug.trim()
+      : null,
+    libraryId: typeof title.libraryId === "string" && title.libraryId.trim().length > 0
+      ? title.libraryId.trim()
+      : null,
+    librarySlug: typeof title.librarySlug === "string" && title.librarySlug.trim().length > 0
+      ? title.librarySlug.trim()
       : null,
   };
 }

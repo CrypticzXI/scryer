@@ -275,6 +275,7 @@ mod tests {
         Title {
             id: "title-1".to_string(),
             name: "Coverage Show".to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
             facet,
             monitored: true,
             tags: vec![],

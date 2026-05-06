@@ -128,6 +128,7 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<String>>,
     },
     DeleteLibraryScanUnmatchedItem {
+        library_id: String,
         facet: MediaFacet,
         item_path: String,
         reply: Sender<AppResult<()>>,
@@ -900,6 +901,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::DeleteLibraryScanUnmatchedItem {
+                    library_id,
                     facet,
                     item_path,
                     reply,
@@ -907,7 +909,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("delete_library_scan_unmatched_item", || {
                             library_scan_unmatched_queries::delete_library_scan_unmatched_item_query(
-                                &pool, facet.clone(), &item_path,
+                                &pool, &library_id, facet.clone(), &item_path,
                             )
                         })
                         .await,

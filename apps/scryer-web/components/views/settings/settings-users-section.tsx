@@ -1,4 +1,3 @@
-
 import type * as React from "react";
 import { KeyRound, Trash2, User2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -15,54 +14,192 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
+import type { LibraryRecord, UserRecord } from "@/lib/types";
 
-type UserRecord = {
-  id: string;
-  username: string;
-  entitlements: string[];
-};
+type LibraryGrantDrafts = Record<string, string[]>;
 
 type SettingsUsersSectionProps = {
   settingsUsers: UserRecord[];
+  libraries: LibraryRecord[];
   currentUserId?: string | null;
-  ALL_ENTITLEMENTS: string[];
-  humanizeEntitlement: (entitlement: string) => string;
+  appPermissions: string[];
+  libraryPermissions: string[];
   newUsername: string;
   setNewUsername: (value: string) => void;
   newPassword: string;
   setNewPassword: (value: string) => void;
-  newEntitlements: string[];
-  toggleNewEntitlement: (value: string) => void;
+  newAppPermissions: string[];
+  newLibraryPermissionDrafts: LibraryGrantDrafts;
+  toggleNewAppPermission: (value: string) => void;
+  toggleNewLibraryPermission: (libraryId: string, value: string) => void;
   createUser: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
   userPasswordDrafts: Record<string, string>;
-  userEntitlementDrafts: Record<string, string[]>;
+  userAppPermissionDrafts: Record<string, string[]>;
+  userLibraryPermissionDrafts: Record<string, LibraryGrantDrafts>;
   updateUserPasswordDraft: (userId: string, value: string) => void;
-  toggleUserEntitlement: (userId: string, entitlement: string) => void;
+  toggleUserAppPermission: (userId: string, permission: string) => void;
+  toggleUserLibraryPermission: (userId: string, libraryId: string, permission: string) => void;
   mutatingUserId: string | null;
   setUserPassword: (userId: string) => Promise<void> | void;
-  setUserEntitlements: (userId: string, entitlements?: string[]) => Promise<void> | void;
+  setUserAppPermissions: (userId: string, permissions?: string[]) => Promise<void> | void;
+  setUserLibraryPermissions: (
+    userId: string,
+    libraryId: string,
+    permissions?: string[],
+  ) => Promise<void> | void;
   deleteUser: (user: UserRecord) => Promise<void> | void;
 };
 
+function appPermissionLabel(permission: string): string {
+  switch (permission) {
+    case "manageUsers":
+      return "Manage Users";
+    case "managePermissions":
+      return "Manage Permissions";
+    case "manageSystemSettings":
+      return "Manage System Settings";
+    case "manageCatalogSettings":
+      return "Manage Catalog Settings";
+    default:
+      return permission;
+  }
+}
+
+function libraryPermissionLabel(permission: string): string {
+  switch (permission) {
+    case "view":
+      return "View";
+    case "manageTitles":
+      return "Manage Titles";
+    case "resolveImports":
+      return "Resolve Imports";
+    case "manageLibrary":
+      return "Manage Library";
+    case "request":
+      return "Request";
+    case "autoApproveRequests":
+      return "Auto-Approve Requests";
+    default:
+      return permission;
+  }
+}
+
+function facetLabel(facet: LibraryRecord["facet"]): string {
+  switch (facet) {
+    case "movie":
+      return "Movies";
+    case "series":
+      return "Series";
+    case "anime":
+      return "Anime";
+    default:
+      return String(facet);
+  }
+}
+
+function toggleNext(current: string[], permission: string): string[] {
+  const next = new Set(current);
+  if (next.has(permission)) {
+    next.delete(permission);
+  } else {
+    next.add(permission);
+  }
+  return Array.from(next);
+}
+
+function PermissionChips({
+  permissions,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  permissions: string[];
+  selected: string[];
+  disabled?: boolean;
+  onToggle: (permission: string, next: string[]) => void;
+}) {
+  return (
+    <div className="grid gap-1 sm:grid-cols-2">
+      {permissions.map((permission) => (
+        <label
+          key={permission}
+          className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 hover:bg-card/70"
+        >
+          <Checkbox
+            checked={selected.includes(permission)}
+            onCheckedChange={() => onToggle(permission, toggleNext(selected, permission))}
+            disabled={disabled}
+          />
+          <span className="text-xs">{appPermissionLabel(permission)}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function LibraryPermissionRow({
+  library,
+  permissions,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  library: LibraryRecord;
+  permissions: string[];
+  selected: string[];
+  disabled?: boolean;
+  onToggle: (permission: string, next: string[]) => void;
+}) {
+  return (
+    <div className="grid gap-2 border-t border-border py-2 first:border-t-0 md:grid-cols-[12rem_minmax(0,1fr)]">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-card-foreground">{library.name}</div>
+        <div className="text-xs text-muted-foreground">{facetLabel(library.facet)}</div>
+      </div>
+      <div className="grid gap-1 sm:grid-cols-2 xl:grid-cols-3">
+        {permissions.map((permission) => (
+          <label
+            key={`${library.id}-${permission}`}
+            className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 hover:bg-card/70"
+          >
+            <Checkbox
+              checked={selected.includes(permission)}
+              onCheckedChange={() => onToggle(permission, toggleNext(selected, permission))}
+              disabled={disabled}
+            />
+            <span className="text-xs">{libraryPermissionLabel(permission)}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsUsersSection({
   settingsUsers,
+  libraries,
   currentUserId,
-  ALL_ENTITLEMENTS,
-  humanizeEntitlement,
+  appPermissions,
+  libraryPermissions,
   newUsername,
   setNewUsername,
   newPassword,
   setNewPassword,
-  newEntitlements,
-  toggleNewEntitlement,
+  newAppPermissions,
+  newLibraryPermissionDrafts,
+  toggleNewAppPermission,
+  toggleNewLibraryPermission,
   createUser,
   userPasswordDrafts,
-  userEntitlementDrafts,
+  userAppPermissionDrafts,
+  userLibraryPermissionDrafts,
   updateUserPasswordDraft,
-  toggleUserEntitlement,
+  toggleUserAppPermission,
+  toggleUserLibraryPermission,
   mutatingUserId,
   setUserPassword,
-  setUserEntitlements,
+  setUserAppPermissions,
+  setUserLibraryPermissions,
   deleteUser,
 }: SettingsUsersSectionProps) {
   const t = useTranslate();
@@ -78,7 +215,7 @@ export function SettingsUsersSection({
           <CardTitle className="text-base">{t("settings.createUser")}</CardTitle>
         </CardHeader>
         <CardContent>
-          <form className="space-y-3" onSubmit={createUser}>
+          <form className="space-y-4" onSubmit={createUser}>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label htmlFor="settings-user-username" className="mb-2 block">
@@ -105,22 +242,27 @@ export function SettingsUsersSection({
                   required
                 />
               </div>
-              <div className="md:col-span-2">
-                <Label className="mb-2 block">{t("settings.entitlements")}</Label>
-                <div className="grid rounded border border-border bg-background/40 p-2">
-                  {ALL_ENTITLEMENTS.map((entitlement) => (
-                    <label
-                      key={`new-${entitlement}`}
-                      className="flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-card/70"
-                    >
-                      <Checkbox
-                        checked={newEntitlements.includes(entitlement)}
-                        onCheckedChange={() => toggleNewEntitlement(entitlement)}
-                      />
-                      <span>{humanizeEntitlement(entitlement)}</span>
-                    </label>
-                  ))}
-                </div>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+              <div className="rounded border border-border bg-background/40 p-3">
+                <Label className="mb-2 block">App Permissions</Label>
+                <PermissionChips
+                  permissions={appPermissions}
+                  selected={newAppPermissions}
+                  onToggle={(permission) => toggleNewAppPermission(permission)}
+                />
+              </div>
+              <div className="rounded border border-border bg-background/40 p-3">
+                <Label className="mb-2 block">Library Permissions</Label>
+                {libraries.map((library) => (
+                  <LibraryPermissionRow
+                    key={`new-${library.id}`}
+                    library={library}
+                    permissions={libraryPermissions}
+                    selected={newLibraryPermissionDrafts[library.id] ?? []}
+                    onToggle={(permission) => toggleNewLibraryPermission(library.id, permission)}
+                  />
+                ))}
               </div>
             </div>
             <Button type="submit" className="min-w-40">
@@ -138,13 +280,13 @@ export function SettingsUsersSection({
           <TableHeader>
             <TableRow>
               <TableHead className="min-w-40">{t("settings.username")}</TableHead>
-              <TableHead className="min-w-[360px]">{t("settings.entitlements")}</TableHead>
+              <TableHead className="min-w-[520px]">Permissions</TableHead>
               <TableHead className="min-w-72">{t("settings.newPassword")}</TableHead>
               <TableHead className="w-44 text-right">{t("label.actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-                {settingsUsers.length === 0 ? (
+            {settingsUsers.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={4} className="text-muted-foreground">
                   {t("settings.noUsers")}
@@ -153,40 +295,54 @@ export function SettingsUsersSection({
             ) : (
               settingsUsers.map((user) => {
                 const isOwnUser = currentUserId === user.id;
+                const appSelected = userAppPermissionDrafts[user.id] ?? user.appPermissions;
+                const libraryDrafts =
+                  userLibraryPermissionDrafts[user.id] ??
+                  Object.fromEntries(
+                    user.libraryPermissions.map((grant) => [
+                      grant.libraryId,
+                      grant.permissions,
+                    ]),
+                  );
                 return (
                   <TableRow key={user.id}>
-                    <TableCell className="align-middle">
+                    <TableCell className="align-top">
                       <div className="text-lg font-semibold text-foreground">{user.username}</div>
                     </TableCell>
                     <TableCell className="align-top">
-                      <div className="space-y-2">
-                        <div className="grid max-h-32 gap-1 overflow-y-auto rounded border border-border bg-background/40 p-2 md:grid-cols-2">
-                          {ALL_ENTITLEMENTS.map((entitlement) => (
-                            <label
-                              key={`user-${user.id}-${entitlement}`}
-                              className="flex items-center gap-2"
-                            >
-                              <Checkbox
-                                checked={(userEntitlementDrafts[user.id] ?? user.entitlements).includes(entitlement)}
-                                onCheckedChange={() => {
-                                  if (isOwnUser) {
-                                    return;
-                                  }
-                                  const currentEntitlements = userEntitlementDrafts[user.id] ?? user.entitlements;
-                                  const nextSet = new Set(currentEntitlements);
-                                  if (nextSet.has(entitlement)) {
-                                    nextSet.delete(entitlement);
-                                  } else {
-                                    nextSet.add(entitlement);
-                                  }
-                                  const nextEntitlements = Array.from(nextSet);
-                                  toggleUserEntitlement(user.id, entitlement);
-                                  void setUserEntitlements(user.id, nextEntitlements);
-                                }}
-                                disabled={mutatingUserId === user.id || isOwnUser}
-                              />
-                              <span>{humanizeEntitlement(entitlement)}</span>
-                            </label>
+                      <div className="space-y-3">
+                        <div className="rounded border border-border bg-background/40 p-2">
+                          <Label className="mb-2 block">App Permissions</Label>
+                          <PermissionChips
+                            permissions={appPermissions}
+                            selected={appSelected}
+                            disabled={mutatingUserId === user.id || isOwnUser}
+                            onToggle={(permission, nextPermissions) => {
+                              if (isOwnUser) return;
+                              toggleUserAppPermission(user.id, permission);
+                              void setUserAppPermissions(user.id, nextPermissions);
+                            }}
+                          />
+                        </div>
+                        <div className="rounded border border-border bg-background/40 p-2">
+                          <Label className="mb-2 block">Library Permissions</Label>
+                          {libraries.map((library) => (
+                            <LibraryPermissionRow
+                              key={`${user.id}-${library.id}`}
+                              library={library}
+                              permissions={libraryPermissions}
+                              selected={libraryDrafts[library.id] ?? []}
+                              disabled={mutatingUserId === user.id || isOwnUser}
+                              onToggle={(permission, nextPermissions) => {
+                                if (isOwnUser) return;
+                                toggleUserLibraryPermission(user.id, library.id, permission);
+                                void setUserLibraryPermissions(
+                                  user.id,
+                                  library.id,
+                                  nextPermissions,
+                                );
+                              }}
+                            />
                           ))}
                         </div>
                       </div>

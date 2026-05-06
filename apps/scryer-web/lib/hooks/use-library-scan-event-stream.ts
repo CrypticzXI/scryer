@@ -151,9 +151,12 @@ export function useLibraryScanEventStream() {
   );
 
   const getActiveSession = useCallback(
-    (facet: Facet) =>
+    (facet: Facet, libraryId?: string | null) =>
       sessions.find(
-        (session) => session.facet === facet && !isTerminal(session.status),
+        (session) =>
+          session.facet === facet &&
+          (libraryId == null || session.libraryId === libraryId) &&
+          !isTerminal(session.status),
       ) ?? null,
     [sessions],
   );

@@ -95,6 +95,7 @@ impl LibraryScanPhaseProgress {
 pub struct LibraryScanSession {
     pub session_id: String,
     pub facet: MediaFacet,
+    pub library_id: Option<String>,
     pub mode: LibraryScanMode,
     pub status: LibraryScanStatus,
     pub started_at: DateTime<Utc>,
@@ -116,6 +117,7 @@ impl LibraryScanSession {
         Self {
             session_id: Id::new().0,
             facet,
+            library_id: None,
             mode: LibraryScanMode::Full,
             status: LibraryScanStatus::Discovering,
             started_at: now,
@@ -132,9 +134,15 @@ impl LibraryScanSession {
         }
     }
 
-    pub(crate) fn with_id(session_id: String, facet: MediaFacet, mode: LibraryScanMode) -> Self {
+    pub(crate) fn with_id_for_library(
+        session_id: String,
+        facet: MediaFacet,
+        library_id: Option<String>,
+        mode: LibraryScanMode,
+    ) -> Self {
         let mut session = Self::new(facet);
         session.session_id = session_id;
+        session.library_id = library_id;
         session.mode = mode;
         session
     }
@@ -399,14 +407,26 @@ impl LibraryScanTracker {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) async fn start_session(&self, facet: MediaFacet) -> AppResult<LibraryScanSession> {
-        self.start_session_with_id(Id::new().0, facet, LibraryScanMode::Full)
+        self.start_session_with_id_for_library(Id::new().0, facet, None, LibraryScanMode::Full)
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn start_session_with_id(
         &self,
         session_id: String,
         facet: MediaFacet,
+        mode: LibraryScanMode,
+    ) -> AppResult<LibraryScanSession> {
+        self.start_session_with_id_for_library(session_id, facet, None, mode)
+            .await
+    }
+
+    pub(crate) async fn start_session_with_id_for_library(
+        &self,
+        session_id: String,
+        facet: MediaFacet,
+        library_id: Option<String>,
         mode: LibraryScanMode,
     ) -> AppResult<LibraryScanSession> {
         let event = {
@@ -418,7 +438,12 @@ impl LibraryScanTracker {
                 )));
             }
 
-            let snapshot = LibraryScanSession::with_id(session_id, facet.clone(), mode);
+            let snapshot = LibraryScanSession::with_id_for_library(
+                session_id,
+                facet.clone(),
+                library_id,
+                mode,
+            );
             state
                 .facet_sessions
                 .insert(facet, snapshot.session_id.clone());
@@ -903,6 +928,7 @@ fn library_scan_session_from_started(
     LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        library_id: data.library_id.clone(),
         mode: parse_library_scan_mode(&data.mode),
         status: LibraryScanStatus::Discovering,
         started_at: event.occurred_at,
@@ -926,6 +952,7 @@ fn library_scan_session_from_title_discovered(
     LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: data.facet.clone(),
+        library_id: None,
         mode: LibraryScanMode::Full,
         status: LibraryScanStatus::Running,
         started_at: event.occurred_at,
@@ -949,6 +976,7 @@ fn library_scan_session_from_progressed(
     let mut session = LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        library_id: None,
         mode: LibraryScanMode::Full,
         status: parse_library_scan_status(&data.status),
         started_at: event.occurred_at,
@@ -974,6 +1002,7 @@ fn library_scan_session_from_completed(
     let mut session = LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        library_id: None,
         mode: LibraryScanMode::Full,
         status: parse_library_scan_status(&data.status),
         started_at: event.occurred_at,
@@ -999,6 +1028,7 @@ fn library_scan_session_from_failed(
     LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        library_id: None,
         mode: LibraryScanMode::Full,
         status: LibraryScanStatus::Failed,
         started_at: event.occurred_at,
@@ -1022,6 +1052,7 @@ fn library_scan_session_from_canceled(
     let mut session = LibraryScanSession {
         session_id: data.session_id.clone(),
         facet: event.facet.clone().unwrap_or(MediaFacet::Movie),
+        library_id: None,
         mode: LibraryScanMode::Full,
         status: LibraryScanStatus::Canceled,
         started_at: event.occurred_at,
@@ -1787,6 +1818,7 @@ mod tests {
                 MediaFacet::Movie,
                 DomainEventPayload::LibraryScanStarted(LibraryScanStartedEventData {
                     session_id: session_id.to_string(),
+                    library_id: None,
                     mode: "full".to_string(),
                 }),
             ),
@@ -1856,6 +1888,7 @@ mod tests {
                 MediaFacet::Series,
                 DomainEventPayload::LibraryScanStarted(LibraryScanStartedEventData {
                     session_id: session_id.to_string(),
+                    library_id: None,
                     mode: "full".to_string(),
                 }),
             ),

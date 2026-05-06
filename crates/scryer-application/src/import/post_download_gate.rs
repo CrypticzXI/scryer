@@ -176,7 +176,11 @@ pub(crate) async fn probe_and_validate(
 
     let category_hint = facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(Some(&title.id), Some(category_hint))
+        .resolve_required_audio_languages(
+            Some(&title.id),
+            Some(title.library_id.as_str()),
+            Some(category_hint),
+        )
         .await
         .unwrap_or_else(|error| {
             warn!(
@@ -204,7 +208,7 @@ pub(crate) async fn probe_and_validate(
         }
     }
     let persona = app
-        .resolve_scoring_persona(Some(category_hint))
+        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
         .await
         .unwrap_or_else(|error| {
             warn!(
@@ -476,11 +480,15 @@ pub(crate) async fn compute_acquisition_score(
     let (rescored, changes) = rescore_from_mediainfo(parsed, acceptance);
     let category = facet_to_category_hint(&title.facet);
     let required_audio_languages = app
-        .resolve_required_audio_languages(Some(&title.id), Some(category))
+        .resolve_required_audio_languages(
+            Some(&title.id),
+            Some(title.library_id.as_str()),
+            Some(category),
+        )
         .await
         .unwrap_or_default();
     let persona = app
-        .resolve_scoring_persona(Some(category))
+        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category))
         .await
         .unwrap_or_default();
     let decision = build_import_profile_decision(

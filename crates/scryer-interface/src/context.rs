@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, Schema};
 use scryer_application::AppError;
 use scryer_application::AppUseCase;
-use scryer_domain::User;
+use scryer_domain::{AppPermission, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
 use crate::{mutation::MutationRoot, query::QueryRoot, subscription::SubscriptionRoot};
@@ -160,6 +160,40 @@ pub(crate) fn to_gql_error(err: AppError) -> Error {
 
 pub(crate) fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     current_user_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+}
+
+pub(crate) async fn require_app_permission(
+    ctx: &Context<'_>,
+    permission: AppPermission,
+) -> GqlResult<User> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.require_app_permission(&actor, permission)
+        .await
+        .map_err(to_gql_error)?;
+    Ok(actor)
+}
+
+pub(crate) async fn actor_has_app_permission(
+    ctx: &Context<'_>,
+    permission: AppPermission,
+) -> GqlResult<bool> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.has_app_permission(&actor, permission)
+        .await
+        .map_err(to_gql_error)
+}
+
+pub(crate) async fn actor_has_any_library_permission(
+    ctx: &Context<'_>,
+    permission: LibraryPermission,
+) -> GqlResult<bool> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.has_any_library_permission(&actor, permission)
+        .await
+        .map_err(to_gql_error)
 }
 
 pub(crate) fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
