@@ -1,2 +1,4 @@
 [alias]
 xtask = "run -p xtask --"
+xtask-release = "run -p xtask-release --"
+xtask-migrations = "run -p xtask-migrations --"

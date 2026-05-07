@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use sqlx::{Row, TypeInfo, ValueRef, sqlite::SqlitePoolOptions};
 use std::collections::HashSet;
+use xtask_support::TaskContext;
 
-use crate::{RebaselineArgs, TaskContext};
+use crate::RebaselineArgs;
 
 const CANONICAL_ADMIN_USER_ID: &str = "00000000000000000000000000000001";
 

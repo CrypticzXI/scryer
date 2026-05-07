@@ -17,6 +17,12 @@ workspace-level `AGENTS.md`, not here.
   - shared UI primitives under `components/ui/`
   - translations under `lib/i18n/locales/`
 - Build and release automation lives in `cargo xtask`
+- The root `xtask` binary stays intentionally thin. Heavy release and migration
+  flows still use `cargo xtask ...`, but they delegate to the dedicated
+  `xtask-release` / `xtask-migrations` packages under the hood.
+- Optional direct aliases `cargo xtask-release -- ...` and
+  `cargo xtask-migrations -- ...` are available for advanced debugging, but
+  `cargo xtask ...` remains the default interface.
 - For app releases, run `cargo xtask release --dry-run` first, inspect the
   dry-run result, and only then run the real `cargo xtask release` if the dry
   run succeeded and the release should continue. The dry run is allowed to

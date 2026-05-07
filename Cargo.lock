@@ -8772,6 +8772,36 @@ version = "0.13.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
+ "clap",
+ "dotenvy",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "signal-hook",
+ "tempfile",
+ "xtask-support",
+]
+
+[[package]]
+name = "xtask-migrations"
+version = "0.13.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "scryer-infrastructure",
+ "sqlx",
+ "tokio",
+ "xtask-support",
+]
+
+[[package]]
+name = "xtask-release"
+version = "0.13.3"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "clap",
@@ -8782,22 +8812,27 @@ dependencies = [
  "reqwest 0.13.3",
  "rustls-pki-types",
  "rustls-webpki",
- "scryer-infrastructure",
  "scryer-plugin-sdk",
- "scryer-release-parser",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "signal-hook",
  "sigstore",
- "sqlx",
  "tempfile",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "toml_edit",
  "x509-cert",
+ "xtask-support",
  "zstd",
+]
+
+[[package]]
+name = "xtask-support"
+version = "0.13.3"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]

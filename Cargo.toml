@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "xtask",
+    "xtask-release",
+    "xtask-migrations",
+    "xtask-support",
     "crates/scryer-domain",
     "crates/scryer-application",
     "crates/scryer-outbound-http",

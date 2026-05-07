@@ -23,6 +23,13 @@ If runtime interfaces change (GraphQL, subscription payloads, gateway contract),
 ## Release requests
 
 - Release automation goes through `cargo xtask`.
+- The root `xtask` binary is intentionally thin: `cargo xtask release ...`,
+  `cargo xtask builtins sync`, `cargo xtask sdk release ...`, and
+  `cargo xtask migrations rebaseline ...` delegate to the heavier
+  `xtask-release` / `xtask-migrations` packages behind the same CLI.
+- Direct aliases `cargo xtask-release -- ...` and
+  `cargo xtask-migrations -- ...` exist for advanced debugging, but the
+  canonical operator interface stays `cargo xtask ...`.
 - For app releases, run `cargo xtask release --dry-run` first. Treat it as a
   mutating rehearsal: it may apply and commit release-prep fixes, but it must
   still stop before the Cargo version bump, signed tag, and push. Only follow

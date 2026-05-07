@@ -56,6 +56,12 @@ For humans and agents alike, `cargo xtask` is the default interface for:
 - profiling and developer workflows
 - other repo-owned operational commands
 
+The root `xtask` package is intentionally thin. Heavy release and migration
+flows keep the same `cargo xtask ...` UX, but delegate internally to the
+dedicated `xtask-release` / `xtask-migrations` packages. Optional direct
+aliases exist for advanced debugging, but operator-facing docs should keep
+pointing at `cargo xtask ...`.
+
 Compatibility scripts may remain during migration, but they are wrappers around xtask rather than the source of truth. New repo automation belongs in xtask, not in fresh shell glue.
 
 The only deliberate shell exceptions are true runtime/container entrypoints under `docker/`, such as the dev seed container bootstrap. Those are execution surfaces for Docker, not the canonical human or agent interface.

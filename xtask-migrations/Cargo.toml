@@ -1,0 +1,13 @@
+[package]
+name = "xtask-migrations"
+version = "0.13.3"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+sqlx = { workspace = true }
+scryer-infrastructure = { path = "../crates/scryer-infrastructure" }
+tokio = { workspace = true }
+xtask-support = { path = "../xtask-support" }
